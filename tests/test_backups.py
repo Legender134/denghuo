@@ -612,7 +612,7 @@ class BackupTests(unittest.TestCase):
         self.manager.tick(self.root);first=self.manager.events(self.root)[0]
         self.write_save(2);self.manager.restore(self.root,self.payload(first))
         record=self.manager.undo_status(self.root)[0]
-        original=self.root/self.manager.journals(self.root)[0]['original']
+        original=(self.root/self.manager.journals(self.root)[0]['original']).resolve()
         baseline={p.name:(p.read_bytes(),p.stat().st_mtime_ns) for p in original.iterdir()}
         native_open=Path.open
         for change in ('add','delete','rewrite_read_file'):
@@ -637,6 +637,7 @@ class BackupTests(unittest.TestCase):
                 current=(self.root/'game1/game.dat').read_bytes()
                 with patch.object(Path,'open',controlled_open),self.assertRaisesRegex(ValueError,'变化'):
                     self.manager.undo(self.root,{**record,'confirm':'撤回槽位 1'})
+                self.assertEqual(len(reads),2)
                 self.assertEqual((self.root/'game1/game.dat').read_bytes(),current)
                 self.assertEqual(len(self.manager.undo_status(self.root)),1)
                 for name,(raw,stamp) in baseline.items():
