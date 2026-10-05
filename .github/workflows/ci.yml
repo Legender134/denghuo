@@ -1,0 +1,52 @@
+name: Windows tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.13']
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Python regression tests
+        run: python -m unittest discover -s tests -v
+      - name: Frontend component checks
+        run: node tools/verify_frontend.js
+      - name: Build source archive
+        if: matrix.python == '3.13'
+        run: python tools/build_release.py
+      - name: Verify isolated source archive
+        if: matrix.python == '3.13'
+        run: |
+          $sourceVersion = python -c "from companion import __version__; print(__version__)"
+          python tools/verify_release.py "dist/denghuo-$sourceVersion.zip"

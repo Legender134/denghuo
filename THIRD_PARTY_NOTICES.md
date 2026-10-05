@@ -12,7 +12,7 @@
 - Chinese translation: Shattered Pixel Dungeon translation contributors
 - License: GNU General Public License, version 3 or later
 
-The development checkout at `.research/upstream` retains the original source and notices. It is not included in the local delivery ZIP; the pinned source is available at the repository and revision above. The full license is in `LICENSE.txt`. No endorsement by the original game's author is implied.
+The optional development checkout at `.research/player-upstream-4.0.1` retains the original source and notices. It is excluded from the source-only ZIP; the pinned source is available at the repository and revision above, with fetch/archive commands in `BUILD.md`. Player packages include it in `corresponding-source/`. The full license is in `LICENSE.txt`. No endorsement by the original game's author is implied.
 
 ## Independent Windows package
 

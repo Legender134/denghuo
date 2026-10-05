@@ -1,41 +1,95 @@
-# Windows build
+# Windows 开发与构建
 
-Player builds do not require Python. This file describes rebuilding the source
-for development or replacing the unmodified LGPL tray library.
+玩家可直接下载 Releases。开发入门与隔离调试见 [CONTRIBUTING.md](CONTRIBUTING.md)。命令在 Windows x64、项目根目录的 PowerShell 中执行，使用带 Tk 的 Python 3.13、Git；前端检查使用 Node.js 24。
 
-Use Windows x64, Python 3.13 with Tk, and the supplied source tree. Create an
-isolated venv and install the pinned build requirements:
+## 环境
 
 ```powershell
-python -m venv .local/desktop-build
-.local/desktop-build/Scripts/python.exe -m pip install -r requirements-desktop.txt
-python -m unittest discover -s tests
-.local/desktop-build/Scripts/python.exe tools/build_desktop.py
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install -r requirements-desktop.txt
+.venv/Scripts/python.exe -m unittest discover -s tests -v
+node tools/verify_frontend.js
 ```
 
-The final line prints the directory containing `灯火.exe` and `_internal/`.
-To replace pystray, install the desired LGPL-compatible modified source into
-that venv before building. Python bytecode is not signed or otherwise locked.
+无需 npm 安装、Java 编译器或修改游戏。仅使用现有 `data/` 开发时，可跳过游戏源码和资料生成步骤。
 
-`tools/verify_desktop.py <directory>/灯火.exe` tests the frozen service, numeric
-results, automatic backup and shutdown with Python removed from PATH. Use a
-normal system Python to run that verifier; it does not use Python to run the app.
+## 获取固定游戏源码
 
-For a complete distributable, place the supplied pinned
-`Shattered-Pixel-Dungeon-4.0.1-source.zip` under `.local/`. The archive can also
-be rebuilt with `git archive --format=zip` from official revision
-`e9defd0444c96d2fce3de5ec297c3398be8b7c55`.
-Install the signed official Inno Setup 7.1.0 compiler, then run:
+资料固定为官方 Shattered Pixel Dungeon 4.0.1（版本码920），提交 `e9defd0444c96d2fce3de5ec297c3398be8b7c55`。普通运行不依赖本地源码镜像。
+
+以下初始化仅在 `.research/player-upstream-4.0.1` **尚不存在**时执行。已有镜像先检查提交和变更，不要 reset 或覆盖自己的改动。关闭换行转换保证生成与核对的原文一致。
 
 ```powershell
-python tools/package_desktop.py <app-directory> --python-root <Python313> --build-env .local/desktop-build --inno <InnoSetup-directory>
-python tools/build_installer.py <app-directory> --compiler <InnoSetup-directory>/ISCC.exe
+New-Item -ItemType Directory -Force .research, .local | Out-Null
+git init .research/player-upstream-4.0.1
+git -C .research/player-upstream-4.0.1 remote add origin https://github.com/00-Evan/shattered-pixel-dungeon.git
+git -C .research/player-upstream-4.0.1 config core.autocrlf false
+git -C .research/player-upstream-4.0.1 fetch --depth 1 origin e9defd0444c96d2fce3de5ec297c3398be8b7c55
+git -C .research/player-upstream-4.0.1 checkout --detach e9defd0444c96d2fce3de5ec297c3398be8b7c55
+git -C .research/player-upstream-4.0.1 rev-parse HEAD
+git -C .research/player-upstream-4.0.1 status --porcelain
 ```
 
-The package script downloads unchanged pystray source and license texts from
-their authors, includes all application sources and pinned game sources,
-and excludes personal settings, saves, logs and research checkouts. It records
-per-file hashes in the desktop ZIP. The source-only ZIP is reproducible in the
-same Python/zlib environment; the frozen PE and installer builds are not claimed
-to be byte-for-byte reproducible. Do not distribute an archive assembled by
-recursively copying the workspace.
+最后两行应分别给出上述提交与空的变更列表。源码镜像不提交到本仓库。
+
+## 重新生成数值资料
+
+```powershell
+.venv/Scripts/python.exe tools/build_catalog.py
+.venv/Scripts/python.exe tools/verify_rules.py
+git diff --stat -- data/catalog.json data/numeric_rules.json
+.venv/Scripts/python.exe -m unittest discover -s tests -v
+node tools/verify_frontend.js
+```
+
+`build_catalog.py` 同时生成中文目录、配方元数据与规则索引。独立核对会检查源码提交、文件、内容哈希和字面量覆盖，把证据写入 `.local/`。未修改生成器且使用固定源码时，资料应无差异；有差异先检查版本、源码与换行，不直接接受批量数据变化。
+
+参数化计算在 `companion/values*.py` 和 `game_math.py`；修改索引不会自动实现新计算。更新游戏版本要同时核对固定提交、元数据、兼容判断、计算逻辑及测试。
+
+## 源码包
+
+```powershell
+.venv/Scripts/python.exe tools/build_release.py
+$sourceVersion = .venv/Scripts/python.exe -c "from companion import __version__; print(__version__)"
+.venv/Scripts/python.exe tools/verify_release.py "dist/denghuo-$sourceVersion.zip"
+```
+
+源码包只使用 `tools/build_release.py` 的 `FILES` 白名单，附清单与 SHA-256。验证会完整解压、运行测试、核对哈希，检查 HTTP 启动/停止、中文和空格路径以及可重复生成。新增必需文件要同步白名单，不递归打包工作区。
+
+## 独立程序
+
+```powershell
+.venv/Scripts/python.exe tools/build_desktop.py
+```
+
+最后输出 `dist/desktop-时间编号/灯火/灯火.exe`。下面的“时间编号”需换成实际目录：
+
+```powershell
+$application = 'dist/desktop-时间编号/灯火'
+.venv/Scripts/python.exe tools/verify_desktop.py "$application/灯火.exe"
+```
+
+验证使用隔离存档，检查计算、自动备份、校验、恢复/撤回及退出，程序运行时从 PATH 移除 Python。它不代替真实游戏、设备/DPI与视觉验收。完整使用版本保留 EXE 旁的 `_internal/`。
+
+## 完整免安装包与安装包
+
+先安装官方 [Inno Setup 7.1.0](https://jrsoftware.org/isinfo.php)。需要编译器与原始许可文件；示例路径按自己机器调整。将固定游戏源码归档到 `.local/`：
+
+```powershell
+$gameSourceArchive = Join-Path (Get-Location) '.local/Shattered-Pixel-Dungeon-4.0.1-source.zip'
+git -C .research/player-upstream-4.0.1 archive --format=zip --output="$gameSourceArchive" e9defd0444c96d2fce3de5ec297c3398be8b7c55
+$pythonRoot = .venv/Scripts/python.exe -c "import sys; print(sys.base_prefix)"
+$innoDirectory = 'C:/Program Files (x86)/Inno Setup 7'
+.venv/Scripts/python.exe tools/package_desktop.py "$application" --python-root "$pythonRoot" --build-env .venv --inno "$innoDirectory"
+.venv/Scripts/python.exe tools/build_installer.py "$application" --compiler "$innoDirectory/ISCC.exe"
+```
+
+打包脚本复制依赖原始许可，下载未修改的 pystray 对应源码及 Tcl/OpenSSL 许可，纳入本项目源码包和固定游戏源码，再生成含逐文件清单的免安装 ZIP。先打包后制作安装包，保证两者均含许可与对应源码。下载需要访问官方 GitHub 域名；失败时检查网络，不关闭证书验证。
+
+默认输出在 `dist/`：`灯火免安装-版本.zip`、`灯火安装-版本.exe`。GitHub 附件可改名为 `denghuo-portable-版本.zip`、`denghuo-setup-版本.exe`，校验列表使用实际下载文件名。每次发行使用新版本与标签，不覆盖已发布包或重写旧标签。
+
+应用版本在 `companion/__init__.py`，安装脚本和源码包读取它。相同 Python/zlib 与相同输入字节下源码 ZIP 可复现；独立 PE 和安装包不声称逐字节可复现。
+
+## 替换 LGPL 托盘库
+
+pystray 使用未修改的 LGPL 源码。替换时在上述虚拟环境安装兼容许可的修改版，再构建目录程序；字节码未签名或锁定。依赖版本变化也要核对打包脚本的安装目录与许可路径，并保留署名。

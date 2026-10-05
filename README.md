@@ -103,6 +103,10 @@ Windows 全局快捷键：**Ctrl+Alt+B 立即备份、Ctrl+Alt+L 显示悬浮窗
 
 曾使用官方4.0.1游戏新开战士存档，实际探索、自动备份、退出游戏、恢复旧进度并重新进入游戏验证。恢复及撤回后的存档文件均与对应进度逐字节一致；游戏运行期间恢复被拒绝且文件未改变。独立程序另用受控存档验证中文/空格路径、不同工作目录、数值计算、自动捕获变化、校验与正常退出。
 
+## 继续开发
+
+仓库已包含应用源码、数值资料、测试和 Windows 构建脚本。拉取后可直接开发，无需开发者的本地文件。环境安装、隔离调试、模块说明及提交改进见 **[中文开发指南](CONTRIBUTING.md)**；重新生成资料与制作安装包见 **[构建说明](BUILD.md)**。提交与 Pull Request 会运行 [Windows 自动测试](https://github.com/Legender134/denghuo/actions/workflows/ci.yml)。
+
 ## 授权
 
 本项目按 GPL-3.0-or-later 提供。中文名称、说明及参考规则来自 Shattered Pixel Dungeon，版权归 Evan Debenham、Oleg Dolya 及翻译贡献者。详见 `LICENSE.txt` 和 `THIRD_PARTY_NOTICES.md`。

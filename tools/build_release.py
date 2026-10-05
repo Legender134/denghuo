@@ -14,7 +14,7 @@ from companion import __version__
 
 # Deliberate allowlist: never include save data, local preferences, logs or research.
 FILES = (
-    "README.md", "BUILD.md", "THIRD_PARTY_NOTICES.md", "LICENSE.txt", "launch.pyw", "启动灯火助手.cmd", "desktop.pyw", "requirements-desktop.txt",
+    "README.md", "BUILD.md", "CONTRIBUTING.md", "CHANGELOG.md", ".gitignore", ".github/workflows/ci.yml", "THIRD_PARTY_NOTICES.md", "LICENSE.txt", "launch.pyw", "启动灯火助手.cmd", "desktop.pyw", "requirements-desktop.txt",
     "companion/__init__.py", "companion/__main__.py", "companion/diagnostics.py", "companion/panel.py", "companion/hotkeys.py", "companion/game_math.py",
     "companion/engine.py", "companion/overlay.py", "companion/saves.py", "companion/paths.py", "companion/tray.py", "data/lamp.ico", "data/lamp.png",
     "companion/server.py", "companion/service.py", "companion/backups.py", "companion/backup_archive.py", "companion/rules.py", "companion/values.py", "companion/values_data.py", "companion/values_abilities.py", "companion/values_decisions.py", "data/catalog.json", "data/numeric_rules.json",
