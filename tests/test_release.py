@@ -1,5 +1,8 @@
 import hashlib
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -10,6 +13,24 @@ from tools.build_release import FILES, build_release
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_cli_unicode_path_works_with_legacy_pipe_encoding(self):
+        script = Path(__file__).resolve().parents[1] / "tools/build_release.py"
+        with tempfile.TemporaryDirectory(prefix="lamp-cli-中文 空格-") as folder:
+            root = Path(folder)
+            for name in FILES:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(("controlled release file " + name).encode("utf-8"))
+            (root / "tools/build_release.py").write_bytes(script.read_bytes())
+            (root / "companion/__init__.py").write_text('__version__ = "0.3.0"\n', encoding="utf-8")
+            env = dict(os.environ, PYTHONIOENCODING="cp1252:strict", PYTHONUTF8="0")
+            env.pop("PYTHONPATH", None)
+            result = subprocess.run([sys.executable, str(root / "tools/build_release.py")],
+                                    cwd=root, env=env, capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", errors="replace"))
+            self.assertIn(str(root.resolve()), result.stdout.decode("utf-8"))
+            self.assertTrue((root / "dist/denghuo-0.3.0.zip").is_file())
+
     def test_reproducible_allowlisted_archive_and_checksums(self):
         with tempfile.TemporaryDirectory(prefix="lamp-release-test-") as folder:
             root = Path(folder)

@@ -27,6 +27,7 @@ def verify(archive):
     local.mkdir(exist_ok=True)
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
+    env["PYTHONIOENCODING"] = "utf-8"
     # Windows users commonly extract to folders containing Chinese and spaces.
     with tempfile.TemporaryDirectory(prefix="release-verification-中文 空格-", dir=local) as folder:
         folder = Path(folder).resolve()

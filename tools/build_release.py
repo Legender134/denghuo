@@ -66,5 +66,6 @@ def build_release(root=ROOT, output=None):
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8")
     archive, digest = build_release()
     print(f"{archive}\nSHA-256 {digest}")

@@ -20,4 +20,6 @@ def build():
     return output/'灯火'
 
 
-if __name__=='__main__':build()
+if __name__ == '__main__':
+    sys.stdout.reconfigure(encoding='utf-8')
+    build()

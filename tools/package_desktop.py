@@ -66,6 +66,7 @@ def package(app,python_root,build_env,inno):
 
 
 if __name__=='__main__':
+    sys.stdout.reconfigure(encoding='utf-8')
     parser=argparse.ArgumentParser()
     parser.add_argument('application',type=Path)
     parser.add_argument('--python-root',type=Path,required=True)
