@@ -6,8 +6,8 @@ Windows 本地悬浮助手与中文分析面板。读取 Shattered Pixel Dungeon
 
 **[下载最新版 Windows 安装包或免安装包](https://github.com/Legender134/denghuo/releases/latest)**
 
-- **灯火安装-0.3.0.exe**：安装后从桌面或开始菜单打开「灯火」。
-- **灯火免安装-0.3.0.zip**：完整解压，保留 `_internal` 文件夹，双击「灯火.exe」。
+- **denghuo-setup-0.3.0.exe**：安装后从桌面或开始菜单打开「灯火」。
+- **denghuo-portable-0.3.0.zip**：完整解压，保留 `_internal` 文件夹，双击「灯火.exe」。
 - **denghuo-0.3.0.zip**：开发与许可用途的源码包，玩游戏不需要下载。
 
 适用于 Windows 10/11 x64。安装版与免安装版不需要安装 Python。当前中文数值参考为 Shattered Pixel Dungeon 4.0.1；旧版存档的解析能力不代表当前游戏能继续所有旧档。
