@@ -1,0 +1,16 @@
+# Local state, user data, research and build products
+.local/
+.research/
+.venv/
+__pycache__/
+*.py[cod]
+dist/
+build/
+灯火程序/
+*.log
+*.dat
+*.zip
+*.exe
+settings.json
+runtime.json
+startup-error.log
