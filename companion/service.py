@@ -140,6 +140,7 @@ class Session:
         self._manual = None
         self._manual_modified = 0
         self._run_identity = None
+        self._run_generation = 0
         self._run_duration = None
         self._history_state = None
         self.history = []
@@ -331,6 +332,7 @@ class Session:
                     # A slot can hold a new run, including a replay of the same seed.
                     restarted = duration is not None and self._run_duration is not None and duration < self._run_duration
                     if identity != self._run_identity or restarted:
+                        self._run_generation += 1
                         self.history = []
                         self._history_state = None
                     self._record(self._history_state, self.data)
@@ -367,6 +369,9 @@ class Session:
                                   "configuration_notice": self.configuration_notice,
                                   "age_seconds": age, "stale": age is None or age > 60,
                                   "active_slot": self.active_slot, "revision": self.revision,
+                                  "run_id": (hashlib.sha256(repr((self.start_time, self._run_generation,
+                                                self._run_identity)).encode('utf-8')).hexdigest()[:24]
+                                             if self._run_identity is not None else None),
                                   "now": time.time(), "started": self.start_time, "history": self.history,
                                   "catalog_version": self.catalog.data["version"], "catalog_count": len(self.catalog.entries),
                                   'panel_reuse': True,

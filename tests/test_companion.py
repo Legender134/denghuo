@@ -601,17 +601,24 @@ class SaveTests(unittest.TestCase):
             with self.subTest(seed=seed,duration=duration):
                 old=self.write(game(seed=11,duration=200));os.utime(old,(100,100))
                 session=self.session()
+                previous_run=session.snapshot()['run_id']
                 new=game(seed=seed,duration=duration,depth=1);new['hero']['HP']=7
                 self.write(new);session.refresh()
+                self.assertNotEqual(session.snapshot()['run_id'],previous_run)
                 self.assertEqual(len(session.history),1)
                 self.assertNotIn('生命',str(session.history))
 
     def test_transient_read_failure_keeps_same_run_history_baseline(self):
         old=self.write(game(seed=11,duration=200));os.utime(old,(100,100))
         session=self.session()
+        previous_run=session.snapshot()['run_id']
+        self.assertEqual(len(previous_run),24)
+        self.assertNotIn('seed',previous_run)
         old.write_bytes(b'{');session.refresh();self.assertIsNone(session.data)
+        self.assertEqual(session.snapshot()['run_id'],previous_run)
         new=game(seed=11,duration=201);new['hero']['HP']=7
         self.write(new);session.refresh()
+        self.assertEqual(session.snapshot()['run_id'],previous_run)
         self.assertIn('生命 -13',session.history[0]['text'])
         self.assertEqual(len(session.history),2)
 

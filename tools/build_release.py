@@ -16,12 +16,12 @@ from companion import __version__
 FILES = (
     "README.md", "BUILD.md", "CONTRIBUTING.md", "CHANGELOG.md", ".gitignore", ".github/workflows/ci.yml", "THIRD_PARTY_NOTICES.md", "LICENSE.txt", "launch.pyw", "启动灯火助手.cmd", "desktop.pyw", "requirements-desktop.txt",
     "companion/__init__.py", "companion/__main__.py", "companion/diagnostics.py", "companion/panel.py", "companion/hotkeys.py", "companion/game_math.py",
-    "companion/engine.py", "companion/overlay.py", "companion/saves.py", "companion/paths.py", "companion/tray.py", "data/lamp.ico", "data/lamp.png",
+    "companion/engine.py", "companion/overlay.py", "companion/play_state.py", "companion/play_overlay.py", "companion/play_settings.py", "companion/quick_reference.py", "companion/windows.py", "companion/saves.py", "companion/paths.py", "companion/tray.py", "data/lamp.ico", "data/lamp.png",
     "companion/server.py", "companion/service.py", "companion/backups.py", "companion/backup_archive.py", "companion/rules.py", "companion/values.py", "companion/values_data.py", "companion/values_abilities.py", "companion/values_decisions.py", "data/catalog.json", "data/numeric_rules.json",
     "web/index.html", "web/style.css", "web/app.js", "web/backups.js", "web/rules.js", "web/compare.js", "web/icon.svg",
     "tools/build_catalog.py", "tools/numeric_catalog.py", "tools/build_numeric_rules.py", "tools/build_release.py", "tools/smoke_runtime.py",
     "tools/verify_release.py", "tools/verify_rules.py", "tools/build_desktop.py", "tools/build_brand.py", "tools/verify_desktop.py", "tools/installer.iss", "tools/build_installer.py", "tools/package_desktop.py", "tests/test_companion.py", "tests/test_startup.py", "tests/test_paths.py",
-    "tests/test_overlay.py", "tests/test_release.py", "tests/test_backups.py", "tests/test_rules.py", "tests/test_values.py", "tests/test_panel.py", "tests/test_hotkeys.py", "tools/verify_frontend.js",
+    "tests/test_overlay.py", "tests/test_play_state.py", "tests/test_play_overlay.py", "tests/test_quick_reference.py", "tests/test_release.py", "tests/test_backups.py", "tests/test_rules.py", "tests/test_values.py", "tests/test_panel.py", "tests/test_hotkeys.py", "tools/verify_frontend.js",
 )
 STAMP = (2026, 10, 2, 0, 0, 0)
 

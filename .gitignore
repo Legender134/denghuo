@@ -1,11 +1,11 @@
-# Local state, user data, research and build products
 .local/
 .research/
-.venv/
 __pycache__/
-*.py[cod]
+*.pyc
+.venv/
 dist/
 build/
+*.py[cod]
 灯火程序/
 *.log
 *.dat

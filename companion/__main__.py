@@ -61,6 +61,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="灯火 · 破碎的像素地牢本地助手")
     parser.add_argument("--no-overlay", action="store_true")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--start-hidden", action="store_true", help="管理窗口先隐藏，保留托盘、快捷键与游玩显示")
     parser.add_argument("--port", type=port_number, default=0)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--stop-at", help="可选的助手停止时间，如 2026-10-03T02:00:00+08:00")
@@ -118,7 +119,7 @@ def main(argv=None):
                     ctypes.windll.shcore.SetProcessDpiAwareness(1)
             except (OSError, AttributeError):
                 pass
-            Overlay(session, url).run()
+            Overlay(session, url, start_hidden=args.start_hidden).run()
     finally:
         if session is not None:
             session.stop.set()

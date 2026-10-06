@@ -62,6 +62,7 @@ Python 检查覆盖读档、信息遮蔽、数值边界、备份/恢复/撤回�
 | `companion/values*.py`、`game_math.py` | 数值、装备计算与游戏舍入 |
 | `companion/backups.py`、`backup_archive.py` | 捕获、历史、校验、恢复和撤回 |
 | `companion/overlay.py`、`tray.py`、`hotkeys.py`、`panel.py` | 窗口、托盘、快捷键与面板入口 |
+| `companion/play_overlay.py`、`play_settings.py`、`play_state.py`、`quick_reference.py`、`windows.py` | 游玩显示、数值速查、来源与提醒、Windows窗口能力 |
 | `web/` | 无需 npm 编译的 HTML/CSS/JavaScript |
 | `data/` | 图标、中文目录和固定版本生成资料 |
 | `tests/`、`tools/verify_*.py` | 回归测试与受控验收 |

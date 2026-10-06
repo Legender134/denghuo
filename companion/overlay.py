@@ -17,11 +17,11 @@ BG, PANEL, FG, MUTED, GOLD = "#131b16", "#202a21", "#e7edde", "#9eb19d", "#dec38
 
 
 class Overlay:
-    def __init__(self, session, url, visible=True):
+    def __init__(self, session, url, visible=True, start_hidden=False):
         self.session, self.url = session, url
         session.panel.bind(url)
         self.root = tk.Tk()
-        if not visible:
+        if not visible or start_hidden:
             self.root.withdraw()
         self.root.title("灯火 · 地牢助手")
         try:
@@ -31,6 +31,8 @@ class Overlay:
         self.commands = Queue()
         self.tray = None
         self.hotkeys = None
+        self.play = None
+        self.play_settings = None
         self.capture_pending = False
         # Tk point fonts already follow system DPI; geometry and wrap lengths are pixels.
         self.ui_scale = max(1.0, self.root.winfo_fpixels('1i') / 96.0)
@@ -113,13 +115,19 @@ class Overlay:
         self.button(self.footer, "推演", lambda: self.open_panel('manual')).pack(side="right")
         self.button(self.footer, "存档", lambda: self.open_panel('backups')).pack(side="right", padx=3)
         self.button(self.footer, "手册", lambda: self.open_panel('library')).pack(side="right", padx=6)
+        self.button(self.footer, '游玩', self.open_play_settings).pack(side='right', padx=2)
         self.root.bind("<Escape>", lambda _: self.root.iconify())
         self.root.bind('<Control-b>', lambda _: self.commands.put(('capture', None)))
         self.root.bind('<Configure>', self.layout_changed)
         if visible:
             try:
+                from .play_overlay import PlayDisplay
+                self.play = PlayDisplay(self)
+            except (OSError, tk.TclError):
+                logging.exception('Play mode unavailable')
+            try:
                 from .hotkeys import Hotkeys
-                self.hotkeys = Hotkeys(self.commands)
+                self.hotkeys = Hotkeys(self.commands, self.play.state['bindings'] if self.play else None)
             except (OSError, RuntimeError):
                 logging.exception('Global hotkeys unavailable')
             try:
@@ -173,6 +181,25 @@ class Overlay:
     def open_panel(self, page='overview'):
         self.session.panel.request(page)
 
+    def open_play_settings(self):
+        if self.play is None:
+            self.status.configure(text='游玩显示不可用，请使用Windows安装版；完整面板仍可使用。')
+            return
+        from .play_settings import PlaySettings
+        if self.play_settings is None or not self.play_settings.window.winfo_exists():
+            self.play_settings = PlaySettings(self)
+        self.play_settings.window.deiconify()
+        self.play_settings.window.lift()
+        self.play_settings.window.focus_force()
+
+    def rebind_hotkeys(self):
+        if self.hotkeys is not None:
+            self.hotkeys.stop()
+            if self.hotkeys.thread.is_alive():
+                raise RuntimeError('快捷键正在释放，请稍后重试')
+        from .hotkeys import Hotkeys
+        self.hotkeys = Hotkeys(self.commands, self.play.state['bindings'])
+
     def hide_to_tray(self):
         if self.tray is not None:
             self.root.withdraw()
@@ -189,7 +216,15 @@ class Overlay:
                 self.close()
                 return False
             if command == 'show':
-                self.root.deiconify();self.root.lift()
+                self.root.deiconify();self.root.lift();self.root.focus_force()
+            elif command == 'quick' and self.play:
+                self.safely(self.play.toggle_peek)
+            elif command == 'play_toggle' and self.play:
+                self.safely(self.play.toggle)
+            elif command == 'play_settings':
+                self.open_play_settings()
+            elif command == 'library' and self.play:
+                self.safely(self.play.open_lookup)
             elif command in ('panel', 'backups', 'library'):
                 self.open_panel(command if command != 'panel' else 'overview')
             elif command == 'hotkeys':
@@ -228,7 +263,7 @@ class Overlay:
         try:
             action()
             self.action_error = ""
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError, tk.TclError) as exc:
             self.action_error = str(exc)
             self.action_error_until = time.monotonic() + 8
             self.status.configure(text=self.action_error, fg="#edafa0")
@@ -282,6 +317,8 @@ class Overlay:
             self.destroy_window()
             return
         snap = self.session.snapshot()
+        if self.play is not None:
+            self.play.update(snap)
         backup = snap.get('backup_health', {})
         if self.tray is not None:
             try:
@@ -320,7 +357,7 @@ class Overlay:
         action_error = self.action_error and time.monotonic() < self.action_error_until
         self.status.configure(text=self.action_error if action_error else status,
                               fg="#edafa0" if action_error or snap["error"] else GOLD if snap["stale"] else MUTED)
-        key = (snap["revision"], snap["error"], self.compact)
+        key = (snap["revision"], snap["error"], snap['stale'], self.compact)
         if data:
             hero = data["hero"]
             branch = "（支线）" if data.get("branch") else ""
@@ -347,17 +384,23 @@ class Overlay:
                 card = tk.Frame(self.cards, bg=PANEL, padx=12, pady=12)
                 card.pack(fill="x", pady=(0, 9))
                 color = {"critical": "#e3a18a", "warning": GOLD, "info": "#b4c9a5"}[tip["severity"]]
+                if snap['stale']:
+                    color = MUTED
                 wrap = max(self.pixels(220), self.canvas.winfo_width()-24)
                 tk.Label(card, text=tip["title"], bg=PANEL, fg=color, wraplength=wrap, justify="left", anchor="w", font=("Microsoft YaHei UI", 10, "bold")).pack(fill="x")
                 tk.Label(card, text=tip["body"], bg=PANEL, fg="#a5b79e", wraplength=wrap, justify="left", anchor="w", font=("Microsoft YaHei UI", 9)).pack(fill="x", pady=(6, 0))
             self.canvas.yview_moveto(0)
-            self.compact_tip.configure(text=tips[0]['title'] if tips else '', wraplength=max(self.pixels(250),self.root.winfo_width()-40))
+            prefix = '旧信息记录 · ' if snap['stale'] else ''
+            self.compact_tip.configure(text=prefix+tips[0]['title'] if tips else '', wraplength=max(self.pixels(250),self.root.winfo_width()-40))
             if self.compact:
                 self.root.update_idletasks()
                 self.root.geometry(f'{self.expanded_size[0]}x{max(self.pixels(180),self.root.winfo_reqheight())}')
         self.tick_id = self.root.after(1000, self.tick)
 
     def destroy_window(self):
+        if self.play is not None:
+            self.play.close()
+            self.play = None
         if self.hotkeys is not None:
             self.hotkeys.stop()
             self.hotkeys = None
