@@ -141,7 +141,13 @@ def _preference_disk_stamp(prefs):
 
 def _target(session, *, include_drafts=False, include_backups=True,
             include_knowledge=True, include_preferences=True):
-    knowledge_stamp = session.knowledge._read()[1] if include_knowledge else None
+    knowledge_stamp = None
+    if include_knowledge:
+        try:
+            knowledge_stamp = session.knowledge._read()[1]
+        except (OSError, ValueError) as exc:
+            # An unavailable category cannot be written; healthy categories remain usable.
+            knowledge_stamp = {'unavailable': True, 'error': str(exc)}
     prefs = session.play_preferences
     prefs_stamp = _preference_disk_stamp(prefs) if include_preferences else None
     return {'root': session.settings['save_root'], 'context': session.backup_context,
@@ -170,12 +176,14 @@ def status(session):
         backup = session.backups.snapshot(session.settings['save_root'])
         rows = []
         for row in backup.get('history', []):
-            if row.get('valid') is False:
-                continue
+            error = row.get('integrity', {}).get('error', '') if row.get('integrity', {}).get('valid') is False else ''
+            error = error or row.get('repair_error', '')
+            valid = row.get('integrity', {}).get('valid') is not False and not error
+            level = row.get('level')
             rows.append({'key': f"backup:{row['slot']}:{row['id']}", 'group': 'backup',
-                         'label': row.get('label') or f"槽位 {row['slot']} · 第 {row['depth']} 层",
-                         'detail': f"{row['class']} · 等级 {row['level']} · 已校验后导出",
-                         'slot': row['slot'], 'id': row['id'], 'valid': True})
+                         'label': row.get('label') or f"槽位 {row['slot']} · 第 {row.get('depth', '未知')} 层",
+                         'detail': error if not valid else f"{row.get('class', '职业未知')} · 等级 {level if level is not None else '未知'} · 导出前完整校验",
+                         'slot': row['slot'], 'id': row['id'], 'valid': valid, 'error': error})
         for row in stored['plans']:
             rows.append({'key': 'plan:' + row['id'], 'group': 'plan', 'label': row['name'],
                          'detail': f"{row['kind']} · 资料版本 {row['rules_version']}", 'valid': True,
@@ -329,7 +337,8 @@ def _preview(session, raw):
     scope = {'include_drafts': 'exit-drafts.json' in contents, 'include_backups': 'backups.zip' in contents,
              'include_knowledge': 'knowledge.json' in contents, 'include_preferences': 'preferences.json' in contents}
     target = _target(session, **scope)
-    value, _ = session.knowledge._read()
+    knowledge_error = target['knowledge'].get('error', '') if isinstance(target['knowledge'], dict) else ''
+    value = session.knowledge._read()[0] if scope['include_knowledge'] and not knowledge_error else None
     rows = []
     if 'backups.zip' in contents:
         incoming = flows.import_preview(session.backups, session.settings['save_root'], contents['backups.zip'])
@@ -341,21 +350,21 @@ def _preview(session, raw):
                          'valid': row['valid'], 'error': row['error'], 'summary': row.get('summary'),
                          'target': str(session.backups.scope(session.settings['save_root']))})
     for row in knowledge['plans']:
-        _, action = _merged_plan(value, row)
+        action = _merged_plan(value, row)[1] if value is not None else '本机方案库不可用；未合并'
         available, warning = True, ''
         try:
             canonical_plan(session, row['kind'], row['entry'], row['params'])
         except (ValueError, KeyError, OSError, OverflowError) as exc:
             available, warning = False, str(exc)
         rows.append({'key': 'plan:' + row['id'], 'group': 'plan', 'label': row['name'],
-                     'detail': action + f" · 来源资料 {row['rules_version']}", 'valid': True,
-                     'available': available, 'error': warning + ('；可保留为旧版本参考，重开需再核对' if not available else ''),
+                     'detail': action + f" · 来源资料 {row['rules_version']}", 'valid': value is not None,
+                     'available': available, 'error': knowledge_error or warning + ('；可保留为旧版本参考，重开需再核对' if not available else ''),
                      'target': str(session.knowledge.path), 'content': row})
     entries = {row['id']: row for row in session.catalog.entries}
     for identity in knowledge['favorites']:
         rows.append({'key': 'favorite:' + identity, 'group': 'favorite', 'label': entries.get(identity, {}).get('name', identity),
-                     'detail': '已收藏，保留现有记录' if identity in value['favorites'] else '新增收藏', 'valid': True,
-                     'available': identity in entries, 'error': '' if identity in entries else '本版条目不可用；可保留收藏ID供未来版本识别',
+                     'detail': '本机方案库不可用；未合并' if value is None else '已收藏，保留现有记录' if identity in value['favorites'] else '新增收藏', 'valid': value is not None,
+                     'available': identity in entries, 'error': knowledge_error or ('' if identity in entries else '本版条目不可用；可保留收藏ID供未来版本识别'),
                      'target': str(session.knowledge.path)})
     for key, setting in preferences.items():
         preference_error = session.play_preferences.error
@@ -394,11 +403,13 @@ def import_bundle(session, raw, payload):
             raise ValueError('迁移包、本机目标或资料已变化，请重新预览；尚未应用')
         available = {row['key']: row for row in preview['rows']}
         selected = _selection(payload.get('selected'), available)
-        results = []
-        value, stamp = session.knowledge._read()
+        results = [{'key': key, 'ok': False, 'saved': False, 'error': available[key]['error']}
+                   for key in selected if not available[key]['valid']]
+        selected = [key for key in selected if available[key]['valid']]
         knowledge_keys = [key for key in selected if key.startswith(('plan:', 'favorite:'))]
         if knowledge_keys:
             try:
+                value, stamp = session.knowledge._read()
                 merged = copy.deepcopy(value)
                 for row in incoming['plans']:
                     if 'plan:' + row['id'] in knowledge_keys:

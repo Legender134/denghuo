@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from io import BytesIO
+from itertools import islice
 import json
 import math
 import os
@@ -24,6 +25,7 @@ NODES = (3600, 1800, 600, 300, 120, 60, 50, 40, 30, 20, 10)
 SAVE_NAME = re.compile(r"(?:game|depth\d+(?:-branch\d+)?)\.dat\Z")
 MAX_TOTAL = 64 * 1024 * 1024
 MAX_STORAGE = 512 * 1024 * 1024
+MAX_HISTORY = 10000
 STAGE_NAME = re.compile(r'\.denghuo-stage-([1-6])-\d+-[0-9a-f]{8}\Z')
 
 
@@ -84,6 +86,7 @@ class BackupManager:
         self.enabled = True
         self.archive_health = {}
         self.scanned = set()
+        self.history_notices = {}
         self.last_success = 0
         self.last_saved = 0
         self.health_root = None
@@ -225,7 +228,7 @@ class BackupManager:
 
     @staticmethod
     def _history_records(path):
-        rows = read_records(path)
+        rows = read_records(path, limit=MAX_HISTORY)
         for row in rows:
             if (not isinstance(row.get('id'), str) or not IDENTITY.fullmatch(row['id'])
                     or type(row.get('slot')) is not int or row['slot'] not in range(1, 7)
@@ -252,11 +255,14 @@ class BackupManager:
             events = self.events(root)
             indexed = {r['id'] for r in rows}
             changed = False
-            files = list(scope.glob('*.zip'))
-            if len(files) > 10000:
-                raise ValueError('备份文件数量过多，请先导出并整理')
+            # Keep valid indexed records usable even if extra originals exceed capacity.
+            files = list(islice(scope.glob('*.zip'), MAX_HISTORY + 1))
+            held = len(files) > MAX_HISTORY
             for archive in files:
                 if not IDENTITY.fullmatch(archive.stem) or archive.stem in indexed:
+                    continue
+                if len(rows) >= MAX_HISTORY:
+                    held = True
                     continue
                 try:
                     metadata, _, game, identity = self.checked_archive(root, archive.stem)
@@ -272,10 +278,16 @@ class BackupManager:
                     continue
             if changed:
                 atomic_json(path, rows)
+            self.history_notices[str(scope)] = (f'活动历史最多 {MAX_HISTORY} 项；未登记ZIP仍保留原位。已有记录可查看、导出或明确移出，整理后重新读取。' if held else '')
             self.scanned.add(str(scope))
         for row in rows:
             row['metadata_revision'] = backup_metadata_revision(row)
         return rows
+
+    def _check_history_capacity(self, root, slot, identity):
+        rows = self.history(root)
+        if len(rows) >= MAX_HISTORY and not any(row['slot'] == slot and row['id'] == identity for row in rows):
+            raise ValueError(f'备份历史已满（{MAX_HISTORY}项），请先导出并移出旧记录；尚未新增备份，原件仍保留')
 
     def register(self, root, row, retained=None, transfer=None, imported=False):
         rows = self.history(root)
@@ -306,7 +318,7 @@ class BackupManager:
             target['time'] = min(target['time'], retained['first_seen'])
             if not target.get('label'):
                 target['label'] = retained['label']
-        if len(rows) > 10000:
+        if len(rows) > MAX_HISTORY:
             raise ValueError('备份历史已满，请导出并整理旧记录')
         atomic_json(self.scope(root) / 'history.json', rows)
         return existing if existing is not None else rows[-1]
@@ -401,7 +413,7 @@ class BackupManager:
                 metadata = {**metadata, 'format': 2}
                 identity = snapshot_identity(metadata['files'], metadata['slot'])
                 # Discover existing records before installing the imported ZIP.
-                self.history(root)
+                self._check_history_capacity(root, metadata['slot'], identity)
                 target = unlinked(scope / (identity + '.zip'))
                 if not target.exists():
                     if self.storage() + len(raw) > MAX_STORAGE:
@@ -463,6 +475,7 @@ class BackupManager:
                 raise
             self.error = ''
             self._storage_cache = None
+            self.scanned.discard(str(scope))
             self.notice = '备份已移出活动库；可在下方保留副本中校验并重新加入，原名称会保留。没有删除文件。'
             self.last_tick = self.clock()  # Do not immediately recreate the same current state.
 
@@ -509,6 +522,7 @@ class BackupManager:
         identity = snapshot_identity(hashes, slot)
         scope = self.scope(root)
         scope.mkdir(parents=True, exist_ok=True)
+        self._check_history_capacity(root, slot, identity)
         target = unlinked(scope / f"{identity}.zip")
         if target.exists():
             try:
@@ -725,7 +739,8 @@ class BackupManager:
                            for r in sorted(history, key=lambda r: r['last_seen'], reverse=True)]
                 latest_time = max((r['time'] for r in rows), default=0)
                 health = self.health_status(root)
-                return {"enabled": self.enabled, "error": health['error'], "notice": self.notice,
+                notice = '；'.join(value for value in (self.notice, self.history_notices.get(str(scope), '')) if value)
+                return {"enabled": self.enabled, "error": health['error'], "notice": notice,
                         "slots": sorted(slots, key=lambda s: s['slot']), "directory": str(self.directory), "interval": 10,
                         'history': history, 'storage_bytes': self.storage(), 'storage_limit': MAX_STORAGE,
                         'storage_breakdown': self.storage_breakdown(root), 'retained': self.retained_status(root),
@@ -860,6 +875,8 @@ class BackupManager:
                 known.add(pair)
                 if not any(row['file'] == event['id'] + '.zip' for row in failures):
                     failures.append({'file': event['id'] + '.zip', 'error': error})
+        if len(rebuilt) > MAX_HISTORY:
+            raise ValueError(f'有效备份和待保留时间记录合计超过 {MAX_HISTORY} 项，请先导出并整理；尚未恢复历史，全部原件仍保留')
         for row in rebuilt:
             own = [event['time'] for event in events if (event['slot'], event['id']) == (row['slot'], row['id'])]
             if own:

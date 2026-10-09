@@ -1,5 +1,7 @@
 """Short behavioral acceptance for local knowledge and support workflows."""
 import copy
+from contextlib import closing
+from http.client import HTTPConnection
 import json
 from pathlib import Path
 import tempfile
@@ -417,12 +419,25 @@ class WorkspaceTests(unittest.TestCase):
             loaded = request('/api/session-exit', {'action': 'draft-load', 'id': copied['id']})
             self.assertEqual(loaded['draft']['draft'], draft)
             before = self.session.knowledge.path.read_bytes()
-            for path, payload in (('/api/workspace', {'action': 'save', 'padding': 'x' * MAX_DRAFT}),
-                    ('/api/session-exit', {'action': 'save-draft', 'surface_id': 'web-12345678',
-                        'draft': {'raw': 'x' * MAX_DRAFT}})):
-                with self.subTest(path=path), self.assertRaises(HTTPError) as failed:
-                    request(path, payload)
-                self.assertEqual(failed.exception.code, 400)
+            from companion.knowledge import MAX_BYTES
+            # Unsupported envelopes are rejected from headers; do not race a large
+            # sender against HTTP/1.0 close with an intentionally unread body.
+            for path, limit in (('/api/workspace', MAX_BYTES), ('/api/session-exit', MAX_DRAFT + 8192)):
+                with self.subTest(path=path), closing(HTTPConnection(*server.server_address, timeout=15)) as connection:
+                    connection.putrequest('POST', path)
+                    for key, value in {'Content-Length': str(limit + 1), 'Content-Type': 'application/json',
+                            'Origin': server.origin, 'X-Companion-Token': server.token}.items():
+                        connection.putheader(key, value)
+                    connection.endheaders()
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 400)
+                    self.assertTrue(json.load(response)['error'])
+            # A complete supported HTTP envelope still enforces the semantic draft limit.
+            with self.assertRaises(HTTPError) as failed:
+                request('/api/session-exit', {'action': 'save-draft', 'surface_id': 'web-12345678',
+                    'kind': 'workspace', 'draft': {'raw': 'x' * MAX_DRAFT}})
+            self.assertEqual(failed.exception.code, 400)
+            self.assertIn('草稿', json.load(failed.exception)['error'])
             self.assertEqual(self.session.knowledge.path.read_bytes(), before)
             self.assertEqual(len(self.session.exit_drafts.list()), 1)
         finally:

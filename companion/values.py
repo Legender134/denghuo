@@ -200,6 +200,7 @@ class PlayerValues:
             owner = self.rules.classes[normalized]
             entry = {'id':identity, 'name':self.rules.title(owner).split(' · ')[0], 'category':'物品', 'description':'', 'numeric_refs':[{'class':normalized}]}
         signed_equipment = identity.startswith(('items.weapon.melee.', 'items.armor.')) and '$' not in identity and not identity.endswith('.ability') and not any(part in identity for part in ('.glyphs.', '.curses.'))
+        signed_equipment = signed_equipment or identity == 'items.scrolls.scrollofupgrade' or identity.startswith(('items.weapon.enchantments.', 'items.weapon.curses.', 'items.armor.glyphs.', 'items.armor.curses.')) and '$' not in identity
         p = integer_parameters(raw or {}, signed_equipment=signed_equipment)
         talent_cap=4
         if identity.startswith('actors.hero.spells.'):
@@ -493,6 +494,7 @@ class PlayerValues:
         if not owner:return
         level=p['level'];depth=p['depth'];hero=p['hero_level']
         if identity.startswith(('items.weapon.enchantments.','items.armor.glyphs.','items.weapon.curses.','items.armor.curses.')):
+            effect_level = max(0, level)
             requested.add('level')
             row=self.rules.classes[owner];proc=next((r for r in row['rules'] if r['name']=='proc'),None)
             if proc:
@@ -500,23 +502,23 @@ class PlayerValues:
                 if match:
                     expression=re.sub(r'procChanceMultiplier\([^)]*\)','1.0',match[1])
                     try:
-                        values=[[f'{l:+d}',display(min(1,Formula({'level':l}).evaluate(expression))*100)] for l in sorted(set([*range(11),level]))]
+                        values=[[f'{l:+d}',display(min(1,Formula({'level':max(0,l)}).evaluate(expression))*100)] for l in sorted(set([*range(11),level]))]
                         if len({v[1] for v in values})==1:
                             result.append(block('触发概率',[metric('每次符合条件的触发概率',values[0][1],'%','无额外触发强度修正')]))
                         else:result.append(table('触发概率',['装备等级','每次满足条件时触发%'],values,'没有奥术之戒、天赋或强化等额外修正。'))
                     except UnknownFormula:pass
             name=identity.rsplit('.',1)[-1];rows=[]
             if name=='blazing':rows=[metric('未燃烧目标燃烧时长',8,'回合')]
-            elif name=='blooming':rows=[metric('触发后平均高草数量',1.5+.1*level,'格','需要可生长地形'),metric('最少/最多高草',f'{math.floor(1.5+.1*level)}–{math.ceil(1.5+.1*level)}','格')]
-            elif name=='blocking':rows=[metric('触发时获得护盾',2+level,'HP')]
+            elif name=='blooming':rows=[metric('触发后平均高草数量',1.5+.1*effect_level,'格','需要可生长地形'),metric('最少/最多高草',f'{math.floor(1.5+.1*effect_level)}–{math.ceil(1.5+.1*effect_level)}','格')]
+            elif name=='blocking':rows=[metric('触发时获得护盾',max(0,2+level),'HP','无已有更高护盾；负等级不降低已有护盾')]
             elif name=='chilling':rows=[metric('每次冻伤延长',3,'回合'),metric('冻伤上限',6,'回合')]
             elif name in ('elastic','repulsion'):rows=[metric('基础击退力',2,'格','障碍、碰撞和体型会影响最终距离')]
             elif name=='shocking':requested.add('damage');rows=[metric('连锁伤害',rounded(p['damage']*.5),'HP','对邻近目标，不额外伤害首个目标')]
-            elif name=='venomous':rows=[metric('增加毒强度',level/2+3,'点'),metric('首次毒伤延迟',3,'回合')]
+            elif name=='venomous':rows=[metric('增加毒强度',effect_level/2+3,'点'),metric('首次毒伤延迟',3,'回合')]
             elif name=='vorpal':requested.add('damage');rows=[metric('流血起始强度',2+p['damage']/2,'点')]
             elif name=='eldritch':rows=[metric('恐惧/眩晕基础时长',5,'回合')]
             elif name=='affection':rows=[metric('魅惑基础时长',self.duration('Charm'),'回合')]
-            elif name=='entanglement':rows=[metric('植被护甲总量',5+2*level,'HP','移动会失效')]
+            elif name=='entanglement':rows=[metric('植被护甲总量',5+2*effect_level,'HP','移动会失效')]
             elif name=='potential':rows=[metric('每根法杖充能',1,'次','未满的法杖')]
             elif name=='vampiric':
                 requested.update(('max_hp','hp','damage'));chance=.05+.25*(p['max_hp']-p['hp'])/p['max_hp']
@@ -538,7 +540,7 @@ class PlayerValues:
             elif identity=='items.weapon.enchantments.kinetic':
                 requested.add('damage');rows=[metric('超额击杀伤害保留',p['damage'],'HP','这里输入的是击杀的超额伤害，下次命中追加')]
             elif identity=='items.weapon.enchantments.grim':
-                requested.update(('target_hp','target_max_hp'));missing=(p['target_max_hp']-p['target_hp'])/p['target_max_hp'];rows=[metric('斩杀触发概率',min(1,(.5+.05*level)*missing**2)*100,'%','目标生命填写本次普通伤害结算后的值；首领等可免疫')]
+                requested.update(('target_hp','target_max_hp'));missing=(p['target_max_hp']-p['target_hp'])/p['target_max_hp'];rows=[metric('斩杀触发概率',min(1,(.5+.05*effect_level)*missing**2)*100,'%','目标生命填写本次普通伤害结算后的值；首领等可免疫')]
             elif identity=='items.weapon.enchantments.projecting':rows=[metric('近战额外攻击距离',1,'格','穿墙能力取决于攻击种类')]
             if rows:result.append(block('当前等级效果',rows,'无其他触发强度修正。'))
         if identity=='items.wands.wandofcorrosion':
@@ -644,11 +646,11 @@ class PlayerValues:
             rows=[metric('常规减伤',f'{low}–{high}','HP','使用转换前护甲的阶数；无强化、刻印与力量不足惩罚'),
                   metric('信念护体',f'0–{challenge}','HP','只在此挑战生效；无其他修正'),
                   metric('力量需求',8+2*t-math.floor((math.sqrt(8*max(0,l)+1)-1)/2),'点','无精通药剂')]
-        if identity=='items.armor.glyphs.antimagic':rows=[metric('额外魔法减伤',f'{l}–{rounded(3+1.5*l)}','HP','仅对受此刻印影响的魔法')];requested.add('level')
-        if identity=='items.armor.glyphs.flow':rows=[metric('水中移动速度倍率',2+.5*l,'倍')];requested.add('level')
-        if identity=='items.armor.glyphs.swiftness':rows=[metric('无近敌时移动速度倍率',1.2+.04*l,'倍'),metric('近敌检查距离',3,'格','沿可通行路径')];requested.add('level')
+        if identity=='items.armor.glyphs.antimagic':rows=[metric('额外魔法减伤','0–0' if l<0 else f'{l}–{rounded(3+1.5*l)}','HP','仅对受此刻印影响的魔法；负等级在英雄刻印查询中按未生效处理')];requested.add('level')
+        if identity=='items.armor.glyphs.flow':rows=[metric('水中移动速度倍率',1 if l<0 else 2+.5*l,'倍','英雄负等级护甲不触发此移动增益')];requested.add('level')
+        if identity=='items.armor.glyphs.swiftness':rows=[metric('无近敌时移动速度倍率',1 if l<0 else 1.2+.04*l,'倍','英雄负等级护甲不触发此移动增益'),metric('近敌检查距离',3,'格','沿可通行路径')];requested.add('level')
         if identity in ('items.armor.glyphs.viscosity','items.armor.glyphs.viscosity$defereddamage'):
-            requested.update(('level','damage'));n=p['damage'];deferred=math.ceil(n*(l+1)/(l+6));rows=[metric('转为延缓伤害',deferred,'HP'),metric('立即承受',n-deferred,'HP')]
+            requested.update(('level','damage'));n=p['damage'];effective=max(0,l);deferred=math.ceil(n*(effective+1)/(effective+6));rows=[metric('转为延缓伤害',deferred,'HP'),metric('立即承受',n-deferred,'HP')]
         if identity=='items.armor.glyphs.stone':
             from .game_math import stone_factor,float32
             requested.update(('accuracy','evasion','damage','glyph_multiplier'))

@@ -78,6 +78,11 @@ const plain=value=>JSON.parse(JSON.stringify(value));
   assert.equal(flow.run('backupFlow.receipts.at(-1).kind'),'stage');assert(flow.run('backupFlow.receipts.at(-1).result.original_stage_preserved'));checks++;
 
   const migration=harness('migration.js');pending=deferred();
+  migration.run("migrationExportSelection=new Set(['backup:unavailable','preference:font_scale']);migrationState={rows:[{key:'backup:unavailable',group:'backup',label:'原选中进度',valid:false,error:'ZIP缺失'},{key:'preference:font_scale',group:'preference',label:'字号',valid:true}]};migrationRows($('#migration-export-list'),migrationState.rows,migrationExportSelection,'export')");
+  const unavailable=migration.get('#migration-export-list').children[0].children[1].children[0].children[0];
+  assert(unavailable.checked);assert(!unavailable.disabled,'previously selected unavailable row must remain deselectable');
+  unavailable.checked=false;migration.get('#view-migration').listeners.change({target:unavailable});
+  assert(unavailable.disabled);assert.deepEqual(Array.from(migration.run('migrationExportSelection')),['preference:font_scale']);checks++;
   migration.run("migrationFile={name:'submitted.zip'};migrationImportPreview={expected:'old',save_root:'/synthetic/a',rows:[{key:'draft:old',label:'已提交原始草稿'}]};migrationImportSelection=new Set(['draft:old']);migrationUpload=async()=>pendingResult;loadMigration=async()=>{}");
   migration.context.pendingResult=pending.promise;migration.get('#migration-confirm').checked=true;
   const applying=migration.get('#migration-import').listeners.click();

@@ -1,4 +1,4 @@
-"""Only player-observable state needed by the pinned game's alchemy workflows.
+"""Player-observable equipment and resource state for the pinned game.
 
 Derived from SPD 4.0.2 commit 57a4e06a4caf162446d1c28caa7983f0493fecf0,
 GPL-3.0-or-later. Exact missile durability is deliberately never projected.
@@ -21,6 +21,22 @@ def identity(item):
 
 def bounded_integer(value, lower=0, upper=2147483647):
     return value if type(value) is int and lower <= value <= upper else None
+
+
+def project_equipment_state(item, key, cursed_known, entries):
+    weapon = key.startswith(('items.weapon.melee.', 'items.weapon.missiles.')) or key == 'items.weapon.spiritbow'
+    armor = key.startswith('items.armor.') and not any(part in key for part in ('.glyphs.', '.curses.', '$'))
+    if key not in entries or not (weapon or armor):
+        return None
+    field, family = ('enchantment', 'weapon') if weapon else ('glyph', 'armor')
+    effect = identity(item.get(field))
+    normal = f'items.{family}.' + ('enchantments.' if weapon else 'glyphs.')
+    curse = f'items.{family}.curses.'
+    if effect not in entries or not (effect.startswith(normal) or cursed_known and effect.startswith(curse)):
+        effect = None
+    hardened = item.get('enchant_hardened' if weapon else 'glyph_hardened', False)
+    return {'effect_id': effect, 'hardened': hardened if type(hardened) is bool else None,
+            'effect_kind': '附魔' if weapon else '刻印'}
 
 
 def project_item_state(item, game, public):

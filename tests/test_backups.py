@@ -48,6 +48,88 @@ class BackupTests(unittest.TestCase):
         current = self.manager.selected(root, payload)
         self.manager.manage(root, {**payload, 'expected_metadata_revision': current['metadata_revision']})
 
+    def test_full_history_rejects_new_capture_and_import_before_publishing_zip(self):
+        with patch('companion.backups.MAX_HISTORY', 3):
+            rows = []
+            for hp in (20, 19, 18):
+                self.write_save(hp); self.clock += 10
+                rows.append(self.manager.capture(self.root, 1))
+            scope = self.manager.scope(self.root)
+            originals = {path.name: path.read_bytes() for path in scope.glob('*.zip')}
+            index = (scope / 'history.json').read_bytes()
+            self.write_save(17)
+            before = {path.name: path.read_bytes() for path in (self.root / 'game1').iterdir()}
+            with self.assertRaisesRegex(ValueError, '历史已满'):
+                self.manager.capture(self.root, 1)
+            incoming = BackupManager(Path(self.temporary.name) / 'incoming', closed_check=lambda: None)
+            addition = incoming.capture(self.root, 1)
+            raw = (incoming.scope(self.root) / (addition['id'] + '.zip')).read_bytes()
+            with self.assertRaisesRegex(ValueError, '历史已满'):
+                self.manager.import_archive(self.root, raw)
+            self.assertEqual({path.name: path.read_bytes() for path in scope.glob('*.zip')}, originals)
+            self.assertEqual((scope / 'history.json').read_bytes(), index)
+            self.assertEqual({path.name: path.read_bytes() for path in (self.root / 'game1').iterdir()}, before)
+            self.assertEqual(len(BackupManager(self.manager.directory).history(self.root)), 3)
+            # Refresh/repair of an already registered identity still works at capacity.
+            self.write_save(18)
+            known = scope / (rows[-1]['id'] + '.zip')
+            known.write_bytes(b'damaged original at capacity')
+            self.assertEqual(self.manager.capture(self.root, 1)['id'], rows[-1]['id'])
+            self.manager.checked_archive(self.root, rows[-1]['id'], 1)
+            quarantined = list((self.manager.directory.parent / 'backup-quarantine' / scope.name).glob('*.zip'))
+            self.assertEqual([path.read_bytes() for path in quarantined], [b'damaged original at capacity'])
+            self.assertEqual(len(self.manager.history(self.root)), 3)
+
+    def test_extra_unindexed_zip_keeps_existing_library_usable_and_is_discovered_after_removal(self):
+        with patch('companion.backups.MAX_HISTORY', 3):
+            rows = []
+            for hp in (20, 19, 18):
+                self.write_save(hp); self.clock += 10
+                rows.append(self.manager.capture(self.root, 1))
+            scope = self.manager.scope(self.root)
+            originals = {path.name: path.read_bytes() for path in scope.glob('*.zip')}
+            original_index = (scope / 'history.json').read_bytes()
+            self.write_save(17)
+            incoming = BackupManager(Path(self.temporary.name) / 'incoming', closed_check=lambda: None)
+            addition = incoming.capture(self.root, 1)
+            raw = (incoming.scope(self.root) / (addition['id'] + '.zip')).read_bytes()
+            (scope / (addition['id'] + '.zip')).write_bytes(raw)
+            reloaded = BackupManager(self.manager.directory, closed_check=lambda: None)
+            self.assertEqual(len(reloaded.history(self.root)), 3)
+            self.assertEqual((scope / 'history.json').read_bytes(), original_index)
+            self.assertTrue(reloaded.snapshot(self.root)['records_available'])
+            self.assertIn('未登记ZIP仍保留', reloaded.snapshot(self.root)['notice'])
+            self.assertTrue(reloaded.export(self.root, rows[0])[0])
+            current = reloaded.selected(self.root, rows[0])
+            reloaded.manage(self.root, {**rows[0], 'label': '仍可编辑', 'expected_metadata_revision': current['metadata_revision']})
+            reloaded.remove(self.root, {**rows[0], 'confirm': '移出备份 1'})
+            remaining = reloaded.history(self.root)
+            self.assertEqual(len(remaining), 3)
+            self.assertIn(addition['id'], {row['id'] for row in remaining})
+            self.assertEqual((scope / (addition['id'] + '.zip')).read_bytes(), raw)
+            for row in rows[1:]:
+                self.assertEqual((scope / (row['id'] + '.zip')).read_bytes(), originals[row['id'] + '.zip'])
+            retained = list((self.manager.directory.parent / 'backup-recycle' / scope.name).glob('*.zip'))
+            self.assertEqual([path.read_bytes() for path in retained], [originals[rows[0]['id'] + '.zip']])
+
+    def test_history_recovery_rejects_unrepresentable_preview_without_dropping_observations(self):
+        with patch('companion.backups.MAX_HISTORY', 3):
+            for hp in (20, 19, 18):
+                self.write_save(hp); self.clock += 10
+                self.manager.capture(self.root, 1)
+            scope = self.manager.scope(self.root)
+            originals = {path.name: path.read_bytes() for path in scope.glob('*.zip')}
+            bad = b'corrupt original history'
+            (scope / 'history.json').write_bytes(bad)
+            atomic_json(scope / 'timeline.json', [{'slot': 1, 'id': 'f' * 64, 'time': 1,
+                'saved': 1, 'depth': 2, 'class': 'MAGE', 'version': 912}])
+            timeline = (scope / 'timeline.json').read_bytes()
+            with self.assertRaisesRegex(ValueError, '合计超过 3 项'):
+                self.manager.history_repair_preview(self.root)
+            self.assertEqual((scope / 'history.json').read_bytes(), bad)
+            self.assertEqual((scope / 'timeline.json').read_bytes(), timeline)
+            self.assertEqual({path.name: path.read_bytes() for path in scope.glob('*.zip')}, originals)
+
     def test_metadata_cas_rejects_old_unlock_and_aba_but_ignores_observations(self):
         row = self.manager.capture(self.root, 1)
         selected = {'slot': 1, 'id': row['id']}

@@ -51,7 +51,7 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
   if(typeof params==='number')params={level:params};
   if(options.fixed||options.ignoreDrafts||!numericalDetail || numericalDetail.identity!==identity){
     const drafts=options.fixed||options.ignoreDrafts?{}:numericalDrafts.get(draftKey)||{};
-    numericalDetail={identity,levelOrigin,context:options.fixed?{...params}:{...visibleCalculationContext(),...params,...drafts},
+    numericalDetail={identity,levelOrigin,context:options.fixed?{...params}:{...(options.capturedContext?{}:visibleCalculationContext()),...params,...drafts},
       origins:{},source:options.fixed?null:options.sourceStamp||calculationStamp(),levelSource:options.fixed?null:options.sourceStamp||calculationStamp(),fixed:!!options.fixed,savedPlan:options.savedPlan||null,rulesChanged:options.rulesChanged||false};
     for(const key of heroParameterKeys)if(key in numericalDetail.context)numericalDetail.origins[key]=key in drafts?'手填保留':heroInputOrigin(key,numericalDetail.source);
     if('level' in params)numericalDetail.origins.level=keyOrigin(levelOrigin);

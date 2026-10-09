@@ -82,6 +82,73 @@ class MigrationTests(unittest.TestCase):
         contents[migration.INDEX] = migration.encode(manifest)
         return migration._zip(contents)
 
+    def test_independent_categories_import_without_reading_damaged_knowledge(self):
+        draft = self.source.exit_drafts.save('web-12345678', 'workspace', '待继续', {'raw': '-'})
+        backup = next(row['key'] for row in migration.status(self.source)['rows'] if row['group'] == 'backup')
+        packages = [(key, self.bundle([key])) for key in ('preference:font_scale', backup, 'draft:' + draft['id'])]
+        original = b'{"plans": damaged original'
+        self.target.knowledge.path.write_bytes(original)
+        for key, raw in packages:
+            with self.subTest(category=key):
+                preview = migration.import_preview(self.target, raw)
+                self.assertTrue(all(row['valid'] for row in preview['rows']))
+                result = self.apply(raw)
+                self.assertEqual((result['success_count'], result['failure_count']), (1, 0))
+                self.assertEqual(self.target.knowledge.path.read_bytes(), original)
+                self.assertEqual(self.game_bytes(self.target), self.original_game)
+        self.assertEqual(self.target.play_preferences.values['font_scale'], 1.3)
+        self.assertEqual(self.target.exit_drafts.list()[0]['draft_kind'], 'workspace')
+
+    def test_mixed_bundle_isolates_bad_knowledge_and_rechecks_recovery(self):
+        raw = self.bundle(['plan:' + self.plan['id'], 'favorite:' + self.favorite, 'preference:font_scale'])
+        original = b'{"plans": damaged mixed original'
+        self.target.knowledge.path.write_bytes(original)
+        preview = migration.import_preview(self.target, raw)
+        knowledge = [row for row in preview['rows'] if row['group'] in ('plan', 'favorite')]
+        self.assertEqual(len(knowledge), 2)
+        self.assertTrue(all(not row['valid'] and '无法读取' in row['error'] for row in knowledge))
+        payload = {'selected': ['plan:' + self.plan['id']], 'expected': preview['expected'], 'confirmed': True}
+        result = migration.import_bundle(self.target, raw, payload)
+        self.assertEqual((result['success_count'], result['failure_count']), (0, 1))
+        self.assertIn('无法读取', result['results'][0]['error'])
+        result = migration.import_bundle(self.target, raw, {**payload,
+            'selected': [row['key'] for row in preview['rows']]})
+        self.assertEqual((result['success_count'], result['failure_count']), (1, 2))
+        self.assertEqual(self.target.play_preferences.values['font_scale'], 1.3)
+        self.assertEqual(self.target.knowledge.path.read_bytes(), original)
+        # Recovery of the category changes the preview guard; no stale confirmation.
+        preview = migration.import_preview(self.target, raw)
+        self.target.knowledge.path.write_text('{"format":1,"plans":[],"favorites":[],"recent":[]}', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, '重新预览'):
+            migration.import_bundle(self.target, raw, {**payload, 'expected': preview['expected'], 'selected': ['preference:font_scale']})
+        fresh = migration.import_preview(self.target, raw)
+        self.assertTrue(all(row['valid'] for row in fresh['rows']))
+        self.assertEqual(self.game_bytes(self.target), self.original_game)
+
+    def test_unavailable_backup_stub_does_not_block_other_migration_categories(self):
+        root = self.source.settings['save_root']
+        records = self.source.backups.history(root)
+        damaged = records[0]
+        archive = self.source.backups.scope(root) / (damaged['id'] + '.zip')
+        archive.write_bytes(b'damaged synthetic ZIP')
+        self.source.backups.validate(root)
+        view = migration.status(self.source)
+        row = next(row for row in view['rows'] if row['key'] == f"backup:{damaged['slot']}:{damaged['id']}")
+        self.assertFalse(row['valid'])
+        self.assertTrue(row['error'])
+        with self.assertRaises(ValueError):
+            migration.export_preview(self.source, {'selected': [row['key']]})
+        # A recovered timeline observation has no verified level.
+        from companion.backups import atomic_json
+        damaged.pop('level', None)
+        damaged['repair_error'] = 'ZIP缺失，原时间记录仍保留'
+        atomic_json(self.source.backups.scope(root) / 'history.json', records)
+        view = migration.status(self.source)
+        self.assertFalse(next(row for row in view['rows'] if row['key'].endswith(damaged['id']))['valid'])
+        healthy = next(row['key'] for row in view['rows'] if row['group'] == 'backup' and row['valid'])
+        self.assertTrue(migration.export_preview(self.source, {'selected': [healthy, 'preference:font_scale']})['expected'])
+        self.assertEqual(archive.read_bytes(), b'damaged synthetic ZIP')
+
     def test_over_200_preserved_drafts_do_not_block_preference_import(self):
         self.source.play_preferences.update({'enabled': False})
         identities = [self.target.exit_drafts.save('web-12345678', 'workspace', f'草稿{n}', {'raw': str(n)})['id']
