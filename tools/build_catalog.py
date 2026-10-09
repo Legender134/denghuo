@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 import re
 from numeric_catalog import enrich
-from build_numeric_rules import build, attach_catalog, UPSTREAM, COMMIT, VERSION
+from build_numeric_rules import build, attach_catalog, UPSTREAM, COMMIT, VERSION, VERSION_CODE
+from alchemy_catalog import attach as attach_alchemy
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = UPSTREAM / "core/src/main/java/com/shatteredpixel/shatteredpixeldungeon"
@@ -89,22 +90,29 @@ def main():
             category = "状态"
         entries.append({"id": stem, "name": name, "description": desc,
                         "category": category, "hint": messages.get(stem + ".hint", "")})
+    # Hunger names are selected dynamically in the game, rather than a .name key.
+    hunger = "actors.buffs.hunger"
+    if all(hunger+suffix in messages for suffix in (".hungry", ".starving", ".desc")):
+        entries.append({"id":hunger, "name":messages[hunger+".hungry"]+" / "+messages[hunger+".starving"],
+                        "description":"饥饿时："+messages[hunger+".desc_intro_hungry"]+"\n\n极度饥饿时："+messages[hunger+".desc_intro_starving"]+messages[hunger+".desc"],
+                        "category":"状态", "hint":""})
     numeric_count = enrich(entries, SRC, messages, tiers)
     rules = build()
     attach_catalog(entries, messages, rules)
     recipe_count=recipes(entries)
     numeric_count = sum(bool(row.get("numbers")) for row in entries)
     (ROOT / "data/numeric_rules.json").write_text(json.dumps(rules, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    data = {"version": VERSION, "version_code": 920, "numeric_count": numeric_count,
+    data = {"version": VERSION, "version_code": VERSION_CODE, "numeric_count": numeric_count,
             "commit": COMMIT,
             "source": "https://github.com/00-Evan/shattered-pixel-dungeon",
             "license": "GPL-3.0-or-later", "messages": messages,
             "tiers": tiers, "terrain": terrain, "entries": entries, "exotic_to_regular": exotic_to_regular,
             "artifact_caps": artifact_caps, "class_armors": sorted(class_armors)}
+    alchemy_count = attach_alchemy(data, UPSTREAM)
     output = ROOT / "data/catalog.json"
     output.parent.mkdir(exist_ok=True)
     output.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    print(f"Catalog: {len(entries)} entries, {len(messages)} messages, {len(tiers)} equipment tiers, {recipe_count} recipes")
+    print(f"Catalog: {len(entries)} entries, {len(messages)} messages, {len(tiers)} equipment tiers, {recipe_count} recipes, {alchemy_count} verified alchemy adapters")
 
 
 if __name__ == "__main__":

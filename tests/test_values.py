@@ -227,6 +227,16 @@ class PlayerValuesTests(unittest.TestCase):
         self.assertEqual(link['实际链接持续'],'17')
         with self.assertRaises(ValueError):self.detail('actors.hero.spells.sunray',talent=3)
 
+    def test_negative_weapon_ability_labels_keep_the_signed_level(self):
+        for identity in ('items.weapon.melee.sword', 'items.weapon.melee.spear'):
+            for level in (-1, 0, 3):
+                with self.subTest(identity=identity, level=level):
+                    result = self.detail(identity, level=level)
+                    ability = next(b for b in result['blocks'] if b['title']=='决斗家技能伤害')
+                    labels = [row[0] for row in ability['rows']]
+                    self.assertIn(format(level, '+d'), labels)
+                    self.assertTrue(all(not label.startswith('+-') for label in labels))
+
     def test_regrowth_limit_and_lotus_values(self):
         values=self.metrics('items.wands.wandofregrowth',level=0,hero_level=10,charges=3)
         self.assertEqual(values['正常产草的累计充能额度'],'40')
@@ -354,6 +364,21 @@ class PlayerValuesTests(unittest.TestCase):
         self.assertEqual(integer_parameters({'max_hp':20})['hp'],20)
         for raw in ({'hp':True},{'level':'1.5'},{'level':-1},{'hp':40,'max_hp':20},{'target_hp':41},{'level':'__import__("os")'},{'vial':4}):
             with self.subTest(raw=raw),self.assertRaises((ValueError,TypeError)):integer_parameters(raw)
+
+    def test_decimal_inputs_and_field_specific_feedback(self):
+        for key in ('accuracy','evasion','glyph_multiplier','power','healing_percent','loot_chance'):
+            with self.subTest(key=key):
+                self.assertEqual(integer_parameters({key:'.5'})[key],.5)
+                with self.assertRaisesRegex(ValueError,'可使用小数'):
+                    integer_parameters({key:'wrong'})
+        self.assertEqual(integer_parameters({'level':'+3.0'})['level'],3)
+        with self.assertRaisesRegex(ValueError,'装备等级.*整数'):
+            integer_parameters({'level':'.5'})
+        with self.assertRaisesRegex(ValueError,'你的命中值.*之间'):
+            integer_parameters({'accuracy':-1})
+        for invalid in (None, float('inf'), '1e999', '__import__("os")'):
+            with self.subTest(value=invalid),self.assertRaises(ValueError):
+                integer_parameters({'accuracy':invalid})
 
 
 if __name__=='__main__':unittest.main()

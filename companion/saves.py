@@ -121,6 +121,40 @@ def default_root() -> Path:
     return Path(os.environ.get("APPDATA", str(Path.home()))) / ".shatteredpixel" / "Shattered Pixel Dungeon"
 
 
+def open_save(path: Path):
+    """Open a live save for reading without preventing the game's replacement."""
+    if os.name != 'nt':
+        return path.open("rb")
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                       wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes, close.restype = (wintypes.HANDLE,), wintypes.BOOL
+    # GENERIC_READ, FILE_SHARE_READ | WRITE | DELETE, OPEN_EXISTING.
+    # The game saves to .spdtmp, deletes the old file, then moves the new one.
+    # This handle stays read-only; existing before/after stamps reject a raced read.
+    handle = create(str(path), 0x80000000, 0x7, None, 3, 0x80, None)
+    if handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    except BaseException:
+        close(handle)
+        raise
+    # open_osfhandle transfers ownership: closing the file closes the handle too.
+    try:
+        return os.fdopen(descriptor, 'rb')
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 def read_bundle(path: Path) -> dict:
     """No repair, rename, write, or fallback to a different save ever occurs here."""
     try:
@@ -129,7 +163,7 @@ def read_bundle(path: Path) -> dict:
             raise SaveError("空存档（此槽位可能已结束）")
         if before.st_size > MAX_BYTES:
             raise SaveError("存档过大，未读取")
-        with path.open("rb") as stream:
+        with open_save(path) as stream:
             raw = stream.read(MAX_BYTES + 1)
         after = path.stat()
         if file_stamp(before) != file_stamp(after):

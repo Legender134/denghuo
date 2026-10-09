@@ -77,6 +77,15 @@ def read_archive(path, *, slot=None, identity=None):
             calculated = snapshot_identity(hashes, actual_slot, metadata['format'])
             if identity is not None and calculated != identity:
                 raise ValueError('备份清单校验失败')
+            transfer = metadata.get('transfer')
+            if transfer is not None:
+                if (not isinstance(transfer, dict) or set(transfer) != {'label', 'locked', 'first_observed', 'last_observed'}
+                        or not isinstance(transfer['label'], str) or len(transfer['label']) > 80
+                        or any(ord(c) < 32 for c in transfer['label']) or type(transfer['locked']) is not bool
+                        or not (transfer['first_observed'] is None and transfer['last_observed'] is None
+                                or valid_time(transfer['first_observed']) and valid_time(transfer['last_observed'])
+                                and transfer['first_observed'] <= transfer['last_observed'])):
+                    raise ValueError('备份名称、固定状态或原观察时间无效，尚未导入')
             contents = {name: archive.read(name) for name in hashes}
             if any(hashlib.sha256(data).hexdigest() != hashes[name] for name, data in contents.items()):
                 raise ValueError('备份文件校验失败，尚未回档')

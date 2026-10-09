@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -10,6 +11,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 from companion.backups import BackupManager, NODES, snapshot_identity, game_closed, unlinked, atomic_json
 from companion.engine import Catalog
+from companion.saves import open_save
 
 
 class BackupTests(unittest.TestCase):
@@ -41,13 +43,81 @@ class BackupTests(unittest.TestCase):
     def payload(self, row):
         return {"slot": row["slot"], "id": row["id"], "confirm": f"恢复槽位 {row['slot']}"}
 
+    def manage(self, root, payload):
+        # Existing lifecycle cases submit the version actually read by this editor.
+        current = self.manager.selected(root, payload)
+        self.manager.manage(root, {**payload, 'expected_metadata_revision': current['metadata_revision']})
+
+    def test_metadata_cas_rejects_old_unlock_and_aba_but_ignores_observations(self):
+        row = self.manager.capture(self.root, 1)
+        selected = {'slot': 1, 'id': row['id']}
+        original = self.manager.selected(self.root, selected)['metadata_revision']
+        self.manager.manage(self.root, {**selected, 'label': '永久保留', 'locked': True,
+                                       'expected_metadata_revision': original})
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            self.manager.manage(self.root, {**selected, 'label': '旧窗口输入', 'locked': False,
+                                           'expected_metadata_revision': original})
+        fixed = self.manager.selected(self.root, selected)
+        self.assertEqual((fixed['label'], fixed['locked']), ('永久保留', True))
+        revision = fixed['metadata_revision']
+        self.clock += 20
+        self.manager.capture(self.root, 1)
+        self.assertEqual(self.manager.selected(self.root, selected)['metadata_revision'], revision)
+        self.manager.manage(self.root, {**selected, 'label': '', 'locked': False,
+                                       'expected_metadata_revision': revision})
+        self.assertNotEqual(self.manager.selected(self.root, selected)['metadata_revision'], original)
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            self.manager.manage(self.root, {**selected, 'locked': False,
+                                           'expected_metadata_revision': original})
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            self.manager.manage(self.root, {**selected, 'locked': False})
+
+    def test_discovered_legacy_backup_exposes_editable_metadata_version(self):
+        row = self.manager.capture(self.root, 1)
+        (self.manager.scope(self.root) / 'history.json').unlink()
+        reloaded = BackupManager(self.manager.directory, closed_check=lambda: None)
+        discovered = reloaded.history(self.root)[0]
+        self.assertEqual(discovered['id'], row['id'])
+        self.assertEqual(len(discovered['metadata_revision']), 64)
+        reloaded.manage(self.root, {**discovered, 'label': '发现的原件',
+                                   'expected_metadata_revision': discovered['metadata_revision']})
+
+    def test_game_replacement_during_backup_read_is_allowed_and_rejected_as_unstable(self):
+        path = self.root / 'game1' / 'game.dat'
+        old = json.loads(gzip.decompress(path.read_bytes()))
+        old['hero']['HP'] = 19
+        new = gzip.compress(json.dumps(old).encode())
+        replacement = path.with_suffix('.spdtmp')
+        replacement.write_bytes(new)
+        def interleaved(file):
+            stream = open_save(file)
+            if file == path:
+                try:
+                    file.unlink()
+                    replacement.replace(file)
+                except BaseException:
+                    stream.close()
+                    raise
+            return stream
+        with patch('companion.backups.open_save', side_effect=interleaved):
+            with self.assertRaisesRegex(ValueError, '正在保存'):
+                self.manager.capture(self.root, 1)
+        self.assertEqual(path.read_bytes(), new)
+        self.assertFalse(list(self.manager.directory.rglob('*.zip')))
+        self.write_save(hp=19)
+        row = self.manager.capture(self.root, 1)
+        self.assertTrue(self.manager.checked_archive(self.root, row['id'], 1))
+
     def test_game_closed_check_uses_windows_system_tool_and_fails_closed(self):
         from types import SimpleNamespace
         import subprocess
-        with patch('companion.backups.sys.platform','win32'),patch.dict(os.environ,{'SystemRoot':'C:\\Windows','PATH':'C:\\Windows\\System32'}):
-            with patch('companion.backups.subprocess.run',return_value=SimpleNamespace(returncode=0,stdout='')) as execute:
+        with (patch.object(subprocess, 'CREATE_NO_WINDOW', getattr(subprocess, 'CREATE_NO_WINDOW', 0), create=True),
+              patch('companion.backups.sys.platform','win32'),patch('companion.game_process.game_window_pids',return_value=set()),patch.dict(os.environ,{'SystemRoot':'C:\\Windows','PATH':'C:\\Windows\\System32'})):
+            with patch('companion.backups.subprocess.run',return_value=SimpleNamespace(returncode=0,stdout=json.dumps({'schema':1,'ok':True,'candidates':[]}))) as execute:
                 game_closed()
-                self.assertEqual(Path(execute.call_args.args[0][0]),Path('C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'))
+                expected = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+                self.assertEqual(Path(execute.call_args.args[0][0]), expected)
+                self.assertEqual(execute.call_args.kwargs['creationflags'], subprocess.CREATE_NO_WINDOW)
             for response in (SimpleNamespace(returncode=1,stdout=''),SimpleNamespace(returncode=0,stdout='"java.exe"')):
                 with patch('companion.backups.subprocess.run',return_value=response),self.assertRaises(ValueError):game_closed()
             with patch('companion.backups.subprocess.run',side_effect=subprocess.TimeoutExpired('controlled',10)),self.assertRaises(ValueError):game_closed()
@@ -80,7 +150,7 @@ class BackupTests(unittest.TestCase):
 
     def test_rejoin_retained_backup_validates_without_restore_or_delete(self):
         self.manager.tick(self.root);first=self.manager.events(self.root)[0]
-        self.manager.manage(self.root,{**first,'label':'首领之前','locked':False})
+        self.manage(self.root,{**first,'label':'首领之前','locked':False})
         original=(self.root/'game1/game.dat').read_bytes()
         self.manager.remove(self.root,{**first,'confirm':'移出备份 1'})
         retained=self.manager.retained_status(self.root)
@@ -96,7 +166,7 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(self.manager.selected(self.root,first)['id'],first['id'])
         self.assertEqual(self.manager.selected(self.root,first)['label'],'首领之前')
         self.assertEqual(self.manager.selected(self.root,first)['time'],10000)
-        self.manager.manage(self.root,{**first,'label':'新名称','locked':False})
+        self.manage(self.root,{**first,'label':'新名称','locked':False})
         self.manager.rejoin(self.root,retained[0])
         self.assertEqual(self.manager.selected(self.root,first)['label'],'新名称')
         with self.assertRaises(ValueError):self.manager.rejoin(self.root,{'file':'../settings.json'})
@@ -342,7 +412,11 @@ class BackupTests(unittest.TestCase):
     def test_numeric_reference_examples_and_sources(self):
         catalog = Catalog()
         rows = {row["id"]: row for row in catalog.entries}
-        self.assertEqual(len(rows), 954)
+        self.assertEqual(len(rows), len(catalog.entries), 'catalog identities must be unique')
+        seeds = {'plants.' + name + '$seed' for name in ('blindweed', 'mageroyal', 'earthroot',
+                 'fadeleaf', 'firebloom', 'icecap', 'rotberry', 'sorrowmoss', 'starflower',
+                 'stormvine', 'sungrass', 'swiftthistle')}
+        self.assertTrue(seeds <= rows.keys(), 'all standard seed materials need named catalog identities')
         self.assertEqual(sum(bool(row.get("numbers")) for row in rows.values()), catalog.data["numeric_count"])
         rat = {r["label"]: r["value"] for r in rows["actors.mobs.rat"]["numbers"]}
         self.assertEqual(rat["初始生命"], "8")
@@ -352,7 +426,7 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(sword["最低基础伤害"], "3 + L")
         self.assertEqual(sword["最高基础伤害"], "5*(3+1) + L*(3+1)")
         self.assertEqual(len(catalog.search(category="角色与机制")["entries"]), 24)
-        self.assertIn("e9defd0", rows["actors.mobs.rat"]["source"])
+        self.assertIn("57a4e06a4caf162446d1c28caa7983f0493fecf0", rows["actors.mobs.rat"]["source"])
         self.assertTrue(catalog.search("基础命中")["total"])
 
     def test_corrupt_reused_archive_is_quarantined_and_rebuilt(self):
@@ -371,7 +445,7 @@ class BackupTests(unittest.TestCase):
     def test_old_history_restores_after_restart_and_preserves_names(self):
         self.manager.tick(self.root)
         first = self.manager.events(self.root)[0]
-        self.manager.manage(self.root, {**first, 'label': '首领之前', 'locked': True})
+        self.manage(self.root, {**first, 'label': '首领之前', 'locked': True})
         for hp in (10, 5):
             self.clock += 4000
             self.write_save(hp)
@@ -508,7 +582,13 @@ class BackupTests(unittest.TestCase):
         self.manager.tick(self.root);first=self.manager.events(self.root)[0]
         self.write_save(2);before=(self.root/'game1/game.dat').read_bytes()
         self.manager.restore(self.root,self.payload(first));self.manager.set_enabled(False)
-        self.manager.remove(self.root,{**first,'confirm':'移出备份 1'})
+        with self.assertRaisesRegex(ValueError, '撤回'):
+            self.manager.remove(self.root,{**first,'confirm':'移出备份 1'})
+        # External movement of the active library must not hide its intact undo journal.
+        scope=self.manager.scope(self.root)
+        (scope/(first['id']+'.zip')).replace(Path(self.temporary.name)/'externally-preserved.zip')
+        atomic_json(scope/'history.json',[])
+        atomic_json(scope/'timeline.json',[])
         reloaded=BackupManager(self.manager.directory,clock=lambda:self.clock,closed_check=lambda:None)
         snapshot=reloaded.snapshot(self.root)
         self.assertEqual(snapshot['history'],[])
@@ -647,16 +727,17 @@ class BackupTests(unittest.TestCase):
     def test_import_export_locked_recoverable_removal_and_preview(self):
         self.manager.tick(self.root)
         first=self.manager.events(self.root)[0]
+        stored=(self.manager.scope(self.root)/(first['id']+'.zip')).read_bytes()
         raw,filename=self.manager.export(self.root,first)
         self.assertTrue(filename.endswith('.zip'))
-        self.manager.manage(self.root,{**first,'locked':True})
+        self.manage(self.root,{**first,'locked':True})
         with self.assertRaisesRegex(ValueError,'永久保留'):
             self.manager.remove(self.root,{**first,'confirm':'移出备份 1'})
-        self.manager.manage(self.root,{**first,'locked':False})
+        self.manage(self.root,{**first,'locked':False})
         self.manager.remove(self.root,{**first,'confirm':'移出备份 1'})
         self.assertEqual(self.manager.history(self.root),[])
         recycled=list((self.manager.directory.parent/'backup-recycle').rglob('*.zip'))
-        self.assertEqual(recycled[0].read_bytes(),raw)
+        self.assertEqual(recycled[0].read_bytes(),stored)
         self.manager.import_archive(self.root,raw)
         self.write_save(2)
         preview=self.manager.preview(self.root,first)
@@ -731,6 +812,215 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(self.manager.health_status(self.root)['state'],'waiting')
         self.assertEqual(self.manager.error,'')
 
+    def test_preview_changed_progress_rejects_before_staging_or_index_discovery(self):
+        self.manager.tick(self.root)
+        row = self.manager.history(self.root)[0]
+        preview = self.manager.preview(self.root, row)
+        self.assertEqual(preview['expected_current'], self.manager.directory_digest(self.root / 'game1'))
+        self.write_save(2)
+        before = {p.name: p.read_bytes() for p in self.manager.scope(self.root).iterdir() if p.is_file()}
+        game_before = {p.name: p.read_bytes() for p in (self.root / 'game1').iterdir()}
+        with patch.object(self.manager, 'selected', side_effect=AssertionError('must not discover/write history')):
+            with self.assertRaisesRegex(ValueError, '进度已变化.*重新预览'):
+                self.manager.restore(self.root, {**self.payload(row), 'expected_current': preview['expected_current']})
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.manager.scope(self.root).iterdir() if p.is_file()})
+        self.assertEqual(game_before, {p.name: p.read_bytes() for p in (self.root / 'game1').iterdir()})
+        self.assertFalse(list(self.root.glob('.denghuo-stage-*')))
+
+    def test_preview_rejects_summary_drift_and_same_bytes_directory_replacement(self):
+        self.manager.tick(self.root)
+        row = self.manager.history(self.root)[0]
+        original_summary = self.manager.current_summary
+        def drift(*args):
+            result = original_summary(*args)
+            self.write_save(2)
+            return result
+        with patch.object(self.manager, 'current_summary', side_effect=drift), self.assertRaisesRegex(ValueError, '预览期间变化'):
+            self.manager.preview(self.root, row)
+        def replacement(*args):
+            result = original_summary(*args)
+            folder = self.root / 'game1'
+            previous = self.root / 'previous-slot'
+            folder.rename(previous)
+            shutil.copytree(previous, folder)
+            return result
+        with patch.object(self.manager, 'current_summary', side_effect=replacement), self.assertRaisesRegex(ValueError, '预览期间变化'):
+            self.manager.preview(self.root, row)
+
+    def test_expected_current_strict_types_and_null_absent_slot(self):
+        self.manager.tick(self.root)
+        row = self.manager.history(self.root)[0]
+        for value in (True, 1, [], {}, '', 'g' * 64, 'a' * 63):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, '摘要不正确'):
+                self.manager.restore(self.root, {**self.payload(row), 'expected_current': value})
+        self.assertFalse(list(self.root.glob('.denghuo-stage-*')))
+        (self.root / 'game1').rename(self.root / 'previous-slot')
+        self.assertIsNone(self.manager.preview(self.root, row)['expected_current'])
+        self.write_save(2)
+        with self.assertRaisesRegex(ValueError, '进度已变化'):
+            self.manager.restore(self.root, {**self.payload(row), 'expected_current': None})
+        self.assertFalse(list(self.root.glob('.denghuo-stage-*')))
+
+    def test_repair_timeline_preserves_sources_names_locks_and_undo(self):
+        self.manager.tick(self.root)
+        first = self.manager.history(self.root)[0]
+        self.manage(self.root, {**first, 'label': '首领前', 'locked': True})
+        self.write_save(2)
+        (self.root / 'game1/notes.txt').write_bytes(b'original extra file')
+        previous = {p.name: p.read_bytes() for p in (self.root / 'game1').iterdir()}
+        self.manager.restore(self.root, self.payload(first))
+        self.write_save(8, slot=2)
+        self.clock += 10
+        self.manager.tick(self.root)
+        scope = self.manager.scope(self.root)
+        history = self.manager.history(self.root)
+        orphan = next(r for r in history if r['slot'] == 2)
+        rows = [r for r in history if r['id'] != orphan['id']]
+        rows += [{**first, 'id': 'a' * 64, 'slot': 3, 'label': '坏文件仍固定', 'locked': True},
+                 {**first, 'id': 'b' * 64, 'slot': 4, 'label': '缺失仍固定', 'locked': True}]
+        atomic_json(scope / 'history.json', rows)
+        (scope / ('a' * 64 + '.zip')).write_bytes(b'bad ZIP original')
+        (scope / 'timeline.json').write_bytes(b'{broken\xff\x00')
+        self.manager.set_enabled(False)
+        names = ('timeline.json', 'history.json', 'restores.json')
+        originals = {name: (scope / name).read_bytes() for name in names}
+        game_before = {p.relative_to(self.root).as_posix(): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        zip_before = {p.name: p.read_bytes() for p in scope.glob('*.zip')}
+        status = self.manager.snapshot(self.root)
+        self.assertTrue(status['repair_timeline_available'])
+        self.assertEqual(status['health'], 'paused')
+        self.assertFalse(status['records_available'])
+        self.assertIn('损坏', status['error'])
+        self.assertEqual(status['storage_bytes'], sum(len(raw) for raw in zip_before.values()))
+        self.assertIn('storage_breakdown', status)
+        result = self.manager.repair_timeline(self.root, {'confirm': '恢复时间记录'})
+        for name, raw in originals.items():
+            self.assertEqual((Path(result['recovery_directory']) / name).read_bytes(), raw)
+        self.assertEqual(originals['restores.json'], (scope / 'restores.json').read_bytes())
+        self.assertEqual(game_before, {p.relative_to(self.root).as_posix(): p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+        self.assertEqual(zip_before, {p.name: p.read_bytes() for p in scope.glob('*.zip')})
+        self.assertEqual(self.manager.events(self.root), [])
+        state = self.manager.snapshot(self.root)
+        records = {r['id']: r for r in state['history']}
+        self.assertEqual(records[first['id']]['label'], '首领前')
+        self.assertTrue(records[first['id']]['locked'])
+        self.assertEqual(records[first['id']]['time'], first['time'])
+        self.assertEqual(records[orphan['id']]['recovered_at'], self.clock)
+        self.assertFalse(records['a' * 64]['integrity']['valid'])
+        self.assertFalse(records['b' * 64]['integrity']['valid'])
+        self.assertTrue(records['b' * 64]['locked'])
+        self.assertFalse(self.manager.enabled)
+        self.assertTrue(all(n['backup'] is None for s in state['slots'] for n in s['nodes']))
+        reloaded = BackupManager(self.manager.directory, clock=lambda: self.clock, closed_check=lambda: None)
+        self.assertFalse(next(r for r in reloaded.snapshot(self.root)['history'] if r['id'] == 'a' * 64)['integrity']['valid'])
+        record = reloaded.undo_status(self.root)[0]
+        reloaded.undo(self.root, {**record, 'confirm': '撤回槽位 1'})
+        self.assertEqual(previous, {p.name: p.read_bytes() for p in (self.root / 'game1').iterdir()})
+
+    def test_repair_timeline_refuses_other_bad_indexes_and_unconfirmed_action(self):
+        self.manager.tick(self.root)
+        scope = self.manager.scope(self.root)
+        (scope / 'timeline.json').write_bytes(b'{broken')
+        with self.assertRaisesRegex(ValueError, '明确确认'):
+            self.manager.repair_timeline(self.root, {})
+        for name in ('history.json', 'restores.json'):
+            path = scope / name
+            previous = path.read_bytes() if path.exists() else None
+            path.write_bytes(b'{bad index')
+            before = {p.name: p.read_bytes() for p in scope.iterdir() if p.is_file()}
+            self.assertFalse(self.manager.snapshot(self.root)['repair_timeline_available'])
+            with self.assertRaisesRegex(ValueError, name):
+                self.manager.repair_timeline(self.root, {'confirm': '恢复时间记录'})
+            self.assertEqual(before, {p.name: p.read_bytes() for p in scope.iterdir() if p.is_file()})
+            self.assertFalse(list(scope.glob('records-recovery-*')))
+            if previous is None:
+                path.unlink()
+            else:
+                path.write_bytes(previous)
+
+    def test_repair_timeline_rolls_back_both_indexes_even_after_publish(self):
+        self.manager.tick(self.root)
+        scope = self.manager.scope(self.root)
+        self.write_save(8, slot=2)
+        self.manager.capture(self.root, 2)
+        atomic_json(scope / 'history.json', [r for r in self.manager.history(self.root) if r['slot'] == 1])
+        (scope / 'timeline.json').write_bytes(b'{broken')
+        original = {name: (scope / name).read_bytes() for name in ('history.json', 'timeline.json')}
+        for index in ('history.json', 'timeline.json'):
+            for exception in (OSError, ValueError, RuntimeError):
+                with self.subTest(index=index, exception=exception.__name__):
+                    def fail(path, value):
+                        atomic_json(path, value)
+                        if path.parent == scope and path.name == index:
+                            raise exception('controlled post-publish failure')
+                    with patch('companion.backups.atomic_json', side_effect=fail), self.assertRaisesRegex(ValueError, '原索引已恢复'):
+                        self.manager.repair_timeline(self.root, {'confirm': '恢复时间记录'})
+                    for name, raw in original.items():
+                        self.assertEqual((scope / name).read_bytes(), raw)
+        self.assertTrue(list(scope.glob('records-recovery-*/timeline.json')))
+
+    def test_repair_preservation_failure_prevents_zip_scan(self):
+        self.manager.tick(self.root)
+        scope = self.manager.scope(self.root)
+        (scope / 'timeline.json').write_bytes(b'{broken')
+        before = {name: (scope / name).read_bytes() for name in ('history.json', 'timeline.json')}
+        original_open = Path.open
+        def fail(path, *args, **kwargs):
+            if path.parent.name.startswith('records-recovery-') and path.name == 'history.json' and args and args[0] == 'xb':
+                raise OSError('controlled preservation failure')
+            return original_open(path, *args, **kwargs)
+        with patch.object(Path, 'open', new=fail), patch('companion.backups.read_archive') as verify:
+            with self.assertRaisesRegex(ValueError, '保留失败'):
+                self.manager.repair_timeline(self.root, {'confirm': '恢复时间记录'})
+            verify.assert_not_called()
+        for name, raw in before.items():
+            self.assertEqual((scope / name).read_bytes(), raw)
+
+    def test_unbound_backup_error_is_visible_but_another_root_error_is_not(self):
+        self.manager.error = '全局备份存储错误'
+        self.assertIsNone(self.manager.health_root)
+        for slot in (None, 1):
+            state = self.manager.health_status(self.root, slot)
+            self.assertEqual(state['state'], 'blocked')
+            self.assertEqual(state['error'], '全局备份存储错误')
+        self.manager.health_root = str(self.root.parent / 'other-root')
+        self.manager.tick_failure = '别的目录读取失败'
+        for slot in (None, 1):
+            state = self.manager.health_status(self.root, slot)
+            self.assertEqual(state['state'], 'waiting')
+            self.assertEqual(state['error'], '')
+            self.assertEqual(state['other_errors'], '')
+
+    def test_health_cache_scope_and_repair_error_validation_after_restart(self):
+        self.manager.tick(self.root)
+        row = self.manager.history(self.root)[0]
+        other = self.root.parent / 'other-saves'
+        shutil.copytree(self.root, other)
+        self.manager.tick(other, force=True)
+        other_row = self.manager.history(other)[0]
+        self.assertEqual(row['id'], other_row['id'])
+        scope = self.manager.scope(self.root)
+        archive = scope / (row['id'] + '.zip')
+        original_zip = archive.read_bytes()
+        archive.write_bytes(b'bad only in first root')
+        with self.assertRaises(ValueError):
+            self.manager.checked_archive(self.root, row['id'], 1)
+        self.manager.checked_archive(other, other_row['id'], 1)
+        self.assertFalse(self.manager.snapshot(self.root)['history'][0]['integrity']['valid'])
+        self.assertTrue(self.manager.snapshot(other)['history'][0]['integrity']['valid'])
+        (scope / 'timeline.json').write_bytes(b'{broken')
+        before_health = self.manager.health_status(other)
+        self.manager.repair_timeline(self.root, {'confirm': '恢复时间记录'})
+        self.assertEqual(self.manager.health_status(other), before_health)
+        self.assertTrue(self.manager.snapshot(other)['history'][0]['integrity']['valid'])
+        self.assertNotEqual(self.manager.health_status(self.root)['state'], 'protected')
+        reloaded = BackupManager(self.manager.directory, clock=lambda: self.clock, closed_check=lambda: None)
+        self.assertFalse(reloaded.snapshot(self.root)['history'][0]['integrity']['valid'])
+        archive.write_bytes(original_zip)
+        reloaded.validate(self.root)
+        self.assertNotIn('repair_error', reloaded.history(self.root)[0])
+        self.assertTrue(reloaded.snapshot(self.root)['history'][0]['integrity']['valid'])
+
     def test_recurring_timeline_keeps_summaries_only_once_in_history(self):
         from companion.backup_archive import player_summary
         game={'depth':2,'hero':{'class':'MAGE','HP':20,'HT':30,'STR':10,'lvl':2}}
@@ -745,6 +1035,101 @@ class BackupTests(unittest.TestCase):
         snapshot=self.manager.snapshot(self.root)
         self.assertEqual(snapshot['slots'][0]['latest']['equipment'],summary['equipment'])
         self.assertEqual(snapshot['slots'][0]['nodes'][-1]['backup']['time'],10000)
+
+
+    def test_export_import_preserves_names_locks_and_original_observations_across_two_moves(self):
+        self.manager.tick(self.root)
+        first = self.manager.history(self.root)[0]
+        self.clock += 30
+        self.manager.tick(self.root)
+        self.manage(self.root, {**first, 'label': '首领之前 <保留>', 'locked': True})
+        original = (self.manager.scope(self.root) / (first['id'] + '.zip')).read_bytes()
+        raw, _ = self.manager.export(self.root, first)
+        self.assertEqual((self.manager.scope(self.root) / (first['id'] + '.zip')).read_bytes(), original)
+        for step in (1, 2):
+            destination = Path(self.temporary.name) / f'new-save-root-{step}'
+            destination.mkdir()
+            self.clock += 86400
+            imported = self.manager.import_archive(destination, raw)
+            self.assertEqual(imported['id'], first['id'])
+            self.assertEqual(imported['label'], '首领之前 <保留>')
+            self.assertTrue(imported['locked'])
+            self.assertEqual(imported['time'], 10000)
+            self.assertEqual(imported['last_seen'], 10030)
+            self.assertEqual(imported['imported_at'], self.clock)
+            self.assertFalse((destination / 'game1').exists())
+            self.assertEqual(self.manager.events(destination), [])
+            self.assertIsNone(self.manager.snapshot(destination)['slots'][0]['nodes'][0]['backup'])
+            raw, _ = self.manager.export(destination, imported)
+        self.manage(destination, {**imported, 'label': '本机选择', 'locked': False})
+        self.clock += 10
+        again = self.manager.import_archive(destination, raw)
+        self.assertEqual(again['label'], '本机选择')
+        self.assertFalse(again['locked'])
+        self.assertEqual((again['time'], again['last_seen']), (10000, 10030))
+        self.assertEqual(again['imported_at'], self.clock)
+
+    def test_legacy_import_marks_unknown_observations_until_actual_live_capture(self):
+        self.manager.tick(self.root)
+        first = self.manager.history(self.root)[0]
+        raw = (self.manager.scope(self.root) / (first['id'] + '.zip')).read_bytes()
+        destination = Path(self.temporary.name) / 'legacy-import'
+        destination.mkdir()
+        self.clock += 100
+        imported = self.manager.import_archive(destination, raw)
+        self.assertEqual(imported['recovered_at'], self.clock)
+        from io import BytesIO
+        exported, _ = self.manager.export(destination, imported)
+        with ZipFile(BytesIO(exported)) as archive:
+            transfer = json.loads(archive.read('manifest.json'))['transfer']
+        self.assertIsNone(transfer['first_observed'])
+        self.assertIsNone(transfer['last_observed'])
+        shutil.copytree(self.root / 'game1', destination / 'game1')
+        self.clock += 100
+        self.manager.tick(destination, force=True)
+        captured = self.manager.selected(destination, imported)
+        self.assertNotIn('recovered_at', captured)
+        self.assertEqual((captured['time'], captured['last_seen']), (self.clock, self.clock))
+
+    def test_invalid_transfer_metadata_rejects_without_changing_game_or_history(self):
+        from io import BytesIO
+        self.manager.tick(self.root)
+        first = self.manager.history(self.root)[0]
+        raw, _ = self.manager.export(self.root, first)
+        with ZipFile(BytesIO(raw)) as archive:
+            metadata = json.loads(archive.read('manifest.json'))
+            contents = {name: archive.read(name) for name in metadata['files']}
+        before = {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        indexes = {p.name: p.read_bytes() for p in self.manager.scope(self.root).glob('*.json')}
+        for change in ({'label': 'unsafe\nlabel'}, {'label': 'x' * 81}, {'locked': 1},
+                       {'first_observed': float('nan')}, {'last_observed': 0}, {'first_observed': None},
+                       {'last_observed': True}):
+            with self.subTest(change=change):
+                malformed = {**metadata, 'transfer': {**metadata['transfer'], **change}}
+                output = BytesIO()
+                with ZipFile(output, 'w', ZIP_DEFLATED) as archive:
+                    archive.writestr('manifest.json', json.dumps(malformed))
+                    for name, data in contents.items():
+                        archive.writestr(name, data)
+                with self.assertRaisesRegex(ValueError, '原观察时间无效'):
+                    self.manager.import_archive(self.root, output.getvalue())
+                self.assertEqual(before, {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+                self.assertEqual(indexes, {p.name: p.read_bytes() for p in self.manager.scope(self.root).glob('*.json')})
+
+    def test_aged_save_remains_explicitly_protected_and_errors_do_not_borrow_protection(self):
+        self.clock = 1700000020
+        self.manager.tick(self.root)
+        self.clock += 61
+        old = self.manager.health_status(self.root, 1)
+        self.assertEqual(old['state'], 'waiting')
+        self.assertTrue(old['last_save_protected'])
+        self.assertTrue(self.manager.snapshot(self.root)['last_save_protected'])
+        self.assertFalse(self.manager.health_status(self.root, 2)['last_save_protected'])
+        (self.root / 'game1/game.dat').write_bytes(b'broken')
+        self.clock += 10
+        self.manager.tick(self.root)
+        self.assertEqual(self.manager.health_status(self.root, 1)['state'], 'blocked')
+        self.assertFalse(self.manager.health_status(self.root, 1)['last_save_protected'])
 
 
 if __name__ == "__main__":

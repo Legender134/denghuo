@@ -2,7 +2,7 @@
 
 import re
 
-COMMIT = "e9defd0444c96d2fce3de5ec297c3398be8b7c55"
+COMMIT = "57a4e06a4caf162446d1c28caa7983f0493fecf0"
 BASE = f"https://github.com/00-Evan/shattered-pixel-dungeon/blob/{COMMIT}/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/"
 METHODS = {"min": "最低基础伤害", "max": "最高基础伤害", "damageRoll": "基础伤害随机范围",
            "attackSkill": "基础命中", "drRoll": "基础减伤随机范围", "damageMin": "最低基础伤害",
@@ -89,7 +89,7 @@ def enrich(entries, src, messages, tiers):
         if rows:
             numeric_count += 1
             entry["numbers"] = rows
-            entry["numeric_note"] = "4.0.1 基础规则；L 为有效装备等级，T 为阶数。公式中的 Random 为随机函数，super 为父类规则。未计入天赋、强化、状态、精英、飞升及挑战等修正。源码常量按所属文件列出，具体适用条件见原文。"
+            entry["numeric_note"] = "4.0.2 基础规则；L 为有效装备等级，T 为阶数。公式中的 Random 为随机函数，super 为父类规则。未计入天赋、强化、状态、精英、飞升及挑战等修正。源码常量按所属文件列出，具体适用条件见原文。"
     for hero in ("warrior", "mage", "rogue", "huntress", "duelist", "cleric"):
         stem = "actors.hero.heroclass." + hero
         entries.append({"id": stem, "name": messages[stem], "description": messages[stem + "_desc"],
@@ -109,6 +109,6 @@ def enrich(entries, src, messages, tiers):
     for key, name, description, relative in rules:
         entries.append({"id": "mechanics." + key, "name": name, "description": description,
                         "category": "角色与机制", "hint": "", "source": BASE + relative,
-                        "numbers": [{"label": "适用版本", "value": "4.0.1 / 版本码 920"}],
+                        "numbers": [{"label": "适用版本", "value": "4.0.2 / 版本码 922"}],
                         "numeric_note": "基础规则及边界见说明，行动前核对实际游戏状态。"})
     return numeric_count + 12

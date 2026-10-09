@@ -8,6 +8,30 @@ from companion.paths import data_directory, migrate_data
 
 
 class DataPathTests(unittest.TestCase):
+    def test_first_install_copies_raw_exit_drafts_and_preserves_incompatible_originals(self):
+        from companion.session_exit import ExitDraftStore
+        from companion.service import Session
+        with tempfile.TemporaryDirectory(prefix='denghuo-raw-draft-migration-') as directory:
+            root = Path(directory); source = root / 'old'; source.mkdir()
+            (source / 'settings.json').write_text(json.dumps({'save_root': str(root / 'saves'),
+                'slot': 'auto', 'mode': 'save', 'reveal': False}), encoding='utf-8')
+            store = ExitDraftStore(source / 'exit-drafts')
+            saved = store.save('web-12345678', 'workspace', '未计算的输入',
+                {'format': 1, 'numeric': {'hp': '不是数字', 'level': '-'}, 'open_plan': {'name': '原名', 'note': '原备注'}})
+            valid_path = store.directory / (saved['id'] + '.json')
+            valid_raw = valid_path.read_bytes()
+            invalid_path = store.directory / ('a' * 32 + '.json')
+            invalid_raw = b'{"format":900,"raw":"incompatible original"}'
+            invalid_path.write_bytes(invalid_raw)
+            destination = root / 'new'; report = migrate_data(destination, [source])
+            self.assertEqual(report['copied_exit_drafts'], [valid_path.name])
+            self.assertEqual(report['unavailable_exit_drafts'][0]['file'], invalid_path.name)
+            self.assertEqual((destination / 'exit-drafts' / valid_path.name).read_bytes(), valid_raw)
+            self.assertEqual((destination / 'exit-drafts-preserved' / invalid_path.name).read_bytes(), invalid_raw)
+            self.assertEqual(valid_path.read_bytes(), valid_raw); self.assertEqual(invalid_path.read_bytes(), invalid_raw)
+            loaded = Session(destination / 'settings.json')
+            self.assertEqual(len(loaded.exit_drafts.list()), 1); self.assertIsNone(loaded.data)
+
     def test_frozen_data_is_independent_of_resource_and_executable_locations(self):
         with patch('companion.paths.sys.frozen',True,create=True), patch.dict('os.environ',{'LOCALAPPDATA':'C:/用户数据'}):
             self.assertEqual(data_directory(),Path('C:/用户数据/Denghuo'))
@@ -39,3 +63,26 @@ class DataPathTests(unittest.TestCase):
                 with self.assertRaises(OSError):migrate_data(destination,[source])
             self.assertFalse(destination.exists())
             self.assertEqual((source/'settings.json').read_text(),raw)
+
+    def test_migration_retains_library_and_shared_play_preferences_without_applying_a_draft(self):
+        from companion.service import Session
+        with tempfile.TemporaryDirectory(prefix='denghuo-workspace-migrate-') as directory:
+            root=Path(directory);source=root/'old';source.mkdir()
+            settings={'save_root':str(root/'synthetic-saves'),'slot':'auto','mode':'save','reveal':False}
+            (source/'settings.json').write_text(json.dumps(settings),encoding='utf-8')
+            session=Session(source/'settings.json')
+            plan=session.knowledge.save('手动草稿','manual',None,{'hp':3,'ht':30,'buffs':['Poison']})
+            session.play_preferences.update({'offset_y':140})
+            original_library=(source/'knowledge.json').read_bytes()
+            original_play=(source/'play-mode.json').read_bytes()
+            destination=root/'new'
+            report=migrate_data(destination,[source])
+            self.assertEqual(set(report['copied_preferences']),{'knowledge.json','play-mode.json'})
+            loaded=Session(destination/'settings.json')
+            self.assertEqual(loaded.knowledge.reopen(plan['id'])['result']['hero']['hp'],3)
+            self.assertIsNone(loaded.data)
+            self.assertEqual(loaded.settings['mode'],'save')
+            self.assertEqual(loaded.play_preferences.values['offset_y'],140)
+            self.assertEqual((destination/'knowledge.json').read_bytes(),original_library)
+            self.assertEqual((source/'knowledge.json').read_bytes(),original_library)
+            self.assertEqual((source/'play-mode.json').read_bytes(),original_play)

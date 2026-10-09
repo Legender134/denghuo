@@ -29,7 +29,7 @@ def port_number(value):
     return port
 
 
-def open_existing(runtime_path, timeout=3):
+def open_existing(runtime_path, timeout=3, *, web=False, no_overlay=False):
     """A second click can precede the first process publishing its address."""
     deadline = time.monotonic() + timeout
     while True:
@@ -43,29 +43,38 @@ def open_existing(runtime_path, timeout=3):
                 state = json.load(response)
             if not isinstance(state, dict) or 'catalog_version' not in state or state.get('stopped'):
                 raise ValueError('助手服务尚未就绪')
-            if state.get('panel_reuse'):
-                request = Request(url+'/api/panel', data=json.dumps({'action':'open'}).encode(),
+            if state.get('manager_reuse') or state.get('panel_reuse'):
+                native = state.get('settings', {}).get('startup_surface', 'panel') == 'native'
+                action = 'show' if native and state.get('manager_reuse') and not (web or no_overlay) else 'open'
+                request = Request(url+'/api/panel', data=json.dumps({'action':action}).encode(),
                                   headers={'Content-Type':'application/json','X-Companion-Token':state['token']})
                 with urlopen(request, timeout=2) as response:
-                    json.load(response)
+                    result = json.load(response)
+                    if result.get('ok') is not True:
+                        raise ValueError('已有助手未能打开入口')
             else:
-                webbrowser.open(url)
+                if not webbrowser.open(url):
+                    raise ValueError('浏览器未能打开完整面板：'+url)
             return
         except (OSError, ValueError, KeyError, TypeError):
             if time.monotonic() >= deadline:
-                raise RuntimeError('另一个灯火进程正在启动或关闭，请稍后重新双击启动。') from None
+                raise RuntimeError('已有灯火入口未能打开，请稍后重试；可手动访问完整面板：'+url if 'url' in locals() else
+                                   '另一个灯火进程正在启动或关闭，请稍后重新双击启动。') from None
             time.sleep(.1)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="灯火 · 破碎的像素地牢本地助手")
-    parser.add_argument("--no-overlay", action="store_true")
+    parser.add_argument("--web", action="store_true", help="打开完整网页面板（推荐键盘与读屏使用；原生Tk读屏支持有限）")
+    parser.add_argument("--no-overlay", action="store_true", help="仅运行网页服务，不启用原生桌面辅助")
     parser.add_argument("--no-browser", action="store_true")
-    parser.add_argument("--start-hidden", action="store_true", help="管理窗口先隐藏，保留托盘、快捷键与游玩显示")
+    parser.add_argument("--start-hidden", action="store_true", help="后台启动，不自动显示网页或管理窗口；原生辅助启用时保留托盘、快捷键与游玩显示")
     parser.add_argument("--port", type=port_number, default=0)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--stop-at", help="可选的助手停止时间，如 2026-10-03T02:00:00+08:00")
     args = parser.parse_args(argv)
+    if args.web and (args.no_browser or args.start_hidden):
+        parser.error("--web 不能与 --no-browser 或 --start-hidden 同时使用")
     local = args.config.parent if args.config else data_directory()
     mutex = kernel = session = server = monitor = http = None
     owned_handlers = []
@@ -80,8 +89,8 @@ def main(argv=None):
             if not mutex:
                 raise ctypes.WinError(ctypes.get_last_error())
             if ctypes.get_last_error() == 183:
-                if not args.no_browser:
-                    open_existing(local/"runtime.json")
+                if not args.no_browser and not args.start_hidden:
+                    open_existing(local/"runtime.json", web=args.web, no_overlay=args.no_overlay)
                 return
         if getattr(sys, 'frozen', False) and args.config is None:
             migrate_data(local, [Path(sys.executable).parent/'.local', Path.cwd()/'.local'])
@@ -91,6 +100,9 @@ def main(argv=None):
                             format="%(asctime)s %(levelname)s %(message)s", encoding="utf-8")
         owned_handlers = [h for h in logging.getLogger().handlers if h not in previous_handlers]
         session = Session(config_path=args.config)
+        file_handlers = [h for h in logging.getLogger().handlers if isinstance(h, logging.FileHandler)]
+        session.log_path = Path(file_handlers[0].baseFilename) if file_handlers else None
+        session.manager_available = not args.no_overlay
         if args.stop_at:
             session.update_settings({"stop_at": args.stop_at})
         session.refresh()
@@ -108,7 +120,9 @@ def main(argv=None):
         http = threading.Thread(target=server.serve_forever, daemon=True, name="dashboard")
         monitor.start()
         http.start()
-        if not args.no_browser:
+        panel_start = not (args.no_browser or args.start_hidden) and (
+            args.web or args.no_overlay or session.settings.get('startup_surface', 'panel') == 'panel')
+        if panel_start:
             session.panel.request()
         if args.no_overlay:
             session.stop.wait()
@@ -119,10 +133,11 @@ def main(argv=None):
                     ctypes.windll.shcore.SetProcessDpiAwareness(1)
             except (OSError, AttributeError):
                 pass
-            Overlay(session, url, start_hidden=args.start_hidden).run()
+            Overlay(session, url, start_hidden=args.start_hidden or panel_start).run()
     finally:
         if session is not None:
             session.stop.set()
+            session.prepare_shutdown()
         if server is not None:
             # shutdown() must only run after serve_forever has started.
             if http is not None and http.is_alive():

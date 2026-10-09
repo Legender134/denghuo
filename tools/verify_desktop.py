@@ -8,8 +8,12 @@ from pathlib import Path
 import subprocess
 import time
 from urllib.request import Request, urlopen
+from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parents[1]
+import sys
+sys.path.insert(0, str(ROOT))
+from tools.build_desktop import native_resources
 
 
 def request(info, path, value=None, token=None):
@@ -23,6 +27,7 @@ def request(info, path, value=None, token=None):
 
 
 def verify(exe):
+    native = native_resources(Path(exe).parent)
     work = ROOT/'.local'/('独立程序 验收 '+str(time.time_ns()))
     work.mkdir(parents=True)
     saves = work/'测试存档'
@@ -39,6 +44,10 @@ def verify(exe):
     config = work/'设置.json'
     config.write_text(json.dumps({'save_root':str(saves),'slot':1,'mode':'save','reveal':False}),encoding='utf-8')
     env = os.environ.copy()
+    for key in ('PYTHONPATH', 'LAMP_NATIVE_HELPER'):
+        env.pop(key, None)
+    env['APPDATA'] = str(work / 'appdata')
+    env['LOCALAPPDATA'] = str(work / 'localappdata')
     env['PATH'] = str(Path(env.get('SystemRoot') or env.get('WINDIR') or 'C:/Windows')/'System32')
     process = subprocess.Popen([str(exe),'--no-overlay','--no-browser','--config',str(config)],
                                cwd=work, env=env)
@@ -78,21 +87,31 @@ def verify(exe):
         while not any(r['hp']==5 for r in backups['history']) and time.monotonic()<deadline:
             time.sleep(.3);backups=request(info,'api/backups')
         assert any(r['hp']==5 for r in backups['history']), 'Automatic backup did not capture the changed save'
-        request(info,'api/backups',{'action':'validate'},state['token'])
+        request(info,'api/backups',{'action':'validate','context':backups['context']},state['token'])
         assert all(r['integrity']['valid'] for r in request(info,'api/backups')['history'])
         assert expected=={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.iterdir()}
         before=next(r for r in backups['history'] if r['hp']==20)
-        request(info,'api/backups',{'action':'restore','slot':1,'id':before['id'],'confirm':'恢复槽位 1'},state['token'])
+        preview=request(info,'api/backups/preview?'+urlencode({'slot':1,'id':before['id'],'context':backups['context']}))
+        request(info,'api/backups',{'action':'restore','slot':1,'id':before['id'],'context':preview['context'],
+                                 'expected_current':preview['expected_current'],'confirm':'恢复槽位 1'},state['token'])
         assert json.loads(gzip.decompress((folder/'game.dat').read_bytes()))['hero']['HP']==20
         undo=request(info,'api/backups')['undo'][0]
-        request(info,'api/backups',{'action':'undo','slot':1,'id':undo['id'],'confirm':'撤回槽位 1'},state['token'])
+        undo_preview=request(info,'api/backups/undo-preview?'+urlencode({'slot':1,'id':undo['id'],'context':backups['context']}))
+        assert undo_preview['current']['hp']==20 and undo_preview['target']['hp']==5
+        request(info,'api/backups',{'action':'undo','slot':1,'id':undo['id'],'context':undo_preview['context'],
+                                 'expected_current':undo_preview['expected_current'],'confirm':'撤回槽位 1'},state['token'])
         assert expected=={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.iterdir()},'Undo failed to recover the complete previous directory'
         game['hero']['class']='\ud800';write(5)
         malformed_original={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.iterdir()}
-        request(info,'api/backups',{'action':'restore','slot':1,'id':before['id'],'confirm':'恢复槽位 1'},state['token'])
+        preview=request(info,'api/backups/preview?'+urlencode({'slot':1,'id':before['id'],'context':backups['context']}))
+        request(info,'api/backups',{'action':'restore','slot':1,'id':before['id'],'context':preview['context'],
+                                 'expected_current':preview['expected_current'],'confirm':'恢复槽位 1'},state['token'])
         unicode_undo=request(info,'api/backups')['undo'][0]
         assert unicode_undo['before']['class']=='\ud800'
-        request(info,'api/backups',{'action':'undo','slot':1,'id':unicode_undo['id'],'confirm':'撤回槽位 1'},state['token'])
+        undo_preview=request(info,'api/backups/undo-preview?'+urlencode({'slot':1,'id':unicode_undo['id'],'context':backups['context']}))
+        assert undo_preview['target']['class']=='\ud800'
+        request(info,'api/backups',{'action':'undo','slot':1,'id':unicode_undo['id'],'context':undo_preview['context'],
+                                 'expected_current':undo_preview['expected_current'],'confirm':'撤回槽位 1'},state['token'])
         assert malformed_original=={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in folder.iterdir()}
         assert request(info,'api/status')['data']['hero']['hp']==5
         request(info,'api/shutdown',{},state['token']);process.wait(timeout=10)
@@ -101,9 +120,10 @@ def verify(exe):
                 'chinese_space_path':True,'different_working_directory':True,'numeric_tables':True,
                 'automatic_changed_save_capture':True,'archives_verified':True,'save_bytes_unchanged':True,
                 'equipment_augmentation_rounding':True,'class_armor_original_tier':True,'upgrade_risk_conditions':True,
-                'controlled_restore_undo':True,'native_game_closed_check':True,
+                'controlled_restore_undo':True,'undo_preview_contract':True,'native_game_closed_check':True,
                 'monk_fractional_energy':True,'unicode_undo_api_roundtrip':True,
-                'normal_shutdown':True}
+                'normal_shutdown':True,'prebundled_native_helper':True,
+                'native_helper_sha256':native['sha256'],'native_gui_exercised':False}
         (work/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
         print(json.dumps(report,ensure_ascii=False))
         return report

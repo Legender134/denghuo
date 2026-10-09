@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from queue import Queue, Empty
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+import webbrowser
+from tkinter import ttk, simpledialog, messagebox
 
-from .play_state import PlayPreferences, SnapshotNotices, place, source_label
+from .play_state import SnapshotNotices, place, source_label
 from .quick_reference import detail_text, peek_reference
 from .windows import WindowsDisplay
 
@@ -122,212 +124,16 @@ class ReferenceWorker:
                 self.results.put((ticket, kind, None, '数值暂不可用，请核对参数；完整解压程序后重试。'))
 
 
-class NumericLookup:
-    def __init__(self, owner):
-        self.owner = owner
-        self.window = tk.Toplevel(owner.manager.root)
-        self.window.withdraw()
-        self.window.title('灯火 · 数值速查')
-        self.window.configure(bg=BG)
-        self.window.attributes('-topmost', True)
-        self.return_target = None
-        self.window.minsize(min(owner.pixels(340), self.window.winfo_screenwidth()-40),
-                            min(owner.pixels(300), self.window.winfo_screenheight()-80))
-        self.window.geometry(f'{min(owner.pixels(430), self.window.winfo_screenwidth()-40)}x'
-                             f'{min(owner.pixels(570), self.window.winfo_screenheight()-80)}')
-        self.window.protocol('WM_DELETE_WINDOW', self.hide)
-        self.window.bind('<Escape>', lambda _: self.hide())
-        self.window.bind('<MouseWheel>', self.scroll_parameters, add='+')
-        self.query = tk.StringVar()
-        self.entry = ttk.Entry(self.window, textvariable=self.query)
-        self.entry.pack(fill='x', padx=12, pady=(12, 6))
-        self.entry.bind('<KeyRelease>', self.schedule_search)
-        row = tk.Frame(self.window, bg=BG)
-        row.pack(fill='x', padx=12)
-        self.count = tk.Label(row, text='', bg=BG, fg=FG, anchor='w')
-        self.count.pack(side='left')
-        tk.Button(row, text='固定到游戏速查', command=self.pin, bg=BG, fg=GOLD, relief='flat').pack(side='right')
-        tk.Button(row, text='清除固定', command=self.clear_pin, bg=BG, fg=GOLD, relief='flat').pack(side='right')
-        self.list = tk.Listbox(self.window, height=4, bg=BG, fg=FG, selectbackground='#435944',
-                               activestyle='none', exportselection=False)
-        self.list.pack(fill='x', padx=12, pady=6)
-        self.list.bind('<<ListboxSelect>>', lambda _: self.select())
-        self.param_holder = tk.Frame(self.window, bg=BG)
-        self.param_holder.pack(fill='x', padx=12)
-        self.param_canvas = tk.Canvas(self.param_holder, bg=BG, height=0, highlightthickness=0)
-        self.param_scroll = ttk.Scrollbar(self.param_holder, command=self.param_canvas.yview)
-        self.param_canvas.configure(yscrollcommand=self.param_scroll.set)
-        self.param_scroll.pack(side='right', fill='y')
-        self.param_canvas.pack(side='left', fill='x', expand=True)
-        self.params = tk.Frame(self.param_canvas, bg=BG)
-        self.params_window = self.param_canvas.create_window(0, 0, window=self.params, anchor='nw')
-        self.params.bind('<Configure>', lambda _: self.param_canvas.configure(scrollregion=self.param_canvas.bbox('all')))
-        self.param_canvas.bind('<Configure>', lambda e: self.param_canvas.itemconfigure(self.params_window, width=e.width))
-        self.calculate_button = ttk.Button(self.window, text='按所填参数计算', command=self.calculate)
-        self.origin = tk.Label(self.window, text='百科参数为参考示例，请按游戏核对。', bg=BG, fg=GOLD,
-                               anchor='w', justify='left', wraplength=owner.pixels(395))
-        self.origin.pack(fill='x', padx=12, pady=5)
-        body = tk.Frame(self.window, bg=BG)
-        body.pack(fill='both', expand=True, padx=12, pady=(0, 12))
-        self.text = tk.Text(body, wrap='word', bg=BG, fg=FG, font=('Microsoft YaHei UI', 11),
-                            relief='flat', state='disabled', padx=6, pady=6)
-        scroll = ttk.Scrollbar(body, command=self.text.yview)
-        self.text.configure(yscrollcommand=scroll.set)
-        scroll.pack(side='right', fill='y')
-        self.text.pack(side='left', fill='both', expand=True)
-        self.rows, self.inputs, self.variables = [], [], {}
-        self.identity = None
-        self.rendered, self.calculated = None, None
-        self.dirty = False
-        self.submitted = None
-        self.pending = None
-        self.ticket = None
-        self.query.trace_add('write', lambda *_: self.schedule_search())
-        self.search()
-
-    def schedule_search(self, _=None):
-        if self.pending:
-            self.window.after_cancel(self.pending)
-        self.pending = self.window.after(180, self.search)
-
-    def scroll_parameters(self, event):
-        widget = event.widget
-        while widget is not None and widget is not self.window:
-            if widget is self.param_holder:
-                self.param_canvas.yview_scroll(-3 if event.delta > 0 else 3, 'units')
-                return 'break'
-            widget = getattr(widget, 'master', None)
-
-    def search(self):
-        self.pending = None
-        result = self.owner.manager.session.catalog.search(self.query.get()[:200], limit=30)
-        self.rows = result['entries']
-        self.list.delete(0, 'end')
-        for row in self.rows:
-            self.list.insert('end', row['name'] + ' · ' + row['type_label'])
-        self.count.configure(text=f"{result['total']}项 · 前{len(self.rows)}项")
-        self.identity, self.rendered, self.calculated = None, None, None
-        self.ticket = None
-        self.clear_params()
-        self.show_text('选择条目查看真实数值与适用条件。' if self.rows else '没有匹配条目，请换一个关键词。')
-
-    def show_text(self, text):
-        self.text.configure(state='normal')
-        self.text.delete('1.0', 'end')
-        self.text.insert('1.0', text)
-        self.text.configure(state='disabled')
-        self.text.yview_moveto(0)
-
-    def clear_params(self):
-        for child in self.params.winfo_children():
-            child.destroy()
-        self.inputs, self.variables = [], {}
-        self.dirty = False
-        self.param_canvas.configure(height=0)
-        self.calculate_button.pack_forget()
-
-    def select(self):
-        selected = self.list.curselection()
-        if not selected or selected[0] >= len(self.rows):
-            return
-        self.identity = self.rows[selected[0]]['id']
-        self.rendered, self.calculated = None, None
-        self.clear_params()
-        self.origin.configure(text='百科 · 默认参数是示例；可在下方修改后计算。')
-        self.ticket = self.owner.worker.request('detail', self.identity, {})
-        self.submitted = None
-        self.show_text('正在读取数值…')
-
-    def render(self, detail, error=None):
-        if self.submitted is not None and any(var.get().strip() != self.submitted.get(key)
-                                             for key, var in self.variables.items()):
-            self.changed()
-            return
-        if error:
-            self.rendered, self.calculated = None, None
-            self.show_text(error)
-            return
-        self.rendered = detail
-        self.inputs = detail['inputs']
-        if not self.variables:
-            for index, field in enumerate(self.inputs):
-                tk.Label(self.params, text=field['label'], bg=BG, fg=FG, anchor='w').grid(row=index, column=0, sticky='w')
-                value = tk.StringVar(value=str(field['value']))
-                self.variables[field['key']] = value
-                ttk.Entry(self.params, textvariable=value, width=9).grid(row=index, column=1, sticky='e', padx=(8, 0), pady=2)
-                value.trace_add('write', lambda *_: self.changed())
-            self.params.columnconfigure(0, weight=1)
-            self.params.update_idletasks()
-            self.param_canvas.configure(height=min(self.owner.pixels(150), self.params.winfo_reqheight()) if self.inputs else 0)
-            if self.inputs:
-                self.calculate_button.pack(fill='x', padx=12, pady=4, before=self.origin)
-        self.calculated = {f['key']: f['value'] for f in detail['inputs']}
-        self.dirty = False
-        self.origin.configure(text=f"百科 {detail['version']} · 按下方参数计算，未自动读取当前角色。")
-        self.show_text(detail_text(detail))
-
-    def changed(self):
-        self.dirty = True
-        self.origin.configure(text='参数已修改，旧结果不可继续参考；点击计算。')
-        self.show_text('参数已修改，请重新计算。')
-
-    def calculate(self):
-        if not self.identity:
-            return
-        from .values import integer_parameters
-        try:
-            raw = {key: var.get().strip() for key, var in self.variables.items()}
-            if any(not value for value in raw.values()):
-                raise ValueError('请填写全部显示的参数')
-            integer_parameters(raw)
-        except (ValueError, OverflowError) as exc:
-            self.origin.configure(text=str(exc))
-            return
-        self.ticket = self.owner.worker.request('detail', self.identity, raw)
-        self.submitted = dict(raw)
-        self.show_text('正在计算…')
-
-    def pin(self):
-        if not self.identity or self.dirty or self.rendered is None or self.calculated is None:
-            self.origin.configure(text='先选择条目并计算有效参数，再固定参考。')
-            return
-        self.owner.pinned = (self.identity, dict(self.calculated))
-        self.owner.peek_key = None
-        self.origin.configure(text='已固定；返回游戏后按速查键查看。固定的是百科参考。')
-
-    def clear_pin(self):
-        self.owner.pinned = None
-        self.owner.peek_key = None
-        self.origin.configure(text='已清除固定；游戏速查恢复装备与局势快照。')
-
-    def show(self):
-        target = self.owner.native.game()
-        if target or not self.visible():
-            self.return_target = target
-        self.window.deiconify()
-        self.window.lift()
-        self.entry.focus_force()  # Only explicit user lookup activates an input window.
-
-    def hide(self):
-        target, self.return_target = self.return_target, None
-        self.owner.native.return_to_game(target)
-        self.window.withdraw()
-
-    def visible(self):
-        return self.window.state() not in ('withdrawn', 'iconic')
-
-    def destroy(self):
-        if self.pending:
-            self.window.after_cancel(self.pending)
-        self.window.destroy()
+from .native_workspace import NumericLookup
 
 
 class PlayDisplay:
     def __init__(self, manager, native=None):
         self.manager = manager
         self.native = native or WindowsDisplay()
-        self.preferences = PlayPreferences(manager.session.config_path.parent)
+        self.preferences = manager.session.play_preferences
         self.state = self.preferences.values
+        self.applied_revision = self.preferences.generation
         self.worker = ReferenceWorker(manager.session)
         created = []
         try:
@@ -347,6 +153,7 @@ class PlayDisplay:
         self.game = None
         self.peek_open, self.peek_key, self.peek_data, self.peek_ticket = False, None, None, None
         self.pinned = None
+        self.pinned_note = ''
         self.editing, self.drag = False, None
         self.timer = None
         self.closed = False
@@ -362,15 +169,26 @@ class PlayDisplay:
 
     def update(self, snap):
         self.snap = snap
+        if self.lookup is not None:
+            if not self.lookup.query.get().strip() and self.lookup.workspace_revision != snap.get('workspace_revision'):
+                self.lookup.search(preserve_detail=True)
+            self.lookup.refresh_origin(snap)
         self.current_notice = self.notices.update(snap, time.monotonic(), self.state['notice_seconds'], self.state['alerts'])
 
     def in_game(self):
         return self.native.game() is not None
 
-    def save(self, patch):
-        self.preferences.update(patch)
+    def apply_preferences(self):
         self.state = self.preferences.values
+        self.applied_revision = self.preferences.generation
         self.peek_key = None
+        if not self.state['enabled']:
+            self.peek_open = False
+            self.hide()
+
+    def save(self, patch, expected_generation=None):
+        self.preferences.update(patch, expected_generation=expected_generation)
+        self.manager.apply_play_settings()
 
     def toggle(self):
         self.save({'enabled': not self.state['enabled']})
@@ -380,7 +198,7 @@ class PlayDisplay:
 
     def toggle_peek(self):
         if (self.lookup and self.lookup.visible()
-                and self.native.foreground() == self.native.hwnd(self.lookup.window)):
+                and self.lookup.foreground()):
             self.lookup.hide()
             return
         if not self.in_game():
@@ -446,12 +264,15 @@ class PlayDisplay:
                     self.lookup.render(result, error)
                 elif kind == 'peek' and ticket == self.peek_ticket:
                     self.peek_data = result or {'title': '速查暂不可用', 'source': '', 'text': error, 'note': ''}
+                    if self.pinned and self.pinned_note:
+                        self.peek_data['note'] = '\n'.join(filter(None, (self.peek_data.get('note'), '用户用途/假设备注（未验证）：'+self.pinned_note)))
         except Empty:
             pass
         try:
             self.game = self.native.game()
             if self.game and self.state['enabled']:
-                if self.manager.root.state() not in ('withdrawn', 'iconic'):
+                native_ui = getattr(self.manager, 'native_ui', None)
+                if native_ui and native_ui.host.visibility.get('manager'):
                     self.manager.hide_to_tray()
                 self.draw()
             else:
@@ -462,38 +283,70 @@ class PlayDisplay:
             self.hide()
         self.timer = self.manager.root.after(200, self.poll)
 
+    def show_pair(self, card, x, y, width, height, other_width, other_height, gap):
+        left, top, right, bottom = self.game['rect']
+        if height + gap + other_height > bottom - top:
+            return False
+        if self.state['anchor'].startswith('bottom'):
+            y = max(y, top + other_height + gap)
+            other_y = y - gap - other_height
+        else:
+            y = min(y, bottom - height - gap - other_height)
+            other_y = y + height + gap
+        other_x = x + width - other_width if self.state['anchor'].endswith('right') else x
+        other_x = max(left, min(other_x, right - other_width))
+        self.status.show(x, y, width, height)
+        card.show(other_x, other_y, other_width, other_height)
+        return True
+
+    def show_combined(self, card, width, height):
+        rect = self.game['rect']
+        if height > rect[3] - rect[1]:
+            card.hide()
+            return False
+        x, y = place(rect, width, height, self.state, self.manager.ui_scale)
+        self.status.hide()
+        card.show(x, y, width, height)
+        return True
+
     def draw(self):
         if not self.snap or not self.game:
             return
         rect = self.game['rect']
         scale = self.manager.ui_scale * self.state['font_scale']
-        short_source = ('局势不可读' if self.snap.get('error') or not self.snap.get('data') else
+        gap = round(7 * scale)
+        short_source = ('等待保存' if self.snap.get('waiting_for_save') else
+                        '局势不可读' if self.snap.get('error') or not self.snap.get('data') else
                         '手填局势' if self.snap['settings']['mode'] == 'manual' else
                         '旧快照' if self.snap['stale'] else '存档快照')
-        backup = self.snap.get('backup_health', {}).get('state')
+        health = self.snap.get('backup_health', {})
+        backup = health.get('state')
         backup_text = {'blocked': '备份受阻', 'paused': '备份暂停', 'protected': '保存已备份'}.get(backup, '等待保存')
+        if backup == 'waiting' and health.get('last_save_protected'):
+            backup_text = '上次保存已备份'
         heading = '拖动入口 · 双击锁定' if self.editing else f'灯火 · {short_source} · {backup_text}'
+        data = self.snap.get('data') or {}
+        hero = data.get('hero')
+        tip = next((tip for tip in data.get('tips', []) if tip['severity'] in ('critical', 'warning')), None)
+        summary = (f"HP {hero['hp']:g}/{hero['ht']:g} · " + (tip['title'] if tip else '暂无特殊风险')) if hero else ''
+        severity = tip['severity'] if tip and not self.snap['stale'] else 'info'
         width = min(self.pixels(290), rect[2] - rect[0])
-        width, height = self.status.content(heading, '', '', scale, width, self.state['opacity'])
+        width, height = self.status.content(heading, summary, '', scale, width, self.state['opacity'], severity)
         if height > rect[3] - rect[1]:
             self.hide()
             return
         x, y = place(rect, width, height, self.state, self.manager.ui_scale)
         if not self.drag:
             self.status.show(x, y, width, height, self.editing)
-        below = y + height + round(7 * scale)
         notice = self.current_notice
         if notice and time.monotonic() < self.notices.until and not self.editing and not self.peek_open:
-            hero = (self.snap.get('data') or {}).get('hero', {})
             caption = source_label(self.snap) + (f" · HP {hero['hp']:g}/{hero['ht']:g}" if hero else '')
             w, h = self.notice.content(notice['title'], notice['body'], caption, scale,
                                        min(self.pixels(340), rect[2] - rect[0]), self.state['opacity'], notice['severity'])
-            nx = min(x, max(rect[0], rect[2] - w))
-            ny = below if below + h <= rect[3] else max(rect[1], y - h - round(7 * scale))
-            if h <= rect[3] - rect[1]:
-                self.notice.show(nx, ny, w, h)
-            else:
-                self.notice.hide()
+            if not self.show_pair(self.notice, x, y, width, height, w, h, gap):
+                w, h = self.notice.content(heading+'\n'+notice['title'], notice['body'], caption, scale,
+                                           min(self.pixels(340), rect[2] - rect[0]), self.state['opacity'], notice['severity'])
+                self.show_combined(self.notice, w, h)
         else:
             self.notice.hide()
         if self.peek_open and not self.editing:
@@ -503,21 +356,39 @@ class PlayDisplay:
                 self.peek_ticket = self.worker.request('peek', self.snap, self.pinned)
             data = self.peek_data or {'title': '灯火速查', 'source': source_label(self.snap), 'text': '正在读取数值…', 'note': ''}
             source = data['source'] if self.pinned else source_label(self.snap)
-            footer = data['note'] + '\n' + self.state['bindings']['library'] + ' 完整数值 · ' + self.state['bindings']['quick'] + ' 收起'
+            controls = self.shortcut_label('library', '手册')+' · '+self.shortcut_label('quick', '收起')
+            footer = data['note']+'\n'+controls
             w, h = self.peek.content(data['title'] + '\n' + source, data['text'], footer, scale,
                                      min(self.pixels(380), rect[2] - rect[0]), self.state['opacity'])
-            if h > rect[3] - rect[1] - height - round(14 * scale):
+            if h + gap + height > rect[3] - rect[1]:
                 w, h = self.peek.content(data['title'], source + '\n该条目较长，打开手册查看完整数值与条件。',
-                                         self.state['bindings']['library'] + ' 手册 · ' + self.state['bindings']['quick'] + ' 收起',
-                                         scale, min(self.pixels(380), rect[2] - rect[0]), self.state['opacity'])
-            nx = min(x, max(rect[0], rect[2] - w))
-            ny = below if below + h <= rect[3] else max(rect[1], y - h - round(7 * scale))
-            if h <= rect[3] - rect[1]:
-                self.peek.show(nx, ny, w, h)
-            else:
-                self.peek.hide()
+                                         controls, scale, min(self.pixels(380), rect[2] - rect[0]), self.state['opacity'])
+            if not self.show_pair(self.peek, x, y, width, height, w, h, gap):
+                body = '\n'.join(part for part in (data['title'], source, summary, '打开手册查看完整数值与条件。') if part)
+                w, h = self.peek.content(heading, body,
+                                         controls, scale, min(self.pixels(380), rect[2] - rect[0]), self.state['opacity'])
+                if h > rect[3] - rect[1]:
+                    w, h = self.peek.content(heading, data['title']+'\n'+source+'\n打开手册查看完整数值与条件。',
+                                             controls, scale, min(self.pixels(380), rect[2] - rect[0]), self.state['opacity'])
+                if not self.show_combined(self.peek, w, h):
+                    for body in (summary, ''):
+                        sw, sh = self.status.content(heading, body, controls, scale, width, self.state['opacity'], severity)
+                        if sh <= rect[3] - rect[1]:
+                            sx, sy = place(rect, sw, sh, self.state, self.manager.ui_scale)
+                            self.status.show(sx, sy, sw, sh)
+                            break
+                    else:
+                        self.status.content(heading, summary, '', scale, width, self.state['opacity'], severity)
         else:
             self.peek.hide()
+
+    def shortcut_label(self, command, label):
+        caps = self.manager.session.ui_capabilities
+        chord = self.state['bindings'][command]
+        if (chord and caps.get('hotkeys_ready') and caps.get('bindings', {}).get(command) == chord
+                and chord not in caps.get('hotkeys_unavailable', [])):
+            return chord+' '+label
+        return label+'键未生效（管理窗口可打开）'
 
     def close(self):
         self.closed = True

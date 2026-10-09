@@ -1,6 +1,7 @@
 import copy
 import gzip
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,7 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
 from companion.engine import Catalog, PREFIX, analyze, known_map, strength_requirement
-from companion.saves import SaveError, read_bundle, read_slot, list_slots
+from companion.saves import SaveError, read_bundle, read_slot, list_slots, open_save
 from companion.service import Session, manual_game, validate_settings
 from companion.server import Server
 
@@ -170,7 +171,7 @@ class EngineTests(unittest.TestCase):
 
     def test_version_difference_notice_does_not_affect_manual(self):
         self.assertIn('833',analyze(game(version=833),self.catalog)['compatibility_warning'])
-        self.assertEqual(analyze(game(),self.catalog)['compatibility_warning'],'')
+        self.assertEqual(analyze(game(version=self.catalog.data['version_code']),self.catalog)['compatibility_warning'],'')
         self.assertEqual(analyze(manual_game({}),self.catalog)['compatibility_warning'],'')
 
     def test_manual_branch_and_all_supported_states(self):
@@ -337,6 +338,39 @@ class SaveTests(unittest.TestCase):
             self.assertEqual(read_bundle(path)["hero"]["HP"],20)
             self.assertEqual(original,hashlib.sha256(path.read_bytes()).hexdigest())
 
+    def test_read_handle_allows_game_to_replace_save(self):
+        path = self.write(game())
+        old = path.read_bytes()
+        replacement = path.with_suffix('.spdtmp')
+        new = gzip.compress(json.dumps(game(depth=7)).encode())
+        replacement.write_bytes(new)
+        with open_save(path) as stream:
+            # Match upstream FileUtils.bundleToFile: delete, then move .spdtmp.
+            path.unlink()
+            replacement.replace(path)
+            self.assertEqual(stream.read(), old)
+            with self.assertRaises(io.UnsupportedOperation):
+                stream.write(b'not writable')
+        self.assertEqual(path.read_bytes(), new)
+
+    def test_save_replaced_while_reader_is_open_is_rejected(self):
+        path = self.write(game())
+        replacement = path.with_suffix('.spdtmp')
+        replacement.write_bytes(gzip.compress(json.dumps(game(depth=7)).encode()))
+        def interleaved(file):
+            stream = open_save(file)
+            try:
+                file.unlink()
+                replacement.replace(file)
+            except BaseException:
+                stream.close()
+                raise
+            return stream
+        with patch('companion.saves.open_save', side_effect=interleaved):
+            with self.assertRaisesRegex(SaveError, '正在写入'):
+                read_bundle(path)
+        self.assertEqual(read_bundle(path)['depth'], 7)
+
     def test_one_byte_deleted_slot_is_not_valid_game(self):
         path=self.write(game());path.write_bytes(b" ")
         with self.assertRaises(SaveError):read_bundle(path)
@@ -465,7 +499,50 @@ class SaveTests(unittest.TestCase):
 
     def test_auto_reports_latest_unreadable_slot_and_recovers(self):
         session=self.session()
-        self.assertIn('尚未找到存档',session.error)
+        self.assertTrue(session.waiting_for_save)
+        self.assertEqual(session.error,'')
+
+    def test_auto_tolerates_save_replacement_gap_without_following_old_run(self):
+        old=self.write(game(depth=2),slot=1);os.utime(old,(100,100))
+        current=self.write(game(depth=7),slot=2)
+        session=self.session();self.assertEqual(session.active_slot,2)
+        original=current.read_bytes();current.unlink()
+        with patch('companion.service.time.monotonic',return_value=10):session.refresh()
+        self.assertEqual(session.active_slot,2)
+        self.assertTrue(session.waiting_for_save)
+        self.assertEqual(session.error,'')
+        current.write_bytes(original)
+        with patch('companion.service.time.monotonic',return_value=11):session.refresh()
+        self.assertEqual(session.active_slot,2)
+        self.assertEqual(session.data['depth'],7)
+        self.assertFalse(session.waiting_for_save)
+
+    def test_auto_reselects_latest_remaining_slot_after_run_is_removed(self):
+        old=self.write(game(depth=2),slot=1);os.utime(old,(100,100))
+        current=self.write(game(depth=7),slot=2)
+        session=self.session();current.unlink()
+        with patch('companion.service.time.monotonic',return_value=10):session.refresh()
+        with patch('companion.service.time.monotonic',return_value=12):session.refresh()
+        self.assertEqual(session.active_slot,1)
+        self.assertEqual(session.data['depth'],2)
+        self.assertEqual(session.error,'')
+        self.assertEqual(session.settings['slot'],'auto')
+
+    def test_auto_returns_to_ready_waiting_after_all_runs_are_removed(self):
+        current=self.write(game(),slot=2)
+        session=self.session()
+        session.backups.health_root=str(self.root)
+        session.backups.last_success=session.backups.last_saved=time.time()
+        current.unlink()
+        with patch('companion.service.time.monotonic',return_value=10):session.refresh()
+        with patch('companion.service.time.monotonic',return_value=12):session.refresh()
+        self.assertIsNone(session.active_slot)
+        self.assertIsNone(session.data)
+        self.assertTrue(session.waiting_for_save)
+        self.assertEqual(session.error,'')
+        self.assertEqual(session.backup_health()['state'],'waiting')
+        self.assertEqual(session.backup_health()['saved'],0)
+        self.assertEqual(session.backup_status()['health'],'waiting')
         old=self.write(game(),slot=2);old.write_bytes(b' ');os.utime(old,(100,100))
         broken=game();broken['hero']['STR']=None
         self.write(broken,slot=3);session.refresh()
@@ -477,6 +554,70 @@ class SaveTests(unittest.TestCase):
         self.assertEqual(session.active_slot,3)
         self.assertEqual(session.data['depth'],9)
         self.assertEqual(session.error,'')
+
+    def test_first_launch_waits_for_standard_root_and_connects_without_settings(self):
+        standard=self.root/'standard-saves'
+        config=self.root/'first-launch.json'
+        with patch.dict('companion.service.DEFAULTS',{'save_root':str(standard)}):
+            session=Session(config);session.refresh()
+        state=session.snapshot()
+        self.assertTrue(state['waiting_for_save'])
+        self.assertEqual(state['error'],'')
+        self.assertEqual(state['backup_health']['state'],'waiting')
+        self.assertEqual(session.backup_status()['health'],'waiting')
+        self.assertTrue(session.backups.enabled)
+        self.assertEqual(session.settings['slot'],'auto')
+        self.assertFalse(session.settings['reveal'])
+        self.assertFalse(session.settings['always_on_top'])
+        self.assertEqual(session.settings['stop_at'],'')
+        self.assertFalse(config.exists())
+        path=standard/'game4'/'game.dat'
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(game(depth=8)))
+        session.refresh()
+        self.assertFalse(session.waiting_for_save)
+        self.assertEqual(session.active_slot,4)
+        self.assertEqual(session.data['depth'],8)
+        self.assertFalse(config.exists())
+
+    def test_waiting_does_not_hide_backup_failures_or_pause(self):
+        session=self.session()
+        self.assertTrue(session.waiting_for_save)
+        session.backups.error='受控备份目录错误'
+        self.assertEqual(session.snapshot()['backup_health']['state'],'blocked')
+        session.backups.set_enabled(False)
+        self.assertEqual(session.snapshot()['backup_health']['state'],'paused')
+
+    def test_default_settings_can_be_saved_before_game_creates_its_directory(self):
+        standard=self.root/'not-created-yet'
+        config=self.root/'first-settings.json'
+        with patch.dict('companion.service.DEFAULTS',{'save_root':str(standard)}):
+            session=Session(config);session.refresh()
+            session.update_settings({'save_root':str(standard),'slot':'auto','always_on_top':True})
+            self.assertTrue(session.waiting_for_save)
+            self.assertEqual(session.error,'')
+            self.assertTrue(session.settings['always_on_top'])
+            self.assertFalse(standard.exists())
+            self.assertEqual(json.loads(config.read_text(encoding='utf-8'))['save_root'],str(standard))
+            with self.assertRaisesRegex(ValueError,'目录不存在'):
+                session.update_settings({'save_root':str(self.root/'missing-custom-directory')})
+            standard.write_text('not a directory')
+            with self.assertRaisesRegex(ValueError,'目录不存在'):
+                session.update_settings({'save_root':str(standard)})
+
+    def test_manual_input_does_not_leave_next_launch_waiting_for_form(self):
+        self.write(game(depth=7),slot=3)
+        session=self.session()
+        session.update_settings({'slot':3,'reveal':True,'always_on_top':True})
+        session.update_manual({'hp':4,'ht':30})
+        config=session.config_path.read_bytes()
+        restarted=Session(session.config_path);restarted.refresh()
+        self.assertEqual(restarted.settings['mode'],'save')
+        self.assertEqual(restarted.settings['slot'],3)
+        self.assertTrue(restarted.settings['reveal'])
+        self.assertTrue(restarted.settings['always_on_top'])
+        self.assertEqual(restarted.data['depth'],7)
+        self.assertEqual(session.config_path.read_bytes(),config)
 
     def test_invalid_floor_does_not_replace_readable_auto_slot(self):
         old=self.write(game(depth=7),slot=2);os.utime(old,(100,100))
@@ -723,6 +864,150 @@ class SaveTests(unittest.TestCase):
         self.assertEqual(session.settings['mode'],'save')
 
 
+class BackupContextTests(unittest.TestCase):
+    def setUp(self):
+        self.temp=tempfile.TemporaryDirectory(prefix='lamp-backup-context-test-')
+        self.addCleanup(self.temp.cleanup)
+        self.base=Path(self.temp.name)
+        self.a,self.b=self.base/'A',self.base/'B'
+        self.write(self.a,20);self.write(self.b,20)
+        self.session=Session(self.base/'settings.json')
+        self.session.update_settings({'save_root':str(self.a)})
+        self.session.backups.closed_check=lambda:None
+        self.session.backup_action({'action':'capture'})
+        self.row=self.session.backup_status()['history'][0]
+
+    def write(self,root,hp):
+        folder=root/'game1';folder.mkdir(parents=True,exist_ok=True)
+        saved=game(depth=2);saved['hero']['HP']=hp
+        (folder/'game.dat').write_text(json.dumps(saved),encoding='utf-8')
+        level={'__className':PREFIX+'levels.SewerLevel','width':4,'height':4,'version':920,
+               'map':[4]*16,'visited':[False]*16,'mapped':[False]*16}
+        (folder/'depth2.dat').write_text(json.dumps({'level':level}),encoding='utf-8')
+
+    def bytes(self):
+        return {p.relative_to(self.base).as_posix():p.read_bytes() for p in self.base.rglob('*') if p.is_file()}
+
+    def test_old_context_cannot_operate_on_new_directory_or_after_return_and_restart(self):
+        session=self.session;context=session.backup_context
+        preview=session.backup_transfer('preview',{**self.row,'context':context})
+        raw=session.backup_transfer('export',{**self.row,'context':context})[0]
+        session.update_settings({'save_root':str(self.b)})
+        session.backup_action({'action':'capture'})
+        self.assertEqual(session.backup_status()['history'][0]['id'],self.row['id'])
+        self.write(self.a,25);self.write(self.b,5)
+        before=self.bytes()
+        for action in ('restore','undo','manage','remove','rejoin','validate','repair_timeline'):
+            with self.subTest(action=action),self.assertRaisesRegex(ValueError,'连接已变化'):
+                session.backup_action({**self.row,'action':action,'context':context,
+                                       'expected_current':preview['expected_current'],'confirm':'恢复槽位 1'})
+            self.assertEqual(self.bytes(),before)
+        for action in ('preview','export'):
+            with self.subTest(action=action),self.assertRaisesRegex(ValueError,'连接已变化'):
+                session.backup_transfer(action,{**self.row,'context':context})
+        with self.assertRaisesRegex(ValueError,'连接已变化'):
+            session.backup_transfer('import',raw,context=context)
+        with self.assertRaisesRegex(ValueError,'连接已变化'):session.backup_status(context)
+        self.assertEqual(self.bytes(),before)
+        session.update_settings({'save_root':str(self.a)})
+        before=self.bytes()
+        with self.assertRaisesRegex(ValueError,'连接已变化'):
+            session.backup_transfer('preview',{**self.row,'context':context})
+        restarted=Session(session.config_path)
+        with self.assertRaisesRegex(ValueError,'连接已变化'):
+            restarted.backup_transfer('export',{**self.row,'context':session.backup_context})
+        self.assertEqual(self.bytes(),before)
+
+    def test_restore_requires_preview_and_rejects_changes_without_writing(self):
+        session=self.session
+        payload={**self.row,'context':session.backup_context,'action':'restore','confirm':'恢复槽位 1'}
+        with self.assertRaisesRegex(ValueError,'先重新预览'):session.backup_action(payload)
+        preview=session.backup_transfer('preview',payload)
+        self.write(self.a,5);before=self.bytes()
+        with self.assertRaisesRegex(ValueError,'变化'):
+            session.backup_action({**payload,'expected_current':preview['expected_current']})
+        self.assertEqual(self.bytes(),before)
+        updated=session.backup_transfer('preview',payload)
+        session.backup_action({**payload,'expected_current':updated['expected_current']})
+        self.assertEqual(read_slot(self.a,1)[0]['hero']['HP'],20)
+        record=session.backup_status()['undo'][0]
+        undo_preview=session.backup_transfer('undo-preview',{**record,'context':session.backup_context})
+        session.backup_action({'action':'undo','slot':1,'id':record['id'],'context':session.backup_context,
+                               'expected_current':undo_preview['expected_current'],'confirm':'撤回槽位 1'})
+        self.assertEqual(read_slot(self.a,1)[0]['hero']['HP'],5)
+
+    def prepare_undo(self):
+        self.write(self.a,5)
+        nested=self.a/'game1'/'nested';nested.mkdir()
+        (nested/'original.bin').write_bytes(b'complete original slot\x00\xff')
+        original={p.relative_to(self.a/'game1').as_posix():p.read_bytes()
+                  for p in (self.a/'game1').rglob('*') if p.is_file()}
+        payload={**self.row,'context':self.session.backup_context,'action':'restore','confirm':'恢复槽位 1'}
+        preview=self.session.backup_transfer('preview',payload)
+        self.session.backup_action({**payload,'expected_current':preview['expected_current']})
+        record=self.session.backup_status()['undo'][0]
+        return {'action':'undo','slot':1,'id':record['id'],'context':self.session.backup_context,
+                'confirm':'撤回槽位 1'},original
+
+    def test_undo_requires_preview_and_rejects_full_slot_changes_without_writing(self):
+        payload,original=self.prepare_undo();session=self.session
+        before=self.bytes()
+        with self.assertRaisesRegex(ValueError,'先重新预览'):session.backup_action(payload)
+        self.assertEqual(self.bytes(),before)
+        with self.assertRaisesRegex(ValueError,'连接已变化'):
+            session.backup_transfer('undo-preview',{k:v for k,v in payload.items() if k!='context'})
+        self.assertEqual(self.bytes(),before)
+        preview=session.backup_transfer('undo-preview',payload)
+        self.assertEqual(preview['context'],session.backup_context)
+        self.assertEqual(preview['current']['hp'],20);self.assertEqual(preview['target']['hp'],5)
+        self.assertTrue(preview['original_existed']);self.assertEqual(len(preview['expected_current']),64)
+        self.assertEqual(self.bytes(),before,'preview must be read-only')
+        extra=self.a/'game1'/'nested';extra.mkdir()
+        (extra/'after-preview.bin').write_bytes(b'new bytes outside game.dat\x00\xff')
+        before=self.bytes()
+        with self.assertRaisesRegex(ValueError,'当前进度已变化'):
+            session.backup_action({**payload,'expected_current':preview['expected_current']})
+        self.assertEqual(self.bytes(),before,'a stale undo must preserve current, original, journals and archives')
+        current={p.relative_to(self.a/'game1').as_posix():p.read_bytes()
+                 for p in (self.a/'game1').rglob('*') if p.is_file()}
+        fresh=session.backup_transfer('undo-preview',payload)
+        self.assertNotEqual(fresh['expected_current'],preview['expected_current'])
+        session.backup_action({**payload,'expected_current':fresh['expected_current']})
+        restored={p.relative_to(self.a/'game1').as_posix():p.read_bytes()
+                  for p in (self.a/'game1').rglob('*') if p.is_file()}
+        self.assertEqual(restored,original)
+        preserved=[{p.relative_to(folder).as_posix():p.read_bytes() for p in folder.rglob('*') if p.is_file()}
+                   for folder in self.a.glob('.denghuo-before-1-*') if folder.is_dir()]
+        self.assertIn(current,preserved,'the complete current slot must also survive successful undo')
+
+    def test_undo_preview_null_token_can_restore_original_to_currently_empty_slot(self):
+        payload,original=self.prepare_undo()
+        (self.a/'game1').rename(self.a/'detached-current-for-test')
+        preview=self.session.backup_transfer('undo-preview',payload)
+        self.assertIsNone(preview['expected_current']);self.assertTrue(preview['current']['empty'])
+        self.assertTrue(preview['original_existed']);self.assertEqual(preview['target']['hp'],5)
+        self.session.backup_action({**payload,'expected_current':None})
+        self.assertEqual({p.relative_to(self.a/'game1').as_posix():p.read_bytes()
+                          for p in (self.a/'game1').rglob('*') if p.is_file()},original)
+
+    def test_undo_preview_and_confirmation_expire_when_root_changes_and_returns(self):
+        payload,original=self.prepare_undo();session=self.session
+        preview=session.backup_transfer('undo-preview',payload)
+        for root in (self.b,self.a):
+            session.update_settings({'save_root':str(root)})
+            before=self.bytes()
+            with self.assertRaisesRegex(ValueError,'连接已变化'):
+                session.backup_transfer('undo-preview',payload)
+            with self.assertRaisesRegex(ValueError,'连接已变化'):
+                session.backup_action({**payload,'expected_current':preview['expected_current']})
+            self.assertEqual(self.bytes(),before)
+        fresh_payload={**payload,'context':session.backup_context}
+        fresh=session.backup_transfer('undo-preview',fresh_payload)
+        session.backup_action({**fresh_payload,'expected_current':fresh['expected_current']})
+        self.assertEqual({p.relative_to(self.a/'game1').as_posix():p.read_bytes()
+                          for p in (self.a/'game1').rglob('*') if p.is_file()},original)
+
+
 class ApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -744,7 +1029,7 @@ class ApiTests(unittest.TestCase):
     def test_player_values_api_and_parameter_errors(self):
         with urlopen(self.url+'/api/values?id=items.potions.potionofhealing&max_hp=100&hp=10') as response:
             detail=json.load(response)
-        self.assertEqual(detail['version'],'4.0.1')
+        self.assertEqual(detail['version'],'4.0.2')
         values={v['label']:v['value'] for b in detail['blocks'] for v in b.get('values',[])}
         self.assertEqual(values['最终实际恢复'],'90')
         self.assertNotIn('sections',detail)
@@ -756,6 +1041,18 @@ class ApiTests(unittest.TestCase):
         req=Request(self.url+'/api/settings',data=b'{"reveal":true}',headers={'Content-Type':'application/json'})
         with self.assertRaises(HTTPError) as error:urlopen(req)
         self.assertEqual(error.exception.code,403)
+
+    def test_repeated_launch_routes_to_native_manager(self):
+        self.session.manager_available=True
+        try:
+            req=Request(self.url+'/api/panel',data=b'{"action":"show"}',headers={
+                'Content-Type':'application/json','X-Companion-Token':self.server.token,'Origin':self.url})
+            with patch.object(self.session.panel,'request') as panel:
+                with urlopen(req) as response:self.assertEqual(response.status,200)
+            self.assertEqual(self.session.manager_commands.get_nowait(),('show',None))
+            panel.assert_not_called()
+        finally:
+            self.session.manager_available=False
 
     def test_authorized_manual_roundtrip(self):
         req=Request(self.url+'/api/manual',data=json.dumps({'hp':3,'ht':40,'buffs':['Burning']}).encode(),headers={'Content-Type':'application/json','X-Companion-Token':self.server.token,'Origin':self.url})
@@ -802,7 +1099,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(caught.exception.code,400)
 
     def test_backup_preview_and_export_reject_unknown_identity(self):
-        for path in ('preview','export'):
+        for path in ('preview','undo-preview','export'):
             with self.subTest(path=path),self.assertRaises(HTTPError) as caught:
                 urlopen(self.url+f'/api/backups/{path}?slot=1&id=../bad')
             self.assertEqual(caught.exception.code,400)
@@ -821,14 +1118,15 @@ class ApiTests(unittest.TestCase):
             session.backup_action({'action':'capture'})
             row=session.backup_status()['history'][0]
             with patch.object(self.server,'session',session):
-                query=f"?slot=1&id={row['id']}"
+                query=f"?slot=1&id={row['id']}&context={session.backup_context}"
                 with urlopen(self.url+'/api/backups/preview'+query) as response:preview=json.load(response)
                 self.assertEqual(preview['current']['hp'],preview['target']['hp'])
                 with urlopen(self.url+'/api/backups/export'+query) as response:
                     raw=response.read();self.assertEqual(response.headers['Content-Type'],'application/zip')
                     self.assertIn('.zip',response.headers['Content-Disposition'])
                 request=Request(self.url+'/api/backups/import',data=raw,headers={'Content-Type':'application/zip',
-                                'X-Companion-Token':self.server.token,'Origin':self.url})
+                                'X-Companion-Token':self.server.token,'Origin':self.url,
+                                'X-Companion-Backup-Context':session.backup_context})
                 with urlopen(request) as response:self.assertTrue(json.load(response)['ok'])
                 self.assertEqual(len(session.backup_status()['history']),1)
 
@@ -850,12 +1148,84 @@ class ApiTests(unittest.TestCase):
                     request=Request(self.url+'/api/backups',data=json.dumps(payload).encode(),
                                     headers={'Content-Type':'application/json','X-Companion-Token':self.server.token,'Origin':self.url})
                     with urlopen(request) as response:return json.load(response)
-                self.assertTrue(post({'action':'restore','slot':1,'id':row['id'],'confirm':'恢复槽位 1'})['ok'])
+                preview=session.backup_transfer('preview',{**row,'context':session.backup_context})
+                self.assertTrue(post({'action':'restore','slot':1,'id':row['id'],'context':session.backup_context,
+                                      'expected_current':preview['expected_current'],'confirm':'恢复槽位 1'})['ok'])
                 with urlopen(self.url+'/api/backups') as response:record=json.load(response)['undo'][0]
                 self.assertEqual(record['before']['class'],'\ud800')
-                self.assertTrue(post({'action':'undo','slot':1,'id':record['id'],'confirm':'撤回槽位 1'})['ok'])
+                with urlopen(self.url+f"/api/backups/undo-preview?slot=1&id={record['id']}&context={session.backup_context}") as response:
+                    undo_preview=json.load(response)
+                self.assertEqual(undo_preview['target']['class'],'\ud800')
+                self.assertTrue(post({'action':'undo','slot':1,'id':record['id'],'context':session.backup_context,
+                                      'expected_current':undo_preview['expected_current'],'confirm':'撤回槽位 1'})['ok'])
                 self.assertEqual({p.name:p.read_bytes() for p in folder.iterdir()},original)
                 with urlopen(self.url+'/api/status') as response:self.assertEqual(json.load(response)['data']['hero']['hp'],2)
+
+    def test_http_undo_requires_fresh_full_slot_preview_and_current_root_context(self):
+        with tempfile.TemporaryDirectory(prefix='denghuo-api-undo-preview-') as directory:
+            base=Path(directory);root=base/'A';folder=root/'game1';folder.mkdir(parents=True)
+            (base/'B').mkdir()
+            saved=game(depth=2);(folder/'game.dat').write_text(json.dumps(saved),encoding='utf-8')
+            level={'__className':PREFIX+'levels.SewerLevel','version':920,'width':4,'height':4,
+                   'map':[4]*16,'visited':[False]*16,'mapped':[False]*16}
+            (folder/'depth2.dat').write_text(json.dumps({'level':level}),encoding='utf-8')
+            session=Session(base/'config.json');session.update_settings({'save_root':str(root),'slot':1})
+            session.backups.closed_check=lambda:None
+            session.backup_action({'action':'capture'});row=session.backup_status()['history'][0]
+            saved['hero']['HP']=5;(folder/'game.dat').write_text(json.dumps(saved),encoding='utf-8')
+            (folder/'original.bin').write_bytes(b'original complete slot\x00\xff')
+            original={p.name:p.read_bytes() for p in folder.iterdir()}
+            def all_bytes():
+                return {p.relative_to(base).as_posix():p.read_bytes() for p in base.rglob('*') if p.is_file()}
+            with patch.object(self.server,'session',session):
+                def post(payload):
+                    request=Request(self.url+'/api/backups',data=json.dumps(payload).encode(),headers={
+                        'Content-Type':'application/json','X-Companion-Token':self.server.token,'Origin':self.url})
+                    with urlopen(request) as response:return json.load(response)
+                restore=session.backup_transfer('preview',{**row,'context':session.backup_context})
+                self.assertTrue(post({'action':'restore','slot':1,'id':row['id'],'context':restore['context'],
+                                     'expected_current':restore['expected_current'],'confirm':'恢复槽位 1'})['ok'])
+                with urlopen(self.url+'/api/backups') as response:record=json.load(response)['undo'][0]
+                payload={'action':'undo','slot':1,'id':record['id'],'context':session.backup_context,'confirm':'撤回槽位 1'}
+                def preview(context):
+                    query=f"?slot=1&id={record['id']}"+(f'&context={context}' if context is not None else '')
+                    with urlopen(self.url+'/api/backups/undo-preview'+query) as response:return json.load(response)
+                before=all_bytes()
+                with self.assertRaises(HTTPError) as caught:post(payload)
+                self.assertEqual(caught.exception.code,400)
+                self.assertIn('先重新预览',json.load(caught.exception)['error'])
+                with self.assertRaises(HTTPError) as caught:preview(None)
+                self.assertEqual(caught.exception.code,400)
+                self.assertIn('连接已变化',json.load(caught.exception)['error'])
+                self.assertEqual(all_bytes(),before)
+                first=preview(payload['context'])
+                self.assertEqual(first['current']['hp'],20);self.assertEqual(first['target']['hp'],5)
+                self.assertTrue(first['original_existed']);self.assertEqual(first['context'],payload['context'])
+                self.assertEqual(all_bytes(),before,'HTTP preview must not alter any files')
+                (folder/'new-after-preview.bin').write_bytes(b'new current sidecar\x00\xff')
+                before=all_bytes()
+                with self.assertRaises(HTTPError) as caught:post({**payload,'expected_current':first['expected_current']})
+                self.assertEqual(caught.exception.code,400)
+                self.assertIn('当前进度已变化',json.load(caught.exception)['error'])
+                self.assertEqual(all_bytes(),before)
+                for changed_root in (base/'B',root):
+                    session.update_settings({'save_root':str(changed_root)})
+                    before=all_bytes()
+                    with self.assertRaises(HTTPError) as caught:preview(payload['context'])
+                    self.assertEqual(caught.exception.code,400)
+                    self.assertIn('连接已变化',json.load(caught.exception)['error'])
+                    with self.assertRaises(HTTPError) as caught:post({**payload,'expected_current':first['expected_current']})
+                    self.assertEqual(caught.exception.code,400)
+                    self.assertIn('连接已变化',json.load(caught.exception)['error'])
+                    self.assertEqual(all_bytes(),before)
+                fresh=preview(session.backup_context)
+                self.assertNotEqual(fresh['expected_current'],first['expected_current'])
+                current={p.name:p.read_bytes() for p in folder.iterdir()}
+                self.assertTrue(post({**payload,'context':fresh['context'],'expected_current':fresh['expected_current']})['ok'])
+                self.assertEqual({p.name:p.read_bytes() for p in folder.iterdir()},original)
+                preserved=[{p.relative_to(preserved).as_posix():p.read_bytes() for p in preserved.rglob('*') if p.is_file()}
+                           for preserved in root.glob('.denghuo-before-1-*') if preserved.is_dir()]
+                self.assertIn(current,preserved)
 
 
 if __name__=='__main__':unittest.main()

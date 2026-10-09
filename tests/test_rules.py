@@ -70,12 +70,12 @@ class ReferenceTests(unittest.TestCase):
         data=self.rules.data;coverage=data['coverage']
         self.assertEqual(coverage['file_count'],1301)
         self.assertEqual(coverage['class_count'],2069)
-        self.assertEqual(coverage['numeric_literals'],36295)
+        self.assertEqual(coverage['numeric_literals'],36299)
         self.assertEqual(coverage['uncovered_literals'],0)
         self.assertEqual(coverage['fallback_literals'],0)
         self.assertEqual(len({r['path'] for r in coverage['files']}),1301)
-        self.assertEqual(sum(r['numeric_literals'] for r in coverage['files']),36295)
-        self.assertEqual(data['entry_coverage']['indexed'],948)
+        self.assertEqual(sum(r['numeric_literals'] for r in coverage['files']),36299)
+        self.assertEqual(data['entry_coverage']['indexed'],949)
         self.assertEqual(len(data['entry_coverage']['legacy']),6)
         for entry in self.catalog.entries:
             for ref in entry['numeric_refs']:

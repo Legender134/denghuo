@@ -1,0 +1,340 @@
+import gzip
+import hashlib
+from io import BytesIO
+import json
+import os
+from pathlib import Path
+import tempfile
+import threading
+import time
+import unittest
+from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+from zipfile import ZipFile
+
+from companion import migration
+from companion.backups import BackupManager
+from companion.server import Server
+from companion.service import Session
+
+
+class MigrationTests(unittest.TestCase):
+    def setUp(self):
+        # Preserve synthetic originals for review; no real profile is consulted.
+        self.base = Path(tempfile.mkdtemp(prefix='denghuo-migration-test-'))
+        self.source = self.session('source')
+        self.target = self.session('target')
+        self.capture(self.source, 5, 1)
+        self.capture(self.source, 12, 2)
+        self.plan = self.source.knowledge.save('保命方案', 'manual', None,
+            {'class': 'MAGE', 'hp': 5, 'ht': 30, 'level': 2, 'strength': 10, 'depth': 2,
+             'branch': 0, 'healing': 1, 'hunger': None, 'buffs': [], 'challenges': 0}, note='回档前核对')
+        self.favorite = self.source.catalog.entries[0]['id']
+        self.source.knowledge.favorite(self.favorite, True)
+        self.source.play_preferences.update({'font_scale': 1.3, 'alerts': False, 'offset_x': 321})
+        self.capture(self.target, 22, 1)
+        self.original_game = self.game_bytes(self.target)
+
+    def session(self, name):
+        profile, root = self.base / name / 'profile', self.base / name / 'saves'
+        profile.mkdir(parents=True); root.mkdir()
+        session = Session(config_path=profile / 'settings.json')
+        session.update_settings({'save_root': str(root), 'slot': 1})
+        session.backups = BackupManager(profile / 'backups', clock=lambda: 1700010000, closed_check=lambda: None)
+        return session
+
+    def capture(self, session, hp, slot):
+        folder = Path(session.settings['save_root']) / f'game{slot}'
+        folder.mkdir(exist_ok=True)
+        game = {'depth': 2, 'version': 920, 'seed': slot, 'generated_levels': [2],
+                'hero': {'class': 'MAGE', 'HP': hp, 'HT': 30, 'STR': 10, 'lvl': 2, 'inventory': [], 'buffs': []}}
+        level = {'__className': 'com.shatteredpixel.shatteredpixeldungeon.levels.SewerLevel', 'version': 920,
+                 'width': 4, 'height': 4, 'map': [4]*16, 'visited': [False]*16, 'mapped': [False]*16}
+        for name, data in [('game.dat', game), ('depth2.dat', {'level': level})]:
+            path = folder / name
+            path.write_bytes(gzip.compress(json.dumps(data).encode(), mtime=0))
+            os.utime(path, (1700000000 + slot, 1700000000 + slot))
+        return session.backups.capture(session.settings['save_root'], slot)
+
+    def game_bytes(self, session):
+        root = Path(session.settings['save_root'])
+        return {str(path.relative_to(root)): path.read_bytes() for path in root.rglob('*') if path.is_file()}
+
+    def bundle(self, selected=None):
+        selected = selected if selected is not None else [row['key'] for row in migration.status(self.source)['rows'] if row['valid']]
+        preview = migration.export_preview(self.source, {'selected': selected})
+        raw, _ = migration.export_bundle(self.source, {'selected': selected, 'expected': preview['expected']})
+        return raw
+
+    def apply(self, raw, selected=None):
+        preview = migration.import_preview(self.target, raw)
+        selected = selected if selected is not None else [row['key'] for row in preview['rows'] if row['valid']]
+        return migration.import_bundle(self.target, raw, {'selected': selected, 'expected': preview['expected'], 'confirmed': True})
+
+    def rewrite(self, raw, change):
+        with ZipFile(BytesIO(raw)) as archive:
+            contents = {name: archive.read(name) for name in archive.namelist()}
+        manifest = migration.read_json(contents[migration.INDEX])
+        change(contents, manifest)
+        for name in list(manifest['members']):
+            manifest['members'][name] = {'bytes': len(contents[name]), 'sha256': migration.checksum(contents[name])}
+        contents[migration.INDEX] = migration.encode(manifest)
+        return migration._zip(contents)
+
+    def test_saved_raw_drafts_select_preview_redact_import_and_preserve_conflict_without_applying(self):
+        raw_form = {'format': 1, 'numeric': {'hp': '不是数字', 'level': '-', 'custom': '  原始空白  '},
+                    'open_plan': {'name': '原名称', 'note': 'C:\\private\\save token=SECRET Authorization: Bearer AUTH'},
+                    'character': {'strength': '尚未确认'}}
+        saved = self.source.exit_drafts.save('web-12345678', 'workspace', '原始退出草稿', raw_form)
+        identity = saved['id']; source_path = self.source.exit_drafts.directory / (identity + '.json')
+        source_raw = source_path.read_bytes(); source_record = self.source.exit_drafts.load(identity)
+        target_path = self.target.exit_drafts.directory / (identity + '.json')
+        target_path.parent.mkdir(); local_record = {**source_record, 'draft': {'local': '本机未完成输入'}}
+        target_path.write_bytes(migration.encode(local_record)); local_raw = target_path.read_bytes()
+        raw = self.bundle(['draft:' + identity])
+        with ZipFile(BytesIO(raw)) as archive:
+            self.assertEqual(set(archive.namelist()), {migration.INDEX, 'exit-drafts.json'})
+            portable = migration.read_json(archive.read('exit-drafts.json'))['records'][0]
+            self.assertEqual(portable['draft']['numeric'], raw_form['numeric'])
+            self.assertNotIn('SECRET', archive.read('exit-drafts.json').decode())
+            self.assertNotIn('AUTH', portable['draft']['open_plan']['note'])
+            self.assertNotIn('C:\\private', portable['draft']['open_plan']['note'])
+        with patch('companion.migration.canonical_plan', side_effect=AssertionError('must not calculate raw forms')):
+            preview = migration.import_preview(self.target, raw)
+            self.assertIn('保留双方', preview['rows'][0]['detail'])
+            self.assertEqual(preview['rows'][0]['content'], portable)
+            result = self.apply(raw)
+        self.assertEqual(result['success_count'], 1); self.assertFalse(result['restored'])
+        self.assertFalse(result['results'][0]['calculated']); self.assertFalse(result['results'][0]['applied'])
+        self.assertEqual(len(self.target.exit_drafts.list()), 2)
+        self.assertEqual(target_path.read_bytes(), local_raw); self.assertEqual(source_path.read_bytes(), source_raw)
+        self.assertEqual(self.game_bytes(self.target), self.original_game); self.assertIsNone(self.target.data)
+        repeated = self.apply(raw); self.assertEqual(len(self.target.exit_drafts.list()), 2)
+        self.assertEqual(repeated['results'][0]['id'], result['results'][0]['id'])
+
+    def test_draft_import_rejects_stale_target_secrets_structure_and_excess_count(self):
+        saved = self.source.exit_drafts.save('web-12345678', 'workspace', '原始草稿', {'raw': '无效数值'})
+        raw = self.bundle(['draft:' + saved['id']]); preview = migration.import_preview(self.target, raw)
+        self.target.exit_drafts.save('web-87654321', 'workspace', '新增本机草稿', {'raw': '本机'})
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            migration.import_bundle(self.target, raw, {'selected': ['draft:' + saved['id']], 'expected': preview['expected'], 'confirmed': True})
+        for change in ('secret', 'depth', 'count', 'size', 'format'):
+            def mutate(contents, manifest):
+                value = migration.read_json(contents['exit-drafts.json'])
+                if change == 'secret': value['records'][0]['draft']['access_token'] = 'forbidden'
+                if change == 'depth':
+                    nested = {}; value['records'][0]['draft'] = nested
+                    for _ in range(22): nested['nested'] = {}; nested = nested['nested']
+                if change == 'count': value['records'] *= 201
+                if change == 'size': value['records'][0]['draft']['raw'] = 'x' * 65536
+                if change == 'format': value['records'][0]['format'] = 900
+                contents['exit-drafts.json'] = migration.encode(value)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                migration.import_preview(self.target, self.rewrite(raw, mutate))
+        self.assertEqual(len(self.target.exit_drafts.list()), 1)
+        self.assertEqual(self.game_bytes(self.target), self.original_game)
+
+    def test_saved_character_conditions_migrate_as_reusable_plan(self):
+        from companion.character_scene import empty_scene
+        plan = self.source.knowledge.save('共享角色条件', 'character', None, empty_scene(13),
+            source={'kind': 'saved_reference', 'mode': 'manual', 'fields': {'base_strength': '明确手填'}})
+        raw = self.bundle(['plan:' + plan['id']]); preview = migration.import_preview(self.target, raw)
+        self.assertEqual(preview['rows'][0]['content']['kind'], 'character')
+        self.assertTrue(preview['rows'][0]['available'])
+        self.assertEqual(self.apply(raw)['success_count'], 1)
+        imported = self.target.knowledge.reopen(plan['id'])
+        self.assertEqual(imported['result']['strength']['effective'], 13)
+        self.assertEqual(imported['plan']['origin']['fields']['base_strength'], '明确手填')
+
+    def test_full_bundle_preview_partial_then_full_no_live_saves_or_old_root(self):
+        raw = self.bundle()
+        with ZipFile(BytesIO(raw)) as archive:
+            for name in archive.namelist():
+                self.assertNotIn(self.source.settings['save_root'].encode(), archive.read(name))
+            preferences = migration.read_json(archive.read('preferences.json'))
+            self.assertNotIn('anchor', preferences)
+            self.assertNotIn('offset_x', preferences)
+        before = self.game_bytes(self.source)
+        preview = migration.import_preview(self.target, raw)
+        self.assertEqual(preview['save_root'], self.target.settings['save_root'])
+        self.assertIn('profile', preview['rows'][0]['target'])
+        selected = [row['key'] for row in preview['rows'] if row['group'] == 'plan']
+        result = migration.import_bundle(self.target, raw, {'selected': selected, 'expected': preview['expected'], 'confirmed': True})
+        self.assertEqual(result['success_count'], 1)
+        self.assertEqual(len(self.target.backups.history(self.target.settings['save_root'])), 1)
+        result = self.apply(raw)
+        self.assertEqual(result['failure_count'], 0)
+        self.assertFalse(result['restored'])
+        self.assertEqual(self.target.play_preferences.values['font_scale'], 1.3)
+        self.assertEqual(self.target.play_preferences.values['offset_x'], 16)
+        self.assertEqual(len(self.target.backups.history(self.target.settings['save_root'])), 3)
+        self.assertEqual(before, self.game_bytes(self.source))
+        self.assertEqual(self.original_game, self.game_bytes(self.target))
+        self.assertFalse(result['preferences_runtime']['desktop_available'])
+
+    def test_conflict_copies_are_visible_and_reimport_does_not_duplicate(self):
+        raw = self.bundle(['plan:' + self.plan['id']])
+        value, stamp = self.target.knowledge._read()
+        incoming = {key: value for key, value in self.plan.items() if key != 'record_revision'}
+        incoming['note'] = '本机独有备注'
+        value['plans'].append(incoming)
+        self.target.knowledge._write(value, stamp)
+        preview = migration.import_preview(self.target, raw)
+        self.assertIn('保留双方', preview['rows'][0]['detail'])
+        self.apply(raw)
+        self.apply(raw)
+        plans = self.target.knowledge.status()['plans']
+        self.assertEqual(len(plans), 2)
+        self.assertEqual(next(row for row in plans if row['id'] == self.plan['id'])['note'], '本机独有备注')
+
+    def test_export_cas_preview_cancel_empty_and_target_rebinding_are_checked(self):
+        selected = ['preference:font_scale']
+        preview = migration.export_preview(self.source, {'selected': selected})
+        self.source.play_preferences.update({'font_scale': 1.5})
+        with self.assertRaisesRegex(ValueError, '重新预览'):
+            migration.export_bundle(self.source, {'selected': selected, 'expected': preview['expected']})
+        raw = self.bundle()
+        preview = migration.import_preview(self.target, raw)
+        with self.assertRaisesRegex(ValueError, '尚未应用'):
+            migration.import_bundle(self.target, raw, {'expected': preview['expected'], 'selected': [], 'confirmed': False})
+        with self.assertRaisesRegex(ValueError, '没有选择'):
+            migration.import_bundle(self.target, raw, {'expected': preview['expected'], 'selected': [], 'confirmed': True})
+        new_root = self.base / 'target' / 'other-saves'; new_root.mkdir()
+        self.target.update_settings({'save_root': str(new_root)})
+        with self.assertRaisesRegex(ValueError, '重新预览'):
+            migration.import_bundle(self.target, raw, {'expected': preview['expected'], 'selected': [preview['rows'][0]['key']], 'confirmed': True})
+
+    def test_knowledge_or_disk_preference_update_after_preview_rejected(self):
+        raw = self.bundle()
+        for action in ('knowledge', 'preferences'):
+            preview = migration.import_preview(self.target, raw)
+            if action == 'knowledge':
+                self.target.knowledge.favorite(self.favorite, True)
+            else:
+                self.target.play_preferences.path.write_text(json.dumps({'font_scale': 1.9}))
+            with self.assertRaisesRegex(ValueError, '重新预览'):
+                migration.import_bundle(self.target, raw, {'expected': preview['expected'], 'selected': [row['key'] for row in preview['rows']], 'confirmed': True})
+        self.assertEqual(len(self.target.knowledge.status()['plans']), 0)
+
+    def test_out_of_process_source_preferences_are_not_exported_from_stale_memory(self):
+        self.source.play_preferences.path.write_text(json.dumps({'font_scale': 1.8}))
+        view = migration.status(self.source)
+        self.assertIn('其他进程', view['preferences_error'])
+        self.assertTrue(all(not row['valid'] for row in view['rows'] if row['group'] == 'preference'))
+        with self.assertRaises(ValueError):
+            migration.export_preview(self.source, {'selected': ['preference:font_scale']})
+
+    def test_disk_failure_reports_partial_progress_and_preserves_originals(self):
+        raw = self.bundle()
+        preview = migration.import_preview(self.target, raw)
+        with patch.object(self.target.play_preferences, 'update', side_effect=OSError('synthetic disk denied')):
+            result = migration.import_bundle(self.target, raw, {'expected': preview['expected'], 'selected': [row['key'] for row in preview['rows']], 'confirmed': True})
+        self.assertGreater(result['success_count'], 0)
+        self.assertEqual(result['failure_count'], 6)
+        self.assertTrue(all(not row['saved'] for row in result['results'] if row['key'].startswith('preference:')))
+        self.assertEqual(self.original_game, self.game_bytes(self.target))
+        self.assertEqual(self.target.play_preferences.values['font_scale'], 1)
+
+    def test_unavailable_version_retained_as_reference_and_invalid_fields_rejected(self):
+        raw = self.bundle(['plan:' + self.plan['id']])
+        def old_version(contents, manifest):
+            manifest['source']['application_version'] = '0.1.0'
+            value = migration.read_json(contents['knowledge.json'])
+            value['plans'][0]['rules_version'] = '0.1.0'
+            contents['knowledge.json'] = migration.encode(value)
+        raw = self.rewrite(raw, old_version)
+        with patch('companion.migration.canonical_plan', side_effect=ValueError('本版条目不可用')):
+            preview = migration.import_preview(self.target, raw)
+            self.assertTrue(preview['version_difference'])
+            self.assertFalse(preview['rows'][0]['available'])
+            self.assertIn('旧版本参考', preview['rows'][0]['error'])
+        self.apply(raw)
+        self.assertEqual(self.target.knowledge.status()['plans'][0]['rules_version'], '0.1.0')
+        raw = self.bundle(['preference:bindings'])
+        for invalid in ({'offset_x': 200}, {'font_scale': 100}, {'bindings': {'show': 'Ctrl+F9', 'capture': 'Ctrl+F9'}}):
+            def change(contents, manifest): contents['preferences.json'] = migration.encode(invalid)
+            with self.assertRaises(ValueError): migration.import_preview(self.target, self.rewrite(raw, change))
+
+    def test_archive_rules_hash_duplicate_path_and_format_are_not_relaxed(self):
+        raw = self.bundle(['preference:font_scale'])
+        with ZipFile(BytesIO(raw)) as archive:
+            contents = {name: archive.read(name) for name in archive.namelist()}
+        bad = dict(contents); bad['../escape'] = b'x'
+        with self.assertRaises(ValueError): migration.import_preview(self.target, migration._zip(bad))
+        contents['preferences.json'] = b'{"font_scale":1.2}'
+        with self.assertRaisesRegex(ValueError, '校验失败|实际文件不一致'): migration.import_preview(self.target, migration._zip(contents))
+        def future(contents, manifest): manifest['format'] = 2
+        with self.assertRaisesRegex(ValueError, '不支持'): migration.import_preview(self.target, self.rewrite(raw, future))
+
+    def test_portable_notes_redact_machine_paths_and_marked_secrets(self):
+        self.source.knowledge.save('C:\\Users\\private\\plan', 'manual', None, self.plan['params'], note='path /home/private/save token=private-token')
+        raw = self.bundle()
+        with ZipFile(BytesIO(raw)) as archive:
+            knowledge = archive.read('knowledge.json')
+        for secret in (b'C:\\', b'/home/private', b'private-token'):
+            self.assertNotIn(secret, knowledge)
+
+    def test_one_unavailable_inner_backup_does_not_fake_full_success(self):
+        raw = self.bundle()
+        def damage(contents, manifest):
+            with ZipFile(BytesIO(contents['backups.zip'])) as archive:
+                members = {name: archive.read(name) for name in archive.namelist()}
+            index = migration.read_json(members['denghuo-transfer.json'])
+            broken = index['entries'][0]
+            members[broken['file']] = b'not a valid backup ZIP'
+            broken.update(bytes=len(members[broken['file']]), sha256=migration.checksum(members[broken['file']]))
+            members['denghuo-transfer.json'] = migration.encode(index)
+            contents['backups.zip'] = migration._zip(members)
+        raw = self.rewrite(raw, damage)
+        preview = migration.import_preview(self.target, raw)
+        unavailable = [row for row in preview['rows'] if not row['valid']]
+        self.assertEqual(len(unavailable), 1)
+        self.assertTrue(unavailable[0]['error'])
+        result = migration.import_bundle(self.target, raw, {'expected': preview['expected'], 'selected': [row['key'] for row in preview['rows']], 'confirmed': True})
+        self.assertEqual(result['failure_count'], 1)
+        self.assertGreater(result['success_count'], 0)
+        self.assertEqual(self.original_game, self.game_bytes(self.target))
+
+    def test_deadline_cancel_is_consumed_and_new_deadline_can_trigger(self):
+        self.target.report_exit_surface('web-' + 'a'*32, 1, True, draft={'message': 'keep'})
+        self.target.settings['stop_at'] = '2001-01-01T00:00:00+08:00'
+        self.target.refresh()
+        state = self.target.exit_status()
+        self.target.acknowledge_exit(state['id'], 'web-' + 'a'*32, 'cancel', 1)
+        for _ in range(3): self.target.refresh()
+        self.assertEqual(self.target.exit_status()['phase'], 'cancelled')
+        self.assertEqual(self.target.exit_status()['id'], state['id'])
+        self.assertFalse(self.target.stop.is_set())
+        self.target.settings['stop_at'] = '2002-01-01T00:00:00+08:00'
+        self.target.refresh()
+        self.assertNotEqual(self.target.exit_status()['id'], state['id'])
+
+    def test_real_http_guard_export_preview_import_and_utf8(self):
+        server = Server(self.target)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            with urlopen(server.origin + '/api/migration') as response:
+                self.assertIn('rows', json.load(response))
+            raw = self.bundle(['plan:' + self.plan['id'], 'preference:font_scale'])
+            headers = {'Content-Type': 'application/zip', 'X-Companion-Token': server.token}
+            with self.assertRaises(HTTPError) as failure:
+                urlopen(Request(server.origin + '/api/migration/preview', data=raw, headers={'Content-Type': 'application/zip'}))
+            self.assertEqual(failure.exception.code, 403)
+            for extras in ({'Origin': 'http://example.invalid'}, {'Host': 'example.invalid'}):
+                with self.assertRaises(HTTPError) as failure:
+                    urlopen(Request(server.origin + '/api/migration/preview', data=raw, headers={**headers, **extras}))
+                self.assertEqual(failure.exception.code, 403)
+            with urlopen(Request(server.origin + '/api/migration/preview', data=raw, headers=headers)) as response:
+                preview = json.load(response)
+            headers.update({'X-Companion-Migration-Digest': preview['expected'], 'X-Companion-Migration-Selection': json.dumps([row['key'] for row in preview['rows']]), 'X-Companion-Migration-Confirmed': 'true'})
+            with urlopen(Request(server.origin + '/api/migration/import', data=raw, headers=headers)) as response:
+                result = json.load(response)
+            self.assertEqual(result['success_count'], 2)
+            self.assertEqual(self.original_game, self.game_bytes(self.target))
+        finally:
+            server.shutdown(); server.server_close(); thread.join(3)
+
+
+if __name__ == '__main__':
+    unittest.main()

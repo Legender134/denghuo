@@ -440,14 +440,16 @@ class NumericRules:
                            "columns": ["L", "C=1 伤害", "C=2 伤害", "C=3 伤害"],
                            "rows": [[str(l), f"{1+l}–{2+2*l}", f"{2*(1+l)}–{2*(4+2*l)}", f"{3*(1+l)}–{3*(6+2*l)}"] for l in levels]})
         tier = constants.get("tier")
+        from .engine import strength_requirement
+        from .values_decisions import armor_ranges
         if "items.armor.armor" in chain and isinstance(tier, int) and "items.armor.classarmor" not in chain:
-            result.append({"title": "护甲基础减伤", "note": "L≥0、无强化符石及刻印修正；信念护体列单独计算。力量未使用精通药剂。",
+            result.append({"title": "护甲基础减伤", "note": "无强化符石及刻印修正；负等级按装备基础规则计算，力量需求按非负等级。信念护体列单独计算。力量未使用精通药剂。",
                            "columns": ["L", "常规减伤", "信念护体", "力量需求"],
-                           "rows": [[str(l), f"{l}–{tier*(2+l)}", f"0–{1+tier+l}", str(8+2*tier-math.floor((math.sqrt(8*l+1)-1)/2))] for l in levels]})
+                           "rows": [[str(l), f"{armor_ranges(tier,l)[0]}–{armor_ranges(tier,l)[1]}", f"0–{armor_ranges(tier,l)[2]}", str(strength_requirement(tier,l))] for l in levels]})
         if "items.weapon.melee.meleeweapon" in chain and isinstance(tier, int):
             strength_tier = 6 if short == "items.weapon.melee.greataxe" else tier
             result.append({"title": "力量需求", "note": "有效等级 L，未使用精通药剂；已使用时再减 2。巨斧有单独需求规则。",
-                           "columns": ["L", "力量"], "rows": [[str(l), str(8+2*strength_tier-math.floor((math.sqrt(8*l+1)-1)/2))] for l in levels]})
+                           "columns": ["L", "力量"], "rows": [[str(l), str(strength_requirement(strength_tier,l))] for l in levels]})
         if short.startswith("items.rings.ringof"):
             # Evaluate only direct expressions, explicitly under the solo uncursed assumption.
             ring_fields = []
