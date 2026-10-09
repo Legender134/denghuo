@@ -207,7 +207,8 @@ class PlaySettings:
                 self.bindings[key].value = merged['binding.'+key]
         self.recovery_pending = None
         self.edit_revision += 1
-        self.status.text = '已载入原始设置草稿；尚未保存或注册快捷键，请核对后点击保存。'
+        self.status.text = ('已载入原始设置草稿，尚未保存；请核对后保存以应用设置和快捷键。'
+                            if self.has_draft() else '已保留当前保存值，没有待保存修改。')
         self.emit()
         self.window.deiconify()
 

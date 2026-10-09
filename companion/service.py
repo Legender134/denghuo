@@ -472,6 +472,13 @@ class Session:
             elif payload.get('action') == 'repair_timeline':
                 self.backups.repair_timeline(root, payload)
                 self.backup_context = uuid.uuid4().hex
+            elif payload.get('action') == 'repair_history_preview':
+                return {'ok': True, 'context': self.backup_context,
+                        'preview': self.backups.history_repair_preview(root)}
+            elif payload.get('action') == 'repair_history':
+                result = self.backups.repair_history(root, payload)
+                self.backup_context = uuid.uuid4().hex
+                receipt = {'ok': True, 'context': self.backup_context, 'repair': result}
             else:
                 raise ValueError("不支持的备份操作")
             if payload.get('action') in ('restore', 'undo'):

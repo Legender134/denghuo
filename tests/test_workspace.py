@@ -380,6 +380,54 @@ class WorkspaceTests(unittest.TestCase):
             thread.join(timeout=5)
             self.assertFalse(thread.is_alive())
 
+    def test_full_alchemy_form_round_trips_http_plans_and_unfinished_drafts(self):
+        from companion.alchemy_flow import validate_plan
+        from companion.session_exit import MAX_DRAFT
+        keys = ['manual-' + str(i + 1) for i in range(256)]
+        params = {'format': 2, 'recipe_version': '4.0.2', 'energy': 100, 'energy_reserve': 0,
+            'energy_origin': 'manual', 'reference_version': None,
+            'resources': [{'key': key, 'id': 'items.wands.wandoffireblast', 'quantity': 1, 'reserve': 0,
+                'origin': 'manual', 'state': {'cursed': False, 'base_level': 0, 'public_level': 0,
+                    'resin_bonus': 0, 'hero_class': 'MAGE', 'wand_preservation': 0}} for key in keys],
+            'targets': [{'key': 'goal-' + str(i), 'recipe': 'resin', 'quantity': 1,
+                'choices': {'source_keys': keys[:64]}} for i in range(64)],
+            'chains': {'items.arcaneresin': {'recipe': 'resin', 'choices': {'source_keys': keys[:64]}}}}
+        self.assertEqual(validate_plan(params), params)
+        self.assertGreater(len(json.dumps(params).encode()), 65536)
+        server = Server(self.session)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        def request(path, payload=None):
+            raw = json.dumps(payload, ensure_ascii=False).encode() if payload is not None else None
+            headers = {'Content-Type': 'application/json', 'Origin': server.origin, 'X-Companion-Token': server.token}
+            with urlopen(Request(server.origin + path, data=raw, headers=headers), timeout=15) as response:
+                return json.load(response)
+        try:
+            calculated = request('/api/workspace', {'action': 'alchemy-calculate', 'params': params})
+            self.assertEqual(calculated['params'], params)
+            discovered = request('/api/workspace', {'action': 'alchemy-discover', 'params': params})
+            self.assertTrue(any(row['id'] == 'resin' for row in discovered['recipes']))
+            saved = request('/api/workspace', {'action': 'save', 'kind': 'alchemy', 'entry': None,
+                'name': '完整炼金库存', 'note': '保留中文用途与实例条件', 'params': params})['plan']
+            self.assertEqual(request('/api/workspace/plan?id=' + saved['id'])['plan']['params'], params)
+            raw_form = copy.deepcopy(params); raw_form['energy'] = '-'
+            draft = {'format': 2, 'schema': 'denghuo-web-session', 'alchemy': {'raw': raw_form,
+                'note': '未完成输入需保留'}}
+            copied = request('/api/session-exit', {'action': 'save-draft', 'surface_id': 'web-12345678',
+                'kind': 'web-session', 'draft': draft})['saved']
+            loaded = request('/api/session-exit', {'action': 'draft-load', 'id': copied['id']})
+            self.assertEqual(loaded['draft']['draft'], draft)
+            before = self.session.knowledge.path.read_bytes()
+            for path, payload in (('/api/workspace', {'action': 'save', 'padding': 'x' * MAX_DRAFT}),
+                    ('/api/session-exit', {'action': 'save-draft', 'surface_id': 'web-12345678',
+                        'draft': {'raw': 'x' * MAX_DRAFT}})):
+                with self.subTest(path=path), self.assertRaises(HTTPError) as failed:
+                    request(path, payload)
+                self.assertEqual(failed.exception.code, 400)
+            self.assertEqual(self.session.knowledge.path.read_bytes(), before)
+            self.assertEqual(len(self.session.exit_drafts.list()), 1)
+        finally:
+            server.shutdown(); server.server_close(); thread.join(3)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -880,6 +880,124 @@ class BackupTests(unittest.TestCase):
             self.manager.restore(self.root, {**self.payload(row), 'expected_current': None})
         self.assertFalse(list(self.root.glob('.denghuo-stage-*')))
 
+    def test_history_recovery_preserves_originals_undo_and_progress_and_defaults_to_locked(self):
+        self.manager.tick(self.root)
+        first = self.manager.history(self.root)[0]
+        self.manage(self.root, {**first, 'label': '无法从损坏索引确认的原名称', 'locked': True})
+        old_revision = self.manager.selected(self.root, first)['metadata_revision']
+        self.write_save(2)
+        self.manager.restore(self.root, self.payload(first))
+        self.write_save(8, slot=2); self.clock += 11; self.manager.tick(self.root)
+        scope = self.manager.scope(self.root)
+        atomic_json(scope / 'stages.json', {})
+        (scope / 'history.json').write_bytes(b'{broken-history\xff\x00')
+        names = ('history.json', 'timeline.json', 'restores.json', 'stages.json')
+        originals = {name: (scope / name).read_bytes() for name in names}
+        archives = {p.name: p.read_bytes() for p in scope.glob('*.zip')}
+        game = {p.relative_to(self.root).as_posix(): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        status = self.manager.snapshot(self.root)
+        self.assertFalse(status['records_available']); self.assertTrue(status['repair_history_available'])
+        preview = self.manager.history_repair_preview(self.root)
+        self.assertEqual((scope / 'history.json').read_bytes(), originals['history.json'])
+        result = self.manager.repair_history(self.root, {'confirm': '恢复备份历史', 'expected': preview['expected']})
+        for name in names:
+            self.assertEqual((Path(result['recovery_directory']) / name).read_bytes(), originals[name])
+            if name != 'history.json': self.assertEqual((scope / name).read_bytes(), originals[name])
+        self.assertEqual({p.name: p.read_bytes() for p in scope.glob('*.zip')}, archives)
+        self.assertEqual({p.relative_to(self.root).as_posix(): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}, game)
+        restarted = BackupManager(self.manager.directory, clock=lambda: self.clock, closed_check=lambda: None)
+        restored = restarted.snapshot(self.root)
+        self.assertTrue(restored['records_available']); self.assertTrue(restored['undo'])
+        self.assertTrue(all(row['locked'] and row['metadata_recovered'] for row in restored['history']))
+        self.assertEqual(len(restored['history']), preview['valid_archives'])
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            restarted.manage(self.root, {**first, 'locked': False, 'expected_metadata_revision': old_revision})
+        self.clock += 11; restarted.tick(self.root)
+        self.assertTrue(all(row['locked'] for row in restarted.history(self.root)))
+        chosen = restarted.selected(self.root, first)
+        restarted.manage(self.root, {**first, 'label': '重新核对的名称', 'locked': True,
+                                   'expected_metadata_revision': chosen['metadata_revision']})
+        self.assertNotIn('metadata_recovered', restarted.selected(self.root, first))
+        self.assertEqual(restarted.validate(self.root), [])
+        raw, _ = restarted.export(self.root, first)
+        self.assertEqual(restarted.import_archive(self.root, raw)['id'], first['id'])
+        restarted.restore(self.root, self.payload(first))
+        journal = restarted.undo_status(self.root)[0]
+        restarted.undo(self.root, {'id': journal['id'], 'slot': journal['slot'], 'confirm': '撤回槽位 1'})
+
+    def test_history_recovery_keeps_bad_and_missing_archives_unavailable_in_history_and_nodes(self):
+        self.manager.tick(self.root); first = self.manager.history(self.root)[0]
+        self.clock += 30; self.write_save(8); self.manager.tick(self.root)
+        scope = self.manager.scope(self.root)
+        broken = scope / (first['id'] + '.zip'); broken.write_bytes(b'bad original ZIP')
+        unknown = scope / 'unknown.zip'; unknown.write_bytes(b'unknown original')
+        events = self.manager.events(self.root)
+        events.append({**events[0], 'slot': 3, 'id': 'c' * 64})
+        atomic_json(scope / 'timeline.json', events); (scope / 'history.json').write_bytes(b'bad index')
+        preview = self.manager.history_repair_preview(self.root)
+        self.assertEqual(preview['valid_archives'], 1); self.assertEqual(len(preview['unavailable']), 3)
+        self.manager.repair_history(self.root, {'confirm': '恢复备份历史', 'expected': preview['expected']})
+        restarted = BackupManager(self.manager.directory, clock=lambda: self.clock, closed_check=lambda: None)
+        status = restarted.snapshot(self.root)
+        bad = next(row for row in status['history'] if row['id'] == first['id'])
+        self.assertFalse(bad['integrity']['valid']); self.assertTrue(bad['locked'])
+        slot = next(row for row in status['slots'] if row['slot'] == 1)
+        node = next(node['backup'] for node in slot['nodes'] if node['backup'])
+        self.assertFalse(node['integrity']['valid'])
+        self.assertEqual(broken.read_bytes(), b'bad original ZIP'); self.assertEqual(unknown.read_bytes(), b'unknown original')
+        with self.assertRaises(ValueError): restarted.export(self.root, first)
+
+    def test_history_recovery_rejects_changes_after_preview_and_preserves_every_changed_original(self):
+        self.manager.tick(self.root); scope = self.manager.scope(self.root)
+        (scope / 'history.json').write_bytes(b'broken original')
+        for change in ('history', 'timeline', 'zip', 'restore', 'stage'):
+            with self.subTest(change=change):
+                preview = self.manager.history_repair_preview(self.root)
+                path = next(scope.glob('*.zip')) if change == 'zip' else scope / {
+                    'history': 'history.json', 'timeline': 'timeline.json', 'restore': 'restores.json', 'stage': 'stages.json'}[change]
+                original = path.read_bytes() if path.exists() else None
+                if change == 'history': changed = b'another broken original'
+                elif change == 'timeline':
+                    rows = json.loads(original); rows[0]['time'] += 1; changed = json.dumps(rows).encode()
+                elif change == 'zip': changed = original + b'outside edit'
+                elif change == 'restore': changed = b'[]'
+                else: changed = b'{}'
+                path.write_bytes(changed)
+                with self.assertRaisesRegex(ValueError, '重新预览'):
+                    self.manager.repair_history(self.root, {'confirm': '恢复备份历史', 'expected': preview['expected']})
+                self.assertEqual(path.read_bytes(), changed)
+                if original is None: path.unlink()
+                else: path.write_bytes(original)
+
+    def test_history_recovery_preservation_or_publication_failure_retains_corrupt_original(self):
+        self.manager.tick(self.root); scope = self.manager.scope(self.root)
+        path = scope / 'history.json'; original = b'broken original'; path.write_bytes(original)
+        real_atomic = atomic_json
+        for failure in ('preserve', 'publish'):
+            preview = self.manager.history_repair_preview(self.root)
+            def fail(target, value):
+                if failure == 'preserve' and target.name == 'manifest.json': raise OSError('controlled full disk')
+                real_atomic(target, value)
+                if failure == 'publish' and target == path: raise OSError('controlled publish failure')
+            with self.subTest(failure=failure), patch('companion.backups.atomic_json', side_effect=fail), self.assertRaises((OSError, ValueError)):
+                self.manager.repair_history(self.root, {'confirm': '恢复备份历史', 'expected': preview['expected']})
+            self.assertEqual(path.read_bytes(), original)
+            self.assertTrue(any((directory / 'history.json').read_bytes() == original for directory in scope.glob('history-recovery-*')))
+
+    def test_history_recovery_stops_if_other_relationships_are_damaged(self):
+        self.manager.tick(self.root); scope = self.manager.scope(self.root)
+        (scope / 'history.json').write_bytes(b'broken history')
+        for name in ('timeline.json', 'restores.json', 'stages.json'):
+            with self.subTest(name=name):
+                path = scope / name; original = path.read_bytes() if path.exists() else None
+                path.write_bytes(b'broken related record')
+                self.assertFalse(self.manager.snapshot(self.root)['repair_history_available'])
+                with self.assertRaisesRegex(ValueError, '不能安全恢复'):
+                    self.manager.history_repair_preview(self.root)
+                self.assertEqual(path.read_bytes(), b'broken related record')
+                if original is None: path.unlink()
+                else: path.write_bytes(original)
+
     def test_repair_timeline_preserves_sources_names_locks_and_undo(self):
         self.manager.tick(self.root)
         first = self.manager.history(self.root)[0]

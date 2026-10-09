@@ -153,6 +153,13 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(self.game_bytes(self.target), self.original_game); self.assertIsNone(self.target.data)
         repeated = self.apply(raw); self.assertEqual(len(self.target.exit_drafts.list()), 2)
         self.assertEqual(repeated['results'][0]['id'], result['results'][0]['id'])
+        source_state = self.source.exit_drafts.lifecycle(identity)
+        self.source.exit_drafts.set_lifecycle(identity, 'archived', source_state['state_revision'])
+        archived_package = self.bundle(['draft:' + identity])
+        archived_import = self.apply(archived_package)
+        self.assertEqual(archived_import['results'][0]['id'], result['results'][0]['id'])
+        self.assertEqual(len(self.target.exit_drafts.list(include_archived=True)), 2)
+        self.assertEqual(target_path.read_bytes(), local_raw)
 
     def test_draft_import_rejects_stale_target_secrets_structure_and_excess_count(self):
         saved = self.source.exit_drafts.save('web-12345678', 'workspace', '原始草稿', {'raw': '无效数值'})
@@ -168,7 +175,9 @@ class MigrationTests(unittest.TestCase):
                     nested = {}; value['records'][0]['draft'] = nested
                     for _ in range(22): nested['nested'] = {}; nested = nested['nested']
                 if change == 'count': value['records'] *= 201
-                if change == 'size': value['records'][0]['draft']['raw'] = 'x' * 65536
+                if change == 'size':
+                    from companion.session_exit import MAX_DRAFT
+                    value['records'][0]['draft']['raw'] = 'x' * MAX_DRAFT
                 if change == 'format': value['records'][0]['format'] = 900
                 contents['exit-drafts.json'] = migration.encode(value)
             with self.subTest(change=change), self.assertRaises(ValueError):
@@ -276,6 +285,63 @@ class MigrationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '重新预览'):
                 migration.import_bundle(self.target, raw, {'expected': preview['expected'], 'selected': [row['key'] for row in preview['rows']], 'confirmed': True})
         self.assertEqual(len(self.target.knowledge.status()['plans']), 0)
+
+    def test_ordinary_backup_ticks_do_not_invalidate_migration_with_or_without_archives(self):
+        for selected in (['preference:font_scale', 'plan:' + self.plan['id']], None):
+            with self.subTest(archives=selected is None):
+                now = [1700010000]
+                self.target.backups.clock = lambda: now[0]
+                self.target.backups.tick(self.target.settings['save_root'], force=True)
+                raw = self.bundle(selected)
+                preview = migration.import_preview(self.target, raw)
+                before = migration._backup_guard(self.target)
+                for _ in range(3):
+                    now[0] += 11
+                    self.target.backups.tick(self.target.settings['save_root'])
+                self.assertEqual(migration._backup_guard(self.target), before)
+                result = migration.import_bundle(self.target, raw, {'selected': [r['key'] for r in preview['rows']],
+                    'expected': preview['expected'], 'confirmed': True})
+                self.assertEqual(result['failure_count'], 0)
+                self.assertEqual(self.game_bytes(self.target), self.original_game)
+
+    def test_archive_import_rejects_real_target_content_protection_and_relationship_changes(self):
+        raw = self.bundle()
+        scope = self.target.backups.scope(self.target.settings['save_root'])
+        for change in ('label', 'lock', 'generation', 'first_observed', 'zip', 'restore'):
+            with self.subTest(change=change):
+                preview = migration.import_preview(self.target, raw)
+                if change in ('label', 'lock', 'generation', 'first_observed'):
+                    path = scope / 'history.json'
+                    original = path.read_bytes(); rows = json.loads(original)
+                    rows[0][{'label': 'label', 'lock': 'locked', 'generation': 'metadata_generation', 'first_observed': 'time'}[change]] = {
+                        'label': '新名称', 'lock': True, 'generation': 'a' * 32, 'first_observed': rows[0]['time'] - 1}[change]
+                    path.write_bytes(migration.encode(rows))
+                elif change == 'zip':
+                    path = next(scope.glob('*.zip')); original = path.read_bytes()
+                    path.write_bytes(original + b'changed')
+                else:
+                    path = scope / 'restores.json'; original = path.read_bytes() if path.exists() else None
+                    path.write_bytes(b'[]')
+                try:
+                    with self.assertRaisesRegex(ValueError, '重新预览'):
+                        migration.import_bundle(self.target, raw, {'selected': [r['key'] for r in preview['rows']],
+                            'expected': preview['expected'], 'confirmed': True})
+                finally:
+                    if original is None: path.unlink()
+                    else: path.write_bytes(original)
+
+    def test_preference_only_import_ignores_unrelated_archive_changes_but_keeps_preferences_cas(self):
+        raw = self.bundle(['preference:font_scale'])
+        preview = migration.import_preview(self.target, raw)
+        self.capture(self.target, 19, 1)
+        result = migration.import_bundle(self.target, raw, {'selected': ['preference:font_scale'],
+            'expected': preview['expected'], 'confirmed': True})
+        self.assertEqual(result['success_count'], 1)
+        preview = migration.import_preview(self.target, raw)
+        self.target.play_preferences.update({'font_scale': 1.7})
+        with self.assertRaisesRegex(ValueError, '重新预览'):
+            migration.import_bundle(self.target, raw, {'selected': ['preference:font_scale'],
+                'expected': preview['expected'], 'confirmed': True})
 
     def test_out_of_process_source_preferences_are_not_exported_from_stale_memory(self):
         self.source.play_preferences.path.write_text(json.dumps({'font_scale': 1.8}))

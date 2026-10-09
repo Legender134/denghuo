@@ -235,6 +235,7 @@ class BackupManager:
                     or 'metadata_generation' in row and (not isinstance(row['metadata_generation'], str)
                         or not re.fullmatch(r'[0-9a-f]{32}', row['metadata_generation']))
                     or 'imported_at' in row and not valid_time(row['imported_at'])
+                    or 'metadata_recovered' in row and type(row['metadata_recovered']) is not bool
                     or not isinstance(row.get('repair_error', ''), str) or len(row.get('repair_error', '')) > 1000):
                 raise ValueError('备份历史记录损坏')
         if len({(r['slot'], r['id']) for r in rows}) != len(rows):
@@ -337,6 +338,7 @@ class BackupManager:
             if payload.get('expected_metadata_revision') != backup_metadata_revision(target):
                 raise ValueError('备份名称或永久保留状态已变化；本次未保存。请核对最新信息，原编辑仍保留')
             target.update(label=label.strip(), locked=locked)
+            target.pop('metadata_recovered', None)
             target['metadata_generation'] = uuid.uuid4().hex
             target['metadata_revision'] = backup_metadata_revision(target)
             atomic_json(self.scope(root) / 'history.json', rows)
@@ -691,6 +693,10 @@ class BackupManager:
             try:
                 rows = self.events(root)
                 history = self.history(root)
+                scope = self.scope(root)
+                history = [{**r, 'integrity': self.archive_health.get((scope.name, r['id']),
+                    {'valid': False, 'error': r['repair_error']} if r.get('repair_error') else {'valid': None, 'error': ''})}
+                    for r in history]
                 summaries = {r['id']: r for r in history}
                 rows = [{**summaries.get(r['id'], {}), **r} for r in rows]
                 now = self.clock()
@@ -726,15 +732,18 @@ class BackupManager:
                         'health': health['state'], 'last_success': max(health['last_success'], latest_time),
                         'last_save_protected': health['last_save_protected'],
                         'undo': undo, 'records_available': True, 'repair_timeline_available': False,
-                        'repair_timeline_reason': ''}
+                        'repair_timeline_reason': '', 'repair_history_available': False, 'repair_history_reason': ''}
             except (OSError, ValueError) as exc:
                 available, reason = self._timeline_repair_status(root)
+                history_available, history_reason = self._history_repair_status(root)
+                reason = history_reason if history_available else reason
                 result = {"enabled": self.enabled, "error": str(exc) + ('；' + reason if reason else ''), "slots": [], "notice": self.notice,
                         "directory": str(self.directory), "interval": 10, 'history': [],
                         'health': 'paused' if not self.enabled else 'blocked',
                         'last_success': self.health_status(root)['last_success'], 'undo': [], 'storage_limit': MAX_STORAGE,
                         'records_available': False, 'repair_timeline_available': available,
-                        'repair_timeline_reason': reason}
+                        'repair_timeline_reason': reason, 'repair_history_available': history_available,
+                        'repair_history_reason': history_reason}
                 result.update(self._storage_report(root))
                 return result
 
@@ -769,6 +778,153 @@ class BackupManager:
             except (OSError, ValueError):
                 return False, f'{name} 也无法读取，不能安全保留名称、固定或撤回关系；原文件仍在'
         return True, '可显式校验ZIP并恢复时间记录；过去的时间节点将重新积累'
+
+    def _history_repair_status(self, root):
+        try:
+            scope = self.scope(root)
+            self._index_bytes(scope / 'history.json')
+        except (OSError, ValueError):
+            return False, '历史原记录无法安全保留，请检查路径、权限或大小；尚未修改原件'
+        try:
+            self._history_records(scope / 'history.json')
+        except ValueError:
+            pass
+        except OSError:
+            return False, '历史原记录无法读取，请检查目录权限；尚未修改原件'
+        else:
+            return False, ''
+        try:
+            self.events(root)
+            self.journals(root)
+            self.stage_records(root)
+        except (OSError, ValueError):
+            return False, '时间、撤回或暂存记录也无法核对，不能安全恢复历史；全部原件仍保留'
+        return True, '可保留损坏索引并校验ZIP恢复历史；原名称和固定状态无法确认，恢复记录默认全部固定'
+
+    def _history_repair_guard(self, root):
+        scope = self.scope(root)
+        originals = {name: self._index_bytes(scope / name)
+                     for name in ('history.json', 'timeline.json', 'restores.json', 'stages.json')}
+        files = sorted(scope.glob('*.zip'))
+        if len(files) > 10000:
+            raise ValueError('备份文件数量过多，尚未恢复历史；原件仍保留')
+        archives = {}
+        for path in files:
+            unlinked(path); before = path.stat()
+            if not stat.S_ISREG(before.st_mode):
+                raise ValueError('备份库包含非普通文件，尚未恢复历史')
+            if before.st_size > MAX_TOTAL:
+                archives[path.name] = [before.st_size, before.st_mtime_ns, 'over-limit']
+                continue
+            digest = hashlib.sha256()
+            with path.open('rb') as stream:
+                while chunk := stream.read(65536):
+                    digest.update(chunk)
+            after = path.stat()
+            if (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
+                raise ValueError('备份正在变化，请重新预览；尚未恢复历史')
+            archives[path.name] = [before.st_size, digest.hexdigest()]
+        return {'indexes': {name: hashlib.sha256(raw).hexdigest() if raw is not None else None
+                            for name, raw in originals.items()}, 'archives': archives}, originals
+
+    def _history_repair_data(self, root):
+        available, reason = self._history_repair_status(root)
+        if not available:
+            raise ValueError(reason or '历史记录完整，无需恢复')
+        scope = self.scope(root)
+        guard, originals = self._history_repair_guard(root)
+        events = self.events(root)
+        rebuilt, failures = [], []
+        for name, stamp in guard['archives'].items():
+            identity = Path(name).stem
+            try:
+                if not IDENTITY.fullmatch(identity):
+                    raise ValueError('文件名不是灯火备份编号，原文件仍保留')
+                if stamp[-1] == 'over-limit':
+                    raise ValueError('备份超过64 MiB校验上限，原文件仍保留')
+                metadata, _, game, identity = self.checked_archive(root, identity)
+                rebuilt.append({**player_summary(game, metadata['saved']), 'id': identity, 'slot': metadata['slot']})
+            except (OSError, ValueError) as exc:
+                error = '备份无法完整校验，原文件仍保留' if isinstance(exc, (json.JSONDecodeError, UnicodeError)) else str(exc)
+                failures.append({'file': name, 'error': error[:1000]})
+        valid_count = len(rebuilt)
+        if any(event['id'] == row['id'] and event['slot'] != row['slot'] for event in events for row in rebuilt):
+            raise ValueError('时间记录的槽位与已校验ZIP不一致，不能安全恢复历史；全部原件仍保留')
+        known = {(row['slot'], row['id']) for row in rebuilt}
+        for event in events:
+            pair = event['slot'], event['id']
+            if pair not in known:
+                error = next((row['error'] for row in failures if row['file'] == event['id'] + '.zip'),
+                             '时间记录对应的备份ZIP缺失，原记录仍保留')
+                rebuilt.append({**{k: v for k, v in event.items() if k != 'time'}, 'repair_error': error})
+                known.add(pair)
+                if not any(row['file'] == event['id'] + '.zip' for row in failures):
+                    failures.append({'file': event['id'] + '.zip', 'error': error})
+        for row in rebuilt:
+            own = [event['time'] for event in events if (event['slot'], event['id']) == (row['slot'], row['id'])]
+            if own:
+                row.update(time=min(own), last_seen=max(own))
+            row.update(label='', locked=True, metadata_recovered=True)
+        if self._history_repair_guard(root)[0] != guard:
+            raise ValueError('备份或管理记录在校验期间变化，请重新预览；尚未恢复历史')
+        expected = hashlib.sha256(json.dumps(guard, sort_keys=True).encode()).hexdigest()
+        preview = {'expected': expected, 'valid_archives': valid_count, 'records_count': len(rebuilt),
+                   'unavailable': failures, 'message': reason, 'game_changed': False}
+        return preview, guard, originals, rebuilt
+
+    def history_repair_preview(self, root):
+        with self.lock:
+            return self._history_repair_data(root)[0]
+
+    def repair_history(self, root, payload):
+        if not isinstance(payload, dict) or payload.get('confirm') != '恢复备份历史':
+            raise ValueError('请明确确认保留原件并恢复备份历史')
+        with self.lock:
+            preview, guard, originals, rebuilt = self._history_repair_data(root)
+            if payload.get('expected') != preview['expected']:
+                raise ValueError('备份或管理记录已变化，请重新预览；尚未恢复历史')
+            scope = self.scope(root)
+            recovery = unlinked(scope / ('history-recovery-' + str(time.time_ns()) + '-' + uuid.uuid4().hex[:8]))
+            recovery.mkdir()
+            for name, raw in originals.items():
+                if raw is not None:
+                    with unlinked(recovery / name).open('xb') as stream:
+                        if stream.write(raw) != len(raw):
+                            raise OSError('原记录副本未完整写入，尚未恢复历史')
+                        stream.flush(); os.fsync(stream.fileno())
+                    if self._index_bytes(recovery / name) != raw:
+                        raise ValueError('原记录副本未完整保存，尚未恢复历史')
+            now = self.clock()
+            for row in rebuilt:
+                row['metadata_generation'] = uuid.uuid4().hex
+                if 'time' not in row:
+                    row.update(time=now, last_seen=now, recovered_at=now)
+            manifest = {**preview, 'created': now, 'originals': guard['indexes'], 'archives': guard['archives']}
+            atomic_json(recovery / 'manifest.json', manifest)
+            if self._history_repair_guard(root)[0] != guard:
+                raise ValueError('备份或管理记录在保留原件期间变化，请重新预览；尚未恢复历史')
+            path = scope / 'history.json'
+            published = json.dumps(rebuilt, ensure_ascii=True, indent=2).replace('\n', os.linesep).encode('utf-8')
+            try:
+                atomic_json(path, rebuilt)
+                self._history_records(path)
+                expected_guard = {**guard, 'indexes': {**guard['indexes'], 'history.json': hashlib.sha256(published).hexdigest()}}
+                if self._history_repair_guard(root)[0] != expected_guard:
+                    raise ValueError('恢复发布期间备份或记录又有变化')
+            except Exception as exc:
+                if self._index_bytes(path) not in (originals['history.json'], published):
+                    raise ValueError('恢复发布后历史被其他程序改写，未覆盖新记录；完整原件位于 ' + str(recovery)) from exc
+                try:
+                    self._restore_index_bytes(path, originals['history.json'])
+                except Exception as rollback:
+                    raise ValueError('历史恢复发布与回滚失败；完整原件位于 ' + str(recovery)) from rollback
+                raise ValueError('历史恢复发布失败，原索引已恢复；完整原件位于 ' + str(recovery)) from exc
+            self.scanned.add(str(scope)); self._storage_cache = None; self.last_tick = 0
+            if self.health_root == str(Path(root)):
+                self.tick_failure = self.error = ''
+            self.notice = (f"已校验恢复 {preview['valid_archives']} 份有效备份，{len(preview['unavailable'])} 项不可用。"
+                f'原名称和固定状态无法确认，恢复记录已全部固定；可逐份核对后修改。原记录位于 {recovery}。')
+            return {**manifest, 'recovery_directory': str(recovery)}
 
     @staticmethod
     def _index_bytes(path):
