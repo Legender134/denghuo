@@ -378,6 +378,71 @@ function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revis
   budgetComparison.context.state.data.items[1].level=-1;budgetComparison.run('renderEquipmentComparison()');
   assert.equal(Number(budgetComparison.get('#compare-level-a').value),-1,'known negative levels must not become zero');
 
+  // Parse the actual generated conditional controls so undo cannot pass by
+  // restoring only static selects while leaving another item's schema behind.
+  const undoCompare=harness(),dynamicCompare={a:[],b:[]};
+  const comparisonMarkup=markup.split('<form id="equipment-comparison">')[1].split('</form>')[0];
+  const comparisonControls=[...comparisonMarkup.matchAll(/<(input|select)\b[^>]*\bid="([^"]+)"[^>]*>/g)].map(match=>{
+    const input=undoCompare.get('#'+match[2]);input.value=match[0].match(/\bvalue="([^"]*)"/)?.[1]||'';return input;
+  });
+  for(const side of ['a','b'])Object.defineProperty(undoCompare.get('#compare-context-'+side),'innerHTML',{
+    get(){return this.html||'';},set(html){this.html=html;dynamicCompare[side]=[...html.matchAll(/<input[^>]*data-compare-key="([^"]+)"[^>]*value="([^"]*)"/g)].map(match=>{
+      const input=element();input.dataset.compareKey=match[1];input.value=match[2];return input;
+    });}
+  });
+  const allComparisonControls=()=>[...comparisonControls,...dynamicCompare.a,...dynamicCompare.b];
+  undoCompare.context.$$=selector=>selector.startsWith('#compare-context-a')?dynamicCompare.a:selector.startsWith('#compare-context-b')?dynamicCompare.b:allComparisonControls();
+  undoCompare.get('#equipment-comparison').querySelectorAll=allComparisonControls;
+  Object.assign(undoCompare.context,{state:stamp(),calculationStamp:()=>({mode:'save',slot:1,modified:100}),displayNumber:String,
+    inlineError:(target,message)=>{target.textContent=message;},
+    fetch:async url=>({ok:true,json:async()=>({entries:String(url).includes('items.wands.')?[
+      {id:'items.wands.wandoffireblast',name:'焰浪法杖'},{id:'items.wands.wandoftransfusion',name:'注魂法杖'}]:[]})}),
+    getJSON:async url=>({inputs:String(url).includes('wandoftransfusion')?[
+      {key:'max_hp',label:'生命上限',value:65,min:1,max:9999}]:[]})});
+  undoCompare.get('#compare-kind').value='wand';undoCompare.get('#compare-strength').value='13';undoCompare.get('#compare-investment-mode').value='all';
+  undoCompare.load('compare.js');await new Promise(resolve=>setImmediate(resolve));
+  const chooseComparison=async identity=>{
+    undoCompare.get('#compare-a').value=String(undoCompare.run(`compareItems.findIndex(item=>item.key===${JSON.stringify(identity)})`));
+    undoCompare.get('#compare-a').listeners.change();await new Promise(resolve=>setImmediate(resolve));
+  };
+  await chooseComparison('items.wands.wandoffireblast');
+  const charge=dynamicCompare.a.find(input=>input.dataset.compareKey==='charges_a');charge.value='3';
+  undoCompare.get('#equipment-comparison').listeners.input({target:charge});
+  const originalComparison=undoCompare.run('JSON.stringify(readComparisonArgs())');
+  undoCompare.get('#compare-use-resources').listeners.click();
+  await chooseComparison('items.wands.wandoftransfusion');
+  assert(dynamicCompare.a.some(input=>input.dataset.compareKey==='max_hp_a'));
+  undoCompare.get('#compare-undo-import').listeners.click();
+  assert.equal(undoCompare.run('JSON.stringify(readComparisonArgs())'),originalComparison);
+  assert.equal(dynamicCompare.a.find(input=>input.dataset.compareKey==='charges_a').dataset.manual,'true');
+  undoCompare.run('renderEquipmentComparison()');
+  assert.equal(undoCompare.run('JSON.stringify(readComparisonArgs())'),originalComparison,'ordinary render keeps restored context');
+  for(const lateOk of [false,true]){
+    undoCompare.get('#compare-use-resources').listeners.click();
+    let finishComparison;
+    undoCompare.context.fetch=()=>new Promise(resolve=>{finishComparison=resolve;});
+    const submitting=undoCompare.get('#equipment-comparison').listeners.submit({preventDefault(){}});
+    assert(undoCompare.run('comparePending'));
+    undoCompare.get('#compare-undo-import').listeners.click();
+    assert(!undoCompare.run('comparePending'));assert(!undoCompare.get('#compare-submit').disabled);
+    assert(!dynamicCompare.a.find(input=>input.dataset.compareKey==='charges_a').disabled);
+    finishComparison({ok:lateOk,json:async()=>lateOk?{choices:[],rows:[]}:{error:'obsolete calculation failure'}});
+    await submitting;
+    assert.equal(undoCompare.run('compareError'),'');
+    assert.equal(undoCompare.run('JSON.stringify(readComparisonArgs())'),originalComparison);
+  }
+  for(const lateFailure of [false,true]){
+    undoCompare.get('#compare-use-resources').listeners.click();
+    let finishContext,failContext;
+    undoCompare.context.getJSON=()=>new Promise((resolve,reject)=>{finishContext=resolve;failContext=reject;});
+    await chooseComparison('items.wands.wandoftransfusion');
+    undoCompare.get('#compare-undo-import').listeners.click();
+    if(lateFailure)failContext(new Error('obsolete schema failure'));else finishContext({inputs:[]});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(undoCompare.run('compareError'),'');
+    assert.equal(undoCompare.run('JSON.stringify(readComparisonArgs())'),originalComparison);
+  }
+
   const scoped=harness();scoped.load('backups.js');scoped.run('initializeBackups()');
   scoped.context.toast=()=>{};
   scoped.context.state={backup_context:'A',active_slot:4,settings:{save_root:'/synthetic/A'}};

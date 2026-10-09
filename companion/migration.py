@@ -114,7 +114,19 @@ def _backup_guard(session):
                     digest = hashlib.sha256()
                     while chunk := stream.read(65536):
                         digest.update(chunk)
-                rows[path.name] = [attrs.st_size, attrs.st_mtime_ns, digest.hexdigest()]
+                rows[path.name] = digest.hexdigest()
+        # Observation clocks do not change the target of an archive import.
+        # Keep every other field, including protection, labels and generations.
+        if 'history.json' in rows:
+            history = session.backups.history(session.settings['save_root'], discover=False)
+            rows['history.json'] = checksum(encode(sorted(
+                ({key: value for key, value in row.items() if key not in ('last_seen', 'metadata_revision')}
+                 for row in history), key=lambda row: (row['slot'], row['id']))))
+        if 'timeline.json' in rows:
+            events = session.backups.events(session.settings['save_root'])
+            rows['timeline.json'] = checksum(encode(sorted({
+                encode({key: value for key, value in row.items() if key != 'time'}).decode('utf-8')
+                for row in events})))
     return rows
 
 
@@ -127,15 +139,17 @@ def _preference_disk_stamp(prefs):
         return None
 
 
-def _target(session, *, include_drafts=False):
-    _, knowledge_stamp = session.knowledge._read()
+def _target(session, *, include_drafts=False, include_backups=True,
+            include_knowledge=True, include_preferences=True):
+    knowledge_stamp = session.knowledge._read()[1] if include_knowledge else None
     prefs = session.play_preferences
-    prefs_stamp = _preference_disk_stamp(prefs)
+    prefs_stamp = _preference_disk_stamp(prefs) if include_preferences else None
     return {'root': session.settings['save_root'], 'context': session.backup_context,
             'config_error': session.config_error, 'knowledge': knowledge_stamp,
-            'preferences_disk': prefs_stamp, 'preferences_loaded': prefs._disk_stamp,
-            'preferences_revision': prefs.generation, 'preferences_values': prefs.values,
-            'backups': _backup_guard(session),
+            'preferences_disk': prefs_stamp, 'preferences_loaded': prefs._disk_stamp if include_preferences else None,
+            'preferences_revision': prefs.generation if include_preferences else None,
+            'preferences_values': prefs.values if include_preferences else None,
+            'backups': _backup_guard(session) if include_backups else None,
             'exit_drafts': session.exit_drafts.stamp() if include_drafts else None}
 
 
@@ -312,8 +326,9 @@ def _merged_plan(value, row):
 
 def _preview(session, raw):
     manifest, contents, knowledge, preferences = inspect(session, raw)
-    include_drafts = 'exit-drafts.json' in contents
-    target = _target(session, include_drafts=include_drafts)
+    scope = {'include_drafts': 'exit-drafts.json' in contents, 'include_backups': 'backups.zip' in contents,
+             'include_knowledge': 'knowledge.json' in contents, 'include_preferences': 'preferences.json' in contents}
+    target = _target(session, **scope)
     value, _ = session.knowledge._read()
     rows = []
     if 'backups.zip' in contents:
@@ -356,7 +371,7 @@ def _preview(session, raw):
                          'detail': action + f" · 草稿类型 {record['draft_kind']} · 来源窗口 {record['surface_id']}",
                          'valid': True, 'content': record, 'target': str(session.exit_drafts.directory)})
     # Preview operations must not hide index updates (e.g. recovery discovery).
-    if target != _target(session, include_drafts=include_drafts):
+    if target != _target(session, **scope):
         raise ValueError('本机资料在预览期间变化，请重新预览；尚未导入')
     result = {'rows': rows, 'source': manifest['source'], 'current_application_version': __version__,
               'current_rules_version': session.catalog.data['version'],

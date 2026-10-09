@@ -15,7 +15,9 @@ from .backups import atomic_json, unlinked
 
 SURFACE = re.compile(r'(?:native(?:[-_][a-z0-9]{1,48})?|web-[a-f0-9]{8,64})\Z')
 DRAFT_ID = re.compile(r'[a-f0-9]{32}\Z')
-MAX_DRAFT = 65536
+MAX_DRAFT = 1024 * 1024
+# ASCII escaping and indentation of a bounded raw form can expand on disk.
+MAX_DRAFT_FILE = 8 * MAX_DRAFT
 # Portable batch bound; explicitly saved local drafts are retained across batches.
 MAX_SAVED_DRAFTS = 200
 MAX_DRAFT_SET = 16 * 1024 * 1024
@@ -38,14 +40,14 @@ def checked_draft(value):
     except (ValueError, TypeError, RecursionError, UnicodeError) as exc:
         raise ValueError('草稿内容无法保存') from exc
     if len(raw) > MAX_DRAFT:
-        raise ValueError('草稿超过64 KiB，请先分别保存方案')
+        raise ValueError('草稿超过1 MiB，请先分别保存方案')
     # Own forms have no authentication fields. Never store an entire status response.
     pending = [(value, 0)]
     nodes = 0
     while pending:
         current, depth = pending.pop()
         nodes += 1
-        if depth > 20 or nodes > 12000:
+        if depth > 20 or nodes > 60000:
             raise ValueError('草稿结构过深或条目过多，原件仍保留')
         if isinstance(current, dict):
             if any(not isinstance(key, str) or len(key) > 120 for key in current):
@@ -125,8 +127,8 @@ class ExitDraftStore:
             path = unlinked(self.directory / (identity + '.json'))
             try:
                 with path.open('rb') as stream:
-                    raw = stream.read(512 * 1024 + 1)
-                if len(raw) > 512 * 1024:
+                    raw = stream.read(MAX_DRAFT_FILE + 1)
+                if len(raw) > MAX_DRAFT_FILE:
                     raise ValueError('草稿文件过大，原件仍保留')
                 value = json.loads(raw)
                 return checked_saved_draft(value, identity)
@@ -141,7 +143,7 @@ class ExitDraftStore:
             rows = {}
             for path in unlinked(self.directory).glob('*.json'):
                 path = unlinked(path)
-                if path.stat().st_size > 512 * 1024:
+                if path.stat().st_size > MAX_DRAFT_FILE:
                     raise ValueError('已有草稿文件大小超过迁移限制，原件仍保留')
                 rows[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
             return rows
@@ -216,41 +218,45 @@ class ExitDraftStore:
             return records
 
     def preview_import(self, record):
-        record = checked_saved_draft(record)
+        addition, message, _ = self._resolve_import(checked_saved_draft(record))
+        return addition, message
+
+    def _resolve_import(self, record):
         with self.lock:
             path = unlinked(self.directory / (record['id'] + '.json'))
             if not path.exists():
-                return record, '新增已保存原始草稿；需明确载入，不计算或应用'
+                return record, '新增已保存原始草稿；需明确载入，不计算或应用', record['id']
             try:
                 if self.same_content(self.load(record['id']), record):
-                    return None, '相同草稿已存在，保留本机原件和归档状态'
+                    return None, '相同草稿已存在，保留本机原件和归档状态', record['id']
             except ValueError:
                 pass  # A damaged local original is also preserved, never replaced.
-            encoded = json.dumps(record, ensure_ascii=True, sort_keys=True).encode()
-            copied = {**record, 'id': hashlib.sha256(encoded).hexdigest()[:32]}
-            copied_path = unlinked(self.directory / (copied['id'] + '.json'))
-            if copied_path.exists():
+            canonical = {**{k: v for k, v in record.items() if k != 'lifecycle'}, 'format': 2}
+            # Recognize copies made by older versions without rewriting either
+            # original or its local lifecycle sidecar. Lifecycle is not content.
+            variants = (canonical, {**canonical, 'format': 1},
+                        {**canonical, 'lifecycle': 'active'}, {**canonical, 'lifecycle': 'archived'})
+            identities = list(dict.fromkeys(hashlib.sha256(json.dumps(value,
+                ensure_ascii=True, sort_keys=True).encode()).hexdigest()[:32] for value in variants))
+            for identity in identities:
+                copied = {**record, 'id': identity}
+                copied_path = unlinked(self.directory / (identity + '.json'))
+                if not copied_path.exists():
+                    continue
                 try:
-                    if self.same_content(self.load(copied['id']), copied):
-                        return None, '同ID冲突副本已存在，双方均保留'
+                    if self.same_content(self.load(identity), copied):
+                        return None, '同ID冲突副本已存在，双方均保留', identity
                 except ValueError:
                     pass
+            copied = {**record, 'id': identities[0]}
+            if unlinked(self.directory / (copied['id'] + '.json')).exists():
                 raise ValueError('草稿冲突副本身份已占用，原件仍保留；请先核对本机草稿')
-            return copied, '同ID内容不同，保留双方并新增原始草稿副本'
+            return copied, '同ID内容不同，保留双方并新增原始草稿副本', copied['id']
 
     def import_record(self, record):
         with self.lock:
             record = checked_saved_draft(record)
-            addition, message = self.preview_import(record)
-            stored_id = addition['id'] if addition else record['id']
-            if addition is None:
-                try:
-                    exact_original = self.same_content(self.load(record['id']), record)
-                except ValueError:
-                    exact_original = False
-                if not exact_original:
-                    encoded = json.dumps(record, ensure_ascii=True, sort_keys=True).encode()
-                    stored_id = hashlib.sha256(encoded).hexdigest()[:32]
+            addition, message, stored_id = self._resolve_import(record)
             if addition is not None:
                 # The 200-record limit applies to one portable batch, not to the
                 # user's lifetime of explicitly preserved unfinished work.

@@ -47,6 +47,53 @@ class SessionExitTests(unittest.TestCase):
         self.assertFalse(self.finished.is_set())
         self.assertEqual(self.exit.status()['participants'][0]['dirty'], True)
 
+    def test_conflict_copy_identity_ignores_archive_state_and_recognizes_legacy_ids(self):
+        saved = self.store.save('web-12345678', 'workspace', '本机原件', {'raw': '本机'})
+        original = Path(saved['path']).read_bytes()
+        incoming = {**self.store.load(saved['id']), 'draft': {'raw': '便携副本'}}
+        first = self.store.import_record(incoming)['id']
+        row = self.store.lifecycle(first)
+        self.store.set_lifecycle(first, 'archived', row['state_revision'])
+        archived = self.store.lifecycle(first)
+        for state in ('active', 'archived'):
+            result = self.store.import_record({**incoming, 'lifecycle': state})
+            self.assertEqual(result['id'], first)
+            self.assertEqual(self.store.lifecycle(first), archived)
+        self.assertEqual(len(self.store.list(include_archived=True)), 2)
+        self.assertEqual(Path(saved['path']).read_bytes(), original)
+        changed = self.store.import_record({**incoming, 'draft': {'raw': '另一份不同内容'}})['id']
+        self.assertNotEqual(changed, first)
+        for variant in ('v1', 'active', 'archived'):
+            with self.subTest(legacy=variant):
+                other = ExitDraftStore(self.store.directory.parent / ('legacy-' + variant))
+                other.directory.mkdir()
+                (other.directory / (saved['id'] + '.json')).write_bytes(original)
+                record = {k: v for k, v in incoming.items() if k != 'lifecycle'}
+                if variant == 'v1':
+                    record['format'] = 1
+                else:
+                    record['lifecycle'] = variant
+                legacy_id = hashlib.sha256(json.dumps(record, ensure_ascii=True, sort_keys=True).encode()).hexdigest()[:32]
+                legacy_path = other.directory / (legacy_id + '.json')
+                legacy_bytes = json.dumps({**record, 'id': legacy_id}).encode()
+                legacy_path.write_bytes(legacy_bytes)
+                result = other.import_record({**incoming, 'lifecycle': 'archived'})
+                self.assertEqual(result['id'], legacy_id)
+                self.assertEqual(legacy_path.read_bytes(), legacy_bytes)
+                self.assertEqual(len(other.list(include_archived=True)), 2)
+
+    def test_large_raw_form_round_trips_ascii_escaped_storage_and_keeps_finite_bounds(self):
+        from companion.session_exit import MAX_DRAFT, checked_draft
+        raw = {'raw': '无效输入待核对' * 40000}
+        saved = self.store.save('web-12345678', 'workspace', '保留大表单', raw)
+        self.assertGreater(Path(saved['path']).stat().st_size, 512 * 1024)
+        self.assertEqual(self.store.load(saved['id'])['draft'], raw)
+        self.assertIn(saved['id'] + '.json', self.store.stamp())
+        with self.assertRaisesRegex(ValueError, '1 MiB'):
+            checked_draft({'raw': 'x' * MAX_DRAFT})
+        with self.assertRaisesRegex(ValueError, '口令'):
+            checked_draft({'authorization': 'secret'})
+
     def test_new_edit_invalidates_an_old_confirmation_and_old_revision_is_rejected(self):
         a, b = self.web('a'), self.web('b')
         request = self.exit.start(a)

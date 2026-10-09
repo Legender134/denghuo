@@ -358,11 +358,28 @@ class SettingsControllerTests(ControllerFixture):
         self.assertEqual(settings.vars['offset_x'].get(), '222')
         settings.finish_recovery({'offset_x': 'draft'})
         self.assertEqual(settings.vars['offset_x'].get(), '777')
+        self.assertTrue(settings.has_draft())
+        self.assertIn('核对后保存', settings.status.text)
         self.assertEqual(self.session.play_preferences.path.read_bytes(), original)
         self.session.play_preferences.update({'offset_x': 333}, expected_generation=settings.revision)
         self.assertFalse(settings.save())
         self.assertEqual(self.session.play_preferences.values['offset_x'], 333)
         self.assertEqual(settings.vars['offset_x'].get(), '777')
+
+    def test_recovery_keep_current_reports_clean_without_writing_or_applying(self):
+        settings = self.manager.play_settings = PlaySettings(self.manager)
+        settings.vars['offset_x'].set('777')
+        draft = settings.draft()
+        settings.reload(True)
+        self.session.play_preferences.update({'offset_x': 222}, expected_generation=settings.revision)
+        settings.read_values()
+        original = self.session.play_preferences.path.read_bytes()
+        settings.restore_draft(draft)
+        settings.finish_recovery({'offset_x': 'current'})
+        self.assertEqual(settings.vars['offset_x'].get(), '222')
+        self.assertFalse(settings.has_draft())
+        self.assertEqual(settings.status.text, '已保留当前保存值，没有待保存修改。')
+        self.assertEqual(self.session.play_preferences.path.read_bytes(), original)
 
     def test_recovery_confirmation_rejects_later_edit_or_saved_generation(self):
         for later in ('edit', 'saved'):

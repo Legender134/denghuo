@@ -113,7 +113,7 @@ $('#equipment-comparison').addEventListener('submit',async event=>{
     if(!response.ok)throw new Error(result.error);if(seq!==compareRequest)return;
     renderComparisonResult(result);compareResultArgs=result.params||canonicalComparisonParams(args);compareResultFields=comparisonFields();inlineError($('#compare-save-error'),'');
     compareDirty=signature!==compareSignature || args.strength!==String($('#compare-strength').value);compareStamp=source;refreshComparisonOrigin();
-  }catch(error){compareError=error.message;refreshComparisonOrigin();}
+  }catch(error){if(seq===compareRequest){compareError=error.message;refreshComparisonOrigin();}}
   finally{if(seq===compareRequest){comparePending=false;button.disabled=false;$('#equipment-comparison').querySelectorAll('input,select').forEach(el=>el.disabled=false);refreshComparisonOrigin();}}
 });
 const comparisonReady=initializeEquipmentComparison().catch(error=>{compareError=error.message;refreshComparisonOrigin();});
@@ -199,10 +199,41 @@ async function loadComparisonContext(side,item){
   }catch(error){if(serial===compareContextSerial[side]){target.dataset.identity='';compareError=error.message;refreshComparisonOrigin();}}
 }
 function captureComparisonRaw(){return Object.fromEntries($$('#equipment-comparison input, #equipment-comparison select').map(input=>[input.id||input.dataset.compareKey,{value:input.value,checked:input.checked,manual:input.dataset.manual||'',edited:input.dataset.edited||''}]));}
-function rememberComparisonImport(){compareImportUndo={characterReference:typeof compareCharacterReference!=='undefined'?characterClone(compareCharacterReference):null,raw:captureComparisonRaw(),items:JSON.parse(JSON.stringify(compareItems)),stamp:compareStamp,budgetStamp:compareBudgetStamp,budgetOrigin:compareBudgetOrigin,dirty:compareDirty,fixed:compareFixed,saved:compareSavedPlan,args:compareResultArgs,fields:compareResultFields,error:compareError,result:$('#compare-result').innerHTML,text:$('#compare-copy-text').textContent,unsaved:compareSessionUnsaved};$('#compare-undo-import').hidden=false;}
-$('#compare-undo-import').addEventListener('click',()=>{const old=compareImportUndo;if(!old)return;compareRequest++;compareItems=old.items;for(const side of ['a','b'])$('#compare-'+side).innerHTML=compareItems.map((i,n)=>`<option value="${n}">${escapeHTML(i.name)}</option>`).join('');for(const input of $$('#equipment-comparison input, #equipment-comparison select')){const raw=old.raw[input.id||input.dataset.compareKey];if(raw){input.value=raw.value;input.checked=raw.checked;input.dataset.manual=raw.manual;input.dataset.edited=raw.edited;}}
+function rememberComparisonImport(){
+  const contexts=Object.fromEntries(['a','b'].map(side=>[side,{
+    identity:$('#compare-context-'+side).dataset.identity||'',html:$('#compare-context-'+side).innerHTML,
+    augments:$('#compare-augment-'+side).innerHTML}]));
+  compareImportUndo={contexts,signature:compareSignature,characterReference:typeof compareCharacterReference!=='undefined'?characterClone(compareCharacterReference):null,raw:captureComparisonRaw(),items:JSON.parse(JSON.stringify(compareItems)),stamp:compareStamp,budgetStamp:compareBudgetStamp,budgetOrigin:compareBudgetOrigin,dirty:compareDirty,fixed:compareFixed,saved:compareSavedPlan,args:compareResultArgs,fields:compareResultFields,error:compareError,result:$('#compare-result').innerHTML,text:$('#compare-copy-text').textContent,unsaved:compareSessionUnsaved};$('#compare-undo-import').hidden=false;
+}
+$('#compare-undo-import').addEventListener('click',()=>{
+  const old=compareImportUndo;if(!old)return;
+  compareRequest++;comparePending=false;$('#compare-submit').disabled=false;
+  $('#equipment-comparison').querySelectorAll('input,select').forEach(el=>el.disabled=false);
+  for(const side of ['a','b'])compareContextSerial[side]++;
   if(typeof compareCharacterReference!=='undefined')compareCharacterReference=old.characterReference||null;
-  compareStamp=old.stamp;compareBudgetStamp=old.budgetStamp;compareBudgetOrigin=old.budgetOrigin;compareDirty=old.dirty;compareFixed=old.fixed;compareSavedPlan=old.saved;compareResultArgs=old.args;compareResultFields=old.fields;compareError=old.error;compareSessionUnsaved=old.unsaved;$('#compare-result').innerHTML=old.result;$('#compare-copy-text').textContent=old.text;compareImportUndo=null;$('#compare-undo-import').hidden=true;refreshComparisonOrigin();$('#compare-use-resources').focus();});
+  compareItems=old.items;compareSignature=old.signature;
+  compareStamp=old.stamp;compareBudgetStamp=old.budgetStamp;compareBudgetOrigin=old.budgetOrigin;compareDirty=old.dirty;compareFixed=old.fixed;compareSavedPlan=old.saved;compareResultArgs=old.args;compareResultFields=old.fields;compareError=old.error;compareSessionUnsaved=old.unsaved;
+  const restoreRaw=()=>{for(const input of $$('#equipment-comparison input, #equipment-comparison select')){
+    const raw=old.raw[input.id||input.dataset.compareKey];if(raw){input.value=raw.value;input.checked=raw.checked;input.dataset.manual=raw.manual;input.dataset.edited=raw.edited;}
+  }};
+  for(const side of ['a','b']){
+    $('#compare-'+side).innerHTML=compareItems.map((i,n)=>`<option value="${n}">${escapeHTML(i.name)}</option>`).join('');
+    $('#compare-augment-'+side).innerHTML=old.contexts[side].augments;
+  }
+  restoreRaw();
+  for(const side of ['a','b']){
+    const saved=old.contexts[side],target=$('#compare-context-'+side),item=compareItems[Number($('#compare-'+side).value)];
+    const ready=saved.identity&&saved.identity===item?.key;
+    target.innerHTML=ready?saved.html:'';target.dataset.identity=ready?saved.identity:'';
+    // Rebuild visibility and, if the old schema was still pending, reload it.
+    fillCompareChoice(side,true);
+  }
+  restoreRaw();
+  const physical=['weapon','armor'].includes($('#compare-kind').value);
+  $('#compare-investment-mode').querySelector('option[value="min_strength"]').disabled=!physical;
+  $('#compare-result').innerHTML=old.result;$('#compare-copy-text').textContent=old.text;
+  compareImportUndo=null;$('#compare-undo-import').hidden=true;refreshComparisonOrigin();$('#compare-use-resources').focus();
+});
 $('#compare-copy-result').addEventListener('click',async()=>{try{if(!$('#compare-copy-text').textContent)throw new Error('先完成比较再复制');await navigator.clipboard.writeText($('#compare-copy-text').textContent);$('#compare-copy-status').textContent='已复制结果、单位与生效条件';}catch(error){$('#compare-copy-status').textContent='复制未完成；请在可选取文本中复制结果与条件。';$('#compare-copy-text').closest('details').open=true;}});
 
 function updateComparisonSavedNote(){const note=compareSavedPlan?.note||'';$('#compare-user-note').textContent=note?'用户用途 / 假设（非游戏事实）：'+note:'';$('#compare-user-note').hidden=!note;const text=$('#compare-copy-text').textContent.split('\n用户用途 / 假设（非游戏事实）：')[0];$('#compare-copy-text').textContent=text+(note?'\n用户用途 / 假设（非游戏事实）：'+note:'');}

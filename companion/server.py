@@ -267,7 +267,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            maximum = 73728 if urlsplit(self.path).path == '/api/session-exit' else 16384
+            path = urlsplit(self.path).path
+            if path == '/api/session-exit':
+                from .session_exit import MAX_DRAFT
+                maximum = MAX_DRAFT + 8192
+            elif path == '/api/workspace':
+                from .knowledge import MAX_BYTES
+                maximum = MAX_BYTES
+            else:
+                maximum = 16384
             if not 0 < size <= maximum:
                 raise ValueError("请求大小不正确")
             self.connection.settimeout(5)

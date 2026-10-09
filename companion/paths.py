@@ -46,7 +46,7 @@ def migrate_data(destination, sources):
                     raise ValueError('旧收藏、方案或游玩设置过大，原文件仍保留，尚未迁移')
                 shutil.copy2(previous, temporary/name)
                 carried_preferences.append(name)
-        from .session_exit import ExitDraftStore, DRAFT_ID
+        from .session_exit import ExitDraftStore, DRAFT_ID, MAX_DRAFT_FILE
         drafts = ExitDraftStore(source/'exit-drafts')
         copied_drafts, uncarried_drafts = [], []
         if drafts.directory.exists():
@@ -63,7 +63,7 @@ def migrate_data(destination, sources):
                 if path in state_paths.values():
                     continue
                 unlinked(path)
-                if not DRAFT_ID.fullmatch(path.stem) or path.stat().st_size > 512*1024:
+                if not DRAFT_ID.fullmatch(path.stem) or path.stat().st_size > MAX_DRAFT_FILE:
                     raise ValueError('旧草稿文件名或大小不受支持，原件仍保留，尚未迁移')
                 try:
                     drafts.load(path.stem)

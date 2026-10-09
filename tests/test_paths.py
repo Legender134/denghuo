@@ -73,13 +73,15 @@ class DataPathTests(unittest.TestCase):
                 'slot': 'auto', 'mode': 'save', 'reveal': False}), encoding='utf-8')
             store = ExitDraftStore(source / 'exit-drafts')
             for index in range(201):
-                store.save('web-12345678', 'workspace', f'未提交草稿{index}', {'raw': str(index)})
+                store.save('web-12345678', 'workspace', f'未提交草稿{index}',
+                           {'raw': '中文原始输入' * 40000 if index == 0 else str(index)})
             originals = {path.name: path.read_bytes() for path in store.directory.glob('*.json')}
             destination = root / 'new'; report = migrate_data(destination, [source])
             self.assertEqual(len(report['copied_exit_drafts']), 201)
             self.assertEqual({path.name: path.read_bytes() for path in (destination / 'exit-drafts').glob('*.json')}, originals)
             self.assertEqual({path.name: path.read_bytes() for path in store.directory.glob('*.json')}, originals)
             self.assertEqual(len(ExitDraftStore(destination / 'exit-drafts').list()), 201)
+            self.assertTrue(any(len(raw) > 512 * 1024 for raw in originals.values()))
 
     def test_first_install_copies_raw_exit_drafts_and_preserves_incompatible_originals(self):
         from companion.session_exit import ExitDraftStore

@@ -1,6 +1,6 @@
 'use strict';
 let backupState, backupLoading=false, restoreTarget=null, backupHistoryLimit=20,backupRetainedLimit=20;
-let backupContext=null,manageTarget=null,repairTarget=null,restorePreview=0;
+let backupContext=null,manageTarget=null,repairTarget=null,historyRepairTarget=null,restorePreview=0;
 const backupViewKeys=new Map(),backupMetadataDrafts=new Map();
 let manageEditRevision=0;
 const nodeLabel=seconds=>seconds>=60?`${seconds/60} 分钟前`:`${seconds} 秒前`;
@@ -18,12 +18,13 @@ function syncBackupContext(context){
   if(context===backupContext)return;
   rememberBackupMetadataDraft();
   const changed=!!backupContext;
-  backupContext=context;backupState=null;manageTarget=null;repairTarget=null;restorePreview++;backupViewKeys.clear();
+  backupContext=context;backupState=null;manageTarget=null;repairTarget=null;historyRepairTarget=null;restorePreview++;backupViewKeys.clear();
   if(typeof resetBackupWorkflows==='function')resetBackupWorkflows(context);
   $('#backup-slot').value='';$('#backup-slot').innerHTML='';
   $('#backup-history-count').textContent=context?'正在读取当前目录的历史记录…':'服务未连接，历史数量暂不可确认。';
   $('#backup-node-gaps').textContent=context?'正在读取当前目录的时间节点…':'服务未连接，时间节点暂不可确认。';backupHistoryLimit=20;backupRetainedLimit=20;
   $('#repair-timeline').hidden=true;
+  $('#repair-history').hidden=true;$('#history-repair-dialog').close();
   $('#backup-storage').textContent=context?'正在读取当前目录的备份占用…':'服务未连接，备份占用暂不可确认。';
   $('#restore-dialog').close();restoreTarget=null;$('#manage-dialog').close();$('#repair-dialog').close();
   $('#manage-form').dataset.context='';$('#repair-form').dataset.context='';
@@ -56,6 +57,7 @@ async function loadBackups(){
     $('#backup-slot').innerHTML=slots.map(slot=>`<option value="${slot}">槽位 ${slot}${backupState.slots.some(row=>row.slot===slot)?'':'（暂无活动备份）'}</option>`).join('');
     $('#backup-slot').value=slots.includes(Number(selected))&&selected?selected:String(active||slots[0]);
     $('#repair-timeline').hidden=!backupState.repair_timeline_available;
+    $('#repair-history').hidden=!backupState.repair_history_available;
     renderBackups();
     if(typeof renderBackupWorkflows==='function')renderBackupWorkflows();
   }catch(error){if(context===state?.backup_context){$('#backup-status').textContent=error.message;$('#backup-nodes').textContent='备份信息不可用，请恢复连接后重试。';backupViewKeys.delete('#backup-nodes');}}
@@ -64,8 +66,9 @@ async function loadBackups(){
 function backupCard(row, labels='', mode='history'){
   const invalid=row.integrity?.valid===false;
   const tags=Array.isArray(labels)?`<div class="node-tags">${labels.map(label=>`<span>${escapeHTML(label)}</span>`).join('')}</div>`:'';
+  const recovered=row.metadata_recovered?'原名称和固定状态无法确认；恢复时默认全部固定，请逐份核对。':'';
   const imported=row.imported_at?`<br>导入登记 ${fmtTime(row.imported_at)}`:'';
-  return `<article class="panel backup-card"><span class="tiny-label">${escapeHTML(row.label||'未命名进度')}${row.locked?' · 已固定':''}</span>${tags}<p class="restore-age" data-backup-saved="${row.saved}">将回到 ${ageLabel(Date.now()/1000-row.saved)}前保存的进度</p>${backupSummary(row)}<p class="muted">${row.recovered_at?'原观察时间未知 · 最近登记':mode==='history'?'最近观察':'观察时间'} <span data-backup-observed="${row.id}" data-backup-mode="${mode}">${fmtTime(mode==='history'?row.last_seen:row.time)}</span>${imported}<br>版本码 ${escapeHTML(row.version??'未知')}${row.version<850?` · 当前${escapeHTML(state?.catalog_version||'参考游戏')}不能继续此旧档`:''}${invalid?`<br>不可用：${escapeHTML(row.integrity.error)}`:''}</p><div class="backup-actions"><button class="secondary" data-restore="${row.id}" ${invalid?'disabled':''}>预览并恢复</button><button class="quiet" data-manage="${row.id}">命名 / 固定</button><button class="quiet" data-export="${row.id}" ${invalid?'disabled':''}>导出</button><button class="quiet" data-remove="${row.id}" ${row.locked?'disabled':''}>移出</button></div></article>`;
+  return `<article class="panel backup-card"><span class="tiny-label">${escapeHTML(row.label||'未命名进度')}${row.locked?' · 已固定':''}</span>${tags}<p class="restore-age" data-backup-saved="${row.saved}">将回到 ${ageLabel(Date.now()/1000-row.saved)}前保存的进度</p>${backupSummary(row)}<p class="muted">${row.recovered_at?'原观察时间未知 · 最近登记':mode==='history'?'最近观察':'观察时间'} <span data-backup-observed="${row.id}" data-backup-mode="${mode}">${fmtTime(mode==='history'?row.last_seen:row.time)}</span>${imported}${recovered?`<br>${recovered}`:''}<br>版本码 ${escapeHTML(row.version??'未知')}${row.version<850?` · 当前${escapeHTML(state?.catalog_version||'参考游戏')}不能继续此旧档`:''}${invalid?`<br>不可用：${escapeHTML(row.integrity.error)}`:''}</p><div class="backup-actions"><button class="secondary" data-restore="${row.id}" ${invalid?'disabled':''}>预览并恢复</button><button class="quiet" data-manage="${row.id}">命名 / 固定</button><button class="quiet" data-export="${row.id}" ${invalid?'disabled':''}>导出</button><button class="quiet" data-remove="${row.id}" ${row.locked?'disabled':''}>移出</button></div></article>`;
 }
 function setBackupContent(selector,key,html){
   if(backupViewKeys.get(selector)===key)return false;
@@ -259,6 +262,35 @@ async function showLatestBackupMetadata(target){
   $('#manage-form').append(panel);
 }
 function initializeBackups(){
+  $('#repair-history').addEventListener('click',async()=>{
+    const context=backupState?.context;if(!context||context!==state?.backup_context)return;
+    const target=historyRepairTarget={context};
+    $('#history-repair-submit').disabled=true;$('#history-repair-confirm').checked=false;
+    $('#history-repair-error').hidden=true;$('#history-repair-preview').textContent='正在逐份校验备份…';
+    $('#history-repair-dialog').showModal();
+    try{
+      const result=await post('/api/backups',{action:'repair_history_preview',context});
+      if(historyRepairTarget!==target||context!==state?.backup_context)return;
+      const preview=result.preview;target.expected=preview.expected;
+      $('#history-repair-preview').innerHTML=`<p>已校验 ${preview.valid_archives} 份有效备份，将恢复 ${preview.records_count} 条历史记录。${escapeHTML(preview.message)}</p>`+
+        (preview.unavailable.length?'<p>以下原件会保留，无法作为有效备份恢复：</p><ul>'+preview.unavailable.map(row=>`<li>${escapeHTML(row.file)}：${escapeHTML(row.error)}</li>`).join('')+'</ul>':'<p>本次检查未发现不可用ZIP。</p>');
+      $('#history-repair-submit').disabled=false;
+    }catch(error){if(historyRepairTarget===target){$('#history-repair-error').hidden=false;$('#history-repair-error').textContent=error.message;}}
+  });
+  $('#close-history-repair').addEventListener('click',()=>{historyRepairTarget=null;$('#history-repair-dialog').close();});
+  $('#history-repair-dialog').addEventListener('cancel',()=>{historyRepairTarget=null;});
+  $('#history-repair-form').addEventListener('submit',async event=>{
+    event.preventDefault();const target=historyRepairTarget;if(!target?.expected)return;
+    const button=$('#history-repair-submit');button.disabled=true;$('#history-repair-error').hidden=true;
+    try{
+      if(!$('#history-repair-confirm').checked)throw new Error('请先确认保留原件并将恢复记录全部固定');
+      const result=await post('/api/backups',{action:'repair_history',context:target.context,expected:target.expected,confirm:'恢复备份历史'});
+      if(historyRepairTarget!==target)return;
+      historyRepairTarget=null;$('#history-repair-dialog').close();await poll();await loadBackups();
+      toast('备份历史已恢复；原记录已保留，恢复的备份默认全部固定。');
+    }catch(error){if(historyRepairTarget===target){$('#history-repair-error').hidden=false;$('#history-repair-error').textContent=error.message;}}
+    finally{if(historyRepairTarget===target)button.disabled=false;}
+  });
   $('#backup-slot').addEventListener('change',()=>{backupHistoryLimit=20;renderBackups();});
   for(const id of ['#backup-search','#backup-filter'])$(id).addEventListener('input',()=>{backupHistoryLimit=20;renderBackups();});
   $('#backup-more').addEventListener('click',()=>{backupHistoryLimit+=20;renderBackups();});
