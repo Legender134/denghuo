@@ -1,7 +1,8 @@
 'use strict';
 let backupState, backupLoading=false, restoreTarget=null, backupHistoryLimit=20,backupRetainedLimit=20;
 let backupContext=null,manageTarget=null,repairTarget=null,restorePreview=0;
-const backupViewKeys=new Map();
+const backupViewKeys=new Map(),backupMetadataDrafts=new Map();
+let manageEditRevision=0;
 const nodeLabel=seconds=>seconds>=60?`${seconds/60} 分钟前`:`${seconds} 秒前`;
 const classNames={WARRIOR:'战士',MAGE:'法师',ROGUE:'盗贼',HUNTRESS:'女猎手',DUELIST:'决斗家',CLERIC:'牧师'};
 const healthNames={paused:'自动备份已暂停',blocked:'自动备份受阻',waiting:'等待新的游戏保存',protected:'最近保存已备份'};
@@ -15,6 +16,7 @@ function renderBackupHealth(){
 }
 function syncBackupContext(context){
   if(context===backupContext)return;
+  rememberBackupMetadataDraft();
   const changed=!!backupContext;
   backupContext=context;backupState=null;manageTarget=null;repairTarget=null;restorePreview++;backupViewKeys.clear();
   if(typeof resetBackupWorkflows==='function')resetBackupWorkflows(context);
@@ -26,6 +28,7 @@ function syncBackupContext(context){
   $('#restore-dialog').close();restoreTarget=null;$('#manage-dialog').close();$('#repair-dialog').close();
   $('#manage-form').dataset.context='';$('#repair-form').dataset.context='';
   for(const selector of ['#backup-history','#backup-retained','#backup-undo','#backup-nodes'])$(selector).replaceChildren();
+  renderBackupMetadataDrafts();
   if(changed&&context)toast('存档历史的确认状态已更新，请重新选择备份并预览。');
 }
 function backupSummary(row){
@@ -169,23 +172,90 @@ function openConfirm(row, operation,context){
   $('#restore-submit').textContent={restore:'确认恢复',undo:'确认撤回',remove:'确认移出'}[operation];
   $('#restore-dialog').showModal();
 }
+function backupMetadataKey(record){return JSON.stringify([record.save_root,record.slot,record.id]);}
+function backupMetadataRaw(){return {label:$('#backup-label').value,locked:$('#backup-locked').checked};}
+function sameBackupMetadata(a,b){return a?.label===b?.label&&a?.locked===b?.locked;}
+function rememberBackupMetadataDraft(){
+  if(!manageTarget)return;
+  const raw=backupMetadataRaw(),key=backupMetadataKey(manageTarget);
+  if(sameBackupMetadata(raw,manageTarget.baseline))backupMetadataDrafts.delete(key);
+  else backupMetadataDrafts.set(key,{format:1,id:manageTarget.id,slot:manageTarget.slot,save_root:manageTarget.save_root,
+    expected_metadata_revision:manageTarget.expected_metadata_revision,baseline:{...manageTarget.baseline},raw});
+}
+function captureBackupMetadataDrafts(){rememberBackupMetadataDraft();return Array.from(backupMetadataDrafts.values(),record=>({...record,raw:{...record.raw},baseline:{...record.baseline}}));}
+function backupMetadataDraftLabel(){return captureBackupMetadataDrafts().length?'备份名称 / 固定标记':'';}
+function checkedBackupMetadataDrafts(records){
+  if(!Array.isArray(records)||records.length>200)throw new Error('备份编辑草稿数量不正确；原副本仍保留。');
+  const keys=new Set();
+  for(const record of records){
+    if(!record||record.format!==1||Object.keys(record).some(key=>!['format','id','slot','save_root','expected_metadata_revision','baseline','raw'].includes(key))||typeof record.id!=='string'||! /^[a-f0-9]{64}$/.test(record.id)||!Number.isInteger(record.slot)||record.slot<1||record.slot>6||typeof record.save_root!=='string'||record.save_root.length>16384||/[\u0000-\u001f]/.test(record.save_root)||typeof record.expected_metadata_revision!=='string'||! /^[a-f0-9]{64}$/.test(record.expected_metadata_revision))throw new Error('备份编辑草稿身份或版本不正确；原副本仍保留。');
+    for(const value of [record.baseline,record.raw])if(!value||Object.keys(value).length!==2||typeof value.label!=='string'||value.label.length>80||/[\u0000-\u001f]/.test(value.label)||typeof value.locked!=='boolean')throw new Error('备份名称或固定标记草稿格式不正确；原副本仍保留。');
+    const key=backupMetadataKey(record);if(keys.has(key))throw new Error('备份编辑草稿包含重复记录；原副本仍保留。');keys.add(key);
+    const existing=backupMetadataDrafts.get(key);if(existing&&JSON.stringify(existing)!==JSON.stringify(record))throw new Error('当前已有这份备份的不同编辑；双方均保留，请先保存当前草稿。');
+  }
+  return records;
+}
+function restoreBackupMetadataDrafts(records){
+  checkedBackupMetadataDrafts(records);
+  for(const record of records)backupMetadataDrafts.set(backupMetadataKey(record),{...record,raw:{...record.raw},baseline:{...record.baseline}});
+  renderBackupMetadataDrafts();
+}
+function renderBackupMetadataDrafts(){
+  const holder=$('#backup-metadata-drafts');if(!holder)return;
+  const rows=Array.from(backupMetadataDrafts.values());
+  const html=rows.length?`<h3>未保存的备份编辑 · ${rows.length} 份</h3><p>关闭弹窗会保留编辑；退出时可保存为会话草稿副本。载入后请重新核对目录和备份。</p>`+rows.map((row,index)=>`<div class="retained-row"><span>槽位 ${row.slot} · ${escapeHTML(row.raw.label||'未命名进度')} · ${row.raw.locked?'固定保留':'未固定'}<br>${escapeHTML(row.save_root)} · ${row.id.slice(0,12)}</span><button type="button" class="secondary" data-metadata-resume="${index}">继续编辑</button></div>`).join(''):'';
+  const revision=JSON.stringify(rows);
+  if(holder.dataset.revision===revision)return;holder.dataset.revision=revision;holder.innerHTML=html;holder.hidden=!rows.length;
+  holder.querySelectorAll('[data-metadata-resume]').forEach(button=>button.addEventListener('click',()=>action(()=>resumeBackupMetadataDraft(rows[Number(button.dataset.metadataResume)]))));
+}
+function showManageTarget(target){
+  manageTarget=target;manageEditRevision++;$('#manage-latest')?.remove();$('#manage-error').hidden=true;
+  $('#manage-form').dataset.id=target.id;$('#manage-form').dataset.slot=target.slot;$('#manage-form').dataset.context=target.context||'';
+  $('#backup-label').value=target.raw.label;$('#backup-locked').checked=target.raw.locked;
+  $('#manage-directory').textContent=`槽位 ${target.slot} · 备份 ${target.id.slice(0,12)} · 原目录：${target.save_root}`;
+  $('#manage-submit').disabled=!target.context;$('#manage-dialog').showModal();
+}
 function openManage(row,context){
   if(context!==state?.backup_context){toast('存档连接已变化，请重新选择备份。',true);return;}
-  manageTarget={id:row.id,slot:row.slot,context,expected_metadata_revision:row.metadata_revision};
-  $('#manage-latest')?.remove();
-  $('#manage-error').hidden=true;
-  $('#manage-form').dataset.id=row.id;$('#manage-form').dataset.slot=row.slot;$('#manage-form').dataset.context=context;
-  $('#backup-label').value=row.label||'';$('#backup-locked').checked=!!row.locked;$('#manage-dialog').showModal();
+  rememberBackupMetadataDraft();
+  const target={id:row.id,slot:row.slot,save_root:backupState?.save_root||state.settings.save_root,context,
+    expected_metadata_revision:row.metadata_revision,baseline:{label:row.label||'',locked:!!row.locked},raw:{label:row.label||'',locked:!!row.locked}};
+  const previous=backupMetadataDrafts.get(backupMetadataKey(target));
+  showManageTarget(previous?{...previous,context}:target);renderBackupMetadataDrafts();
+}
+async function resumeBackupMetadataDraft(record){
+  rememberBackupMetadataDraft();const generation=manageEditRevision,context=state?.backup_context;
+  if(!context)throw new Error('请先恢复连接；备份编辑仍保留。');
+  const response=await fetch('/api/backups?'+new URLSearchParams({context})),latest=await response.json();
+  if(!response.ok)throw new Error(latest.error||'备份暂时无法读取');
+  if(context!==state?.backup_context||latest.context!==context||generation!==manageEditRevision)throw new Error('读取期间连接或编辑有变化；草稿仍保留，请重试。');
+  const row=latest.history.find(row=>row.id===record.id&&row.slot===record.slot);
+  if(!row)throw new Error('当前目录没有这份备份；请切换至原目录，或先导入对应备份。原始编辑仍保留。');
+  const matched=latest.save_root===record.save_root;
+  showManageTarget({...record,context:matched?context:null});
+  if(!matched)showBackupMetadataRebind(manageTarget,latest,row);else if(row.metadata_revision!==record.expected_metadata_revision)await showLatestBackupMetadata(manageTarget);
+}
+function showBackupMetadataRebind(target,latest,row){
+  const panel=document.createElement('section');panel.id='manage-latest';panel.className='support-step';
+  const info=document.createElement('p');info.textContent=`草稿来自不同目录或搬机副本，尚未关联。当前目录：${latest.save_root}；槽位 ${row.slot}；同一备份 ${row.id.slice(0,12)}；当前名称：${row.label||'未命名进度'}；固定保留：${row.locked?'已开启':'未开启'}。请核对后再关联。`;panel.append(info);
+  const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='已确认是这份备份，将编辑关联到当前目录';
+  button.addEventListener('click',()=>{
+    if(manageTarget!==target||latest.context!==state?.backup_context)return;
+    rememberBackupMetadataDraft();const raw=backupMetadataRaw(),next={...target,context:latest.context,save_root:latest.save_root,expected_metadata_revision:row.metadata_revision,baseline:{label:row.label||'',locked:!!row.locked},raw};
+    const existing=backupMetadataDrafts.get(backupMetadataKey(next));if(existing&&!sameBackupMetadata(existing.raw,raw)){toast('当前目录已有不同编辑；双方均保留，请先处理该草稿。',true);return;}
+    backupMetadataDrafts.delete(backupMetadataKey(target));manageTarget=next;manageEditRevision++;rememberBackupMetadataDraft();renderBackupMetadataDrafts();panel.remove();$('#manage-submit').disabled=false;
+    $('#manage-directory').textContent=`槽位 ${next.slot} · 备份 ${next.id.slice(0,12)} · 已关联目录：${next.save_root}`;toast('已关联，尚未保存；请核对后点击保存。');
+  });panel.append(button);$('#manage-form').append(panel);
 }
 async function showLatestBackupMetadata(target){
   const response=await fetch('/api/backups?'+new URLSearchParams({context:target.context}));
   const latest=await response.json();if(!response.ok)throw new Error(latest.error||'最新备份信息暂不可读');
-  if(manageTarget!==target||latest.context!==target.context)return;
+  if(manageTarget!==target||latest.context!==target.context||state?.backup_context!==target.context)return;
   const row=latest.history.find(row=>row.id===target.id&&row.slot===target.slot);
   $('#manage-latest')?.remove();const panel=document.createElement('section');panel.id='manage-latest';panel.className='support-step';
-  const info=document.createElement('p');info.textContent=row?`最新名称：${row.label||'未命名进度'}；永久保留：${row.locked?'已开启':'未开启'}。上方仍是你原来的编辑，请对照核对。`:'这份备份已不在当前活动历史。上方编辑仍保留；请关闭对话框后核对空间清单。';panel.append(info);
-  if(row){const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='已核对最新信息，重新确认上方名称和永久保留设置';
-    button.addEventListener('click',()=>{if(manageTarget!==target)return;manageTarget={...target,expected_metadata_revision:row.metadata_revision};panel.remove();$('#manage-error').hidden=true;$('#manage-form').requestSubmit();});panel.append(button);}
+  const info=document.createElement('p');info.textContent=row?`最新名称：${row.label||'未命名进度'}；永久保留：${row.locked?'已开启':'未开启'}。上方仍是你原来的编辑，请对照核对。`:'这份备份已不在当前活动历史。编辑仍保留；请核对空间清单。';panel.append(info);
+  if(row){const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='已核对最新信息，保留上方编辑并重新确认';
+    button.addEventListener('click',()=>{if(manageTarget!==target||state?.backup_context!==target.context)return;manageTarget={...target,expected_metadata_revision:row.metadata_revision,baseline:{label:row.label||'',locked:!!row.locked}};manageEditRevision++;rememberBackupMetadataDraft();renderBackupMetadataDrafts();panel.remove();$('#manage-error').hidden=true;toast('最新信息已核对；尚未保存，请点击保存。');});panel.append(button);}
   $('#manage-form').append(panel);
 }
 function initializeBackups(){
@@ -231,13 +301,31 @@ function initializeBackups(){
       $('#restore-dialog').close();restoreTarget=null;await loadBackups();toast(backupState.notice);
     }catch(error){if(restoreTarget===target){$('#restore-confirm').checked=false;$('#restore-error').hidden=false;$('#restore-error').textContent=error.message+'。操作未完成，请核对后重试。';}}finally{if(restoreTarget===target||restoreTarget===null)button.disabled=false;}})();
   });
-  $('#close-manage').addEventListener('click',()=>{manageTarget=null;$('#manage-dialog').close();});
-  $('#manage-dialog').addEventListener('cancel',()=>{manageTarget=null;});
+  const closeManage=()=>{rememberBackupMetadataDraft();manageTarget=null;manageEditRevision++;renderBackupMetadataDrafts();};
+  $('#close-manage').addEventListener('click',()=>{closeManage();$('#manage-dialog').close();});
+  $('#manage-dialog').addEventListener('cancel',closeManage);
+  for(const id of ['#backup-label','#backup-locked'])$(id).addEventListener('input',()=>{manageEditRevision++;rememberBackupMetadataDraft();renderBackupMetadataDrafts();});
   $('#manage-form').addEventListener('submit',event=>{
     event.preventDefault();const target=manageTarget;if(!target)return;
-    const payload={action:'manage',...target,label:$('#backup-label').value,locked:$('#backup-locked').checked};
-    (async()=>{try{await post('/api/backups',payload);if(manageTarget!==target)return;
-      $('#manage-dialog').close();manageTarget=null;await loadBackups();toast('已保存备份名称与保留设置');
-    }catch(error){if(manageTarget===target){$('#manage-error').hidden=false;$('#manage-error').textContent=error.message+'。原编辑保留；请先核对最新名称与保护状态。';try{await showLatestBackupMetadata(target);}catch(readError){if(manageTarget===target)$('#manage-error').textContent+=' 最新信息读取失败：'+readError.message;}}}})();
+    if(!target.context||target.context!==state?.backup_context){$('#manage-error').hidden=false;$('#manage-error').textContent='连接已变化；编辑仍保留，请从未保存编辑中重新核对。';return;}
+    rememberBackupMetadataDraft();const raw=backupMetadataRaw(),generation=manageEditRevision,key=backupMetadataKey(target);
+    const payload={action:'manage',id:target.id,slot:target.slot,context:target.context,expected_metadata_revision:target.expected_metadata_revision,...raw};
+    $('#manage-submit').disabled=true;
+    (async()=>{try{const result=await post('/api/backups',payload),saved=result.metadata;
+      if(!saved||saved.id!==target.id||saved.slot!==target.slot||typeof saved.label!=='string'||typeof saved.locked!=='boolean'||! /^[a-f0-9]{64}$/.test(saved.metadata_revision)||result.context!==target.context||result.save_root!==target.save_root)throw new Error('保存回执无法核对；编辑仍保留，请读取最新信息。');
+      const pending=backupMetadataDrafts.get(key);
+      if(pending&&pending.expected_metadata_revision===target.expected_metadata_revision){
+        const baseline={label:saved.label,locked:saved.locked};
+        if(sameBackupMetadata(pending.raw,raw)||sameBackupMetadata(pending.raw,baseline))backupMetadataDrafts.delete(key);
+        else backupMetadataDrafts.set(key,{...pending,baseline,expected_metadata_revision:saved.metadata_revision});
+      }
+      if(manageTarget!==target){renderBackupMetadataDrafts();return;}
+      manageTarget={...target,baseline:{label:saved.label,locked:saved.locked},expected_metadata_revision:saved.metadata_revision};
+      if(generation===manageEditRevision&&sameBackupMetadata(backupMetadataRaw(),raw)){
+        $('#backup-label').value=saved.label;$('#backup-locked').checked=saved.locked;rememberBackupMetadataDraft();manageTarget=null;$('#manage-dialog').close();toast('已保存备份名称与保留设置');
+      }else{rememberBackupMetadataDraft();$('#manage-error').hidden=false;$('#manage-error').textContent='本次提交已保存；之后的新编辑仍未保存。';}
+      renderBackupMetadataDrafts();await loadBackups();
+    }catch(error){if(manageTarget===target){$('#manage-error').hidden=false;$('#manage-error').textContent=error.message+'。原编辑保留；请先核对最新名称与保护状态。';try{await showLatestBackupMetadata(target);}catch(readError){if(manageTarget===target)$('#manage-error').textContent+=' 最新信息读取失败：'+readError.message;}}}
+    finally{if(manageTarget?.context===state?.backup_context)$('#manage-submit').disabled=false;}})();
   });
 }

@@ -243,8 +243,8 @@ class Session:
     def save_exit_draft(self, surface_id, kind, label, draft):
         return self.exit_drafts.save(surface_id, kind, label, draft)
 
-    def list_exit_drafts(self):
-        return self.exit_drafts.list()
+    def list_exit_drafts(self, include_archived=False):
+        return self.exit_drafts.list(include_archived=include_archived)
 
     def load_exit_draft(self, identity):
         return self.exit_drafts.load(identity)
@@ -267,9 +267,17 @@ class Session:
         elif action == 'save-draft':
             return {'saved': self.save_exit_draft(surface, payload.get('kind', 'web-session'), payload.get('label', '未完成草稿'), payload.get('draft'))}
         elif action == 'draft-list':
-            return {'drafts': self.list_exit_drafts()}
+            rows = self.list_exit_drafts(include_archived=True)
+            include_archived = payload.get('include_archived', False)
+            if type(include_archived) is not bool:
+                raise ValueError('草稿归档筛选不正确')
+            return {'drafts': rows if include_archived else [row for row in rows if row.get('state') != 'archived'],
+                    'archived_count': sum(row.get('state') == 'archived' for row in rows)}
         elif action == 'draft-load':
             return {'draft': self.load_exit_draft(payload.get('id'))}
+        elif action == 'draft-state':
+            return {'draft_state': self.exit_drafts.set_lifecycle(payload.get('id'), payload.get('state'),
+                payload.get('expected_revision'))}
         elif action == 'resolve-offline':
             return self.exit_coordinator.resolve_offline(payload.get('request_id'), surface, payload.get('decision'), payload.get('revision'))
         else:
@@ -433,6 +441,7 @@ class Session:
     def backup_action(self, payload):
         if not isinstance(payload, dict):
             raise ValueError("备份请求格式不正确")
+        receipt = None
         with self.lock:
             if self.config_error:
                 raise ValueError("请先恢复连接设置，再操作存档备份")
@@ -452,7 +461,8 @@ class Session:
             elif payload.get('action') == 'undo':
                 self.backups.undo(root, payload)
             elif payload.get('action') == 'manage':
-                self.backups.manage(root, payload)
+                receipt = {'ok': True, 'metadata': self.backups.manage(root, payload),
+                           'context': self.backup_context, 'save_root': root}
             elif payload.get('action') == 'validate':
                 self.backups.validate(root)
             elif payload.get('action') == 'rejoin':
@@ -472,6 +482,7 @@ class Session:
                 self._run_identity = None
                 self.history = []
         self.refresh()
+        return receipt
 
     def backup_transfer(self, action, payload, *, context=None):
         with self.lock:
@@ -539,7 +550,7 @@ class Session:
                 raise ValueError('不支持的备份工作流')
             return {**result, 'context': self.backup_context}
 
-    def update_settings(self, patch, *, expected_revision=None):
+    def update_settings(self, patch, *, expected_revision=None, return_receipt=False):
         clean = validate_settings(patch)
         with self.lock:
             if expected_revision is not None and expected_revision != self.settings_revision:
@@ -576,12 +587,13 @@ class Session:
             self.settings = updated
             self.settings_revision = uuid.uuid4().hex
             revision = self.settings_revision
+            receipt = {'ok': True, 'settings_revision': revision, 'settings': dict(updated)}
             self.config_error = ""
             if backup is not None:
                 self.configuration_notice = f"原配置已保留为 {backup.name}。"
             self._fingerprint = None
         self.refresh()
-        return revision
+        return receipt if return_receipt else revision
 
     def update_manual(self, payload):
         game = manual_game(payload)

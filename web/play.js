@@ -1,7 +1,10 @@
 'use strict';
-let playSaved=null,playRevision=null,playSeenRevision=null,playRequest=0,playDraftGeneration=0,playDirty=false,playConflict=false,playRuntime=null;
+let playSaved=null,playRevision=null,playSeenRevision=null,playRequest=0,playDraftGeneration=0,playDirty=false,playConflict=false,playRuntime=null,playRawBaseline=null;
 const playFields=['enabled','alerts','anchor','offset_x','offset_y','font_scale','opacity','notice_seconds'];
 const bindingLabels={capture:'立即备份',show:'显示完整管理面板',library:'桌面资料速查',backups:'存档时光机',play_toggle:'临时显示 / 隐藏游玩窗',quick:'打开优先建议速查'};
+function playRawValues(){return {...Object.fromEntries(playFields.map(key=>['play-'+key,['enabled','alerts'].includes(key)?$('#play-'+key).checked:$('#play-'+key).value])),...Object.fromEntries($$('#play-bindings [data-binding]').map(input=>['binding.'+input.dataset.binding,input.value]))};}
+function playSavedRaw(settings){return {...Object.fromEntries(playFields.map(key=>['play-'+key,['enabled','alerts'].includes(key)?settings[key]:String(settings[key])])),...Object.fromEntries(Object.entries(settings.bindings).map(([key,value])=>['binding.'+key,value]))};}
+function capturePlayDraft(){const raw=playRawValues();return {format:2,raw,baseline:playRawBaseline?{...playRawBaseline}:null,changed:Object.keys(raw).filter(key=>!playRawBaseline||raw[key]!==playRawBaseline[key])};}
 function playFormValues(){
   const result={};for(const key of playFields){const input=$('#play-'+key);result[key]=['enabled','alerts'].includes(key)?input.checked:key==='anchor'?input.value:Number(input.value);}
   result.bindings=Object.fromEntries($$('#play-bindings [data-binding]').map(input=>[input.dataset.binding,input.value]));return result;
@@ -24,28 +27,32 @@ async function loadPlaySettings(force=false){
 function applyPlayRead(result,replaceDraft){
   playRuntime=result;playSeenRevision=result.revision;
   if(replaceDraft){
-    playSaved=result.settings;playRevision=result.revision;playDirty=false;playConflict=false;playDraftGeneration++;
-    for(const key of playFields)$('#play-'+key)[['enabled','alerts'].includes(key)?'checked':'value']=result.settings[key];
+    const incoming=playSavedRaw(result.settings),current=playRawValues();
+    if(playRevision!==result.revision||playDirty||Object.keys(current).length!==Object.keys(incoming).length||Object.keys(incoming).some(key=>current[key]!==incoming[key]))playDraftGeneration++;
+    playSaved=result.settings;playRevision=result.revision;playDirty=false;playConflict=false;
+    for(const key of playFields)$('#play-'+key)[['enabled','alerts'].includes(key)?'checked':'value']=['enabled','alerts'].includes(key)?result.settings[key]:String(result.settings[key]);
     $('#play-bindings').innerHTML=Object.entries(result.settings.bindings).map(([key,value])=>`<label>${escapeHTML(bindingLabels[key]||key)}<input type="text" data-binding="${escapeHTML(key)}" maxlength="60" value="${escapeHTML(value)}" aria-label="${escapeHTML(bindingLabels[key]||key)}快捷键"><small data-binding-state="${escapeHTML(key)}"></small></label>`).join('');
+    playRawBaseline=playSavedRaw(result.settings);
     inlineError($('#play-error'),result.error||'');
   }else if(result.revision!==playRevision)playConflict=true;
   renderPlayRuntime(result);renderPlayDraftNotice();
 }
 async function reloadPlaySettings(){
   const operation=++playRequest,generation=playDraftGeneration;$('#play-reload').disabled=true;
-  try{const latest=await getJSON('/api/play-settings');if(operation!==playRequest)return;const result=await post('/api/play-settings/reload',{revision:latest.revision});if(operation!==playRequest)return;if(result.error){applyPlayRead(result,false);playRevision=result.revision;playConflict=false;renderPlayDraftNotice();inlineError($('#play-error'),result.error+' 当前表单草稿保留；核对后可保存修正配置。');return;}applyPlayRead(result,generation===playDraftGeneration);if(generation!==playDraftGeneration)inlineError($('#play-error'),'磁盘配置已重新读取；操作期间的新编辑保留为草稿，请核对后再明确重新读取。');}
+  try{const latest=await getJSON('/api/play-settings');if(operation!==playRequest)return;const result=await post('/api/play-settings/reload',{revision:latest.revision});if(operation!==playRequest)return;if(result.error){applyPlayRead(result,false);playRevision=result.revision;playConflict=false;renderPlayDraftNotice();inlineError($('#play-error'),result.error+' 当前表单草稿保留；核对后可保存修正配置。');return;}const newerEdits=generation!==playDraftGeneration;applyPlayRead(result,!newerEdits);if(newerEdits)inlineError($('#play-error'),'磁盘配置已重新读取；操作期间的新编辑保留为草稿，请核对后再明确重新读取。');}
   catch(error){if(operation===playRequest)inlineError($('#play-error'),error.message);}
   finally{$('#play-reload').disabled=false;}
 }
 function refreshPlaySettings(){if(state&&state.play_revision!==playSeenRevision)loadPlaySettings();}
-$('#play-form').addEventListener('input',()=>{playDirty=true;playDraftGeneration++;renderPlayDraftNotice();});
+$('#play-form').addEventListener('input',()=>{playDirty=capturePlayDraft().changed.length>0;playDraftGeneration++;renderPlayDraftNotice();});
 $('#play-reload').addEventListener('click',reloadPlaySettings);
 $('#play-form').addEventListener('submit',async event=>{
   event.preventDefault();if(playRevision===null){inlineError($('#play-error'),'请先读取已保存设置，不能把默认值当作当前配置。');return;}if(playConflict){inlineError($('#play-error'),'其他窗口已修改配置；草稿保留，请明确重新读取再保存。');return;}
   const operation=++playRequest,generation=playDraftGeneration,settings=playFormValues(),revision=playRevision;$('#play-save').disabled=true;
   try{
     const result=await post('/api/play-settings',{settings,revision});if(operation!==playRequest)return;playRevision=result.revision;playSeenRevision=result.revision;playSaved=result.settings||settings;playConflict=false;
-    if(generation===playDraftGeneration)playDirty=false;
+    playRawBaseline=playSavedRaw(playSaved);
+    if(generation===playDraftGeneration){for(const key of playFields)$('#play-'+key)[['enabled','alerts'].includes(key)?'checked':'value']=['enabled','alerts'].includes(key)?playSaved[key]:String(playSaved[key]);for(const input of $$('#play-bindings [data-binding]'))input.value=playSaved.bindings[input.dataset.binding];playDirty=false;}else playDirty=capturePlayDraft().changed.length>0;
     inlineError($('#play-error'),'');renderPlayDraftNotice();if(result.desktop_status)renderPlayRuntime({...result,settings:playSaved});else await loadPlaySettings();toast(playDirty?'配置已保存；你之后输入的新修改仍是草稿':'已保存配置；请核对桌面应用与注册状态');
   }catch(error){if(operation===playRequest){inlineError($('#play-error'),error.message);if(/其他|变化|冲突|重新读取/.test(error.message))playConflict=true;renderPlayDraftNotice();}}
   finally{$('#play-save').disabled=false;}

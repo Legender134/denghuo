@@ -167,9 +167,14 @@ class NativeManager:
                     row, source, note = self.references[index]
                     self.manager.open_reference(row, source, note)
             elif action == 'list_drafts':
-                self.host.command('drafts', rows=self.session.list_exit_drafts())
+                include_archived = item.get('include_archived', False)
+                self.host.command('drafts', rows=self.draft_rows(include_archived), include_archived=include_archived)
             elif action == 'load_draft':
-                self.restore_draft(self.session.load_exit_draft(item['id']))
+                self.restore_draft(self.session.load_exit_draft(item['id']), item.get('component'))
+            elif action == 'draft_state':
+                self.session.exit_drafts.set_lifecycle(item['id'], item.get('state'), item.get('expected_revision'))
+                self.host.command('drafts', rows=self.draft_rows(item.get('include_archived', False)),
+                                  include_archived=item.get('include_archived', False))
             self.report_drafts()
             self.update(self.session.snapshot(), force=True)
         except (ValueError, KeyError, OSError, RuntimeError) as exc:
@@ -179,19 +184,40 @@ class NativeManager:
             else:
                 self.error(str(exc))
 
-    def restore_draft(self, saved):
+    def draft_rows(self, include_archived=False):
+        rows = self.session.list_exit_drafts(include_archived=include_archived)
+        for row in rows:
+            if row.get('draft_kind') == 'offline-native' and not row.get('error'):
+                try:
+                    draft = self.session.load_exit_draft(row['id'])['draft']
+                    row['components'] = [key for key in ('numeric', 'play-settings')
+                                         if isinstance(draft.get(key), dict)]
+                    if not row['components']:
+                        row['error'] = '副本没有当前版本支持的原生表单；原件仍保留。'
+                except (ValueError, OSError) as exc:
+                    row['error'] = str(exc)
+        return rows
+
+    def restore_draft(self, saved, component=None):
         kind = saved['draft_kind']
+        draft = saved['draft']
+        if kind == 'offline-native':
+            if component not in ('numeric', 'play-settings') or not isinstance(draft.get(component), dict):
+                raise ValueError('请在草稿列表选择此离线副本中的数值或游玩设置表单；原件仍保留。')
+            kind, draft = component, draft[component]
+        elif component is not None:
+            raise ValueError('此副本不含所选原生表单；原件仍保留。')
         if kind == 'numeric':
             self.manager.open_lookup()
             lookup = self.lookup()
-            lookup.guard('载入未完成草稿', lambda: lookup.restore_draft(saved['draft']))
+            lookup.guard('载入未完成草稿', lambda: lookup.restore_draft(draft))
         elif kind == 'play-settings':
             self.manager.open_play_settings()
             settings = self.manager.play_settings
             if settings.has_draft():
                 self.error('当前游玩设置已有草稿；请先保存或重新读取后再载入副本。')
             else:
-                settings.restore_draft(saved['draft'])
+                settings.restore_draft(draft)
         else:
             raise ValueError('此草稿属于完整面板，请在完整面板中载入；尚未应用。')
 

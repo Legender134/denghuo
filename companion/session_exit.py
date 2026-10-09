@@ -63,8 +63,8 @@ def checked_draft(value):
 def checked_saved_draft(value, identity=None):
     """Validate a portable record without interpreting or applying its raw form."""
     fields = {'format', 'kind', 'id', 'surface_id', 'draft_kind', 'label', 'saved', 'draft'}
-    if (not isinstance(value, dict) or set(value) != fields or type(value['format']) is not int
-            or value['format'] != 1 or value['kind'] != 'denghuo-unfinished-draft'
+    if (not isinstance(value, dict) or set(value) not in (fields, fields | {'lifecycle'}) or type(value['format']) is not int
+            or value['format'] not in (1, 2) or value['kind'] != 'denghuo-unfinished-draft'
             or not isinstance(value['id'], str) or not DRAFT_ID.fullmatch(value['id'])
             or identity is not None and value['id'] != identity
             or not isinstance(value['surface_id'], str) or not SURFACE.fullmatch(value['surface_id'])
@@ -72,6 +72,8 @@ def checked_saved_draft(value, identity=None):
             or not 0 <= value['saved'] <= 32503680000):
         raise ValueError('草稿格式或版本不兼容，原件仍保留；尚未载入或应用')
     result = copy.deepcopy(value)
+    if 'lifecycle' in result and (result['format'] != 2 or result['lifecycle'] not in ('active', 'archived')):
+        raise ValueError('草稿归档状态不兼容，原件仍保留')
     bounded_text(result['draft_kind'], 60, '草稿类型')
     bounded_text(result['label'], 120, '草稿名称')
     result['draft'] = checked_draft(result['draft'])
@@ -105,9 +107,10 @@ class ExitDraftStore:
         label = bounded_text(label, 120, '草稿名称')
         draft = checked_draft(draft)
         identity = uuid.uuid4().hex
-        value = {'format': 1, 'kind': 'denghuo-unfinished-draft', 'id': identity,
+        # Older clients reject v2 before interpreting newer recovery contracts.
+        value = {'format': 2, 'kind': 'denghuo-unfinished-draft', 'id': identity,
                  'surface_id': surface_id, 'draft_kind': kind, 'label': label,
-                 'saved': time.time(), 'draft': draft}
+                 'saved': time.time(), 'draft': draft, 'lifecycle': 'active'}
         with self.lock:
             unlinked(self.directory).mkdir(parents=True, exist_ok=True)
             path = unlinked(self.directory / (identity + '.json'))
@@ -143,6 +146,52 @@ class ExitDraftStore:
                 rows[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
             return rows
 
+    def lifecycle(self, identity):
+        """Keep completion state beside the immutable original, bound to its bytes."""
+        with self.lock:
+            record = self.load(identity)
+            original = unlinked(self.directory / (identity + '.json')).read_bytes()
+            digest = hashlib.sha256(original).hexdigest()
+            path = unlinked(self.directory / (identity + '.state.json'))
+            raw = b''
+            state = record.get('lifecycle', 'active')
+            if path.exists():
+                with path.open('rb') as stream:
+                    raw = stream.read(4097)
+                try:
+                    value = json.loads(raw)
+                    if (len(raw) > 4096 or not isinstance(value, dict)
+                            or set(value) != {'format', 'id', 'original_sha256', 'state', 'generation'}
+                            or type(value['format']) is not int or value['format'] != 1
+                            or value['id'] != identity or value['original_sha256'] != digest
+                            or value['state'] not in ('active', 'archived')
+                            or not isinstance(value['generation'], str) or not DRAFT_ID.fullmatch(value['generation'])):
+                        raise ValueError('invalid state')
+                    state = value['state']
+                except (ValueError, UnicodeError, RecursionError) as exc:
+                    raise ValueError('草稿归档状态无法核对；原件仍保留，请先核对副本') from exc
+            return {'state': state, 'state_revision': hashlib.sha256(digest.encode() + b'\0' + raw).hexdigest()}
+
+    def set_lifecycle(self, identity, state, expected_revision):
+        if state not in ('active', 'archived'):
+            raise ValueError('请选择归档或恢复到未完成列表')
+        with self.lock:
+            current = self.lifecycle(identity)
+            if expected_revision != current['state_revision']:
+                raise ValueError('草稿或归档状态已变化；请重新读取列表，原副本仍保留')
+            path = unlinked(self.directory / (identity + '.json'))
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            atomic_json(unlinked(self.directory / (identity + '.state.json')),
+                {'format': 1, 'id': identity, 'original_sha256': digest, 'state': state,
+                 'generation': uuid.uuid4().hex})
+            return {'id': identity, **self.lifecycle(identity), 'applied': False}
+
+    @staticmethod
+    def same_content(first, second):
+        # Portable v2 can add lifecycle to a v1 original without changing its form.
+        return {**{k: v for k, v in first.items() if k != 'lifecycle'}, 'format': 2} == {
+            **{k: v for k, v in second.items() if k != 'lifecycle'}, 'format': 2}
+
     def export_records(self, identities, text_filter=lambda text: text):
         """Only migration copies are redacted; persisted local drafts are unchanged."""
         if (not isinstance(identities, list) or not 1 <= len(identities) <= MAX_SAVED_DRAFTS
@@ -158,7 +207,11 @@ class ExitDraftStore:
                 return {key: portable(item) for key, item in value.items()}
             return value
         with self.lock:
-            records = [checked_saved_draft(portable(self.load(identity))) for identity in identities]
+            records = []
+            for identity in identities:
+                record = portable(self.load(identity))
+                record.update(format=2, lifecycle=self.lifecycle(identity)['state'])
+                records.append(checked_saved_draft(record))
             checked_draft_set({'format': 1, 'kind': 'denghuo-exit-draft-set', 'records': records})
             return records
 
@@ -169,8 +222,8 @@ class ExitDraftStore:
             if not path.exists():
                 return record, '新增已保存原始草稿；需明确载入，不计算或应用'
             try:
-                if self.load(record['id']) == record:
-                    return None, '相同草稿已存在，保留本机原件'
+                if self.same_content(self.load(record['id']), record):
+                    return None, '相同草稿已存在，保留本机原件和归档状态'
             except ValueError:
                 pass  # A damaged local original is also preserved, never replaced.
             encoded = json.dumps(record, ensure_ascii=True, sort_keys=True).encode()
@@ -178,7 +231,7 @@ class ExitDraftStore:
             copied_path = unlinked(self.directory / (copied['id'] + '.json'))
             if copied_path.exists():
                 try:
-                    if self.load(copied['id']) == copied:
+                    if self.same_content(self.load(copied['id']), copied):
                         return None, '同ID冲突副本已存在，双方均保留'
                 except ValueError:
                     pass
@@ -192,7 +245,7 @@ class ExitDraftStore:
             stored_id = addition['id'] if addition else record['id']
             if addition is None:
                 try:
-                    exact_original = self.load(record['id']) == record
+                    exact_original = self.same_content(self.load(record['id']), record)
                 except ValueError:
                     exact_original = False
                 if not exact_original:
@@ -209,7 +262,9 @@ class ExitDraftStore:
             return {'id': stored_id, 'message': message,
                     'loaded': False, 'calculated': False, 'applied': False}
 
-    def list(self):
+    def list(self, include_archived=False):
+        if type(include_archived) is not bool:
+            raise ValueError('草稿归档筛选不正确')
         with self.lock:
             if not self.directory.exists():
                 return []
@@ -220,8 +275,10 @@ class ExitDraftStore:
                     continue
                 try:
                     value = self.load(path.stem)
-                    rows.append({key: value[key] for key in ('id', 'draft_kind', 'label', 'saved', 'surface_id')})
-                except ValueError as exc:
+                    lifecycle = self.lifecycle(path.stem)
+                    if include_archived or lifecycle['state'] == 'active':
+                        rows.append({**{key: value[key] for key in ('id', 'draft_kind', 'label', 'saved', 'surface_id')}, **lifecycle})
+                except (ValueError, OSError) as exc:
                     rows.append({'id': path.stem, 'error': str(exc), 'saved': 0})
             return sorted(rows, key=lambda row: row['saved'], reverse=True)
 

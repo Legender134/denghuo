@@ -72,6 +72,22 @@ class BackupTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '已变化'):
             self.manager.manage(self.root, {**selected, 'locked': False})
 
+    def test_metadata_receipt_belongs_to_its_write_and_cannot_unlock_a_later_write(self):
+        row = self.manager.capture(self.root, 1)
+        selected = {'slot': 1, 'id': row['id']}
+        original = self.manager.selected(self.root, selected)
+        receipt = self.manager.manage(self.root, {**selected, 'label': '  提交名称  ', 'locked': False,
+            'expected_metadata_revision': original['metadata_revision']})
+        self.assertEqual(receipt['label'], '提交名称')
+        self.manager.manage(self.root, {**selected, 'label': '另一窗口', 'locked': True,
+            'expected_metadata_revision': receipt['metadata_revision']})
+        self.assertEqual(receipt['label'], '提交名称')
+        self.assertFalse(receipt['locked'])
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            self.manager.manage(self.root, {**selected, 'label': '继续输入', 'locked': False,
+                'expected_metadata_revision': receipt['metadata_revision']})
+        self.assertTrue(self.manager.selected(self.root, selected)['locked'])
+
     def test_discovered_legacy_backup_exposes_editable_metadata_version(self):
         row = self.manager.capture(self.root, 1)
         (self.manager.scope(self.root) / 'history.json').unlink()

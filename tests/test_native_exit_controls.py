@@ -33,6 +33,52 @@ class NativeExitTests(ControllerFixture):
         self.assertEqual(self.lookup.variables['hp'].get(), 'invalid raw')
         self.assertEqual(self.session.exit_status()['phase'], 'cancelled')
 
+    def test_offline_aggregate_routes_selected_member_without_replacing_other_drafts(self):
+        from pathlib import Path
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['hp'].set('offline invalid hp')
+        settings = self.manager.play_settings = PlaySettings(self.manager)
+        settings.vars['opacity'].set('offline invalid opacity')
+        saved = self.session.save_exit_draft('native', 'offline-native', '离线原始副本', self.ui.drafts())
+        source = Path(saved['path'])
+        original = source.read_bytes()
+        row = next(row for row in self.ui.draft_rows() if row['id'] == saved['id'])
+        self.assertEqual(row['components'], ['numeric', 'play-settings'])
+        record = self.session.load_exit_draft(saved['id'])
+        with self.assertRaisesRegex(ValueError, '选择此离线副本'):
+            self.ui.restore_draft(record)
+        # The existing numeric draft remains dirty while a clean settings form is restored.
+        settings.reload(True)
+        self.ui.restore_draft(record, 'play-settings')
+        self.assertEqual(settings.vars['opacity'].get(), 'offline invalid opacity')
+        self.assertEqual(self.lookup.variables['hp'].get(), 'offline invalid hp')
+        settings.vars['opacity'].set('new current draft')
+        self.ui.error = Mock()
+        self.ui.restore_draft(record, 'play-settings')
+        self.ui.error.assert_called_once()
+        self.assertEqual(settings.vars['opacity'].get(), 'new current draft')
+        self.lookup.guard = Mock()
+        self.manager.open_lookup = Mock()
+        self.ui.restore_draft(record, 'numeric')
+        self.lookup.guard.assert_called_once()
+        self.assertEqual(source.read_bytes(), original)
+        self.assertEqual(len(self.session.list_exit_drafts()), 1)
+        with self.assertRaises(ValueError):
+            self.ui.restore_draft(record, 'web-session')
+
+    def test_native_picker_defaults_active_and_can_list_restored_archive_with_same_id(self):
+        saved = self.session.save_exit_draft('native', 'numeric', '待归档', {'raw_params': {'hp': '-'}})
+        row = self.ui.draft_rows()[0]
+        self.session.exit_action({'action': 'draft-state', 'id': row['id'], 'state': 'archived', 'expected_revision': row['state_revision']})
+        self.assertEqual(self.ui.draft_rows(), [])
+        archived = self.ui.draft_rows(True)[0]
+        self.assertEqual(archived['id'], saved['id'])
+        self.assertEqual(archived['state'], 'archived')
+        listing = self.session.exit_action({'action': 'draft-list'})
+        self.assertEqual(listing, {'drafts': [], 'archived_count': 1})
+        self.session.exit_action({'action': 'draft-state', 'id': row['id'], 'state': 'active', 'expected_revision': archived['state_revision']})
+        self.assertEqual(self.ui.draft_rows()[0]['id'], saved['id'])
+
     def test_save_all_raw_drafts_then_ack_and_finished_close_do_not_register(self):
         self.open('items.potions.potionofhealing')
         self.lookup.variables['hp'].set('invalid raw')

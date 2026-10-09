@@ -42,13 +42,20 @@ def game_window_pids():
     matches, errors = set(), []
     def inspect(hwnd, _):
         try:
-            title, kind = ctypes.create_unicode_buffer(512), ctypes.create_unicode_buffer(128)
-            user.GetWindowTextW(hwnd, title, len(title))
+            kind = ctypes.create_unicode_buffer(128)
             user.GetClassNameW(hwnd, kind, len(kind))
-            if title.value.startswith('Shattered Pixel Dungeon') and kind.value in ('GLFW30', 'LWJGL'):
-                pid = wintypes.DWORD()
-                if not user.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)) or not pid.value:
-                    raise OSError('无法读取游戏窗口所属进程')
+            if kind.value not in ('GLFW30', 'LWJGL'):
+                return True
+            pid = wintypes.DWORD()
+            if not user.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)) or not pid.value:
+                raise OSError('无法读取游戏窗口所属进程')
+            # GetWindowText sends WM_GETTEXT for our own windows. The UI thread
+            # may be waiting for the Session lock held by this restore guard.
+            if pid.value == os.getpid():
+                return True
+            title = ctypes.create_unicode_buffer(512)
+            user.GetWindowTextW(hwnd, title, len(title))
+            if title.value.startswith('Shattered Pixel Dungeon'):
                 matches.add(pid.value)
         except Exception as exc:
             errors.append(exc)

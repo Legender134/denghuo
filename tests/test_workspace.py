@@ -4,9 +4,11 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from unittest.mock import patch
 
 from companion.engine import Catalog, PREFIX
 from companion.server import Server
@@ -15,6 +17,58 @@ from companion.values_resources import water_drink
 
 
 class WorkspaceTests(unittest.TestCase):
+    def test_connection_receipt_keeps_its_normalized_values_after_a_later_write(self):
+        original_refresh = self.session.refresh
+        competing = False
+        def refresh():
+            nonlocal competing
+            if not competing:
+                competing = True
+                self.session.update_settings({'slot': 2})
+            original_refresh()
+        with patch.object(self.session, 'refresh', side_effect=refresh):
+            receipt = self.session.update_settings({'save_root': '  '+str(self.directory)+'  ', 'slot': 1},
+                expected_revision=self.session.settings_revision, return_receipt=True)
+        self.assertEqual(receipt['settings']['save_root'], str(self.directory.resolve()))
+        self.assertEqual(receipt['settings']['slot'], 1)
+        self.assertEqual(self.session.settings['slot'], 2)
+        self.assertNotEqual(receipt['settings_revision'], self.session.settings_revision)
+        with self.assertRaisesRegex(ValueError, '其他位置'):
+            self.session.update_settings(receipt['settings'], expected_revision=receipt['settings_revision'])
+
+    def test_backup_receipt_is_captured_before_refresh_changes_connection(self):
+        own = {'id': 'a'*64, 'slot': 1, 'label': '提交名称', 'locked': False, 'metadata_revision': 'b'*64}
+        context, root = self.session.backup_context, self.session.settings['save_root']
+        def later_refresh():
+            self.session.backup_context = 'new-connection'
+            self.session.settings['save_root'] = '/synthetic/other-root'
+        with patch.object(self.session.backups, 'manage', return_value=own), patch.object(self.session, 'refresh', side_effect=later_refresh):
+            receipt = self.session.backup_action({'action': 'manage', 'context': context})
+        self.assertEqual(receipt, {'ok': True, 'metadata': own, 'context': context, 'save_root': root})
+
+    def test_play_save_and_reload_receipts_never_borrow_a_competing_generation(self):
+        from companion.workspace_service import reload_play, update_play
+        for operation in ('save', 'reload'):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as directory:
+                session = Session(Path(directory) / 'settings.json', self.catalog)
+                session.manager_available = True
+                def competing_native_write(_):
+                    session.play_preferences.update({'anchor': 'bottom_right', 'offset_y': 222},
+                        expected_generation=1)
+                session.manager_commands = SimpleNamespace(put=competing_native_write)
+                receipt = (update_play(session, {'settings': {'offset_x': 777}, 'revision': 0})
+                    if operation == 'save' else reload_play(session, {'revision': 0}))
+                self.assertEqual(receipt['revision'], 1)
+                self.assertEqual(receipt['settings']['anchor'], 'top_left')
+                self.assertEqual(receipt['settings']['offset_y'], 100)
+                self.assertEqual(session.play_preferences.generation, 2)
+                original = session.play_preferences.path.read_bytes()
+                session.manager_available = False
+                with self.assertRaisesRegex(ValueError, '另一窗口'):
+                    update_play(session, {'settings': {**receipt['settings'], 'offset_x': 778},
+                        'revision': receipt['revision']})
+                self.assertEqual(session.play_preferences.path.read_bytes(), original)
+
     @classmethod
     def setUpClass(cls):
         cls.catalog = Catalog()

@@ -225,6 +225,66 @@ function restoreNamedForm(selector,raw){
   }
   const used={};for(const input of controls){const key=input.id||(input.dataset.binding?'binding.'+input.dataset.binding:input.name),index=used[key]||0;used[key]=index+1;const cell=raw[key]?.[index];if(cell){input.value=cell.value;input.checked=cell.checked;}}
 }
+let settingsRecoveryChoice=null;
+const settingsRecoveryLabels={'save-root':'存档目录','settings-slot':'槽位','source-mode':'局势来源','startup-surface':'启动入口','always-top':'管理窗口置顶',reveal:'地图显示','stop-at':'结束时间','play-enabled':'启用游玩显示','play-alerts':'新风险提醒','play-anchor':'显示角落','play-offset_x':'横向边距','play-offset_y':'纵向边距','play-font_scale':'字号倍率','play-opacity':'背景不透明度','play-notice_seconds':'短提醒时长'};
+function settingRecoveryLabel(key){return settingsRecoveryLabels[key]||(key.startsWith('binding.')?(bindingLabels[key.slice(8)]||key.slice(8))+'快捷键':key);}
+function settingsRecoveryDisplay(value){return typeof value==='boolean'?(value?'启用':'关闭'):String(value);}
+function chooseSettingsRecovery(rows,legacy){
+  if(settingsRecoveryChoice)throw new Error('请先完成当前设置草稿的核对。');
+  $('#settings-recovery-description').textContent=legacy?'副本未记录完整的原保存值或修改范围。请逐项选择，默认保留当前值；原副本不会改动。':'仅核对原来修改的字段。发生冲突时默认保留当前保存值；载入后仍需另行保存。';
+  $('#settings-recovery-fields').innerHTML=rows.map(row=>`<fieldset><legend>${escapeHTML(settingRecoveryLabel(row.key))}${row.conflict?' · 需要核对':''}</legend><p>原保存值：${escapeHTML(legacy?'旧版未记录':settingsRecoveryDisplay(row.original))}</p><p>当前保存值：${escapeHTML(settingsRecoveryDisplay(row.current))}</p><p>找回的原始输入：${escapeHTML(settingsRecoveryDisplay(row.draft))}</p><label>载入选择<select data-settings-recovery-key="${escapeHTML(row.key)}" aria-label="${escapeHTML(settingRecoveryLabel(row.key))}载入选择"><option value="current"${row.conflict?' selected':''}>保留当前值</option><option value="draft"${row.conflict?'':' selected'}>找回草稿值</option>${legacy?'':'<option value="original">恢复原保存值</option>'}</select></label></fieldset>`).join('');
+  return new Promise(resolve=>{settingsRecoveryChoice=resolve;$('#settings-recovery-dialog').showModal();});
+}
+function finishSettingsRecoveryChoice(choices){const resolve=settingsRecoveryChoice;settingsRecoveryChoice=null;$('#settings-recovery-dialog').close();if(resolve)resolve(choices);}
+$('#settings-recovery-form').addEventListener('submit',event=>{event.preventDefault();finishSettingsRecoveryChoice(Object.fromEntries($$('[data-settings-recovery-key]').map(input=>[input.dataset.settingsRecoveryKey,input.value])));});
+$('#settings-recovery-cancel').addEventListener('click',()=>finishSettingsRecoveryChoice(null));
+$('#settings-recovery-dialog').addEventListener('cancel',event=>{event.preventDefault();finishSettingsRecoveryChoice(null);});
+function checkedSettingsRecovery(snapshot,current){
+  if(!snapshot||typeof snapshot!=='object'||Array.isArray(snapshot))throw new Error('设置草稿格式不正确；原副本保留。');
+  const keys=Object.keys(current),oldWire=!('format' in snapshot),legacy=oldWire||snapshot.baseline===null,raw={},baseline={};
+  if(!oldWire&&(snapshot.format!==2||Object.keys(snapshot).some(key=>!['format','raw','baseline','changed'].includes(key))))throw new Error('设置草稿版本不兼容；原副本保留。');
+  const source=oldWire?snapshot:snapshot.raw;
+  if(!source||typeof source!=='object'||Array.isArray(source)||!Object.keys(source).length||!legacy&&Object.keys(source).length!==keys.length||Object.keys(source).some(key=>!Object.hasOwn(current,key)))throw new Error('设置草稿字段不完整；原副本保留。');
+  if(!legacy&&(!snapshot.baseline||typeof snapshot.baseline!=='object'||Array.isArray(snapshot.baseline)||Object.keys(snapshot.baseline).length!==keys.length||Object.keys(snapshot.baseline).some(key=>!Object.hasOwn(current,key))))throw new Error('设置草稿缺少原保存值；原副本保留。');
+  for(const key of Object.keys(source)){
+    if(oldWire&&(!Array.isArray(source[key])||source[key].length!==1||!source[key][0]||typeof source[key][0]!=='object'))throw new Error('旧版设置草稿字段格式不正确；原副本保留。');
+    raw[key]=oldWire?source[key][0][typeof current[key]==='boolean'?'checked':'value']:source[key];
+    baseline[key]=legacy?null:snapshot.baseline[key];
+    for(const value of legacy?[raw[key]]:[raw[key],baseline[key]])if(typeof value!==typeof current[key]||typeof value==='string'&&(value.length>16384||/[\u0000-\u0008\u000b-\u001f]/.test(value)))throw new Error('设置草稿原始输入格式不正确；原副本保留。');
+  }
+  const declared=oldWire?Object.keys(source):snapshot.changed;
+  if(!Array.isArray(declared)||declared.some(key=>typeof key!=='string'||!Object.hasOwn(source,key))||new Set(declared).size!==declared.length)throw new Error('设置草稿修改范围不正确；原副本保留。');
+  const changed=legacy?Object.keys(source):declared;
+  return {raw,baseline,changed,legacy};
+}
+async function prepareSettingsRecovery(kind,snapshot){
+  const isPlay=kind==='play',generation=isPlay?playDraftGeneration:settingsFormGeneration;
+  const saved=await getJSON(isPlay?'/api/play-settings':'/api/status');
+  if(generation!==(isPlay?playDraftGeneration:settingsFormGeneration)||(isPlay?playDirty:settingsDrafts.size))throw new Error('读取期间有新设置编辑；当前输入和原副本都保留，请先处理当前草稿。');
+  if(isPlay)applyPlayRead(saved,true);else loadSettings(true,saved);
+  const current=isPlay?playRawValues():settingsFormValues(),checked=checkedSettingsRecovery(snapshot,current);
+  const rows=checked.changed.map(key=>({key,original:checked.baseline[key],current:current[key],draft:checked.raw[key],conflict:checked.legacy||current[key]!==checked.baseline[key]&&checked.raw[key]!==current[key]}));
+  const ready={kind,current,revision:isPlay?saved.revision:saved.settings_revision,generation:isPlay?playDraftGeneration:settingsFormGeneration,checked};
+  const choices=rows.some(row=>row.conflict)?await chooseSettingsRecovery(rows,checked.legacy):Object.fromEntries(rows.map(row=>[row.key,'draft']));
+  if(choices===null)throw new Error('已取消载入设置草稿；当前保存值和原副本保持不变。');
+  if(Object.keys(choices).length!==rows.length||rows.some(row=>!['current','draft','original'].includes(choices[row.key])||checked.legacy&&choices[row.key]==='original'))throw new Error('设置载入选择不完整；原副本保留。');
+  ready.merged={...current};for(const [key,choice] of Object.entries(choices)){if(choice==='draft')ready.merged[key]=checked.raw[key];else if(choice==='original')ready.merged[key]=checked.baseline[key];}
+  return ready;
+}
+async function verifySettingsRecovery(ready){
+  if(!ready)return;
+  const isPlay=ready.kind==='play',saved=await getJSON(isPlay?'/api/play-settings':'/api/status');
+  const current=isPlay?playSavedRaw(saved.settings):settingsSavedValues(saved.settings);
+  if(ready.generation!==(isPlay?playDraftGeneration:settingsFormGeneration)||ready.revision!==(isPlay?saved.revision:saved.settings_revision)||Object.keys(ready.current).some(key=>ready.current[key]!==current[key]))throw new Error('核对期间设置又有变化；当前编辑和原副本仍保留，请重新载入核对。');
+}
+function applySettingsRecovery(ready){
+  if(!ready)return;
+  const isPlay=ready.kind==='play';
+  if(ready.generation!==(isPlay?playDraftGeneration:settingsFormGeneration))throw new Error('载入期间产生了新设置编辑；当前编辑和原副本保留。');
+  for(const [key,value] of Object.entries(ready.merged)){const input=key.startsWith('binding.')?$(`#play-bindings [data-binding="${key.slice(8)}"]`):$('#'+key);if(!input)throw new Error('设置表单已经变化；原副本仍保留。');input[typeof value==='boolean'?'checked':'value']=value;}
+  if(isPlay){playRevision=ready.revision;playRawBaseline={...ready.current};playDirty=capturePlayDraft().changed.length>0;playConflict=false;playDraftGeneration++;renderPlayDraftNotice();}
+  else {settingsRevision=ready.revision;settingsBaseline={...ready.current};settingsDrafts.clear();for(const key of Object.keys(ready.merged))if(ready.merged[key]!==ready.current[key])settingsDrafts.add(key);settingsConflict=false;settingsFormGeneration++;settingsDraftNotice();}
+}
 function compactNumeric(detail,key){
   if(!detail)return null;
   const raw={...(detail.rawDraft||numericalFormDrafts.get(key)||{})};
@@ -243,6 +303,7 @@ function webDirtySummary(){
   if(typeof characterDraftLabel==='function'&&characterDraftLabel())labels.push('共享角色条件');
   if(settingsDrafts.size)labels.push('连接设置');
   if(typeof playDirty!=='undefined'&&playDirty)labels.push('游玩设置');
+  if(typeof backupMetadataDraftLabel==='function'){const backupLabel=backupMetadataDraftLabel();if(backupLabel)labels.push(backupLabel);}
   if(typeof alchemyDraftLabel==='function'&&alchemyDraftLabel())labels.push('炼金规划');
   if(typeof migrationDraftLabel==='function'&&migrationDraftLabel())labels.push('搬机迁移');
   if(Array.from(planNameDrafts.keys()).some(key=>{const baseline=planMetaOriginals.get(key);return !baseline||planNameDrafts.get(key)!==baseline.name||(planNoteDrafts.get(key)||'')!==baseline.note;}))labels.push('方案名称 / 备注');
@@ -253,13 +314,14 @@ function collectWebDraft(){
   for(const [key,detail] of fixedNumericalDrafts)if(detail.dirty||detail.sessionUnsaved||Object.keys(numericalFormDrafts.get('plan:'+key)||{}).length)numeric.set('plan:'+key,compactNumeric(detail,'plan:'+key));
   for(const key of new Set([...numericalDrafts.keys(),...numericalFormDrafts.keys(),...Array.from(numericalCalculated).filter(([,item])=>item.sessionUnsaved).map(([key])=>key)]))if(!numeric.has(key)&&!key.startsWith('plan:')){const calculated=numericalCalculated.get(key);numeric.set(key,{identity:key,key,params:{...(calculated?.params||numericalDrafts.get(key)||{})},raw:{...(numericalFormDrafts.get(key)||{})},origins:calculated?.origins||{},source:calculated?.source||null,levelSource:calculated?.levelSource||null,fixed:false,levelOrigin:'manual',dirty:true,sessionUnsaved:true});}
   if(numericalDetail&&(numericalDetail.dirty||numericalDetail.sessionUnsaved||labels.includes('数值试算'))){const key=numericalDetail.savedPlan?'plan:'+numericalDetail.savedPlan.id:numericalDetail.identity;numeric.set(key,compactNumeric(numericalDetail,key));}
-  const draft={format:1,schema:'denghuo-web-session',numeric:Array.from(numeric.values()),
+  const draft={format:2,schema:'denghuo-web-session',numeric:Array.from(numeric.values()),
     manual:manualUnsaved?captureNamedForm('#manual-form'):null,
     manual_character:manualUnsaved&&typeof manualCharacterReference!=='undefined'?characterClone(manualCharacterReference):null,
     character:typeof captureCharacterDraft==='function'?captureCharacterDraft():null,
     comparison:compareSessionUnsaved?{form:captureComparisonRaw(),choices:{a:compareItems[Number($('#compare-a').value)]?.key,b:compareItems[Number($('#compare-b').value)]?.key},fixed:compareFixed,saved_id:compareSavedPlan?.id||null,saved_revision:compareSavedPlan?.record_revision||null,saved_name:compareSavedPlan?.name||null,saved_origin:compareSavedPlan?.origin||null,note:compareSavedPlan?.note||'',budget_origin:compareBudgetOrigin,budget_stamp:compareBudgetStamp,stamp:compareStamp,character_reference:typeof compareCharacterReference!=='undefined'?characterClone(compareCharacterReference):null}:null,
-    settings:settingsDrafts.size?captureNamedForm('#settings-form'):null,
-    play:typeof playDirty!=='undefined'&&playDirty?captureNamedForm('#play-form'):null,
+    settings:settingsDrafts.size?captureSettingsDraft():null,
+    play:typeof playDirty!=='undefined'&&playDirty?capturePlayDraft():null,
+    backup_metadata:typeof captureBackupMetadataDrafts==='function'?captureBackupMetadataDrafts():[],
     alchemy:typeof captureAlchemyDraft==='function'?captureAlchemyDraft():null,
     alchemy_plan_meta:typeof captureAlchemyPlanMetadata==='function'?captureAlchemyPlanMetadata():[],
     migration:typeof captureMigrationDraft==='function'?captureMigrationDraft():null,
@@ -341,11 +403,22 @@ $('#session-exit-dialog').addEventListener('cancel',event=>{event.preventDefault
 window.addEventListener('beforeunload',event=>{if(webDirtySummary().length&&webExitState?.phase!=='finished'){event.preventDefault();event.returnValue='';}});
 window.addEventListener('pagehide',()=>{if(!token||webExitState?.phase==='finished')return;const captured=currentWebDraft();fetch('/api/session-exit',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json','X-Companion-Token':token},body:JSON.stringify({action:'unregister',surface_id:webSurfaceId,revision:captured.revision,dirty:captured.dirty,draft:captured.draft})}).catch(()=>{});});
 for(const name of ['input','change','submit','click'])document.addEventListener(name,event=>{if(webEditingFrozen&&event.target.closest?.('form')){event.preventDefault();event.stopImmediatePropagation();}},true);
+let exitDraftListRequest=0;
 async function loadExitDrafts(){
-  try{const result=await post('/api/session-exit',{action:'draft-list'}),target=$('#session-drafts');target.replaceChildren();
-    if(!result.drafts.length)target.innerHTML='<p class="muted">尚无明确保存的未完成草稿副本。</p>';
-    for(const record of result.drafts){const row=document.createElement('article');row.className='plan-row';row.innerHTML=`<div><h3>${escapeHTML(record.label||'无法读取的草稿')}</h3><small>${escapeHTML(record.draft_kind||'')} · ${escapeHTML(fmtTime(record.saved))}</small>${record.error?`<p>${escapeHTML(record.error)}；原件保留。</p>`:''}</div>`;if(!record.error){const button=document.createElement('button');button.className='secondary';button.textContent='载入为未提交草稿';button.addEventListener('click',()=>loadUnfinishedDraft(record.id));row.append(button);}target.append(row);}inlineError($('#draft-error'),'');
-  }catch(error){inlineError($('#draft-error'),error.message);}
+  const request=++exitDraftListRequest,includeArchived=$('#draft-include-archived').checked;
+  try{const result=await post('/api/session-exit',{action:'draft-list',include_archived:includeArchived});
+    if(request!==exitDraftListRequest)return;
+    const target=$('#session-drafts');target.replaceChildren();
+    $('#draft-count').textContent=`${result.drafts.filter(row=>row.state!=='archived').length} 份未完成 · ${result.archived_count||0} 份已归档。归档保留原始副本，可随时恢复。`;
+    if(!result.drafts.length)target.innerHTML='<p class="muted">当前列表没有草稿副本。</p>';
+    for(const record of result.drafts){const row=document.createElement('article');row.className='plan-row';row.innerHTML=`<div><h3>${escapeHTML(record.label||'无法读取的草稿')}</h3><small>${record.state==='archived'?'已归档':'未完成'} · ${escapeHTML(record.draft_kind||'')} · ${escapeHTML(fmtTime(record.saved))} · ${escapeHTML(record.id.slice(0,12))}</small>${record.error?`<p>${escapeHTML(record.error)}；原件保留。</p>`:''}</div>`;
+      if(!record.error){const actions=document.createElement('div');actions.className='backup-actions';
+        const load=document.createElement('button');load.className='secondary';load.textContent='载入为未提交草稿';load.addEventListener('click',()=>loadUnfinishedDraft(record.id));actions.append(load);
+        const archive=document.createElement('button');archive.className='quiet';archive.textContent=record.state==='archived'?'恢复到未完成列表':'已处理，归档副本';
+        archive.addEventListener('click',async()=>{archive.disabled=true;try{await post('/api/session-exit',{action:'draft-state',id:record.id,state:record.state==='archived'?'active':'archived',expected_revision:record.state_revision});await loadExitDrafts();toast(record.state==='archived'?'已恢复到未完成列表；原始内容保留。':'已归档；可勾选「显示已归档」找回。');}catch(error){inlineError($('#draft-error'),error.message);}finally{archive.disabled=false;}});actions.append(archive);row.append(actions);
+      }target.append(row);
+    }inlineError($('#draft-error'),'');
+  }catch(error){if(request===exitDraftListRequest)inlineError($('#draft-error'),error.message);}
 }
 async function restoreNumericSession(item){
   if(!item||typeof item.identity!=='string'||!/^[a-z0-9_.\-$]{1,300}$/.test(item.identity)||!item.raw||typeof item.raw!=='object')throw new Error('数值草稿身份或原始参数不正确');
@@ -372,15 +445,16 @@ async function restoreNumericSession(item){
 async function loadUnfinishedDraft(id){
   try{if(webDirtySummary().length)throw new Error('当前有未保存草稿；请先命名保存，或保存会话草稿副本后再载入，避免覆盖本地编辑。');
     const result=await post('/api/session-exit',{action:'draft-load',id}),record=result.draft,draft=record.draft;
-    if(draft?.schema!=='denghuo-web-session'||draft.format!==1){
+    if(draft?.schema!=='denghuo-web-session'||![1,2].includes(draft.format)){
       if(record.draft_kind==='numeric'&&draft.entry&&draft.raw_params){await restoreNumericSession({identity:draft.entry,raw:draft.raw_params,params:draft.calculated||{},origins:draft.origins||{},saved_id:draft.saved_plan?.id||null,saved_revision:draft.saved_plan?.record_revision||null,saved_name:draft.saved_plan?.name||null,saved_origin:draft.saved_plan?.origin||null,fixed:!!draft.saved_plan,note:draft.note||'',source:lookupCalculationOptions({stamp:draft.context?.stamp,source:draft.context?.source}).sourceStamp||null});return;}
       throw new Error('此副本使用原生窗口的草稿格式，请在原生管理窗口选择「载入未完成草稿」。原件保留。');
     }
+    if(draft.backup_metadata&&typeof checkedBackupMetadataDrafts==='function')checkedBackupMetadataDrafts(draft.backup_metadata);
+    const settingsRecovery=draft.settings?await prepareSettingsRecovery('connection',draft.settings):null;
+    const playRecovery=draft.play?await prepareSettingsRecovery('play',draft.play):null;
     if(draft.character&&typeof restoreCharacterDraft==='function')await restoreCharacterDraft(draft.character);
     if(draft.manual&&typeof setManualCharacterReference==='function')setManualCharacterReference(draft.manual_character||null);
     if(draft.manual){restoreNamedForm('#manual-form',draft.manual);manualFormGeneration++;manualUnsaved=true;$('#manual-draft-status').textContent='找回了尚未提交的原始局势草稿；请核对后再提交。';}
-    if(draft.settings){restoreNamedForm('#settings-form',draft.settings);for(const key of Object.keys(draft.settings))settingsDrafts.add(key);settingsDraftNotice();}
-    if(draft.play){await loadPlaySettings();restoreNamedForm('#play-form',draft.play);playDirty=true;playDraftGeneration++;renderPlayDraftNotice();}
     if(draft.alchemy&&typeof restoreAlchemyDraft==='function')await restoreAlchemyDraft(draft.alchemy);
     if(draft.alchemy_plan_meta&&typeof restoreAlchemyPlanMetadata==='function')restoreAlchemyPlanMetadata(draft.alchemy_plan_meta);
     if(draft.migration&&typeof restoreMigrationDraft==='function')await restoreMigrationDraft(draft.migration);
@@ -393,10 +467,14 @@ async function loadUnfinishedDraft(id){
       compareSessionUnsaved=true;compareDirty=true;compareFixed=!!saved&&!!c.fixed;compareStamp=c.stamp||null;compareBudgetOrigin=c.budget_origin||'找回的手填预算';compareBudgetStamp=c.budget_stamp||null;compareResultArgs=null;compareSavedPlan=saved;updateComparisonSavedNote();$('#compare-result').replaceChildren();$('#compare-copy-text').textContent='';$('.comparison-panel').open=true;refreshComparisonOrigin();}
     for(const meta of draft.plan_meta||[]){if(typeof meta.key!=='string'||typeof meta.name!=='string'||meta.name.length>80||typeof meta.note!=='string'||meta.note.length>1200)throw new Error('方案备注草稿格式不正确');planNameDrafts.set(meta.key,meta.name);planNoteDrafts.set(meta.key,meta.note);if(meta.original)planMetaOriginals.set(meta.key,meta.original);}
     if(draft.numeric?.length){for(const item of draft.numeric)await restoreNumericSession(item);}
-    else if(draft.character)navigate('workspace');else if(draft.alchemy||draft.alchemy_plan_meta?.length)navigate('alchemy');else if(draft.migration)navigate('migration');else if(draft.manual)navigate('manual');else if(draft.comparison)navigate('inventory');else if(draft.settings)navigate('settings');else if(draft.play)navigate('play-settings');
+    else if(draft.character)navigate('workspace');else if(draft.alchemy||draft.alchemy_plan_meta?.length)navigate('alchemy');else if(draft.migration)navigate('migration');else if(draft.manual)navigate('manual');else if(draft.comparison)navigate('inventory');else if(draft.settings)navigate('settings');else if(draft.play)navigate('play-settings');else if(draft.backup_metadata?.length)navigate('backups');
     if(draft.open_plan){const old=draft.open_plan;let existing=null,conflict=false;if(old.existing_revision!=null&&!/^[a-f0-9]{64}$/.test(old.existing_revision))throw new Error('命名草稿关联版本格式不正确；原始副本仍保留');if(old.existing_id){try{const latest=(await getJSON('/api/workspace/plan?'+new URLSearchParams({id:old.existing_id}))).plan;if(latest.kind!==old.payload.kind)throw new Error('关联方案类型已经变化');conflict=latest.record_revision!==old.existing_revision;existing={...latest,record_revision:old.existing_revision||'',name:old.existing_name||old.name||latest.name,note:old.existing_note??old.note??'',origin:old.existing_origin||old.payload.source||latest.origin};}catch(error){conflict=true;/* Keep as a new independent draft. */}}openPlanSave(old.payload,existing,old.name);$('#plan-name').value=old.name;$('#plan-note').value=old.note||'';if(conflict)inlineError($('#plan-error'),'关联方案已变化；原始条件、名称和备注按旧版本保留。可另存副本，或明确重新读取最新方案；旧草稿不能覆盖新内容。');}
+    await Promise.all([verifySettingsRecovery(settingsRecovery),verifySettingsRecovery(playRecovery)]);
+    applySettingsRecovery(settingsRecovery);applySettingsRecovery(playRecovery);
+    if(draft.backup_metadata?.length&&typeof restoreBackupMetadataDrafts==='function')restoreBackupMetadataDrafts(draft.backup_metadata);
     toast('已找回原始草稿；未计算、未提交局势、未应用设置。');inlineError($('#draft-error'),'');
   }catch(error){inlineError($('#draft-error'),error.message);toast(error.message,true);}
 }
 $('#draft-refresh').addEventListener('click',loadExitDrafts);
+$('#draft-include-archived').addEventListener('change',loadExitDrafts);
 manualAppliedRaw=captureNamedForm('#manual-form');

@@ -150,20 +150,22 @@ let settingsWriteGeneration=0;
 async function postSettings(patch,expected=state?.settings_revision){const result=await post('/api/settings',{...patch,expected_revision:expected});settingsWriteGeneration++;return result;}
 $('#slot').addEventListener('change',()=>action(()=>postSettings({slot:$('#slot').value==='auto'?'auto':Number($('#slot').value),mode:'save'})));
 const settingsDrafts=new Set();
-let settingsRevision=null,settingsConflict=false,settingsFormGeneration=0,settingsRequestSerial=0;
+let settingsRevision=null,settingsConflict=false,settingsFormGeneration=0,settingsRequestSerial=0,settingsBaseline=null;
 const settingsChecks=new Set(['always-top','reveal']);
 function settingsFormValues(){return Object.fromEntries(['save-root','settings-slot','source-mode','startup-surface','always-top','reveal','stop-at'].map(id=>[id,$('#'+id)[settingsChecks.has(id)?'checked':'value']]));}
+function settingsSavedValues(settings){return {'save-root':settings.save_root,'settings-slot':String(settings.slot),'source-mode':settings.mode,'startup-surface':settings.startup_surface||'panel','always-top':settings.always_on_top,reveal:settings.reveal,'stop-at':settings.stop_at.slice(0,16)};}
+function captureSettingsDraft(){return {format:2,raw:settingsFormValues(),baseline:settingsBaseline?{...settingsBaseline}:null,changed:Array.from(settingsDrafts)};}
 function settingsDraftNotice(){$('#settings-draft-status').textContent=settingsConflict?'已保存设置发生变化；尚未保存的草稿仍保留。请重新载入已保存设置，再应用需要的修改。':settingsDrafts.size?'有尚未保存的修改，切换页面后会保留。点击「保存设置」应用。':'已按当前设置显示，需要时再调整。';}
 function loadSettings(force=false,saved=state){
   if(!saved)return;
   if(force)settingsDrafts.clear();
-  if(!settingsDrafts.size){settingsRevision=saved.settings_revision;settingsConflict=false;}
+  if(!settingsDrafts.size){settingsRevision=saved.settings_revision;settingsConflict=false;settingsBaseline=settingsSavedValues(saved.settings);}
   else if(saved.settings_revision!==settingsRevision)settingsConflict=true;
-  const values={'save-root':saved.settings.save_root,'settings-slot':String(saved.settings.slot),'source-mode':saved.settings.mode,'startup-surface':saved.settings.startup_surface||'panel','always-top':saved.settings.always_on_top,reveal:saved.settings.reveal,'stop-at':saved.settings.stop_at.slice(0,16)};
+  const values=settingsSavedValues(saved.settings);
   for(const [id,value] of Object.entries(values))if(!settingsDrafts.has(id))$('#'+id)[settingsChecks.has(id)?'checked':'value']=value;
   settingsDraftNotice();
 }
-$('#settings-form').addEventListener('input',event=>{settingsFormGeneration++;if(event.target.id in settingsFormValues())settingsDrafts.add(event.target.id);settingsDraftNotice();});
+$('#settings-form').addEventListener('input',event=>{settingsFormGeneration++;const key=event.target.id,raw=settingsFormValues();if(key in raw){if(settingsBaseline&&raw[key]===settingsBaseline[key])settingsDrafts.delete(key);else settingsDrafts.add(key);}settingsDraftNotice();});
 $('#settings-reset').addEventListener('click',()=>action(async()=>{
   const serial=++settingsRequestSerial,generation=settingsFormGeneration;
   const response=await fetch('/api/status');if(!response.ok)throw new Error('暂时无法重新载入设置，草稿仍保留。');
@@ -178,7 +180,8 @@ $('#settings-form').addEventListener('submit',event=>{
     catch(error){if(error.status===409){settingsConflict=true;settingsDraftNotice();await poll();}throw error;}
     if(serial!==settingsRequestSerial)return;
     settingsRevision=result.settings_revision;settingsConflict=false;
-    const current=settingsFormValues();for(const [id,value] of Object.entries(submitted))if(current[id]===value)settingsDrafts.delete(id);
+    const current=settingsFormValues(),saved=result.settings?settingsSavedValues(result.settings):submitted;settingsBaseline={...saved};
+    for(const [id,value] of Object.entries(submitted)){if(current[id]===value){$('#'+id)[settingsChecks.has(id)?'checked':'value']=saved[id];settingsDrafts.delete(id);}else if(current[id]===saved[id])settingsDrafts.delete(id);else settingsDrafts.add(id);}
     settingsDraftNotice();toast(settingsDrafts.size?'设置已保存；新的修改尚未保存':'设置已保存');
   },$('#settings-error'));
 });

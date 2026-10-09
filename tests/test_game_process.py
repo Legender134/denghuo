@@ -1,11 +1,14 @@
 import json
+import ctypes
+from ctypes import wintypes
+import os
 from types import SimpleNamespace
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from companion.game_process import (GAME_MAIN, absolute_windows_path, classify_process,
-    confirm_game_closed, java_entry, main_manifest, read_processes, windows_arguments)
+    confirm_game_closed, game_window_pids, java_entry, main_manifest, read_processes, windows_arguments)
 
 
 class GameProcessTests(unittest.TestCase):
@@ -94,6 +97,33 @@ class GameProcessTests(unittest.TestCase):
         self.assertEqual(java_entry(parsed[1:])[0:2], ('class', GAME_MAIN))
         with self.assertRaises(ValueError):
             windows_arguments('java.exe """opaque"')
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows enumeration callback ABI')
+    def test_window_scan_avoids_own_title_and_keeps_supported_game_identity_guard(self):
+        rows = {1: ('TkTopLevel', os.getpid(), 'own manager'),
+                2: ('GLFW30', os.getpid(), 'Shattered Pixel Dungeon own fixture'),
+                3: ('GLFW30', 77, 'Shattered Pixel Dungeon 4.0.2'),
+                4: ('LWJGL', 88, 'another game')}
+        def kind(hwnd, buffer, _):
+            buffer.value = rows[hwnd][0]
+            return len(buffer.value)
+        def pid(hwnd, pointer):
+            ctypes.cast(pointer, ctypes.POINTER(wintypes.DWORD)).contents.value = rows[hwnd][1]
+            return 1
+        def title(hwnd, buffer, _):
+            buffer.value = rows[hwnd][2]
+            return len(buffer.value)
+        user = SimpleNamespace(GetClassNameW=Mock(side_effect=kind),
+            GetWindowThreadProcessId=Mock(side_effect=pid), GetWindowTextW=Mock(side_effect=title),
+            EnumWindows=Mock(side_effect=lambda callback, _: all(callback(hwnd, 0) for hwnd in rows)))
+        with patch('companion.game_process.ctypes.WinDLL', return_value=user):
+            self.assertEqual(game_window_pids(), {77})
+            self.assertEqual([call.args[0] for call in user.GetWindowTextW.call_args_list], [3, 4])
+            user.GetWindowThreadProcessId.side_effect = lambda *_: 0
+            user.GetWindowTextW.reset_mock()
+            with self.assertRaisesRegex(OSError, '完整检查'):
+                game_window_pids()
+            user.GetWindowTextW.assert_not_called()
 
 
 if __name__ == '__main__':

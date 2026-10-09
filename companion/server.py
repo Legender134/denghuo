@@ -327,8 +327,8 @@ class Handler(BaseHTTPRequestHandler):
                 revision = patch.pop('expected_revision', None)
                 if not isinstance(revision, str) or not revision:
                     raise ValueError('连接设置尚未核对，请刷新面板后重试。草稿仍保留。')
-                revision = self.server.session.update_settings(patch, expected_revision=revision)
-                self.send_data({'ok': True, 'settings_revision': revision})
+                receipt = self.server.session.update_settings(patch, expected_revision=revision, return_receipt=True)
+                self.send_data(receipt)
                 return
             elif path == "/api/manual":
                 self.server.session.update_manual(payload)
@@ -338,7 +338,8 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/refresh":
                 self.server.session.refresh()
             elif path == "/api/backups":
-                self.server.session.backup_action(payload)
+                self.send_data(self.server.session.backup_action(payload) or {"ok": True})
+                return
             else:
                 self.send_data({"error": "Not found"}, 404)
                 return

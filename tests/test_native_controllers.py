@@ -1,5 +1,6 @@
 """Real numeric/workspace services with a headless transport, no user data or GUI."""
 import copy
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -256,6 +257,39 @@ class NumericControllerTests(ControllerFixture):
 
 
 class SettingsControllerTests(ControllerFixture):
+    def test_actual_wire_values_become_clean_after_edit_and_revert(self):
+        settings = self.manager.play_settings = PlaySettings(self.manager)
+        values, bindings = settings.draft_values()
+        wire = {key: value if type(value) is bool else str(value) for key, value in values.items()}
+        settings.handle({'action': 'settings_edit', 'values': {**wire, 'offset_x': '777'},
+            'bindings': bindings, 'draft_revision': 1})
+        self.assertTrue(settings.has_draft())
+        settings.handle({'action': 'settings_edit', 'values': wire,
+            'bindings': bindings, 'draft_revision': 2})
+        self.assertFalse(settings.has_draft())
+        self.assertIn('没有未保存草稿', settings.status.text)
+
+    @unittest.skipUnless(sys.platform == 'win32', 'PlayDisplay imports native Tk runtime')
+    def test_actual_overlay_save_acknowledges_only_its_own_preference_write(self):
+        from companion.play_overlay import PlayDisplay
+        settings = self.manager.play_settings = PlaySettings(self.manager)
+        self.owner.manager = self.manager
+        self.owner.save = lambda patch, expected_generation=None: PlayDisplay.save(
+            self.owner, patch, expected_generation=expected_generation)
+        self.manager.apply_play_settings.side_effect = lambda: self.session.play_preferences.update(
+            {'anchor': 'bottom_right', 'offset_y': 222}, expected_generation=1)
+        settings.vars['offset_x'].set('777')
+        self.assertTrue(settings.save())
+        self.assertEqual(settings.revision, 1)
+        self.assertEqual(settings.saved_baseline['anchor'], 'top_left')
+        self.assertEqual(self.session.play_preferences.generation, 2)
+        self.assertFalse(settings.has_draft())
+        original = self.session.play_preferences.path.read_bytes()
+        settings.vars['offset_x'].set('778')
+        self.assertFalse(settings.save())
+        self.assertEqual(self.session.play_preferences.path.read_bytes(), original)
+        self.assertTrue(settings.has_draft())
+
     def test_conflict_keeps_all_raw_fields_and_reload_requires_decision(self):
         settings = self.manager.play_settings = PlaySettings(self.manager)
         settings.vars['opacity'].set('invalid raw')
@@ -274,10 +308,106 @@ class SettingsControllerTests(ControllerFixture):
         settings.bindings['quick'].set('Ctrl+Alt+Q')
         settings.save_draft_copy()
         saved = self.session.load_exit_draft(self.session.list_exit_drafts()[0]['id'])
+        self.assertEqual(saved['format'], 2)
+        with self.assertRaisesRegex(ValueError, '已有草稿'):
+            settings.restore_draft(saved['draft'])
+        settings.reload(True)
         settings.restore_draft(saved['draft'])
         self.assertEqual(settings.vars['opacity'].get(), 'invalid raw')
         self.assertNotEqual(self.session.play_preferences.values['opacity'], 'invalid raw')
         self.assertIn('尚未保存', settings.status.text)
+
+    def test_scoped_restore_keeps_new_unedited_values_across_generation_reset(self):
+        settings = self.manager.play_settings = PlaySettings(self.manager)
+        settings.vars['offset_x'].set('-')
+        raw = settings.draft()
+        self.assertEqual(raw['changed'], ['offset_x'])
+        self.session.play_preferences.update({'anchor': 'bottom_right', 'offset_y': 222,
+            'bindings': {'capture': 'Ctrl+Alt+X'}}, expected_generation=0)
+        self.session = Session(self.directory/'settings.json')
+        self.manager.session = self.session
+        self.owner.preferences = self.session.play_preferences
+        settings = self.manager.play_settings = PlaySettings(self.manager)
+        self.assertEqual(settings.revision, 0)
+        original = self.session.play_preferences.path.read_bytes()
+        settings.restore_draft(raw)
+        self.assertIsNone(settings.recovery_pending)
+        self.assertEqual(settings.vars['offset_x'].get(), '-')
+        self.assertEqual(settings.vars['anchor'].get(), '右下')
+        self.assertEqual(settings.vars['offset_y'].get(), '222')
+        self.assertEqual(settings.bindings['capture'].get(), 'Ctrl+Alt+X')
+        self.assertEqual(self.session.play_preferences.path.read_bytes(), original)
+        self.assertFalse(settings.save())
+        self.assertEqual(self.session.play_preferences.path.read_bytes(), original)
+        settings.vars['offset_x'].set('777')
+        self.assertTrue(settings.save())
+        self.assertEqual(self.session.play_preferences.values['anchor'], 'bottom_right')
+        self.assertEqual(self.session.play_preferences.values['offset_y'], 222)
+        self.assertEqual(self.session.play_preferences.values['bindings']['capture'], 'Ctrl+Alt+X')
+
+    def test_same_field_restore_requires_choice_and_keeps_cas_after_choice(self):
+        settings = self.manager.play_settings = PlaySettings(self.manager)
+        settings.vars['offset_x'].set('777')
+        draft = settings.draft()
+        settings.reload(True)
+        self.session.play_preferences.update({'offset_x': 222}, expected_generation=settings.revision)
+        settings.read_values()
+        original = self.session.play_preferences.path.read_bytes()
+        settings.restore_draft(draft)
+        self.assertTrue(settings.recovery_pending['rows'][0]['conflict'])
+        self.assertEqual(settings.vars['offset_x'].get(), '222')
+        settings.finish_recovery({'offset_x': 'draft'})
+        self.assertEqual(settings.vars['offset_x'].get(), '777')
+        self.assertEqual(self.session.play_preferences.path.read_bytes(), original)
+        self.session.play_preferences.update({'offset_x': 333}, expected_generation=settings.revision)
+        self.assertFalse(settings.save())
+        self.assertEqual(self.session.play_preferences.values['offset_x'], 333)
+        self.assertEqual(settings.vars['offset_x'].get(), '777')
+
+    def test_recovery_confirmation_rejects_later_edit_or_saved_generation(self):
+        for later in ('edit', 'saved'):
+            with self.subTest(later=later):
+                settings = self.manager.play_settings = PlaySettings(self.manager)
+                values, bindings = settings.draft_values()
+                legacy = {'values': {**values, 'offset_x': '777'}, 'bindings': bindings}
+                settings.restore_draft(legacy)
+                choices = {row['key']: 'draft' for row in settings.recovery_pending['rows']}
+                if later == 'edit':
+                    settings.vars['offset_x'].set('999')
+                else:
+                    self.session.play_preferences.update({'offset_x': 333}, expected_generation=settings.revision)
+                before = copy.deepcopy(settings.draft_values())
+                with self.assertRaisesRegex(ValueError, '又有变化'):
+                    settings.finish_recovery(choices)
+                self.assertEqual(settings.draft_values(), before)
+
+    def test_legacy_restore_can_cancel_or_select_only_one_field(self):
+        settings = self.manager.play_settings = PlaySettings(self.manager)
+        values, bindings = settings.draft_values()
+        legacy = {'values': {**values, 'offset_x': '777'}, 'bindings': bindings, 'preferences_revision': 0}
+        self.session.play_preferences.update({'anchor': 'bottom_right'}, expected_generation=0)
+        settings.read_values()
+        before = copy.deepcopy(settings.draft_values())
+        settings.restore_draft(legacy)
+        self.assertTrue(all(row['conflict'] for row in settings.recovery_pending['rows']))
+        settings.handle({'action': 'settings_recovery_decision', 'decision': 'cancel'})
+        self.assertEqual(settings.draft_values(), before)
+        self.assertFalse(settings.has_draft())
+        settings.restore_draft(legacy)
+        choices = {row['key']: 'current' for row in settings.recovery_pending['rows']}
+        choices['offset_x'] = 'draft'
+        settings.finish_recovery(choices)
+        self.assertEqual(settings.vars['offset_x'].get(), '777')
+        self.assertEqual(settings.vars['anchor'].get(), '右下')
+        self.assertEqual(settings.draft()['changed'], ['offset_x'])
+
+    def test_invalid_scope_or_future_format_keeps_current_form(self):
+        settings = self.manager.play_settings = PlaySettings(self.manager)
+        before = copy.deepcopy(settings.draft_values())
+        for change in ({'changed': ['not-a-field']}, {'changed': ['offset_x', 'offset_x']}, {'format': 900}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                settings.restore_draft({**settings.draft(), **change})
+            self.assertEqual(settings.draft_values(), before)
 
     def test_registration_readout_distinguishes_disabled_occupied_and_applied(self):
         settings = self.manager.play_settings = PlaySettings(self.manager)
