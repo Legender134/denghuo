@@ -213,7 +213,9 @@ def resource_catalog(catalog):
                     'wands': ['cursed', 'base_level', 'public_level', 'resin_bonus', 'hero_class', 'wand_preservation'],
                     'missiles': ['cursed', 'is_upgradable', 'level', 'tier', 'default_quantity', 'durability']}
     state_fields['darts'] = state_fields['missiles']
-    return {**groups, 'items': [{'id': i, 'name': ids[i]['name'], 'kind': kind(i),
+    return {**groups, 'known_names': {i: row['name'] for i, row in ids.items()
+                                     if i.startswith(('items.', 'plants.')) and isinstance(row.get('name'), str) and row['name']},
+            'items': [{'id': i, 'name': ids[i]['name'], 'kind': kind(i),
                                 'state_fields': state_fields.get(kind(i), ['cooked', 'potion_id'] if i == item_id('food/Blandfruit') else [])}
                                for i in sorted(relevant) if i in ids]}
 

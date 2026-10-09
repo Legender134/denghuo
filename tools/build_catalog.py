@@ -101,7 +101,6 @@ def main():
     attach_catalog(entries, messages, rules)
     recipe_count=recipes(entries)
     numeric_count = sum(bool(row.get("numbers")) for row in entries)
-    (ROOT / "data/numeric_rules.json").write_text(json.dumps(rules, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     data = {"version": VERSION, "version_code": VERSION_CODE, "numeric_count": numeric_count,
             "commit": COMMIT,
             "source": "https://github.com/00-Evan/shattered-pixel-dungeon",
@@ -109,6 +108,9 @@ def main():
             "tiers": tiers, "terrain": terrain, "entries": entries, "exotic_to_regular": exotic_to_regular,
             "artifact_caps": artifact_caps, "class_armors": sorted(class_armors)}
     alchemy_count = attach_alchemy(data, UPSTREAM)
+    # Alchemy adds canonical seed entries; attach every final entry to its source.
+    attach_catalog(entries, messages, rules)
+    (ROOT / "data/numeric_rules.json").write_text(json.dumps(rules, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     output = ROOT / "data/catalog.json"
     output.parent.mkdir(exist_ok=True)
     output.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")

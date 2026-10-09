@@ -8,6 +8,7 @@ from pathlib import Path
 import secrets
 from urllib.parse import parse_qs, urlsplit
 from .backups import MAX_TOTAL
+from .service import SettingsConflict
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 
@@ -322,7 +323,13 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('不支持的面板操作')
                 return
             if path == "/api/settings":
-                self.server.session.update_settings(payload)
+                patch = dict(payload)
+                revision = patch.pop('expected_revision', None)
+                if not isinstance(revision, str) or not revision:
+                    raise ValueError('连接设置尚未核对，请刷新面板后重试。草稿仍保留。')
+                revision = self.server.session.update_settings(patch, expected_revision=revision)
+                self.send_data({'ok': True, 'settings_revision': revision})
+                return
             elif path == "/api/manual":
                 self.server.session.update_manual(payload)
             elif path == "/api/shutdown":
@@ -336,5 +343,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_data({"error": "Not found"}, 404)
                 return
             self.send_data({"ok": True})
+        except SettingsConflict as exc:
+            self.send_data({'error': str(exc)}, 409)
         except (ValueError, OSError, KeyError, RecursionError, OverflowError) as exc:
             self.send_data({"error": str(exc) if isinstance(exc, (ValueError, OSError)) else '请求参数或资料不正确'}, 400)

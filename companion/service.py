@@ -24,6 +24,10 @@ DEFAULTS = {"save_root": str(default_root()), "slot": "auto", "mode": "save", "r
             "always_on_top": False, "stop_at": "", "startup_surface": "panel"}
 
 
+class SettingsConflict(ValueError):
+    """The saved connection changed after a browser form was loaded."""
+
+
 def validate_settings(patch, *, require_existing_root=True):
     if not isinstance(patch, dict) or set(patch) - set(DEFAULTS):
         raise ValueError("包含不支持的设置")
@@ -136,6 +140,7 @@ class Session:
         self.exit_drafts = ExitDraftStore(self.config_path.parent / 'exit-drafts')
         self.exit_coordinator = ExitCoordinator(self.prepare_shutdown, self.save_exit_draft, on_finished=self._exit_finished)
         self.settings = dict(DEFAULTS)
+        self.settings_revision = uuid.uuid4().hex
         self.config_error = ""
         self.configuration_notice = ""
         try:
@@ -534,9 +539,11 @@ class Session:
                 raise ValueError('不支持的备份工作流')
             return {**result, 'context': self.backup_context}
 
-    def update_settings(self, patch):
+    def update_settings(self, patch, *, expected_revision=None):
         clean = validate_settings(patch)
         with self.lock:
+            if expected_revision is not None and expected_revision != self.settings_revision:
+                raise SettingsConflict('连接设置已在其他位置更新。草稿仍保留，请点击「重新载入已保存设置」后重新应用需要的修改。')
             if self.config_error and not {"save_root", "slot"}.issubset(clean):
                 raise ValueError("请先在「连接设置」中确认存档目录和槽位，再保存设置。")
             updated = {**self.settings, **clean}
@@ -567,11 +574,14 @@ class Session:
             if updated['save_root'] != self.settings['save_root'] or self.config_error:
                 self.backup_context = uuid.uuid4().hex
             self.settings = updated
+            self.settings_revision = uuid.uuid4().hex
+            revision = self.settings_revision
             self.config_error = ""
             if backup is not None:
                 self.configuration_notice = f"原配置已保留为 {backup.name}。"
             self._fingerprint = None
         self.refresh()
+        return revision
 
     def update_manual(self, payload):
         game = manual_game(payload)
@@ -721,6 +731,7 @@ class Session:
         with self.lock:
             age = max(0, time.time() - self.modified) if self.modified else None
             return copy.deepcopy({"data": self.data, "slots": self.slots, "settings": self.settings,
+                                  "settings_revision": self.settings_revision,
                                   "error": self.error, "warning": self.warning, "modified": self.modified,
                                   "waiting_for_save": self.waiting_for_save,
                                   "configuration_notice": self.configuration_notice,

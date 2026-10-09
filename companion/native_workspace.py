@@ -2,11 +2,19 @@
 from __future__ import annotations
 
 import copy
-from datetime import datetime
+from datetime import datetime, timezone
 import webbrowser
 
 from .native_host import Value, TextState, NativeWindow
 from .quick_reference import detail_text
+
+
+def plan_updated_text(stamp):
+    """Workspace timestamps may predate Windows local-time support."""
+    try:
+        return datetime.fromtimestamp(stamp, timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M')
+    except (ValueError, OSError, OverflowError):
+        return '时间超出本机显示范围'
 
 
 class Rows:
@@ -378,7 +386,7 @@ class NumericLookup:
             return
         labels = {'numeric': '数值方案', 'equipment': '装备方案', 'alchemy': '炼金方案', 'manual': '手动草稿', 'character': '角色条件'}
         rows = self.filtered_plans(status['plans'], query, kind, order)
-        self.host.command('plans', rows=[{'id': row['id'], 'text': row['name']+' · '+labels.get(row['kind'], row['kind'])+' · '+datetime.fromtimestamp(row['updated']).astimezone().strftime('%Y-%m-%d %H:%M')} for row in rows])
+        self.host.command('plans', rows=[{'id': row['id'], 'text': row['name']+' · '+labels.get(row['kind'], row['kind'])+' · '+plan_updated_text(row['updated'])} for row in rows])
 
     def open_plan(self, record_id, confirm_draft=True):
         if confirm_draft:

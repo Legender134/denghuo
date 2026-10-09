@@ -9,6 +9,23 @@ from companion.character_scene import calculate_scene, empty_scene
 from tests.test_native_controllers import ControllerFixture
 
 class NativeWorkspaceTests(unittest.TestCase):
+    def test_plan_timestamp_bounds_keep_valid_rows_and_identities(self):
+        from datetime import datetime, timezone
+        from companion.native_workspace import plan_updated_text
+        expected = datetime.fromtimestamp(10, timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
+        self.assertEqual(plan_updated_text(10), expected)
+        self.assertEqual(plan_updated_text(1700000000), datetime.fromtimestamp(1700000000, timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M"))
+        lookup = NumericLookup.__new__(NumericLookup)
+        lookup.owner, lookup.host = Mock(), Mock()
+        rows = [{'id': 'a'*32, 'name': '早期', 'kind': 'numeric', 'updated': 10},
+                {'id': 'b'*32, 'name': '超出范围', 'kind': 'numeric', 'updated': 999999999999}]
+        lookup.owner.manager.session.workspace_status.return_value = {'available': True, 'plans': rows}
+        lookup.choose_plan()
+        emitted = lookup.host.command.call_args.kwargs['rows']
+        self.assertEqual([row['id'] for row in emitted], ['b'*32, 'a'*32])
+        self.assertIn('时间超出本机显示范围', emitted[0]['text'])
+        self.assertIn(expected, emitted[1]["text"])
+
     def test_character_filter_label_and_exact_identity_handoff(self):
         rows = [{'id': 'a'*32, 'name': '同名条件', 'note': '根骨之戒需要核对', 'kind': 'character', 'updated': 30},
                 {'id': 'b'*32, 'name': '同名条件', 'note': '', 'kind': 'character', 'updated': 20},

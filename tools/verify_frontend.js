@@ -26,7 +26,7 @@ function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revis
   for(const page of ['workspace','help','play-settings'])assert(markup.includes(`id="view-${page}"`)&&markup.includes(`data-view="${page}"`));
   for(const script of ['workspace.js','help.js','play.js'])assert(markup.includes(`src="/${script}"`)&&fs.existsSync(path.join(root,'web',script)));
   const dashboard=harness();
-  const waiting={revision:0,data:null,error:'',warning:'',waiting_for_save:true,slots:[],active_slot:null,backup_context:'first-context',
+  const waiting={settings_revision:'connection-1',revision:0,data:null,error:'',warning:'',waiting_for_save:true,slots:[],active_slot:null,backup_context:'first-context',
     modified:0,age_seconds:null,stale:true,catalog_version:'4.0.2',catalog_count:955,token:'fixture',
     settings:{mode:'save',slot:'auto',stop_at:'',reveal:false,save_root:'/synthetic/default',always_on_top:false},backup_health:{state:'waiting'}};
   dashboard.context.document={querySelector:dashboard.get,querySelectorAll:()=>[],addEventListener(){}};
@@ -74,7 +74,7 @@ function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revis
   assert.equal(saveRoot.value,'/synthetic/draft','settings draft must survive navigation');
   assert.equal(dashboard.get('#always-top').checked,true,'unchanged fields follow saved preferences');
   assert(dashboard.get('#settings-draft-status').textContent.includes('尚未保存'));
-  dashboard.get('#settings-reset').listeners.click();
+  await dashboard.get('#settings-reset').listeners.click();
   assert.equal(saveRoot.value,'/synthetic/default');
   assert(!dashboard.get('#settings-draft-status').textContent.includes('尚未保存'));
   let resolveSettings,submittedSettings;
@@ -83,9 +83,47 @@ function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revis
   dashboard.get('#settings-form').listeners.submit({preventDefault(){}});
   saveRoot.value='/synthetic/new-edit';dashboard.get('#settings-form').listeners.input({target:saveRoot});
   assert.equal(submittedSettings.save_root,'/synthetic/first-edit');assert.equal(submittedSettings.startup_surface,'panel');
-  resolveSettings({});await new Promise(resolve=>setImmediate(resolve));
+  waiting.settings_revision='connection-2';waiting.settings.save_root='/synthetic/first-edit';
+  resolveSettings({settings_revision:'connection-2'});await new Promise(resolve=>setImmediate(resolve));
   assert.equal(saveRoot.value,'/synthetic/new-edit','late save acknowledgement must not erase newer edits');
   assert(dashboard.get('#settings-draft-status').textContent.includes('尚未保存'));
+
+  assert.equal(submittedSettings.expected_revision,'connection-1');
+  // Another panel changes the slot while this panel retains its unsaved root.
+  waiting.settings_revision='connection-3';waiting.settings.slot=2;
+  dashboard.context.post=async(path,payload)=>{if(path!=='/api/settings')return {};submittedSettings=payload;const error=new Error('连接设置已在其他位置更新，草稿仍保留');error.status=409;throw error;};
+  await dashboard.get('#settings-form').listeners.submit({preventDefault(){}});
+  assert.equal(submittedSettings.expected_revision,'connection-2');
+  assert.equal(saveRoot.value,'/synthetic/new-edit');assert(dashboard.run('settingsConflict'));
+  assert(dashboard.get('#settings-draft-status').textContent.includes('重新载入'));
+  assert.equal(dashboard.run('settingsRevision'),'connection-2','a conflict must not silently rebase the draft');
+  assert(!dashboard.get('#settings-error').hidden);
+  await dashboard.get('#settings-reset').listeners.click();
+  assert.equal(dashboard.get('#settings-slot').value,'2');assert.equal(saveRoot.value,'/synthetic/first-edit');
+  assert.equal(dashboard.run('settingsRevision'),'connection-3');assert(!dashboard.run('settingsConflict'));
+  const top=dashboard.get('#always-top');top.checked=true;dashboard.get('#settings-form').listeners.input({target:top});
+  dashboard.context.post=async(path,payload)=>{if(path!=='/api/settings')return {};submittedSettings=payload;waiting.settings_revision='connection-4';waiting.settings.always_on_top=true;return {settings_revision:'connection-4'};};
+  await dashboard.get('#settings-form').listeners.submit({preventDefault(){}});
+  assert.equal(submittedSettings.slot,2);assert.equal(submittedSettings.expected_revision,'connection-3');
+  assert.equal(dashboard.run('settingsDrafts.size'),0);
+  // A response that began before a successful save must not restore old settings.
+  let finishOldPoll;
+  const oldPollState=structuredClone(waiting);
+  dashboard.context.fetch=()=>new Promise(resolve=>finishOldPoll=resolve);
+  const oldPoll=dashboard.run('poll()');
+  saveRoot.value='/synthetic/saved-next';dashboard.get('#settings-form').listeners.input({target:saveRoot});
+  dashboard.context.post=async(path,payload)=>{if(path!=='/api/settings')return {};submittedSettings=payload;waiting.settings_revision='connection-5';waiting.settings.save_root=payload.save_root;return {settings_revision:'connection-5'};};
+  await dashboard.get('#settings-form').listeners.submit({preventDefault(){}});
+  finishOldPoll({ok:true,json:async()=>oldPollState});await oldPoll;
+  assert.equal(saveRoot.value,'/synthetic/saved-next');assert.equal(dashboard.run('settingsRevision'),'connection-5');
+  // Explicit reload obtains fresh values and preserves edits made during its request.
+  let finishSettingsReload;
+  dashboard.context.fetch=()=>new Promise(resolve=>finishSettingsReload=resolve);
+  const reload=dashboard.get('#settings-reset').listeners.click();
+  saveRoot.value='/synthetic/typed-during-reload';dashboard.get('#settings-form').listeners.input({target:saveRoot});
+  finishSettingsReload({ok:true,json:async()=>structuredClone(waiting)});await reload;
+  assert.equal(saveRoot.value,'/synthetic/typed-during-reload');assert(dashboard.run('settingsDrafts.size')>0);
+  assert(dashboard.get('#settings-error').textContent.includes('新修改'));
 
   const numeric=harness();numeric.load('rules.js');numeric.context.state=stamp();
   numeric.run("numericalDetail={identity:'example',inputs:[{key:'hp'},{key:'vial'}],origins:{hp:'快照',vial:'手填'},source:calculationStamp()};refreshNumericalOrigin()");
@@ -298,6 +336,33 @@ function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revis
   firstComparison.get('#compare-kind').value='armor';firstComparison.get('#compare-kind').listeners.change();
   assert.equal(firstComparison.run('compareItems[Number($("#compare-a").value)].location'),'护甲');
   assert.equal(Number(firstComparison.get('#compare-level-a').value),3);
+
+  const changingInventory=stamp();changingInventory.data.items=[ownedSword,
+    {...ownedSword,key:'items.weapon.melee.dagger',name:'匕首',location:'背包',level:0},
+    {...ownedSword,key:'items.weapon.melee.longsword',name:'长剑',location:'背包',level:0},
+    {...ownedSword,key:'items.weapon.melee.greatsword',name:'巨剑',location:'背包',level:0}];
+  const heldComparison=await freshComparison(changingInventory);
+  heldComparison.get('#compare-b').value='3';heldComparison.get('#compare-b').listeners.change();
+  const heldLevel=heldComparison.get('#compare-level-b');heldLevel.value='7';
+  heldComparison.get('#equipment-comparison').listeners.input({target:heldLevel});
+  changingInventory.data.items.splice(1,1);heldComparison.run('renderEquipmentComparison()');
+  assert.equal(heldComparison.run('readComparisonArgs().id_b'),'items.weapon.melee.greatsword');
+  assert.equal(heldComparison.run('readComparisonArgs().level_b'),'7');
+  assert(heldComparison.run('compareItems[Number($("#compare-b").value)].reference'));
+  assert(heldComparison.get('#compare-origin-b').textContent.includes('固定装备参考'));
+  changingInventory.data.items.pop();heldComparison.run('renderEquipmentComparison()');
+  assert.equal(heldComparison.run('readComparisonArgs().id_b'),'items.weapon.melee.greatsword');
+  assert.equal(heldComparison.run('readComparisonArgs().level_b'),'7');
+  changingInventory.data.items.push({...ownedSword,key:'items.weapon.melee.greatsword',name:'另一巨剑',location:'背包',level:1});
+  heldComparison.run('renderEquipmentComparison()');
+  assert.equal(heldComparison.run('readComparisonArgs().level_b'),'7');
+  heldComparison.get('#compare-b').value=String(heldComparison.run('compareItems.findIndex(item=>item.owned&&item.key==="items.weapon.melee.greatsword")'));
+  heldComparison.get('#compare-b').listeners.change();
+  assert.equal(Number(heldComparison.get('#compare-level-b').value),1);
+  heldComparison.get('#compare-curse-b').dataset.manual='true';
+  heldComparison.get('#compare-kind').value='armor';heldComparison.get('#compare-kind').listeners.change();
+  assert(!heldComparison.get('#compare-b').dataset.edited);
+  assert(!heldComparison.get('#compare-curse-b').dataset.manual);
 
   const budgetComparison=await freshComparison(firstSave);let budgetQuery;
   budgetComparison.context.displayNumber=String;budgetComparison.context.exampleHTML=()=>'';budgetComparison.context.inlineError=(target,message)=>{target.textContent=message;};budgetComparison.context.calculationStamp=()=>({modified:budgetComparison.context.state.modified,revision:budgetComparison.context.state.revision,mode:'save',slot:1,started:90});

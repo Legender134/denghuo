@@ -144,6 +144,8 @@ def recipe_list(catalog):
         if row['output'] not in entries or any(i['id'] not in entries for i in row['inputs']):
             raise ValueError('已核对配方的材料或产出资料缺失')
         row['name'] = entries[row['output']]['name']
+        if row['output'] == item_id('food/StewedMeat'):
+            row['name'] += f"（{row['inputs'][0]['quantity']}份原肉 → {row['quantity']}份；{row['cost']}能量）"
         row['unit'] = '件'
         for ingredient in row['inputs']:
             ingredient['name'] = entries[ingredient['id']]['name']

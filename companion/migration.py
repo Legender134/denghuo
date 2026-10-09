@@ -127,7 +127,7 @@ def _preference_disk_stamp(prefs):
         return None
 
 
-def _target(session):
+def _target(session, *, include_drafts=False):
     _, knowledge_stamp = session.knowledge._read()
     prefs = session.play_preferences
     prefs_stamp = _preference_disk_stamp(prefs)
@@ -135,7 +135,8 @@ def _target(session):
             'config_error': session.config_error, 'knowledge': knowledge_stamp,
             'preferences_disk': prefs_stamp, 'preferences_loaded': prefs._disk_stamp,
             'preferences_revision': prefs.generation, 'preferences_values': prefs.values,
-            'backups': _backup_guard(session), 'exit_drafts': session.exit_drafts.stamp()}
+            'backups': _backup_guard(session),
+            'exit_drafts': session.exit_drafts.stamp() if include_drafts else None}
 
 
 def _locks(session):
@@ -189,7 +190,7 @@ def status(session):
                 'save_root': session.settings['save_root'],
                 'backup_target': str(session.backups.scope(session.settings['save_root'])),
                 'knowledge_target': str(session.knowledge.path), 'preferences_target': str(session.play_preferences.path),
-                'note': '仅迁移所选助手资料。进度进入助手档案，回档需另行预览确认；本机目录和位置保持。'}
+                'note': '仅迁移所选助手资料。每包最多200份草稿，可分批迁移；本机已保存的草稿原件继续保留。进度进入助手档案，回档需另行预览确认；本机目录和位置保持。'}
 
 
 def _export(session, payload):
@@ -311,7 +312,8 @@ def _merged_plan(value, row):
 
 def _preview(session, raw):
     manifest, contents, knowledge, preferences = inspect(session, raw)
-    target = _target(session)
+    include_drafts = 'exit-drafts.json' in contents
+    target = _target(session, include_drafts=include_drafts)
     value, _ = session.knowledge._read()
     rows = []
     if 'backups.zip' in contents:
@@ -354,7 +356,7 @@ def _preview(session, raw):
                          'detail': action + f" · 草稿类型 {record['draft_kind']} · 来源窗口 {record['surface_id']}",
                          'valid': True, 'content': record, 'target': str(session.exit_drafts.directory)})
     # Preview operations must not hide index updates (e.g. recovery discovery).
-    if target != _target(session):
+    if target != _target(session, include_drafts=include_drafts):
         raise ValueError('本机资料在预览期间变化，请重新预览；尚未导入')
     result = {'rows': rows, 'source': manifest['source'], 'current_application_version': __version__,
               'current_rules_version': session.catalog.data['version'],

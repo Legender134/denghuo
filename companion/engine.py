@@ -48,6 +48,7 @@ class Catalog:
                 '角色天赋' if identity.startswith('actors.hero.talent.') else
                 '职业技能' if identity.startswith('actors.hero.abilities.') else
                 '武器技能' if identity.endswith('.ability') else
+                '植物种子' if identity.startswith('plants.') and identity.endswith('$seed') else
                 '状态效果' if '$' in identity or identity.startswith('actors.buffs.') else row['category'])
 
     def key(self, obj):

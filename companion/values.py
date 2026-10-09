@@ -211,6 +211,15 @@ class PlayerValues:
         if entry.get('numeric_status') == 'legacy':
             return {'id':identity, 'name':entry['name'], 'version':self.catalog.data['version'], 'blocks':[], 'inputs':[], 'notice':'此物品只存在于旧版本，当前游戏已经移除。', 'status':'legacy'}
         owner = self.identity(entry)
+        if identity.startswith('plants.') and identity.endswith('$seed') and identity[:-5] in self.rules.entries:
+            effect = self.detail(identity[:-5], raw)
+            effect.update(id=identity, name=entry['name'])
+            effect['blocks'] = [block('播种与触发前提', [],
+                '以下复用对应植物种植并触发后的效果；携带种子本身不会立即获得这些数值。'
+                '需在游戏中确认可种植地形、触发对象、职业和挑战；普通职业与守望者条件分别按下表核对。'),
+                *[{**row, 'title': '种植后 · ' + row['title']} for row in effect['blocks']]]
+            effect['provenance']['limits'].append('植物效果需要实际播种并触发；种子不是即时治疗或增益。')
+            return effect
         result, requested = [], set()
         rows = [metric(*row) for row in FIXED.get(identity, [])]
         for label, name, scale, condition in DURATION_EFFECTS.get(identity, []):

@@ -853,8 +853,14 @@ class SaveTests(unittest.TestCase):
     def test_stale_save_and_deadline(self):
         path=self.write(game());os.utime(path,(100,100));session=self.session()
         self.assertTrue(session.snapshot()['stale'])
-        session.update_settings({"stop_at":"2026-10-01T02:00:00+08:00"})
-        self.assertTrue(session.stop.is_set())
+        from datetime import datetime, timezone
+        elapsed = datetime.fromtimestamp(time.time()-1, timezone.utc).isoformat()
+        session.update_settings({"stop_at": elapsed})
+        status = session.exit_status()
+        self.assertEqual(status['initiator'], 'deadline')
+        self.assertEqual(status['reason'], '已到达用户设置的结束时间')
+        self.assertTrue(session.stop.wait(5), "Coordinated deadline exit did not complete")
+        self.assertEqual(session.exit_status()['phase'], 'finished')
 
     def test_invalid_settings_and_manual_input_do_not_apply(self):
         session=self.session()
@@ -1006,6 +1012,67 @@ class BackupContextTests(unittest.TestCase):
         session.backup_action({**fresh_payload,'expected_current':fresh['expected_current']})
         self.assertEqual({p.relative_to(self.a/'game1').as_posix():p.read_bytes()
                           for p in (self.a/'game1').rglob('*') if p.is_file()},original)
+
+
+class ConnectionSettingsTests(unittest.TestCase):
+    def test_stale_forms_cannot_revert_connection_and_reload_preserves_independent_changes(self):
+        with tempfile.TemporaryDirectory(prefix='denghuo-settings-cas-') as name:
+            root = Path(name).resolve()
+            session = Session(root / 'config.json')
+            session.update_settings({'save_root': str(root), 'slot': 1})
+            server = Server(session)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            def status():
+                with urlopen(server.origin + '/api/status') as response:
+                    return json.load(response)
+            def submit(patch):
+                req = Request(server.origin + '/api/settings', data=json.dumps(patch).encode(), headers={
+                    'Content-Type': 'application/json', 'X-Companion-Token': server.token, 'Origin': server.origin})
+                with urlopen(req) as response:
+                    return json.load(response)
+            try:
+                old = status()
+                newer_root = root / 'other'; newer_root.mkdir()
+                changed = {**old['settings'], 'save_root': str(newer_root), 'slot': 2, 'reveal': True,
+                           'stop_at': '2099-01-01T12:00:00+08:00'}
+                first = submit({**changed, 'expected_revision': old['settings_revision']})
+                original_bytes = session.config_path.read_bytes()
+                with self.assertRaises(HTTPError) as caught:
+                    submit({**old['settings'], 'always_on_top': True, 'expected_revision': old['settings_revision']})
+                self.assertEqual(caught.exception.code, 409)
+                self.assertIn('草稿仍保留', json.load(caught.exception)['error'])
+                self.assertEqual(session.config_path.read_bytes(), original_bytes)
+                self.assertEqual(status()['settings'], changed)
+                self.assertEqual(status()['settings_revision'], first['settings_revision'])
+                for missing in ({'always_on_top': True}, {'always_on_top': True, 'expected_revision': None}):
+                    with self.assertRaises(HTTPError) as caught:
+                        submit(missing)
+                    self.assertEqual(caught.exception.code, 400)
+                    self.assertEqual(session.config_path.read_bytes(), original_bytes)
+                fresh = status()
+                final = submit({**fresh['settings'], 'always_on_top': True, 'expected_revision': fresh['settings_revision']})
+                self.assertEqual(status()['settings'], {**changed, 'always_on_top': True})
+                self.assertNotEqual(final['settings_revision'], first['settings_revision'])
+                self.assertNotIn('expected_revision', json.loads(session.config_path.read_text(encoding='utf-8')))
+            finally:
+                server.shutdown(); server.server_close(); thread.join(5)
+                self.assertFalse(thread.is_alive())
+
+    def test_native_targeted_changes_and_new_sessions_invalidate_old_forms(self):
+        from companion.service import SettingsConflict
+        with tempfile.TemporaryDirectory(prefix='denghuo-settings-session-') as name:
+            config = Path(name) / 'settings.json'
+            first = Session(config)
+            old_revision = first.snapshot()['settings_revision']
+            first.update_settings({'always_on_top': True})
+            with self.assertRaises(SettingsConflict):
+                first.update_settings({'slot': 1}, expected_revision=old_revision)
+            self.assertTrue(first.settings['always_on_top'])
+            second = Session(config)
+            self.assertNotEqual(first.settings_revision, second.settings_revision)
+            with self.assertRaises(SettingsConflict):
+                second.update_settings({'slot': 1}, expected_revision=first.settings_revision)
 
 
 class ApiTests(unittest.TestCase):

@@ -18,6 +18,30 @@ class PlayerValuesTests(unittest.TestCase):
     def metrics(self, identity, **parameters):
         return {v['label']:v['value'] for b in self.detail(identity,**parameters)['blocks'] for v in b.get('values',[])}
 
+    def test_all_canonical_seeds_show_conditioned_parent_effects_and_correct_type(self):
+        seeds = [row for row in self.catalog.entries if row['id'].startswith('plants.') and row['id'].endswith('$seed')]
+        self.assertEqual(len(seeds), 12)
+        for seed in seeds:
+            with self.subTest(seed=seed['id']):
+                self.assertEqual(seed['type_label'], '植物种子')
+                self.assertEqual(seed['numeric_status'], 'indexed')
+                self.assertTrue(seed['numeric_refs'])
+                detail = self.detail(seed['id'], max_hp=100)
+                parent = self.detail(seed['id'][:-5], max_hp=100)
+                self.assertEqual((detail['id'], detail['name']), (seed['id'], seed['name']))
+                self.assertIn('携带种子本身不会立即', detail['blocks'][0]['note'])
+                self.assertEqual([row['values'] for row in detail['blocks'][1:] if 'values' in row],
+                                 [row['values'] for row in parent['blocks'] if 'values' in row])
+                self.assertEqual(detail['inputs'], parent['inputs'])
+                self.assertEqual(detail['provenance']['links'], parent['provenance']['links'])
+        sun = self.detail('plants.sungrass$seed', max_hp=100)
+        healing = next(value for row in sun['blocks'] for value in row.get('values', []) if value['label'] == '总治疗额度')
+        self.assertEqual(healing['value'], '100')
+        self.assertIn('普通职业离开原地会中断；守望者可带走', healing['condition'])
+        from companion.quick_reference import detail_text
+        self.assertIn('携带种子本身不会立即', detail_text(sun))
+        self.assertIn('100 HP', detail_text(sun))
+
     def test_every_entry_opens_without_implementation_text(self):
         for entry in self.catalog.entries:
             with self.subTest(entry=entry['id']):

@@ -46,13 +46,11 @@ def migrate_data(destination, sources):
                     raise ValueError('旧收藏、方案或游玩设置过大，原文件仍保留，尚未迁移')
                 shutil.copy2(previous, temporary/name)
                 carried_preferences.append(name)
-        from .session_exit import ExitDraftStore, DRAFT_ID, MAX_SAVED_DRAFTS
+        from .session_exit import ExitDraftStore, DRAFT_ID
         drafts = ExitDraftStore(source/'exit-drafts')
         copied_drafts, uncarried_drafts = [], []
         if drafts.directory.exists():
             paths = list(unlinked(drafts.directory).glob('*.json'))
-            if len(paths) > MAX_SAVED_DRAFTS:
-                raise ValueError('旧未完成草稿超过200份，原件仍保留，请在旧版分批迁移')
             target_store = ExitDraftStore(temporary/'exit-drafts')
             for path in paths:
                 unlinked(path)

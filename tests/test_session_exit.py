@@ -188,12 +188,24 @@ class FinalCaptureTests(unittest.TestCase):
 
     def test_capacity_failure_is_bounded_and_preserves_original_bytes(self):
         before = self.hashes()
-        started = time.monotonic()
-        with patch('companion.backups.MAX_STORAGE', 1):
-            result = self.manager.final_capture(self.root, started + .15)
+        clock, attempts = [1000.0], []
+        actual = self.manager.capture
+        def fail_at_deadline(root, slot, *, deadline=None):
+            attempts.append(slot)
+            try:
+                return actual(root, slot, deadline=deadline)
+            finally:
+                # Expire the shared budget after the real capacity check, rather
+                # than racing Windows file I/O against a 150 ms wall-clock limit.
+                clock[0] = 1000.15
+        with (patch('companion.backups.MAX_STORAGE', 1),
+              patch('companion.backups.time.monotonic', side_effect=lambda: clock[0]),
+              patch.object(self.manager, 'capture', side_effect=fail_at_deadline)):
+            result = self.manager.final_capture(self.root, 1000.15)
         self.assertFalse(result['ok'])
         self.assertIn('512 MiB', result['error'])
-        self.assertLess(time.monotonic() - started, .8)
+        self.assertEqual(attempts, [1])
+        self.assertEqual(clock[0], 1000.15)
         self.assertEqual(self.hashes(), before)
         self.assertFalse(list(self.manager.directory.rglob('*.zip')))
 

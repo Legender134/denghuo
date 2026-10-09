@@ -82,6 +82,47 @@ class MigrationTests(unittest.TestCase):
         contents[migration.INDEX] = migration.encode(manifest)
         return migration._zip(contents)
 
+    def test_over_200_preserved_drafts_do_not_block_preference_import(self):
+        self.source.play_preferences.update({'enabled': False})
+        identities = [self.target.exit_drafts.save('web-12345678', 'workspace', f'草稿{n}', {'raw': str(n)})['id']
+                      for n in range(201)]
+        originals = {identity: self.target.exit_drafts.load(identity) for identity in identities}
+        raw = self.bundle(['preference:enabled'])
+        preview = migration.import_preview(self.target, raw)
+        # An unrelated new draft must not invalidate a preference-only preview.
+        self.target.exit_drafts.save('web-87654321', 'workspace', '随后保存', {'raw': 'keep'})
+        result = migration.import_bundle(self.target, raw, {'selected': ['preference:enabled'],
+            'expected': preview['expected'], 'confirmed': True})
+        self.assertEqual((result['success_count'], result['failure_count']), (1, 0))
+        self.assertFalse(self.target.play_preferences.values['enabled'])
+        self.assertEqual(len(self.target.exit_drafts.list()), 202)
+        self.assertEqual({identity: self.target.exit_drafts.load(identity) for identity in identities}, originals)
+        self.assertEqual(self.game_bytes(self.target), self.original_game)
+
+    def test_draft_batch_limit_is_independent_of_lifetime_count_and_still_checks_cas(self):
+        from companion.session_exit import checked_draft_set
+        existing = [self.target.exit_drafts.save('web-12345678', 'workspace', f'草稿{n}', {'raw': str(n)})['id']
+                    for n in range(201)]
+        before = self.target.exit_drafts.stamp()
+        incoming = self.source.exit_drafts.save('web-87654321', 'workspace', '待迁移', {'raw': 'unchanged'})['id']
+        raw = self.bundle(['draft:' + incoming])
+        result = self.apply(raw)
+        self.assertEqual((result['success_count'], result['failure_count']), (1, 0))
+        self.assertEqual(self.target.exit_drafts.load(incoming), self.source.exit_drafts.load(incoming))
+        self.assertEqual({name: digest for name, digest in self.target.exit_drafts.stamp().items() if name in before}, before)
+        preview = migration.import_preview(self.target, raw)
+        self.target.exit_drafts.save('web-87654321', 'workspace', '并发编辑', {'raw': 'keep'})
+        with self.assertRaisesRegex(ValueError, '变化'):
+            migration.import_bundle(self.target, raw, {'selected': ['draft:' + incoming],
+                'expected': preview['expected'], 'confirmed': True})
+        # Portable batches retain their explicit 200-record bound.
+        with self.assertRaises(ValueError):
+            self.target.exit_drafts.export_records(existing)
+        with self.assertRaises(ValueError):
+            checked_draft_set({'format': 1, 'kind': 'denghuo-exit-draft-set',
+                               'records': [self.target.exit_drafts.load(identity) for identity in existing]})
+        self.assertEqual(self.game_bytes(self.target), self.original_game)
+
     def test_saved_raw_drafts_select_preview_redact_import_and_preserve_conflict_without_applying(self):
         raw_form = {'format': 1, 'numeric': {'hp': '不是数字', 'level': '-', 'custom': '  原始空白  '},
                     'open_plan': {'name': '原名称', 'note': 'C:\\private\\save token=SECRET Authorization: Bearer AUTH'},

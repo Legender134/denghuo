@@ -16,6 +16,7 @@ from .backups import atomic_json, unlinked
 SURFACE = re.compile(r'(?:native(?:[-_][a-z0-9]{1,48})?|web-[a-f0-9]{8,64})\Z')
 DRAFT_ID = re.compile(r'[a-f0-9]{32}\Z')
 MAX_DRAFT = 65536
+# Portable batch bound; explicitly saved local drafts are retained across batches.
 MAX_SAVED_DRAFTS = 200
 MAX_DRAFT_SET = 16 * 1024 * 1024
 ONLINE_SECONDS = 12
@@ -137,8 +138,8 @@ class ExitDraftStore:
             rows = {}
             for path in unlinked(self.directory).glob('*.json'):
                 path = unlinked(path)
-                if len(rows) >= MAX_SAVED_DRAFTS or path.stat().st_size > 512 * 1024:
-                    raise ValueError('已有草稿数量或文件大小超过迁移限制，原件仍保留')
+                if path.stat().st_size > 512 * 1024:
+                    raise ValueError('已有草稿文件大小超过迁移限制，原件仍保留')
                 rows[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
             return rows
 
@@ -198,8 +199,8 @@ class ExitDraftStore:
                     encoded = json.dumps(record, ensure_ascii=True, sort_keys=True).encode()
                     stored_id = hashlib.sha256(encoded).hexdigest()[:32]
             if addition is not None:
-                if len(self.stamp()) >= MAX_SAVED_DRAFTS:
-                    raise ValueError('本机已有200份草稿，请减少迁移选择；原件仍保留')
+                # The 200-record limit applies to one portable batch, not to the
+                # user's lifetime of explicitly preserved unfinished work.
                 unlinked(self.directory).mkdir(parents=True, exist_ok=True)
                 # Exclusive creation closes the cross-process check/write race.
                 path = unlinked(self.directory / (addition['id'] + '.json'))

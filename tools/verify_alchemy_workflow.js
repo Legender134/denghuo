@@ -57,6 +57,24 @@ function harness(){
 (async()=>{
   const h=harness();let checks=0;
   assert.equal(h.get('#alchemy-targets').children.length>1,true);assert.equal(h.run('alchemyFamilies.length'),73);assert.equal(new Set(metadata.families.map(row=>row.family)).size,39);checks++;
+  const sword='items.weapon.melee.sword';h.apply(plan([target('recipe-stewedmeat-onemeat')],[stock(sword)],10));
+  assert.equal(h.run('alchemyName("items.weapon.melee.sword")'),'单手剑');
+  const identityPicker=h.field('#alchemy-materials','标准身份');
+  assert(identityPicker.children.some(row=>row.value===sword&&row.textContent.includes('单手剑')&&row.textContent.includes('库存参考')));
+  assert(!identityPicker.children.some(row=>row.value===sword&&row.textContent.includes('未匹配')));
+  assert(h.get('#alchemy-materials').textContent.includes('不参与本版炼金配方'));
+  assert(!h.get('#alchemy-resource-type').children.some(row=>row.value===sword));checks++;
+  const stew=metadata.families.filter(row=>row.output==='items.food.stewedmeat'&&row.inputs);
+  assert.equal(stew.length,3);assert.equal(new Set(stew.map(row=>row.name)).size,3);
+  for(const row of stew){h.get('#alchemy-recipe').value=row.id;h.run('renderAlchemyEditor()');
+    assert(h.get('#alchemy-formula').textContent.includes(row.cost+' 能量'));
+    assert(h.get('#alchemy-formula').textContent.includes(row.quantity+' 件 / 批'));
+    assert(h.get('#alchemy-recipe').children.some(option=>option.value===row.id&&option.textContent.includes(row.cost+'能量')));
+    assert(h.field('#alchemy-targets','目标配方').children.some(option=>option.value===row.id&&option.textContent.includes(row.quantity+'份')));
+  }
+  h.apply(plan([target('recipe-meatpie')],[],10,{'items.food.stewedmeat':{recipe:stew[2].id,choices:{}}}));
+  for(const row of stew)assert(h.field('#alchemy-chains','明确使用的生产配方').children.some(option=>option.value===row.id&&option.textContent.includes(row.cost+'能量')));
+  assert(h.get('#alchemy-chains').textContent.includes('2 能量 → 3 件 / 批'));checks++;
   // Every real family option creates its actual choice widgets; source lists remain per instance.
   const allStock=[stock('items.wands.wandoffireblast',1,'wand',{base_level:0,cursed:false},'known'),stock('items.weapon.missiles.throwingknife',3,'missile',{tier:1,default_quantity:3,level:0,durability:75,is_upgradable:true,cursed:false}),stock('items.trinkets.ratskull',1,'trinket',{level:0}),stock('items.trinkets.trinketcatalyst',1,'catalyst',{catalyst_stage:'awaiting_choice',rolled_choices:['items.trinkets.ratskull','items.trinkets.exoticcrystals','items.trinkets.mossyclump','items.trinkets.petrifiedseed']})];
   for(const family of metadata.families){h.apply({...plan([target(family.id)],allStock),reference_version:922});for(const field of family.choices||[]){const widgets=h.walk(h.get('#alchemy-targets')).filter(row=>row.tagName==='SELECT'||row.tagName==='INPUT');if(field.type==='instance-list')assert(widgets.some(row=>row.type==='checkbox'),family.id);else assert(widgets.some(row=>row.parentNode._text.startsWith(h.run('alchemyChoiceLabels['+JSON.stringify(field.key)+']'))),family.id+' '+field.key);}}checks++;

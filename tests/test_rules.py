@@ -75,7 +75,8 @@ class ReferenceTests(unittest.TestCase):
         self.assertEqual(coverage['fallback_literals'],0)
         self.assertEqual(len({r['path'] for r in coverage['files']}),1301)
         self.assertEqual(sum(r['numeric_literals'] for r in coverage['files']),36299)
-        self.assertEqual(data['entry_coverage']['indexed'],949)
+        self.assertEqual(data['entry_coverage']['indexed'],961)
+        self.assertEqual(data['entry_coverage']['total'],len(self.catalog.entries))
         self.assertEqual(len(data['entry_coverage']['legacy']),6)
         for entry in self.catalog.entries:
             for ref in entry['numeric_refs']:

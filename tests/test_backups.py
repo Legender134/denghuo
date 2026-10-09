@@ -83,15 +83,17 @@ class BackupTests(unittest.TestCase):
                                    'expected_metadata_revision': discovered['metadata_revision']})
 
     def test_game_replacement_during_backup_read_is_allowed_and_rejected_as_unstable(self):
-        path = self.root / 'game1' / 'game.dat'
+        path = (self.root / 'game1' / 'game.dat').resolve()
         old = json.loads(gzip.decompress(path.read_bytes()))
         old['hero']['HP'] = 19
         new = gzip.compress(json.dumps(old).encode())
         replacement = path.with_suffix('.spdtmp')
         replacement.write_bytes(new)
+        injected = []
         def interleaved(file):
             stream = open_save(file)
             if file == path:
+                injected.append(file)
                 try:
                     file.unlink()
                     replacement.replace(file)
@@ -102,6 +104,7 @@ class BackupTests(unittest.TestCase):
         with patch('companion.backups.open_save', side_effect=interleaved):
             with self.assertRaisesRegex(ValueError, '正在保存'):
                 self.manager.capture(self.root, 1)
+        self.assertEqual(injected, [path])
         self.assertEqual(path.read_bytes(), new)
         self.assertFalse(list(self.manager.directory.rglob('*.zip')))
         self.write_save(hp=19)
