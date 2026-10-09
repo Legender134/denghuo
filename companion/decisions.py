@@ -101,11 +101,13 @@ def context_actions(session,snapshot):
         if item['kind'] not in RESOURCES:
             continue
         kind = item['kind']
-        if kind in grouped:
-            grouped[kind]['quantity'] += item['quantity']
+        fruit = item.get('alchemy_state', {}) if kind == 'Blandfruit' else {}
+        group = (kind, fruit.get('cooked', 'unknown'), fruit.get('potion_id')) if kind == 'Blandfruit' else kind
+        if group in grouped:
+            grouped[group]['quantity'] += item['quantity']
             if kind=='Waterskin':
-                grouped[kind]['params'].pop('dew_volume',None)
-                grouped[kind]['calculation_missing']='记录中有多个水袋，请核对要使用的水袋露珠量、天赋与屏障后计算'
+                grouped[group]['params'].pop('dew_volume',None)
+                grouped[group]['calculation_missing']='记录中有多个水袋，请核对要使用的水袋露珠量、天赋与屏障后计算'
             continue
         purpose,entry = RESOURCES[kind]
         if entry not in entries:
@@ -115,6 +117,9 @@ def context_actions(session,snapshot):
                   'restriction':'生命值为0；普通行动建议暂停，先核对复活或狂暴状态' if hero['hp']<=0 else
                                 '当前状态限制主动行动；解除后再核对是否能使用' if blocked else '',
                   'calculation_missing':'', 'note':'所记资源需按当前游戏画面核对；资料入口不会替你操作游戏'}
+        if kind == 'Blandfruit':
+            option['fruit_state'] = dict(fruit)
+            option['related'] = item.get('related', [])
         if kind in ('PotionOfHealing','Waterskin'):
             vials = [item for item in data.get('items',[]) if item.get('kind')=='VialOfBlood']
             if not vials:
@@ -145,9 +150,9 @@ def context_actions(session,snapshot):
                 option['note']='凝血试管可能让多滴露珠逐次恢复；回血与护盾按实际分支分配'
         if kind in FOODS:
             add_food_context(session, data, kind, entry, option, known_available)
-        grouped[kind]=option
+        grouped[group]=option
     order = list(RESOURCES)
-    options = sorted(grouped.values(),key=lambda row:order.index(next(kind for kind,value in RESOURCES.items() if value[1]==row['entry'])))
+    options = sorted(grouped.values(),key=lambda row:(order.index(next(kind for kind,value in RESOURCES.items() if value[1]==row['entry'])), row.get('fruit_state', {}).get('cooked', ''), row.get('fruit_state', {}).get('potion_id') or ''))
     return {'state':'manual' if provenance['mode']=='manual' else 'saved-stale' if provenance['stale'] else 'saved',
             'source':provenance, 'risks':risks,'options':options,
             'message':'核对当前可用资源，再查看条件与具体数值。旧快照和手动填写不会自动成为此刻确认信息。'}
@@ -190,6 +195,27 @@ def explain_comparison(result):
 def add_food_context(session, data, kind, entry, option, known_available):
     """Link only known carried foods; displayed values remain conditional base references."""
     from .values import metric
+    if kind == 'Blandfruit':
+        state = option.get('fruit_state', {})
+        cooked = state.get('cooked', 'unknown')
+        if cooked != 'cooked':
+            raw = cooked == 'raw'
+            option['name'] += '（未烹煮）' if raw else '（烹煮状态未确认）'
+            option['purpose'] = '核对烹煮' if raw else '核对果实状态'
+            option['values'] = []
+            message = '未烹煮，不能直接进食；可与种子一起烹煮' if raw else '烹煮效果未确认，不能给出此果实的进食数值'
+            option['restriction'] += ('；' if option['restriction'] else '') + message
+            option['calculation_missing'] = '资料中的450点饱食和3回合仅为烹煮后进食的基础参考，不适用于当前未确认可食用的果实'
+            option['note'] = message + '。先核对烹煮状态；原始果实和不同药剂果实不合并计数。'
+            return
+        potion = state.get('potion_id', '').rsplit('.', 1)[-1]
+        throwing = potion in ('potionoffrost', 'potionofliquidflame', 'potionoftoxicgas', 'potionofparalyticgas')
+        choice = potion in ('potionoflevitation', 'potionofpurity')
+        option['purpose'] = '核对投掷或进食' if throwing else '核对使用方式' if choice else '核对进食与药剂效果'
+        if throwing:
+            option['restriction'] += ('；' if option['restriction'] else '') + '该果实默认投掷；主动进食仍会把对应有害药剂效果施加给英雄'
+        if potion == 'potionofhealing' and '药水恐惧' in data.get('challenges', []):
+            option['restriction'] += ('；' if option['restriction'] else '') + '药水恐惧挑战：治疗果实的药剂效果不恢复生命，改为中毒'
     details = session.values.detail(entry)
     cells = {row['label']:row for block in details['blocks'] for row in block.get('values',[])}
     option['values'] = [dict(cells[label]) for label in ('恢复饱食','进食耗时') if label in cells]
@@ -200,7 +226,13 @@ def add_food_context(session, data, kind, entry, option, known_available):
         option['note'] += '肉馅饼还会赋予饱腹状态；900点为基础恢复，不表示可超出普通饱食上限。'
     elif kind == 'MysteryMeat':
         option['note'] += '生肉可能附带负面状态；可先核对烹饪方式。'
-    elif kind in ('Blandfruit','FrozenCarpaccio','PhantomMeat'):
+    elif kind == 'Blandfruit':
+        option['note'] += '已确认烹煮药剂种类；进食还会对英雄施加对应药剂效果，不能只当普通口粮。'
+        if choice:
+            option['note'] += '该果实默认选择使用方式；进食与投掷效果分别核对。'
+        elif throwing:
+            option['note'] += '以下饱食和耗时仅适用于主动进食，不表示应当吃下，也不是投掷数值。'
+    elif kind in ('FrozenCarpaccio','PhantomMeat'):
         option['note'] += '实际效果还取决于烹饪/冷冻/灵肉等特殊分支，请核对该物品说明。'
     nutrition = cells.get('恢复饱食',{}).get('value')
     if nutrition is None:
@@ -220,4 +252,4 @@ def add_food_context(session, data, kind, entry, option, known_available):
     if isinstance(hunger,(int,float)) and not isinstance(hunger,bool) and kind not in ('Pasty','Blandfruit'):
         option['values'].append(metric('进食后饥饿值参考',max(0,hunger-amount),'点',
             '仅扣本次基础食物恢复；未计进食期间饥饿增长、天赋、特殊状态与未确认修正，不保证即时解除危险'))
-    option['note'] += '药水恐惧不把普通食物变成治疗药剂；食物饱食恢复不等于即时回血。诅咒丰饶之角会降低恢复，未确认的状态需在游戏中核对。'
+    option['note'] += ('果实药剂效果及挑战另行判断；' if kind == 'Blandfruit' else '药水恐惧不把普通食物变成治疗药剂；') + '食物饱食恢复不等于即时回血。诅咒丰饶之角会降低恢复，未确认的状态需在游戏中核对。'

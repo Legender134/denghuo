@@ -39,6 +39,13 @@ def workspace_status(session):
                                            'mode': provenance['mode'], 'source': provenance,
                                            'source_label': provenance['label'],
                                            'conditions': ('角色总力量已按公开条件计算；其他加成仍需核对' if data.get('character_scene', {}).get('strength', {}).get('usable') else '基础力量参考；总力量条件尚未确认，请核对戒指、天赋与临时状态')}})
+        base = current[-1]
+        related = [{**row, 'lookup_label': row['name'] + ' · ' + provenance['label'],
+                    'lookup_context': {**base['lookup_context'], 'params': dict(params), 'ignore_drafts': True, 'capture_context': True,
+                                       'conditions': row['conditions']}} for row in item.get('related', [])]
+        base.update(name=item['name'], description=item['description'], related=related)
+        base['lookup_context']['conditions'] += '；' + ' · '.join(item.get('details', []))
+        current.extend(related)
     for buff in data.get('buffs', []):
         identity = 'actors.buffs.' + buff['kind'].lower()
         if identity not in entries or any(row['id'] == identity for row in current):

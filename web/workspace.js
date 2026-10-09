@@ -192,6 +192,7 @@ async function openBuffReference(buff){
 function openDecisionReference(ref,kind='reference'){
   showDetail(ref.name,kind==='resource'?(ref.note||'核对当前游戏画面中的资源与条件；阅读不会执行游戏行动。'):'参考相关游戏机制；资源是否可用需要另行核对。','当前局势的资料入口',ref.source_label||'资料参考');
   showDetailContext([ref.restriction?'主动行动限制：'+ref.restriction:'',ref.calculation_missing?'未确认条件：'+ref.calculation_missing:'',kind==='resource'?'以下是资料与所填条件的参考计算，阅读入口不会确认此刻可用或执行游戏行动。':''].filter(Boolean).join('；'));
+  if(typeof showRelatedReferences==='function')showRelatedReferences(ref.related,{params:ref.params,source:ref.source,level_origin:ref.level_origin||'not_applicable'});
   setDetailEntry(ref.entry);loadNumericalDetail(ref.entry,ref.params||{},ref.level_origin||'example',{ignoreDrafts:true,...lookupCalculationOptions(ref)});
 }
 function refreshWorkspaceViews(){

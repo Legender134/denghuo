@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 
 from .public_item_levels import level_applies, scroll_upgradable, visible_level
-from .public_item_state import project_item_state, cooked_fruit_name
+from .public_item_state import project_item_state, cooked_fruit_name, project_equipment_state
 from .character_scene import scene_from_game
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +42,7 @@ class Catalog:
         self.messages = self.data["messages"]
         self.tiers = self.data["tiers"]
         self.entries = [{**row, "description": clean_text(row["description"]), "name": clean_text(row["name"])} for row in self.data["entries"]]
+        self.entry_index = {row['id']: row for row in self.entries}
         for row in self.entries:
             identity = row['id']
             row['type_label'] = ('牧师法术' if identity.startswith('actors.hero.spells.') else
@@ -129,9 +130,44 @@ class Catalog:
                 "augmentation": item.get('augment', 'NONE') if visible else None,
                 "volume": volume}
         public["alchemy_state"] = project_item_state(item, game, public)
+        equipment = project_equipment_state(item, key, cursed_known, self.entry_index)
+        public['equipment_state'] = equipment
+        public['related'] = []
+        if equipment:
+            effect_id = equipment['effect_id']
+            label = equipment['effect_kind']
+            if effect_id:
+                template = self.messages.get(effect_id + '.name', '')
+                effect_name = clean_text(template.replace('%s', '')).strip() or self.entry_index[effect_id]['name']
+                public['name'] = clean_text(template.replace('%s', public['name'])) if '%s' in template else public['name']
+                public['details'].append(effect_name + label)
+                public['description'] += '\n\n' + effect_name + label + '：' + self.entry_index[effect_id]['description']
+                public['related'].append({**self.entry_index[effect_id], 'name': effect_name + label + ' · ' + public['name'],
+                    'conditions': '已知装备效果；数值未计奥术之戒、天赋、魔免或其他触发强度修正'})
+            if equipment['hardened'] is True:
+                public['details'].append(label + '已硬化')
+            elif equipment['hardened'] is None:
+                public['details'].append('硬化状态未确认')
+            if public['is_upgradable']:
+                branch = ('已硬化：先核对硬化保护损失分支' if equipment['hardened'] is True else
+                          '诅咒效果：核对诅咒附魔 / 刻印移除分支' if effect_id and '.curses.' in effect_id else
+                          '正常效果：核对普通附魔 / 刻印消失分支' if effect_id else
+                          '当前无可见附魔 / 刻印；未鉴定诅咒仍需核对，不能直接套用无效果分支')
+                public['related'].append({**self.entry_index['items.scrolls.scrollofupgrade'],
+                    'name': '升级风险 · ' + public['name'], 'conditions': branch + '；填写升级前等级，各分支不相加'})
         fruit_name = cooked_fruit_name(public["alchemy_state"], self.messages)
         if fruit_name:
             public["name"] = clean_text(fruit_name)
+            potion_id = public['alchemy_state']['potion_id']
+            suffix = 'desc_throw' if potion_id.rsplit('.', 1)[-1] in ('potionoffrost', 'potionofliquidflame', 'potionoftoxicgas', 'potionofparalyticgas') else 'desc_eat'
+            public['description'] = clean_text(self.messages.get('items.food.blandfruit.desc_cooked', '已烹煮果实') + '\n\n' + self.messages.get('items.food.blandfruit.' + suffix, ''))
+            public['details'].append('已烹煮 · ' + self.entry_index[potion_id]['name'])
+            public['related'].append({**self.entry_index[potion_id], 'name': public['name'] + ' · 药剂效果',
+                'conditions': '果实进食会对英雄施加该药剂效果；投掷分支和挑战条件须另行核对'})
+        elif public['alchemy_state'].get('cooked') == 'raw':
+            public['details'].append('未烹煮，不能直接进食')
+        elif public['alchemy_state'].get('cooked') == 'unknown':
+            public['details'].append('烹煮效果未确认')
         return public
 
 

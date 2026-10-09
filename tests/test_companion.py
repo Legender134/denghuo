@@ -44,13 +44,13 @@ class EngineTests(unittest.TestCase):
         self.assertNotIn("PotionOfHealing", json.dumps(state))
         self.assertFalse(state["items"][0]["known"])
 
-    def test_unknown_equipment_hides_level_curse_and_enchantment(self):
-        source = item("items.armor.LeatherArmor", level=7, cursed=True, glyph=item("items.armor.glyphs.Brimstone"))
+    def test_unknown_equipment_hides_level_and_curse(self):
+        source = item("items.armor.LeatherArmor", level=7, cursed=True, glyph=item("items.armor.curses.Bulk"))
         row = self.catalog.item(source, game())
         self.assertIsNone(row["level"])
         self.assertIsNone(row["cursed"])
         self.assertNotIn("+7", row["name"])
-        self.assertNotIn("Brimstone", json.dumps(row))
+        self.assertNotIn("Bulk", json.dumps(row))
         self.assertEqual(row["strength_requirement"], 12)
 
     def test_reveal_is_explicit_and_separate_from_known(self):

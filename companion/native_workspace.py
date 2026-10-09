@@ -121,7 +121,8 @@ class NumericLookup:
                 if row['lookup_context'].get('stamp') == captured.get('stamp'):
                     self.bind_strength_context(row['lookup_context'], captured.get('current'))
                 level = row['lookup_context']['params'].get('level')
-                row['lookup_label'] += f' {level:+g}' if level is not None else '（等级未知）' if row['lookup_context'].get('level_unknown') else ''
+                if level is None and row['lookup_context'].get('level_unknown'):
+                    row['lookup_label'] += '（等级未知）'
             for group, label in (('favorites', '收藏'), ('recent', '最近打开'), ('common', '常用')):
                 for row in status[group]:
                     if not any(item['id'] == row['id'] for item in self.rows):

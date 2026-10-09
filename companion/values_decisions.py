@@ -27,7 +27,7 @@ def add_operation_values(identity, p, result, requested):
     if identity == 'items.scrolls.scrollofupgrade':
         requested.add('level')
         level = p['level']
-        result.append(block(f'从 +{level} 升到 +{level+1} 的风险', [
+        result.append(block(f'从 {level:+d} 升到 {level+1:+d} 的风险', [
             metric('普通附魔 / 刻印消失', upgrade_risk(level), '%', '有正常附魔或刻印，且未硬化'),
             metric('硬化保护消失', upgrade_risk(level, True), '%', '装备已硬化且有附魔或刻印；本次保留附魔或刻印'),
             metric('无附魔 / 刻印时硬化保护消失', 0, '%', '无附魔或刻印的硬化装备，升级不会触发损失判定'),

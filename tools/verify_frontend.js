@@ -3,8 +3,8 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const root=path.resolve(__dirname,'..');
 function element(id=''){
   return {id,value:'',textContent:'',className:'',innerHTML:'',childElementCount:0,hidden:false,disabled:false,
-    checked:false,dataset:{},open:true,isConnected:true,listeners:{},
-    classList:{toggle(){},contains(){return false;}},closest(){return this;},replaceChildren(){this.innerHTML='';this.childElementCount=0;},
+    checked:false,dataset:{},open:true,isConnected:true,listeners:{},children:[],
+    classList:{toggle(){},contains(){return false;}},closest(){return this;},replaceChildren(...items){this.innerHTML='';this.children=[...items];this.childElementCount=items.length;},append(...items){this.children.push(...items);this.childElementCount=this.children.length;},
     close(){this.open=false;},showModal(){this.open=true;},setAttribute(name,value){this[name]=value;},getAttribute(name){return this[name]??null;},
     validity:{valid:true},reportValidity(){return this.validity.valid;},focus(){this.focused=true;},
     addEventListener(name,fn){this.listeners[name]=fn;},querySelectorAll(){return [];},contains(){return false;},
@@ -653,6 +653,9 @@ function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revis
   fixed.context.sourceStamp={mode:'save',slot:2,modified:77,started:90,revision:1};
   await fixed.run("loadNumericalDetail('items.waterskin',{dew_volume:6},'example',{ignoreDrafts:true,sourceStamp,fieldOrigins:{dew_volume:'快照记录 · 水袋露珠量'}})");
   assert.equal(fixed.run('numericalDetail.origins.dew_volume'),'快照记录 · 水袋露珠量');assert.equal(fixed.run('numericalDetail.source.modified'),77);
+  fixed.run('cancelNumericalDetail()');await fixed.run("loadNumericalDetail('items.weapon.enchantments.blazing',{level:-1,hp:7},'known',{ignoreDrafts:true,capturedContext:true,sourceStamp})");
+  assert.equal(fixed.run('numericalDetail.context.level'),-1);assert.equal(fixed.run('numericalDetail.context.hp'),7);
+  assert(!fixed.run("'strength' in numericalDetail.context"),'captured item links must not borrow newer live fields under the older snapshot stamp');
 
   // Restoring a saved equipment plan preserves its exact independent conditions across polling.
   const savedComparison=await freshComparison(firstSave);
@@ -752,6 +755,29 @@ function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revis
   assert.throws(()=>dashboard.run('checkedSettingsRecovery(badPrototype,settingsFormValues())'),/字段不完整/);
   dashboard.context.invalidScope={...rootDraft,changed:['unsupported-field']};assert.throws(()=>dashboard.run('checkedSettingsRecovery(invalidScope,settingsFormValues())'),/修改范围/);
   dashboard.context.invalidScope={...rootDraft,format:900};assert.throws(()=>dashboard.run('checkedSettingsRecovery(invalidScope,settingsFormValues())'),/版本不兼容/);
+
+  dashboard.context.document.createElement=()=>element();
+  let relatedCalculation;
+  dashboard.context.loadNumericalDetail=(id,params,origin,options)=>{relatedCalculation={id,params,origin,options};};
+  dashboard.context.cancelNumericalDetail=()=>{};
+  dashboard.context.numericalDetail=null;
+  dashboard.context.calculationStamp=()=>({started:90,mode:'save',slot:1,revision:1,modified:100});
+  dashboard.context.currentEquipment={name:'烈焰单手剑 +4',description:'已知附魔说明',location:'主武器',details:['附魔已硬化'],known:true,key:'items.weapon.melee.sword',level:4,level_applicable:true,tier:2,
+    related:[{id:'items.weapon.enchantments.blazing',name:'烈焰附魔',description:'烈焰效果',conditions:'正常附魔'},
+      {id:'items.scrolls.scrollofupgrade',name:'升级风险',description:'升级说明',conditions:'已硬化：先核对硬化保护损失分支'}]};
+  dashboard.run('showItem(currentEquipment)');
+  const relatedButtons=[...dashboard.get('#detail-related').children];
+  assert.equal(relatedButtons.length,2);
+  dashboard.run('renderDetailTools()');
+  assert.equal(dashboard.get('#detail-related').children.length,2,'numeric/tool refresh must preserve item-related navigation');
+  relatedButtons[1].listeners.click();
+  assert.equal(relatedCalculation.id,'items.scrolls.scrollofupgrade');assert.equal(relatedCalculation.params.level,4);
+  assert.equal(relatedCalculation.origin,'known');assert(relatedCalculation.options.ignoreDrafts);
+  assert(relatedCalculation.options.capturedContext);
+  assert.equal(relatedCalculation.options.sourceStamp.modified,100);
+  assert(dashboard.get('#detail-context').textContent.includes('已硬化'));
+  dashboard.run("showItem({...currentEquipment,name:'普通单手剑',related:[]})");
+  assert.equal(dashboard.get('#detail-related').children.length,0,'another item must not retain previous equipment effect links');
 
   const play=harness();Object.assign(play.context,{view:'overview',inlineError:(target,message)=>{target.textContent=message;target.hidden=!message;},toast(){},getJSON:null});let bindings=[];
   play.context.$$=selector=>selector.includes('data-binding')?bindings:[];
