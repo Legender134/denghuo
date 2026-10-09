@@ -26,8 +26,8 @@ namespace Denghuo.Native {
     }
 
     sealed class Choice {
-        public string Id, Text;
-        public Choice(string id, string text) { Id = id; Text = text; }
+        public string Id, Text, Component;
+        public Choice(string id, string text, string component = null) { Id = id; Text = text; Component = component; }
         public override string ToString() { return Text; }
     }
 
@@ -109,6 +109,7 @@ namespace Denghuo.Native {
                         case "exit_cancelled": Frozen = false; SetFrozen(false); break;
                         case "exit_finished": Manager.Status.Text = Data.Text(Data.Object(d, "state"), "error", "最后备份处理完成，正在退出。"); break;
                         case "drafts": Drafts(d); break;
+                        case "recover_settings": RecoverSettings(d); break;
                         case "error": Fail(Data.Text(d, "message", "原生操作未完成")); break;
                         case "shutdown": Shutdown(); return;
                     }
@@ -161,16 +162,39 @@ namespace Denghuo.Native {
             }
         }
         void Drafts(Dictionary<string, object> d) {
-            using (var form = new BaseForm(this, "drafts", "灯火 · 未完成草稿副本", 600, 380)) {
+            using (var form = new BaseForm(this, "drafts", "灯火 · 会话草稿副本", 720, 440)) {
                 form.TopMost = true;
                 var table = UI.Table(1); table.Dock = DockStyle.Fill;
                 var list = UI.List("未完成草稿副本列表"); list.Dock = DockStyle.Fill;
-                foreach (object item in Data.Array(d, "rows")) { var row = (Dictionary<string, object>)item; string kind = Data.Text(row, "draft_kind", ""); string surface = kind == "numeric" ? "数值速查" : kind == "play-settings" ? "游玩设置" : "完整面板"; double savedAt; string when = Double.TryParse(Data.Text(row, "saved", ""), out savedAt) && savedAt >= 0 && savedAt <= 32503680000 ? new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(savedAt).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "保存时间不可用"; string error = Data.Text(row, "error", ""); list.Items.Add(new Choice(Data.Text(row, "id", ""), Data.Text(row, "label", "无法读取的草稿") + " · " + surface + " · " + when + (error.Length > 0 ? " · " + error : ""))); }
-                var open = UI.Button("载入所选草稿（不自动应用）", delegate { var choice = list.SelectedItem as Choice; if (choice != null) { Send("load_draft", "id", choice.Id); form.CloseForShutdown(); } });
-                table.RowCount = 2; table.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-                table.Controls.Add(list, 0, 0); table.Controls.Add(open, 0, 1); form.Controls.Add(table);
+                var draftRows = new Dictionary<string, Dictionary<string, object>>();
+                foreach (object item in Data.Array(d, "rows")) {
+                    var row = (Dictionary<string, object>)item; string kind = Data.Text(row, "draft_kind", ""); string surface = kind == "numeric" ? "数值速查" : kind == "play-settings" ? "游玩设置" : kind == "offline-native" ? "离线原生副本" : "完整面板";
+                    double savedAt; string when = Double.TryParse(Data.Text(row, "saved", ""), out savedAt) && savedAt >= 0 && savedAt <= 32503680000 ? new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(savedAt).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "保存时间不可用";
+                    draftRows[Data.Text(row, "id", "")] = row;
+                    string text = (Data.Text(row, "state", "active") == "archived" ? "[已归档] " : "[未完成] ") + Data.Text(row, "label", "无法读取的草稿") + " · " + surface + " · " + when + " · " + Data.Text(row, "id", "").Substring(0, 12); string error = Data.Text(row, "error", "");
+                    object[] components = Data.Array(row, "components");
+                    if (kind == "offline-native" && components.Length > 0 && error.Length == 0) {
+                        foreach (object part in components) { string component = Convert.ToString(part); list.Items.Add(new Choice(Data.Text(row, "id", ""), text + " · 载入" + (component == "numeric" ? "数值表单" : "游玩设置表单"), component)); }
+                    } else list.Items.Add(new Choice(Data.Text(row, "id", ""), text + (error.Length > 0 ? " · " + error : "")));
+                }
+                var open = UI.Button("载入所选草稿（不自动应用）", delegate { var choice = list.SelectedItem as Choice; if (choice != null) { Send("load_draft", "id", choice.Id, "component", choice.Component); form.CloseForShutdown(); } });
+                var archived = UI.Name(new CheckBox { Text = "显示已归档", AutoSize = true }, "显示已归档"); archived.Checked = Data.Flag(d, "include_archived");
+                archived.CheckedChanged += delegate { Send("list_drafts", "include_archived", archived.Checked); form.CloseForShutdown(); };
+                var archive = UI.Button("已处理，归档副本", delegate { var choice = list.SelectedItem as Choice; if (choice == null) return; var row = draftRows[choice.Id]; if (Data.Text(row, "error", "").Length > 0) return; Send("draft_state", "id", choice.Id, "state", Data.Text(row, "state", "active") == "archived" ? "active" : "archived", "expected_revision", Data.Text(row, "state_revision", ""), "include_archived", archived.Checked); form.CloseForShutdown(); });
+                list.SelectedIndexChanged += delegate { var choice = list.SelectedItem as Choice; if (choice == null) { open.Enabled = archive.Enabled = false; return; } var row = draftRows[choice.Id]; open.Enabled = archive.Enabled = Data.Text(row, "error", "").Length == 0; archive.Text = Data.Text(row, "state", "active") == "archived" ? "恢复到未完成列表" : "已处理，归档副本"; archive.AccessibleName = archive.Text; };
+                table.RowCount = 4; table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                table.Controls.Add(archived, 0, 0); table.Controls.Add(list, 0, 1); table.Controls.Add(UI.Label("载入不会自动归档。归档保留原始副本，可显示后恢复。"), 0, 2); table.Controls.Add(UI.Buttons(open, archive), 0, 3); form.Controls.Add(table);
+                open.Enabled = archive.Enabled = false;
                 if (list.Items.Count > 0) list.SelectedIndex = 0;
                 form.ShowDialog(Manager);
+            }
+        }
+        void RecoverSettings(Dictionary<string, object> d) {
+            Settings.FlushEdit();
+            using (var dialog = new RecoveryForm(d)) {
+                dialog.ShowDialog(Settings);
+                Send("settings_recovery_decision", "surface", "settings", "decision", dialog.Decision,
+                    "choices", dialog.Choices);
             }
         }
         void Shutdown() { stopping = true; timer.Stop(); foreach (BaseForm f in new BaseForm[] { Manager, Lookup, Settings, Plans }) f.CloseForShutdown(); outgoing.CompleteAdding(); ExitThread(); }
@@ -382,6 +406,35 @@ namespace Denghuo.Native {
         public Dictionary<string, object> Raw() { var v = new Dictionary<string, object>(); var b = new Dictionary<string, object>(); foreach (var pair in values) { var check = pair.Value as CheckBox; v[pair.Key] = check == null ? (object)pair.Value.Text : check.Checked; } foreach (var pair in bindings) b[pair.Key] = pair.Value.Text; return Data.Map("values", v, "bindings", b, "draft_revision", draftRevision); }
         public void FlushEdit() { if (!initialized || !changed) return; changed = false; var raw = Raw(); Host.Send("settings_edit", "surface", "settings", "values", raw["values"], "bindings", raw["bindings"], "draft_revision", draftRevision); }
         public void Render(Dictionary<string, object> d) { if (Data.Number(d, "draft_revision") < draftRevision) return; rendering = true; try { draftRevision = Data.Number(d, "draft_revision"); var v = Data.Object(d, "values"); var b = Data.Object(d, "bindings"); foreach (var pair in values) { var check = pair.Value as CheckBox; if (check != null) check.Checked = Data.Flag(v, pair.Key); else if (pair.Value.Text != Data.Text(v, pair.Key, "")) pair.Value.Text = Data.Text(v, pair.Key, ""); } foreach (var pair in bindings) if (pair.Value.Text != Data.Text(b, pair.Key, "")) pair.Value.Text = Data.Text(b, pair.Key, ""); UI.ReplaceText(status, Data.Text(d, "status", "") + "\n\n" + Data.Text(d, "registration", "")); Dirty = Data.Flag(d, "dirty"); initialized = true; } finally { rendering = false; } }
+    }
+
+    sealed class RecoveryForm : Form {
+        public string Decision = "cancel";
+        readonly Dictionary<string, ComboBox> selections = new Dictionary<string, ComboBox>();
+        public Dictionary<string, object> Choices { get { var result = new Dictionary<string, object>(); foreach (var pair in selections) result[pair.Key] = pair.Value.SelectedIndex == 1 ? "draft" : pair.Value.SelectedIndex == 2 ? "original" : "current"; return result; } }
+        static string Display(Dictionary<string, object> row, string key) { object value; return row.TryGetValue(key, out value) && value is bool ? ((bool)value ? "启用" : "关闭") : Data.Text(row, key, ""); }
+        public RecoveryForm(Dictionary<string, object> data) {
+            Text = "灯火 · 核对找回的设置"; AccessibleName = Text; TopMost = true;
+            Font = new Font("Microsoft YaHei UI", 10F); AutoScaleMode = AutoScaleMode.Font; AutoScaleDimensions = new SizeF(7F, 17F);
+            float scale; using (Graphics graphics = CreateGraphics()) scale = graphics.DpiX / 96F;
+            Size = new Size((int)(780*scale), (int)(570*scale)); MinimumSize = new Size((int)(420*scale), (int)(300*scale));
+            StartPosition = FormStartPosition.CenterParent; MinimizeBox = MaximizeBox = false;
+            var outer = UI.Table(1); outer.Dock = DockStyle.Fill; outer.RowCount = 3;
+            outer.RowStyles.Add(new RowStyle(SizeType.AutoSize)); outer.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            var notice = UI.Label(Data.Text(data, "text", "载入后仍需另行保存。")); notice.MaximumSize = new Size((int)(720*scale), 0); outer.Controls.Add(notice, 0, 0);
+            var scroll = new Panel { AutoScroll = true, Dock = DockStyle.Fill }; var table = UI.Table(1); table.Dock = DockStyle.Top; int index = 0;
+            foreach (object item in Data.Array(data, "rows")) {
+                var row = (Dictionary<string, object>)item; string key = Data.Text(row, "key", ""); string label = Data.Text(row, "label", key);
+                var description = UI.Label(label + (Data.Flag(row, "conflict") ? " · 需要核对" : "") + "\n原保存值：" + Display(row, "original") + "\n当前保存值：" + Display(row, "current") + "\n找回的原始输入：" + Display(row, "draft")); description.MaximumSize = new Size((int)(690*scale), 0);
+                table.Controls.Add(description, 0, index++);
+                var choices = UI.Combo(label + "载入选择", Data.Flag(row, "original_available") ? new[] { "保留当前值", "找回草稿值", "恢复原保存值" } : new[] { "保留当前值", "找回草稿值" });
+                choices.SelectedIndex = Data.Flag(row, "conflict") ? 0 : 1; selections[key] = choices; table.Controls.Add(choices, 0, index++);
+            }
+            table.RowCount = index; for (int i = 0; i < index; ++i) table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); scroll.Controls.Add(table); outer.Controls.Add(scroll, 0, 1);
+            var cancel = UI.Button("取消载入", delegate { DialogResult = DialogResult.Cancel; }); CancelButton = cancel;
+            outer.Controls.Add(UI.Buttons(UI.Button("按以上选择载入（尚未保存）", delegate { Decision = "restore"; DialogResult = DialogResult.OK; }), cancel), 0, 2); Controls.Add(outer);
+            Shown += delegate { Rectangle area = Screen.FromControl(this).WorkingArea; Size = new Size(Math.Min(Width, area.Width-20), Math.Min(Height, area.Height-20)); };
+        }
     }
 
     sealed class DecisionForm : Form {

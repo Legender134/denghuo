@@ -341,6 +341,7 @@ class BackupManager:
             target['metadata_revision'] = backup_metadata_revision(target)
             atomic_json(self.scope(root) / 'history.json', rows)
             self.notice = '备份名称与保留设置已保存'
+            return {key: target[key] for key in ('id', 'slot', 'label', 'locked', 'metadata_revision')}
 
     def validate(self, root):
         with self.lock:

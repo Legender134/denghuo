@@ -310,10 +310,14 @@ class KnowledgeWorkspace:
             value,_ = self._read()
             row = next((row for row in value['plans'] if row['id']==record_id),None)
             if row is None:raise ValueError('方案已不存在，请刷新方案库')
-            _,result = canonical_plan(self.session,row['kind'],row['entry'],row['params'])
-            return {'plan':self.record_view(row),'result':result,
-                    'source_label':'保存的参考方案 · 固定参数，未跟随当前角色',
-                    'rules_changed':row['rules_version']!=self.session.catalog.data['version']}
+            row = copy.deepcopy(row)
+            plan = self.record_view(row)
+        # Numeric calculation can acquire Session.lock; migration takes that
+        # lock before this store's lock. Keep calculation outside the store.
+        _,result = canonical_plan(self.session,row['kind'],row['entry'],row['params'])
+        return {'plan':plan,'result':result,
+                'source_label':'保存的参考方案 · 固定参数，未跟随当前角色',
+                'rules_changed':row['rules_version']!=self.session.catalog.data['version']}
 
     def remove(self,record_id,expected_record_revision=None):
         with self.lock:

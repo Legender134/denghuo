@@ -187,8 +187,9 @@ class PlayDisplay:
             self.hide()
 
     def save(self, patch, expected_generation=None):
-        self.preferences.update(patch, expected_generation=expected_generation)
+        receipt = self.preferences.update(patch, expected_generation=expected_generation)
         self.manager.apply_play_settings()
+        return receipt
 
     def toggle(self):
         self.save({'enabled': not self.state['enabled']})

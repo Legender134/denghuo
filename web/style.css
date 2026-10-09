@@ -39,3 +39,7 @@ textarea{font:inherit;color:var(--text);background:#121915;border:1px solid #364
 @media(max-width:900px){.nav-toggle{display:block;margin:12px 0 4px;width:100%;text-align:left}.sidebar nav{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr));overflow:visible!important;white-space:normal!important;gap:4px;min-width:0}.sidebar nav .nav{width:100%;min-width:0;white-space:normal;margin:0;padding:10px 7px;gap:5px;font-size:12px;align-items:flex-start}.sidebar nav:not(.expanded) .nav:nth-child(n+4){display:none}.sidebar nav.expanded{grid-template-columns:repeat(2,minmax(0,1fr))}.sidebar nav kbd{display:none}.sidebar .nav>span{width:auto;font-size:15px}.sidebar nav .nav span{flex-shrink:0}}
 
 #alchemy-materials fieldset{margin-block:16px}#alchemy-result table small{display:block}#alchemy-copy-text{white-space:pre-wrap;overflow-wrap:anywhere}#alchemy-pending-meta{margin-top:12px}
+#settings-recovery-dialog{width:min(720px,calc(100vw - 32px));max-height:calc(100dvh - 32px)}
+#settings-recovery-fields{display:grid;gap:16px}
+#settings-recovery-fields fieldset{min-width:0;border:1px solid var(--border);border-radius:8px;padding:12px}
+#settings-recovery-fields p{margin:6px 0;overflow-wrap:anywhere;white-space:pre-wrap}

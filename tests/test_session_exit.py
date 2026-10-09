@@ -112,6 +112,58 @@ class SessionExitTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.load('../outside')
 
+    def test_explicit_archive_is_reversible_keeps_id_and_original_and_rejects_stale_state(self):
+        saved = self.store.save('web-12345678', 'web-session', '已处理原始输入', {'raw': {'hp': '9'}})
+        identity = saved['id']; path = Path(saved['path']); original = path.read_bytes()
+        initial = self.store.list()[0]
+        # Loading or a successful downstream save never implicitly archives.
+        self.store.load(identity)
+        self.assertEqual(self.store.list()[0]['state'], 'active')
+        receipt = self.store.set_lifecycle(identity, 'archived', initial['state_revision'])
+        self.assertFalse(receipt['applied']); self.assertEqual(self.store.list(), [])
+        restarted = ExitDraftStore(self.store.directory)
+        archived = restarted.list(include_archived=True)[0]
+        self.assertEqual((archived['id'], archived['state']), (identity, 'archived'))
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            restarted.set_lifecycle(identity, 'active', initial['state_revision'])
+        restarted.set_lifecycle(identity, 'active', archived['state_revision'])
+        active = restarted.list()[0]
+        self.assertEqual(active['id'], identity)
+        self.assertNotEqual(active['state_revision'], initial['state_revision'])
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(restarted.load(identity)['draft'], {'raw': {'hp': '9'}})
+
+    def test_archive_failure_or_invalid_metadata_never_hides_the_original(self):
+        saved = self.store.save('native', 'numeric', '无效原始输入', {'raw': '-'})
+        identity = saved['id']; original = Path(saved['path']).read_bytes(); row = self.store.list()[0]
+        with patch('companion.session_exit.atomic_json', side_effect=OSError('controlled state write failure')):
+            with self.assertRaises(OSError):
+                self.store.set_lifecycle(identity, 'archived', row['state_revision'])
+        self.assertEqual(self.store.list()[0]['state'], 'active')
+        state = self.store.directory / (identity + '.state.json')
+        state.write_text('{broken metadata', encoding='utf-8')
+        visible = self.store.list()[0]
+        self.assertEqual(visible['id'], identity); self.assertIn('归档状态', visible['error'])
+        self.assertEqual(Path(saved['path']).read_bytes(), original)
+        self.assertEqual(self.store.load(identity)['draft']['raw'], '-')
+        with self.assertRaises(ValueError):
+            self.store.set_lifecycle(identity, 'active', row['state_revision'])
+
+    def test_legacy_record_is_active_and_archive_export_does_not_rewrite_original(self):
+        saved = self.store.save('native', 'numeric', '旧版本副本', {'raw': '-'})
+        path = Path(saved['path']); value = json.loads(path.read_bytes()); value['format'] = 1; value.pop('lifecycle')
+        path.write_text(json.dumps(value), encoding='utf-8'); original = path.read_bytes()
+        row = self.store.list()[0]; self.assertEqual(row['state'], 'active')
+        self.store.set_lifecycle(row['id'], 'archived', row['state_revision'])
+        portable = self.store.export_records([row['id']])[0]
+        self.assertEqual((portable['format'], portable['lifecycle']), (2, 'archived'))
+        self.assertEqual(path.read_bytes(), original)
+        # Importing the same original preserves the target's explicit local state.
+        self.store.set_lifecycle(row['id'], 'active', self.store.lifecycle(row['id'])['state_revision'])
+        result = self.store.import_record(portable)
+        self.assertEqual(result['id'], row['id']); self.assertEqual(len(self.store.list()), 1)
+        self.assertEqual(path.read_bytes(), original)
+
     def test_no_editing_surface_finalizes_once_and_reports_backup_failure(self):
         self.exit.finalize = lambda: {'ok': False, 'state': 'failed', 'error': '最后一次备份未完成'}
         first = self.exit.start('headless')

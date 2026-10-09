@@ -52,23 +52,38 @@ def migrate_data(destination, sources):
         if drafts.directory.exists():
             paths = list(unlinked(drafts.directory).glob('*.json'))
             target_store = ExitDraftStore(temporary/'exit-drafts')
+            state_paths = {}
             for path in paths:
+                if path.name.endswith('.state.json') and DRAFT_ID.fullmatch(path.name[:-11]):
+                    unlinked(path)
+                    if path.stat().st_size > 4096 or not unlinked(path.with_name(path.name[:-11]+'.json')).is_file():
+                        raise ValueError('旧草稿归档状态缺少原件或超过限制，原件仍保留，尚未迁移')
+                    state_paths[path.name[:-11]] = path
+            for path in paths:
+                if path in state_paths.values():
+                    continue
                 unlinked(path)
                 if not DRAFT_ID.fullmatch(path.stem) or path.stat().st_size > 512*1024:
                     raise ValueError('旧草稿文件名或大小不受支持，原件仍保留，尚未迁移')
                 try:
                     drafts.load(path.stem)
+                    drafts.lifecycle(path.stem)
                 except ValueError as exc:
                     # Carry bounded incompatible originals out of the active draft list.
                     preserved = temporary/'exit-drafts-preserved'
                     preserved.mkdir(exist_ok=True)
                     shutil.copy2(path, preserved/path.name)
+                    if path.stem in state_paths:
+                        shutil.copy2(state_paths[path.stem], preserved/state_paths[path.stem].name)
                     uncarried_drafts.append({'file': path.name, 'error': str(exc),
                                              'preserved_copy': 'exit-drafts-preserved/'+path.name})
                     continue
                 target_store.directory.mkdir(exist_ok=True)
                 shutil.copy2(path, target_store.directory/path.name)
+                if path.stem in state_paths:
+                    shutil.copy2(state_paths[path.stem], target_store.directory/state_paths[path.stem].name)
                 target_store.load(path.stem)  # Validate the actual copy before publication.
+                target_store.lifecycle(path.stem)
                 copied_drafts.append(path.name)
         backup = unlinked(source/'backups')
         count, total = 0, 0

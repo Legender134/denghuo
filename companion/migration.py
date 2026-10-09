@@ -170,12 +170,12 @@ def status(session):
         for identity in stored['favorites']:
             rows.append({'key': 'favorite:' + identity, 'group': 'favorite',
                          'label': entries.get(identity, {}).get('name', identity), 'detail': identity, 'valid': True})
-        for row in session.exit_drafts.list():
+        for row in session.exit_drafts.list(include_archived=True):
             valid = not row.get('error')
             content = session.exit_drafts.export_records([row['id']], portable_text)[0] if valid else None
             rows.append({'key': 'draft:' + row['id'], 'group': 'draft',
                          'label': row.get('label') or '已保存未完成草稿', 'valid': valid,
-                         'detail': (f"{row.get('draft_kind', '')} · 原窗口 {row.get('surface_id', '')} · 未计算或应用"
+                         'detail': (f"{row.get('draft_kind', '')} · {'已归档' if row.get('state') == 'archived' else '未完成'} · 原窗口 {row.get('surface_id', '')} · 未计算或应用"
                                     if valid else row['error']),
                          'content': content, 'error': row.get('error', '')})
         preference_error = session.play_preferences.error

@@ -1,7 +1,9 @@
 """Persistence-level conflict acceptance for separate windows and records."""
 from pathlib import Path
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
 
 from companion.engine import Catalog
 from companion.native_workspace import NumericLookup
@@ -72,6 +74,61 @@ class WorkspaceConcurrencyTests(unittest.TestCase):
         self.assertEqual([row['id'] for row in NumericLookup.filtered_plans(rows, 'target beta', '数值方案')], ['a'*32])
         self.assertEqual([row['id'] for row in NumericLookup.filtered_plans(rows, '蛇层备选', order='名称')], ['a'*32, 'b'*32])
         self.assertEqual(rows[0]['note'], '蛇层备选\nTARGET Beta')
+
+    def test_reopen_releases_store_for_migration_and_keeps_original_revision(self):
+        from companion.knowledge import canonical_plan
+        from companion.migration import status
+        self.a.update_settings({'save_root': str(self.config.parent)})
+        original = self.plan()
+        calculating, release, migrated = threading.Event(), threading.Event(), threading.Event()
+        opened, errors = [], []
+
+        def calculate(*args):
+            if threading.current_thread().name == 'reopen-for-migration':
+                calculating.set()
+                if not release.wait(3):
+                    raise RuntimeError('test calculation gate timed out')
+            return canonical_plan(*args)
+
+        def reopen():
+            try:
+                opened.append(self.a.knowledge.reopen(original['id']))
+            except Exception as exc:
+                errors.append(exc)
+
+        def migrate():
+            try:
+                status(self.a)
+                self.a.snapshot()
+                migrated.set()
+            except Exception as exc:
+                errors.append(exc)
+
+        reader = threading.Thread(target=reopen, name='reopen-for-migration', daemon=True)
+        migration = threading.Thread(target=migrate, daemon=True)
+        with patch('companion.knowledge.canonical_plan', side_effect=calculate):
+            try:
+                reader.start()
+                self.assertTrue(calculating.wait(2))
+                migration.start()
+                self.assertTrue(migrated.wait(2), 'migration must finish while calculation is paused')
+                updated = self.a.knowledge.save('另一窗口已更新', 'numeric', original['entry'],
+                    {'hp': 20, 'max_hp': 40}, record_id=original['id'],
+                    expected_record_revision=original['record_revision'])
+            finally:
+                release.set()
+                reader.join(3)
+                if migration.ident is not None:
+                    migration.join(3)
+        self.assertFalse(reader.is_alive())
+        self.assertFalse(migration.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(opened[0]['plan'], original)
+        self.assertEqual(opened[0]['plan']['params']['hp'], 10)
+        with self.assertRaisesRegex(ValueError, '另一窗口'):
+            self.a.knowledge.save('旧结果覆盖', 'numeric', original['entry'], original['params'],
+                record_id=original['id'], expected_record_revision=opened[0]['plan']['record_revision'])
+        self.assertEqual(self.a.knowledge.reopen(original['id'])['plan'], updated)
 
 
 if __name__ == '__main__':

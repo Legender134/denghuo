@@ -8,6 +8,63 @@ from companion.paths import data_directory, migrate_data
 
 
 class DataPathTests(unittest.TestCase):
+    def test_first_install_preserves_archived_draft_original_and_state(self):
+        from companion.session_exit import ExitDraftStore
+        with tempfile.TemporaryDirectory(prefix='denghuo-archived-draft-migration-') as directory:
+            root = Path(directory); source = root / 'old'; source.mkdir()
+            (source / 'settings.json').write_text(json.dumps({'save_root': str(root / 'saves'),
+                'slot': 'auto', 'mode': 'save', 'reveal': False}), encoding='utf-8')
+            store = ExitDraftStore(source / 'exit-drafts')
+            saved = store.save('web-12345678', 'workspace', '已完成但保留原件', {'numeric': {'hp': '未计算'}})
+            archived = store.set_lifecycle(saved['id'], 'archived', store.lifecycle(saved['id'])['state_revision'])
+            originals = {path.name: path.read_bytes() for path in store.directory.glob('*.json')}
+            destination = root / 'new'; report = migrate_data(destination, [source])
+            copied = ExitDraftStore(destination / 'exit-drafts')
+            self.assertEqual(report['copied_exit_drafts'], [saved['id'] + '.json'])
+            self.assertEqual(report['unavailable_exit_drafts'], [])
+            self.assertEqual(copied.list(), [])
+            self.assertEqual(copied.list(include_archived=True)[0]['id'], saved['id'])
+            self.assertEqual(copied.lifecycle(saved['id'])['state_revision'], archived['state_revision'])
+            self.assertEqual(copied.load(saved['id'])['draft']['numeric']['hp'], '未计算')
+            self.assertEqual({path.name: path.read_bytes() for path in copied.directory.glob('*.json')}, originals)
+            self.assertEqual({path.name: path.read_bytes() for path in store.directory.glob('*.json')}, originals)
+
+    def test_first_install_preserves_draft_and_invalid_bound_state_together(self):
+        from companion.session_exit import ExitDraftStore
+        with tempfile.TemporaryDirectory(prefix='denghuo-invalid-draft-state-migration-') as directory:
+            root = Path(directory); source = root / 'old'; source.mkdir()
+            (source / 'settings.json').write_text(json.dumps({'save_root': str(root / 'saves'),
+                'slot': 'auto', 'mode': 'save', 'reveal': False}), encoding='utf-8')
+            store = ExitDraftStore(source / 'exit-drafts')
+            saved = store.save('web-12345678', 'workspace', '原草稿', {'raw': '未提交'})
+            state_path = store.directory / (saved['id'] + '.state.json')
+            state_path.write_bytes(b'{"format":900,"state":"archived"}')
+            originals = {path.name: path.read_bytes() for path in store.directory.glob('*.json')}
+            destination = root / 'new'; report = migrate_data(destination, [source])
+            self.assertEqual(report['copied_exit_drafts'], [])
+            self.assertEqual(report['unavailable_exit_drafts'][0]['file'], saved['id'] + '.json')
+            self.assertEqual(ExitDraftStore(destination / 'exit-drafts').list(), [])
+            self.assertEqual({path.name: path.read_bytes() for path in (destination / 'exit-drafts-preserved').glob('*.json')}, originals)
+            self.assertEqual({path.name: path.read_bytes() for path in store.directory.glob('*.json')}, originals)
+
+    def test_first_install_rejects_orphaned_or_oversized_draft_state_without_publishing(self):
+        from companion.session_exit import ExitDraftStore
+        for state_kind in ('orphaned', 'oversized'):
+            with self.subTest(state_kind=state_kind), tempfile.TemporaryDirectory(prefix='denghuo-unbounded-draft-state-') as directory:
+                root = Path(directory); source = root / 'old'; source.mkdir()
+                (source / 'settings.json').write_text(json.dumps({'save_root': str(root / 'saves'),
+                    'slot': 'auto', 'mode': 'save', 'reveal': False}), encoding='utf-8')
+                store = ExitDraftStore(source / 'exit-drafts'); store.directory.mkdir()
+                identity = 'a' * 32
+                if state_kind == 'oversized':
+                    identity = store.save('web-12345678', 'workspace', '原草稿', {'raw': '保留'})['id']
+                (store.directory / (identity + '.state.json')).write_bytes(b'x' * (4097 if state_kind == 'oversized' else 1))
+                originals = {path.name: path.read_bytes() for path in store.directory.glob('*.json')}
+                destination = root / 'new'
+                with self.assertRaises(ValueError): migrate_data(destination, [source])
+                self.assertFalse(destination.exists())
+                self.assertEqual({path.name: path.read_bytes() for path in store.directory.glob('*.json')}, originals)
+
     def test_first_install_preserves_more_than_one_portable_batch_of_drafts(self):
         from companion.session_exit import ExitDraftStore
         with tempfile.TemporaryDirectory(prefix='denghuo-many-draft-migration-') as directory:

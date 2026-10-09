@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import math
 import hashlib
 import threading
@@ -99,6 +100,7 @@ class PlayPreferences:
             self.values, self.error = clean, ''
             self._disk_stamp = hashlib.sha256(raw).hexdigest()
             self.generation += 1
+            return {'settings': copy.deepcopy(clean), 'revision': self.generation}
 
     def reload(self):
         with self.lock:

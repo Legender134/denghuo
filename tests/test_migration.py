@@ -176,6 +176,25 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(len(self.target.exit_drafts.list()), 1)
         self.assertEqual(self.game_bytes(self.target), self.original_game)
 
+    def test_archived_draft_migrates_with_stable_id_and_explicit_restore_only(self):
+        saved = self.source.exit_drafts.save('web-12345678', 'web-session', '已完成的原始草稿', {'raw': {'hp': '9'}})
+        identity = saved['id']; original = Path(saved['path']).read_bytes()
+        row = self.source.exit_drafts.list()[0]
+        self.source.exit_drafts.set_lifecycle(identity, 'archived', row['state_revision'])
+        status = migration.status(self.source)
+        self.assertIn('已归档', next(item for item in status['rows'] if item['key'] == 'draft:'+identity)['detail'])
+        raw = self.bundle(['draft:'+identity]); result = self.apply(raw)
+        self.assertEqual(result['success_count'], 1); self.assertEqual(result['results'][0]['id'], identity)
+        self.assertEqual(self.target.exit_drafts.list(), [])
+        target = Session(self.target.config_path, self.target.catalog)
+        archived = target.exit_drafts.list(include_archived=True)[0]
+        self.assertEqual((archived['id'], archived['state']), (identity, 'archived'))
+        target.exit_drafts.set_lifecycle(identity, 'active', archived['state_revision'])
+        self.assertEqual(target.exit_drafts.list()[0]['id'], identity)
+        self.assertEqual(target.exit_drafts.load(identity)['draft'], {'raw': {'hp': '9'}})
+        self.assertEqual(Path(saved['path']).read_bytes(), original)
+        self.assertEqual(self.game_bytes(self.target), self.original_game)
+
     def test_saved_character_conditions_migrate_as_reusable_plan(self):
         from companion.character_scene import empty_scene
         plan = self.source.knowledge.save('共享角色条件', 'character', None, empty_scene(13),

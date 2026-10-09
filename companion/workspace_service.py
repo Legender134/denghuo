@@ -124,10 +124,12 @@ def update_play(session, payload):
     if not isinstance(payload, dict) or set(payload) != {'settings', 'revision'}:
         raise ValueError('游玩设置请求格式不正确')
     with session.lock:
-        session.play_preferences.update(payload['settings'], expected_generation=payload['revision'])
+        with session.play_preferences.lock:
+            session.play_preferences.update(payload['settings'], expected_generation=payload['revision'])
+            result = play_status(session)
         if session.manager_available:
-            session.manager_commands.put(('play_settings_changed', session.play_preferences.generation))
-    return play_status(session)
+            session.manager_commands.put(('play_settings_changed', result['revision']))
+    return result
 
 
 def reload_play(session, payload):
@@ -139,9 +141,10 @@ def reload_play(session, payload):
             if payload['revision'] != prefs.generation:
                 raise ValueError('另一窗口刚修改配置，请先查看当前已保存设置再重新读取')
             prefs.reload()
+            result = play_status(session)
         if session.manager_available:
-            session.manager_commands.put(('play_settings_changed', prefs.generation))
-    return play_status(session)
+            session.manager_commands.put(('play_settings_changed', result['revision']))
+    return result
 
 
 def help_status(session):
