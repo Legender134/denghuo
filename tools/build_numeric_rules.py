@@ -8,16 +8,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-UPSTREAM = ROOT / ".research/player-upstream-4.0.1"
+UPSTREAM = Path(os.environ.get("DENGHUO_UPSTREAM_SOURCE", str(ROOT / ".research/player-upstream-4.0.2"))).expanduser().resolve()
 PREFIX = "com.shatteredpixel.shatteredpixeldungeon."
-COMMIT = "e9defd0444c96d2fce3de5ec297c3398be8b7c55"
-VERSION = "4.0.1"
+COMMIT = "57a4e06a4caf162446d1c28caa7983f0493fecf0"
+VERSION = "4.0.2"
+VERSION_CODE = 922
 NUMBER = re.compile(r"(?<![\w$])(?:0[xX][0-9a-fA-F_]+(?:\.[0-9a-fA-F_]*)?(?:[pP][+-]?[0-9_]+)?[fFdDlL]?|0[bB][01_]+[lL]?|(?:\d[\d_]*(?:\.[\d_]*)?|\.[\d_]+)(?:[eE][+-]?[\d_]+)?[fFdDlL]?)(?![\w$])")
 TYPES = re.compile(r"\b(class|interface|enum)\s+(\w+)([^;{}]*?)\{")
 METHOD = re.compile(r"([\w$]+)\s*\(([^()]*)\)\s*(?:throws\s+[\w.,\s]+)?$")
@@ -224,6 +226,11 @@ def build(upstream=UPSTREAM):
     dirty = subprocess.check_output([git, "-C", str(upstream), "status", "--porcelain"], text=True).strip()
     if head != COMMIT or dirty:
         raise ValueError("资料生成要求完整且未修改的官方固定提交")
+    gradle = (upstream / "build.gradle").read_text(encoding="utf-8")
+    actual_code = re.search(r"\bappVersionCode\s*=\s*(\d+)", gradle)
+    actual_version = re.search(r"\bappVersionName\s*=\s*(['\"])([^'\"\n]+)\1", gradle)
+    if not actual_code or not actual_version or int(actual_code[1]) != VERSION_CODE or actual_version[2] != VERSION:
+        raise ValueError("官方源码版本与生成器固定版本不一致")
     roots = [(upstream / "core/src/main/java/com/shatteredpixel/shatteredpixeldungeon", "game"),
              (upstream / "SPD-classes/src/main/java/com/watabou", "engine")]
     classes, files = {}, []

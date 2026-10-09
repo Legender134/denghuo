@@ -15,19 +15,19 @@ node tools/verify_frontend.js
 
 ## 获取固定游戏源码
 
-资料固定为官方 Shattered Pixel Dungeon 4.0.1（版本码920），提交 `e9defd0444c96d2fce3de5ec297c3398be8b7c55`。普通运行不依赖本地源码镜像。
+资料固定为官方 Shattered Pixel Dungeon 4.0.2（版本码922），提交 `57a4e06a4caf162446d1c28caa7983f0493fecf0`。普通运行不依赖本地源码镜像。
 
-以下初始化仅在 `.research/player-upstream-4.0.1` **尚不存在**时执行。已有镜像先检查提交和变更，不要 reset 或覆盖自己的改动。关闭换行转换保证生成与核对的原文一致。
+以下初始化仅在 `.research/player-upstream-4.0.2` **尚不存在**时执行。已有镜像先检查提交和变更，不要 reset 或覆盖自己的改动。关闭换行转换保证生成与核对的原文一致。
 
 ```powershell
 New-Item -ItemType Directory -Force .research, .local | Out-Null
-git init .research/player-upstream-4.0.1
-git -C .research/player-upstream-4.0.1 remote add origin https://github.com/00-Evan/shattered-pixel-dungeon.git
-git -C .research/player-upstream-4.0.1 config core.autocrlf false
-git -C .research/player-upstream-4.0.1 fetch --depth 1 origin e9defd0444c96d2fce3de5ec297c3398be8b7c55
-git -C .research/player-upstream-4.0.1 checkout --detach e9defd0444c96d2fce3de5ec297c3398be8b7c55
-git -C .research/player-upstream-4.0.1 rev-parse HEAD
-git -C .research/player-upstream-4.0.1 status --porcelain
+git init .research/player-upstream-4.0.2
+git -C .research/player-upstream-4.0.2 remote add origin https://github.com/00-Evan/shattered-pixel-dungeon.git
+git -C .research/player-upstream-4.0.2 config core.autocrlf false
+git -C .research/player-upstream-4.0.2 fetch --depth 1 origin 57a4e06a4caf162446d1c28caa7983f0493fecf0
+git -C .research/player-upstream-4.0.2 checkout --detach 57a4e06a4caf162446d1c28caa7983f0493fecf0
+git -C .research/player-upstream-4.0.2 rev-parse HEAD
+git -C .research/player-upstream-4.0.2 status --porcelain
 ```
 
 最后两行应分别给出上述提交与空的变更列表。源码镜像不提交到本仓库。
@@ -56,10 +56,21 @@ $sourceVersion = .venv/Scripts/python.exe -c "from companion import __version__;
 
 源码包只使用 `tools/build_release.py` 的 `FILES` 白名单，附清单与 SHA-256。验证会完整解压、运行测试、核对哈希，检查 HTTP 启动/停止、中文和空格路径以及可重复生成。新增必需文件要同步白名单，不递归打包工作区。
 
+## 原生窗口构建输入
+
+标准桌面窗口使用项目自有 `native/NativeCompanion.cs`，按 C# 4 与 Framework 4.0 API 编译。构建者从 Microsoft 的 [NuGet 固定包 Microsoft.NETFramework.ReferenceAssemblies.net40 1.0.3](https://www.nuget.org/packages/Microsoft.NETFramework.ReferenceAssemblies.net40/1.0.3) 下载 `.nupkg`（ZIP 格式）并解压。包的 SHA-256 应为 `54d6e20a1b61caf79395d6d71d091265e81f5a5705ac4ae52af45ca143c3c694`；引用目录是其中的 `build/.NETFramework/v4.0`。
+
+```powershell
+$net40References = '.local/net40-referenceassemblies/build/.NETFramework/v4.0'
+.venv/Scripts/python.exe tools/build_native_helper.py --references "$net40References" --output native
+```
+
+源码桌面调试需先执行这一构建，默认读取 `native/NativeCompanion.exe` 与相邻运行配置。编译器默认使用 Windows 的 `Framework64/v4.0.30319/csc.exe`，可用 `--compiler` 指定构建者已有编译器。脚本只引用显式指定的 Framework 4.0 程序集；引用包不作为运行时程序发给玩家。严格 API 编译不代替旧系统或实际读屏验证。
+
 ## 独立程序
 
 ```powershell
-.venv/Scripts/python.exe tools/build_desktop.py
+.venv/Scripts/python.exe tools/build_desktop.py --references "$net40References"
 ```
 
 最后输出 `dist/desktop-时间编号/灯火/灯火.exe`。下面的“时间编号”需换成实际目录：
@@ -76,8 +87,8 @@ $application = 'dist/desktop-时间编号/灯火'
 先安装官方 [Inno Setup 7.1.0](https://jrsoftware.org/isinfo.php)。需要编译器与原始许可文件；示例路径按自己机器调整。将固定游戏源码归档到 `.local/`：
 
 ```powershell
-$gameSourceArchive = Join-Path (Get-Location) '.local/Shattered-Pixel-Dungeon-4.0.1-source.zip'
-git -C .research/player-upstream-4.0.1 archive --format=zip --output="$gameSourceArchive" e9defd0444c96d2fce3de5ec297c3398be8b7c55
+$gameSourceArchive = Join-Path (Get-Location) '.local/Shattered-Pixel-Dungeon-4.0.2-source.zip'
+git -C .research/player-upstream-4.0.2 archive --format=zip --output="$gameSourceArchive" 57a4e06a4caf162446d1c28caa7983f0493fecf0
 $pythonRoot = .venv/Scripts/python.exe -c "import sys; print(sys.base_prefix)"
 $innoDirectory = 'C:/Program Files (x86)/Inno Setup 7'
 .venv/Scripts/python.exe tools/package_desktop.py "$application" --python-root "$pythonRoot" --build-env .venv --inno "$innoDirectory"

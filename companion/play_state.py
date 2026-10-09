@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import json
 import math
+import hashlib
+import threading
+import uuid
 from pathlib import Path
 import time
 
@@ -46,10 +49,14 @@ class PlayPreferences:
     def __init__(self, directory):
         self.path = Path(directory) / 'play-mode.json'
         self.error = ''
+        self.lock = threading.RLock()
+        self.generation = 0
+        self._disk_stamp = None
         self.values = validate_preferences({})
         try:
             with self.path.open('rb') as stream:
                 raw = stream.read(16385)
+            self._disk_stamp = hashlib.sha256(raw).hexdigest()
             if len(raw) > 16384:
                 raise ValueError('游玩设置过大')
             self.values = validate_preferences(json.loads(raw.decode('utf-8-sig')))
@@ -59,20 +66,49 @@ class PlayPreferences:
             self.error = '游玩设置无法读取，游玩显示已暂停；保存设置时会保留原文件。'
             self.values['enabled'] = False
 
-    def update(self, patch):
-        clean = validate_preferences({**self.values, **patch})
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        if self.error and self.path.exists():
-            preserved = self.path.with_name(f'play-mode.recovery-{time.time_ns()}.json')
-            with preserved.open('xb') as stream:
-                stream.write(self.path.read_bytes())
-        pending = self.path.with_suffix('.pending')
-        pending.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding='utf-8')
-        pending.replace(self.path)
-        self.values, self.error = clean, ''
+    def update(self, patch, expected_generation=None):
+        with self.lock:
+            if expected_generation is not None and (type(expected_generation) is not int or expected_generation != self.generation):
+                raise ValueError('游玩设置刚在另一窗口修改，请重新读取已保存设置；当前草稿仍保留')
+            if not isinstance(patch, dict) or set(patch) - set(PLAY_DEFAULTS):
+                raise ValueError('游玩设置格式不正确')
+            clean = validate_preferences({**self.values, **patch})
+            try:
+                with self.path.open('rb') as stream:
+                    original = stream.read(16385)
+                current_stamp = hashlib.sha256(original).hexdigest()
+            except FileNotFoundError:
+                current_stamp = None
+            if current_stamp != self._disk_stamp:
+                raise ValueError('游玩设置文件刚被修改，请重新读取已保存设置；原文件与当前草稿仍保留')
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            if self.error and self.path.exists():
+                preserved = self.path.with_name(f'play-mode.recovery-{time.time_ns()}.json')
+                with self.path.open('rb') as source, preserved.open('xb') as target:
+                    while chunk := source.read(65536):
+                        target.write(chunk)
+            pending = self.path.with_name(self.path.name + '.' + uuid.uuid4().hex + '.pending')
+            raw = json.dumps(clean, ensure_ascii=False, indent=2).encode('utf-8')
+            try:
+                with pending.open('xb') as stream:
+                    stream.write(raw)
+                pending.replace(self.path)
+            finally:
+                if pending.exists():
+                    pending.unlink()
+            self.values, self.error = clean, ''
+            self._disk_stamp = hashlib.sha256(raw).hexdigest()
+            self.generation += 1
 
+    def reload(self):
+        with self.lock:
+            saved = type(self)(self.path.parent)
+            self.values, self.error, self._disk_stamp = saved.values, saved.error, saved._disk_stamp
+            self.generation += 1
 
 def source_label(snap):
+    if snap.get('waiting_for_save'):
+        return '已就绪 · 等待游戏保存'
     if snap.get('error') or not snap.get('data'):
         return '局势不可读'
     if snap['settings']['mode'] == 'manual':

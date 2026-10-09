@@ -5,7 +5,7 @@
   #error OutputDir is required
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.4.0"
+  #define AppVersion "0.6.0"
 #endif
 
 [Setup]
@@ -43,6 +43,7 @@ Source: "{#AppDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs cre
 
 [Icons]
 Name: "{group}\灯火"; Filename: "{app}\灯火.exe"; WorkingDir: "{app}"
+Name: "{group}\灯火完整面板（键盘与读屏）"; Filename: "{app}\灯火.exe"; Parameters: "--web"; WorkingDir: "{app}"
 Name: "{autodesktop}\灯火"; Filename: "{app}\灯火.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]

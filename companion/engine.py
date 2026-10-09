@@ -7,6 +7,10 @@ import math
 from pathlib import Path
 import re
 
+from .public_item_levels import level_applies, scroll_upgradable, visible_level
+from .public_item_state import project_item_state, cooked_fruit_name
+from .character_scene import scene_from_game
+
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = "com.shatteredpixel.shatteredpixeldungeon."
 CLASSES = {"WARRIOR": "战士", "MAGE": "法师", "ROGUE": "盗贼", "HUNTRESS": "女猎手", "DUELIST": "决斗家", "CLERIC": "牧师"}
@@ -44,6 +48,7 @@ class Catalog:
                 '角色天赋' if identity.startswith('actors.hero.talent.') else
                 '职业技能' if identity.startswith('actors.hero.abilities.') else
                 '武器技能' if identity.endswith('.ability') else
+                '植物种子' if identity.startswith('plants.') and identity.endswith('$seed') else
                 '状态效果' if '$' in identity or identity.startswith('actors.buffs.') else row['category'])
 
     def key(self, obj):
@@ -56,13 +61,8 @@ class Catalog:
         return clean_text(self.messages.get(self.key(obj) + ".name", short_class(obj) or fallback))
 
     def search(self, query="", category="全部", limit=80, offset=0):
-        terms = query.lower().split()
-        entries = [row for row in self.entries if (category == "全部" or row["category"] == category)
-                   and all(term in (row["name"] + " " + row["id"] + " " + row["description"] + " " + json.dumps(row.get("numbers", []), ensure_ascii=False)).lower() for term in terms)]
-        if query:
-            entries.sort(key=lambda row: (query.lower() not in row["name"].lower(), len(row["name"])))
-        return {"total": len(entries), "entries": entries[offset:offset + limit], "version": self.data["version"],
-                "offset": offset, "limit": limit}
+        from .knowledge_search import search
+        return search(self, query, category, limit, offset)
 
     def item(self, item, game, location="背包", reveal=False):
         kind, key = short_class(item), self.key(item)
@@ -84,9 +84,7 @@ class Catalog:
             description = clean_text(self.messages.get(f"items.{family}.{base}.unknown_desc", "效果尚未鉴定"))
         level_known = bool(item.get("levelKnown")) or reveal
         cursed_known = bool(item.get("cursedKnown")) or reveal
-        level = int(number(item.get("level")))
-        if item.get("curse_infusion_bonus"):
-            level += 1 + int(level / 6)
+        level = visible_level(item, game, known=level_known)
         tier = self.tiers.get(kind)
         if kind in self.data.get("class_armors", []):
             saved_tier = item.get("armortier")
@@ -95,15 +93,18 @@ class Catalog:
         if tier is not None:
             # Greataxe deliberately requires two more strength than normal tier 5.
             req_tier = tier + 1 if kind == "Greataxe" else tier
-            requirement = strength_requirement(req_tier, level if level_known else 0, bool(item.get("mastery_potion_bonus")))
+            requirement = strength_requirement(req_tier, level if level is not None else 0, bool(item.get("mastery_potion_bonus")))
+        if kind == "SpiritBow" and level is not None:
+            requirement = strength_requirement(1, level)
         details = []
         artifact_cap = self.data.get("artifact_caps", {}).get(kind)
-        display_level = math.floor(level * 10 / artifact_cap + .5) if artifact_cap else level
-        upgradable = key.startswith(("items.weapon.", "items.armor.", "items.rings.", "items.wands.", "items.artifacts."))
-        if level_known and upgradable:
+        display_level = math.floor(level * 10 / artifact_cap + .5) if artifact_cap and level is not None else level
+        level_applicable = level_applies(key)
+        upgradable = level_applicable
+        if level_known and display_level is not None and upgradable:
             name += f" {display_level:+d}"
         elif upgradable:
-            details.append("等级未知")
+            details.append("等级暂缺上下文" if level_known else "等级未知")
         if item.get("cursed") and cursed_known:
             details.append("已知诅咒")
         elif upgradable:
@@ -112,18 +113,26 @@ class Catalog:
             details.append(f"{tier} 阶 · 力量 {requirement}" + ("（+0参考）" if not level_known else ""))
         if "curCharges" in item and (item.get("curChargeKnown") or reveal):
             details.append(f"{item['curCharges']} 次充能")
+        volume = item.get('volume') if kind == 'Waterskin' and type(item.get('volume')) is int and 0 <= item['volume'] <= 20 else None
         if kind == "Waterskin":
-            details.append(f"露珠 {int(number(item.get('volume')))}/20")
+            details.append(f"露珠 {volume}/20" if volume is not None else '露珠量未知')
         if kind == "MagesStaff" and isinstance(item.get("wand"), dict):
             wand = item["wand"]
             details.append(self.name(wand) + (f" · {wand.get('curCharges', '?')} 次" if wand.get("curChargeKnown") or reveal else ""))
-        return {"name": name, "kind": kind if visible else "Unknown" + base.title(),
+        public = {"name": name, "kind": kind if visible else "Unknown" + base.title(),
                 "key": key if visible else f"items.{family}.{base}", "quantity": max(1, int(number(item.get("quantity"), 1))),
                 "location": location, "known": known, "level_known": level_known,
-                "level": display_level if level_known else None, "cursed": bool(item.get("cursed")) if cursed_known else None,
+                "level": display_level if level_known and level_applicable else None,
+                "level_applicable": level_applicable, "is_upgradable": scroll_upgradable(key), "cursed": bool(item.get("cursed")) if cursed_known else None,
                 "tier": tier, "strength_requirement": requirement, "details": details, "description": description,
                 "mastery": bool(item.get('mastery_potion_bonus')) if visible else None,
-                "augmentation": item.get('augment', 'NONE') if visible else None}
+                "augmentation": item.get('augment', 'NONE') if visible else None,
+                "volume": volume}
+        public["alchemy_state"] = project_item_state(item, game, public)
+        fruit_name = cooked_fruit_name(public["alchemy_state"], self.messages)
+        if fruit_name:
+            public["name"] = clean_text(fruit_name)
+        return public
 
 
 def strength_requirement(tier, level, mastery=False):
@@ -189,7 +198,10 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
         row["available"] = not lost_inventory or source.get("kept_lost") is True or mining_pickaxe
         if lost_inventory:
             row["details"].insert(0, "遗落行囊期间可用" if row["available"] else "遗落行囊：未确认可用")
+        row["instance_key"] = "item-" + str(len(items))
         items.append(row)
+    character = scene_from_game(game, catalog, items)
+    total_strength = character["strength"]["effective"] if character["strength"]["usable"] else number(hero.get("STR"), 10)
     inventory_counts = {}
     for item in items:
         if item["available"] and (item["known"] or reveal):
@@ -202,9 +214,9 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
 
     if hp <= 0:
         if "Berserk" in buff_types:
-            tip("berserk_zero", "critical", "零生命：核对狂暴与护盾", "狂暴期间可能依靠护盾继续行动，不能仅凭 0 生命判断已经倒下。对照游戏中的狂暴状态与剩余护盾；若仍能行动，优先评估安全恢复，护盾耗尽有倒下风险。", "存档生命值 ≤ 0，且存在狂战士状态")
+            tip("berserk_zero", "critical", "零生命：核对狂暴与护盾", "狂暴期间可能依靠护盾继续行动，不能仅凭 0 生命判断已经倒下。对照游戏中的狂暴状态与剩余护盾；若仍能行动，优先评估安全恢复，护盾耗尽有倒下风险。", "所示局势生命值 ≤ 0，且存在狂战士状态")
         else:
-            tip("zero_hp", "critical", "此快照生命值已降到 0", "先确认游戏中的复活界面或结算状态。普通行动建议已暂停，等待复活后的新快照或新一局。", "存档生命值 ≤ 0")
+            tip("zero_hp", "critical", "生命值为 0：先核对游戏状态", "先确认游戏中的复活界面或结算状态。普通行动建议已暂停；请在游戏复活或开始新一局后更新局势。", "所示局势生命值 ≤ 0")
     elif hp / ht <= .25:
         text = "先停止自动探索，检查敌人和逃生手段。"
         if blocked:
@@ -224,7 +236,7 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
             text += "休息前确认周围安全、没有持续伤害且没有进入饥饿。"
         tip("low_hp", "warning", "先恢复，再扩大探索", text, f"生命 {hp:g}/{ht:g}（<50%）")
     if blocked:
-        tip("paralysis", "critical", lock_label + "期间无法主动行动", "暂时不能移动或使用物品。避免预先连点行动；控制解除后重新检查血量、其他状态与周围威胁。", f"存档中存在「{lock_label}」")
+        tip("paralysis", "critical", lock_label + "期间无法主动行动", "暂时不能移动或使用物品。避免预先连点行动；控制解除后重新检查血量、其他状态与周围威胁。", f"局势中存在「{lock_label}」")
     if "Burning" in buff_types:
         text = "接触水能灭火，但不保证免掉紧接着的一次伤害。"
         if flying:
@@ -233,26 +245,26 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
             text += "当前不能正常移动，不能把走进水格作为立即可用的办法。"
         if not flying and not movement_limited:
             text += "先确认路线安全；不要穿过高草把火带开。"
-        tip("burning", "critical", "正在燃烧：核对灭火条件", text, "存档中存在「燃烧」")
+        tip("burning", "critical", "正在燃烧：核对灭火条件", text, "局势中存在「燃烧」")
     if "Ooze" in buff_types:
         text = "接触水可洗掉腐蚀淤泥，但不保证免掉紧接着的一次伤害。它与「酸蚀」是不同的状态。"
         if flying:
             text += "漂浮时经过水格不能清洗。"
         if movement_limited:
             text += "当前不能正常移动，先核对控制状态，不能立即走到水中。"
-        tip("ooze", "warning", "酸性淤泥：核对用水清洗条件", text, "存档中存在「腐蚀淤泥」")
+        tip("ooze", "warning", "酸性淤泥：核对用水清洗条件", text, "局势中存在「腐蚀淤泥」")
     if "Corrosion" in buff_types:
         text = ("目前无法正常移动，先检查控制状态；能够行动后再脱离持续施加酸蚀的区域。" if movement_limited
                 else "先离开持续施加酸蚀的区域，检查恢复或解除负面效果的资源。")
-        tip("corrosion", "critical", "酸蚀会逐渐加重", text + "踏入水地不能照搬淤泥的处理方法。", "存档中存在「酸蚀」")
+        tip("corrosion", "critical", "酸蚀会逐渐加重", text + "踏入水地不能照搬淤泥的处理方法。", "局势中存在「酸蚀」")
     if buff_types & {"Poison", "Bleeding", "DeferedDamage", "DeferredDamage"}:
         tip("dot", "warning", "持续伤害仍在结算", "不要用长时间休息推进回合。先查看游戏中的状态说明和剩余伤害，再决定恢复或撤离。", "存在中毒、流血或延缓伤害")
     if "Roots" in buff_types:
-        tip("roots", "warning", "被缠绕，不能依赖走路脱身", "准备远程、控制或可用的传送手段；先核对技能说明。", "存档中存在「缠绕」")
+        tip("roots", "warning", "被缠绕，不能依赖走路脱身", "准备远程、控制或可用的传送手段；先核对技能说明。", "局势中存在「缠绕」")
     if "Cripple" in buff_types:
-        tip("cripple", "warning", "残废会降低移动速度", "走一格可能让敌人多行动，别把普通走位当成安全拉扯。", "存档中存在「残废」")
+        tip("cripple", "warning", "残废会降低移动速度", "走一格可能让敌人多行动，别把普通走位当成安全拉扯。", "局势中存在「残废」")
     if lost_inventory:
-        tip("lost_inventory", "warning", "行囊遗落：先核对随身物品", "复活后多数物品暂时不可用。存档仍记录遗落物品，不能把它们当作救命资源；先核对游戏中保留的装备，再规划找回行囊的安全路线。", "存档中存在「遗落行囊」；按复活后保留标记筛选可用资源")
+        tip("lost_inventory", "warning", "行囊遗落：先核对随身物品", "复活后多数物品暂时不可用。遗落物品不能当作救命资源；先核对游戏中保留的装备，再规划找回行囊的安全路线。", "局势中存在「遗落行囊」；按复活后保留标记筛选可用资源")
     if hunger is not None and hunger >= 450:
         food_note = "进食前确认食物确实随身保留，遗落物品暂不可用。" if lost_inventory else "可在安全位置补充食物；吃东西也消耗回合。"
         tip("starving", "warning", "已经饥饿，休息无法正常回血", "先处理眼前威胁。" + food_note, f"饥饿值 {hunger:g} ≥450")
@@ -267,16 +279,19 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
                      if inventory_counts.get("ScrollOfRemoveCurse") else "查看是否有已确认的解咒方法。")
             tip("curse_" + item["location"], "warning", item["location"] + "带有已知诅咒", text, item["name"])
         req = item["strength_requirement"]
-        if hp > 0 and item["location"] in ("主武器", "副武器", "护甲") and req is not None and req > number(hero.get("STR"), 10):
+        if hp > 0 and item["location"] in ("主武器", "副武器", "护甲") and req is not None and req > total_strength:
             qualifier = "已知需求" if item["level_known"] else "+0 参考需求（实际等级未知）"
-            text = f"{item['name']} 的{qualifier}为 {req}，基础力量为 {number(hero.get('STR'), 10):g}。"
-            text += "先对照游戏角色面板中的总力量，计入戒指、天赋和临时加成。"
+            if character["strength"]["usable"]:
+                text = f"{item['name']} 的{qualifier}为 {req}，按已确认角色条件计算的总力量为 {total_strength:g}。"
+            else:
+                text = f"{item['name']} 的{qualifier}为 {req}，基础力量为 {number(hero.get('STR'), 10):g}。"
+                text += "总力量条件尚未确认；请核对戒指、天赋和临时加成。"
             text += ("若总力量仍不足，护甲会降低移动速度和闪避。" if item["location"] == "护甲"
                      else "若总力量仍不足，武器的命中和攻击速度会受影响。")
             if not item["level_known"]:
                 text += "此装备尚未鉴定，不能据此断定超重。"
             tip("strength_" + item["location"], "info", "核对" + item["location"] + "的力量需求", text,
-                "按公开的阶数和已知等级计算；基础力量不包含额外加成")
+                "按公开阶数和等级核对；角色条件区分基础力量、已确认加成与未知状态")
     if hp > 0 and not blocked:
         if inventory_counts.get("PotionOfStrength"):
             tip("strength_potion", "info", "有可规划的永久成长资源", "背包中有已鉴定的力量药剂，饮用可提升基础力量。先处理威胁，安全且能行动时再使用；之后重新核对装备需求。", f"已知力量药剂 ×{inventory_counts['PotionOfStrength']}")
@@ -315,12 +330,15 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
                      "hp": hp, "ht": ht, "strength": number(hero.get("STR"), 10),
                      "strength_label": "基础力量", "hunger": hunger,
                      "hunger_label": "未知" if hunger is None else "饥饿" if hunger >= 450 else "饥肠辘辘" if hunger >= 300 else "尚未饥饿"},
+            "character_scene": character,
             "depth": depth, "branch": branch, "gold": number(game.get("gold")),
             "compatibility_warning": compatibility,
             "energy": number(game.get("energy")), "version": game.get("version"),
             "challenges": [name for bit, name in CHALLENGES.items() if challenge_mask & bit],
             "buffs": [{"name": catalog.name(b), "kind": short_class(b).rsplit("$", 1)[-1],
-                       "active": b.get("state") == "BERSERK" if short_class(b) == "Berserk" else True}
+                       "active": b.get("state") == "BERSERK" if short_class(b) == "Berserk" else True,
+                       **({"current_shield": b["shielding"]} if catalog.key(b) == "actors.buffs.barrier"
+                          and type(b.get("shielding")) is int and 0 <= b["shielding"] <= 10000 else {})}
                       for b in buffs if short_class(b) not in ("Regeneration", "Hunger")],
             "items": items, "tips": tips, "map": known_map(level, hero.get("pos")),
             "region": region(depth, branch), "reveal": reveal}

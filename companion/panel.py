@@ -4,7 +4,7 @@ import threading
 import time
 import webbrowser
 
-PAGES = {'overview','inventory','library','backups','manual','settings'}
+PAGES = {'overview','inventory','library','backups','manual','settings','workspace','help','play-settings','alchemy','migration'}
 
 
 class PanelBridge:
@@ -20,22 +20,30 @@ class PanelBridge:
     def bind(self, url):
         self.url = url.rstrip('/')+'/'
 
-    def request(self, page='overview'):
+    def request(self, page='overview', plan_id=None):
         if page not in PAGES:
             raise ValueError('不支持的面板页面')
+        if plan_id is not None and (page != 'workspace' or not isinstance(plan_id, str) or not re.fullmatch(r'[a-f0-9]{32}', plan_id)):
+            raise ValueError('所选方案身份不正确，请重新打开方案列表')
         with self.lock:
             now = self.clock()
             alive = [key for key, stamp in self.clients.items() if now-stamp < 90]
             target = max(alive, key=self.clients.get) if alive else None
             self.serial += 1
-            self.pending = {'serial':self.serial,'page':page,'client':target,'time':now}
+            self.pending = {'serial':self.serial,'page':page,'client':target,'time':now, 'plan_id':plan_id}
             if target is None and now-self.last_open >= 6:
-                self._open(page)
+                try:
+                    self._open(page, plan_id)
+                except Exception:
+                    self.pending = None
+                    raise
 
-    def _open(self, page):
+    def _open(self, page, plan_id=None):
         if not self.url:
-            return
-        (self.opener or webbrowser.open)(self.url+('#'+page if page!='overview' else ''))
+            raise ValueError('完整面板地址尚未就绪')
+        url = self.url+('?' + 'plan=' + plan_id if plan_id else '')+('#'+page if page!='overview' else '')
+        if not (self.opener or webbrowser.open)(url):
+            raise ValueError('浏览器未能打开完整面板。请复制此地址到浏览器，或重新启动：'+url)
         self.last_open = self.clock()
 
     def heartbeat(self, client, acknowledged=None):
@@ -53,12 +61,12 @@ class PanelBridge:
                 if type(acknowledged) is int and acknowledged == self.pending['serial']:
                     self.pending = None
                 else:
-                    return {'serial':self.pending['serial'],'page':self.pending['page']}
+                    return {'serial':self.pending['serial'],'page':self.pending['page'], **({'plan_id':self.pending['plan_id']} if self.pending.get('plan_id') else {})}
             return None
 
     def tick(self):
         with self.lock:
             if self.pending and self.clock()-self.pending['time'] >= 6 and self.clock()-self.last_open >= 6:
-                page = self.pending['page']
+                page, plan_id = self.pending['page'], self.pending.get('plan_id')
                 self.pending = None
-                self._open(page)
+                self._open(page, plan_id)

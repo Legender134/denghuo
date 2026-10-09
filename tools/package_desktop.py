@@ -12,6 +12,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from companion import __version__
 from tools.build_release import build_release
+from tools.build_desktop import native_resources
 
 
 def download(url,target,expected=None):
@@ -22,6 +23,7 @@ def download(url,target,expected=None):
 
 
 def package(app,python_root,build_env,inno):
+    native_resources(app)
     notices=app/'licenses';notices.mkdir(exist_ok=True)
     site=build_env/'Lib/site-packages'
     inputs={
@@ -41,7 +43,7 @@ def package(app,python_root,build_env,inno):
     # Author's annotated v0.19.5 tag resolves to this immutable commit.
     download('https://codeload.github.com/moses-palmer/pystray/tar.gz/1907f8681d6d421517c63d94f425f9cdd74d0034',
              sources/'pystray-0.19.5-source.tar.gz')
-    upstream=ROOT/'.local/Shattered-Pixel-Dungeon-4.0.1-source.zip'
+    upstream=ROOT/'.local/Shattered-Pixel-Dungeon-4.0.2-source.zip'
     if not upstream.is_file():raise ValueError('Pinned upstream git archive is required')
     shutil.copy2(upstream,sources/upstream.name)
     source_zip,digest=build_release()

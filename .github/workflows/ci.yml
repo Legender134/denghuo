@@ -41,7 +41,12 @@ jobs:
       - name: Python regression tests
         run: python -m unittest discover -s tests -v
       - name: Frontend component checks
-        run: node tools/verify_frontend.js
+        run: |
+          node tools/verify_frontend.js
+          node tests/verify_data_workflows.js
+          node tools/verify_web_exit_receipt.js
+          node tools/verify_workspace_concurrency.js
+          node tools/verify_alchemy_workflow.js
       - name: Build source archive
         if: matrix.python == '3.13'
         run: python tools/build_release.py
