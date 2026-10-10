@@ -148,7 +148,9 @@ def physical_metric_rows(values, raw, side, level, strength):
     if identity in MISSILE_PUBLIC_TYPES:
         return missile_metrics(values,identity,level,raw['mastery_'+side],raw['augment_'+side],strength,raw['level_known_'+side],raw['level_'+side])
     from .values_investment import structured_physical
-    return structured_physical(adjusted_equipment_metrics(values,identity,level,raw['tier_'+side],raw['mastery_'+side],raw['augment_'+side],strength))
+    from .combat_context import ordinary_metrics
+    return (structured_physical(adjusted_equipment_metrics(values,identity,level,raw['tier_'+side],raw['mastery_'+side],raw['augment_'+side],strength))
+            + ordinary_metrics(values,raw,side,level,strength))
 
 
 def compare_equipment(values, raw):
@@ -206,6 +208,9 @@ def compare_equipment(values, raw):
         for explanation,choice in zip(result['explanation']['choices'],choices):
             explanation['timing_and_accuracy']='；'.join(row['label']+' '+row['value']+row['unit']+'（'+row['condition']+'）' for row in choice['current_metrics'] if '命中倍率' in row['label'] or '耗时' in row['label'])
     result['notice']+=' 注魔仅按明确手填假设；旧方案沿用无注魔的普通等级假设。硬化的当次升级保留诅咒效果，即便本次失去硬化；之后无硬化的卷轴才可能移除效果与注魔。随机分支分别列出，未确认注魔不推算升级。'
+    if raw.get('combat_model'):
+        result['notice']=result['notice'].replace('未合并戒指、天赋、诅咒、偷袭伤害和临时状态', '基础行未合并戒指、天赋、诅咒、偷袭伤害和临时状态')
+        result['notice']+=' 普通近战综合行额外计入所列武力、狂怒、精准戒指条件；未附共享角色时明确按无戒指假设。目标条件均由用户手填，空白保留待确认；不读取隐藏敌人，不据伤害端点推算平均DPS或击杀回合。'
     result['explanation']['boundary']=result['notice']
     if raw.get('planning', '0') == '1':
         result['planning'] = plan_equipment(values, raw, choices)

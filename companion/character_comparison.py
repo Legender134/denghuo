@@ -86,7 +86,7 @@ def attach_scenes(result, raw):
         if choice.get('after_curse_removed'):
             choice['uncursed_character_scene'] = comparison_scene(raw, side, choice.get('after_curse_removed_level', choice['level'] + 1), clear_curse=True)
     result['notice'] = result['notice'].replace('未合并戒指、天赋、诅咒、偷袭伤害和临时状态', '未合并除力量来源外的戒指、天赋、诅咒、偷袭伤害和临时战斗效果').replace('未计其他戒指、天赋、魔法免疫或临时等级', '未计未填写的其他戒指、天赋或临时等级')
-    result['notice'] += ' 共享角色条件已计入基础力量、根骨之戒、力大无穷天赋及所列临时力量；未计其他战斗效果。戒指比较按明确槽位替换，A、B各自计算，不重复佩戴原戒指。'
+    result['notice'] += ' 共享角色条件已计入基础力量、根骨之戒、力大无穷天赋及所列临时力量；' + ('综合普通近战行另按明确模型合并所列戒指，基础行保持原意义。' if raw.get('combat_model') else '未启用综合近战模型，保留原基础指标意义。') + '戒指比较按明确槽位替换，A、B各自计算，不重复佩戴原戒指。'
     if result.get('explanation'):
         result['explanation']['boundary'] = result['notice']
     return result

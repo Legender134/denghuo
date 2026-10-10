@@ -69,6 +69,29 @@ class PlayStateTests(unittest.TestCase):
         self.assertIsNone(notices.update(snapshot([CRITICAL],modified=2),2,enabled=False))
         self.assertIsNone(notices.update(snapshot([CRITICAL],modified=2),3))
 
+    def test_new_content_revision_with_same_timestamp_notifies_once(self):
+        notices=SnapshotNotices()
+        notices.update(snapshot(modified=500,revision=40),0)
+        fire=snapshot([FIRE],modified=500,revision=41)
+        self.assertEqual(notices.update(fire,1)['id'],'burning')
+        self.assertEqual(notices.until,6)
+        self.assertEqual(notices.update(copy.deepcopy(fire),2)['id'],'burning')
+        self.assertEqual(notices.until,6,'polling the same content must not extend the notice')
+        self.assertIsNone(notices.update(snapshot(modified=500,revision=42),3))
+        self.assertEqual(notices.update(snapshot([CRITICAL],modified=500,revision=43),4)['id'],'critical_hp')
+        self.assertIsNone(notices.update(snapshot([FIRE],modified=500,revision=44,run_id='run-b'),5))
+
+    def test_revision_changes_do_not_replay_stale_or_disabled_risks(self):
+        notices=SnapshotNotices()
+        notices.update(snapshot(modified=500,revision=1),0)
+        self.assertIsNone(notices.update(snapshot([FIRE],modified=500,revision=2,stale=True),1))
+        self.assertIsNone(notices.update(snapshot([FIRE],modified=500,revision=3),2))
+        notices.update(snapshot(modified=500,revision=4),3)
+        self.assertIsNone(notices.update(snapshot([CRITICAL],modified=500,revision=5),4,enabled=False))
+        self.assertIsNone(notices.update(snapshot([CRITICAL],modified=500,revision=6),5))
+        notices.update(snapshot(modified=500,revision=7),6)
+        self.assertEqual(notices.update(snapshot([CRITICAL],modified=500,revision=8),7)['id'],'critical_hp')
+
     def test_risk_respects_action_locks_and_water_limits(self):
         data={'buffs':[{'kind':'Levitation'}]}
         self.assertIn('不能灭火',risk_summary(data,FIRE))

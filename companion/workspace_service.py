@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from .decisions import public_context, source, healing_context
+from .public_skills import skill_context
 
 COMMON = ('items.potions.potionofhealing', 'items.waterskin', 'items.scrolls.scrollofupgrade',
           'items.scrolls.scrollofidentify', 'items.scrolls.scrollofremovecurse')
@@ -68,8 +69,18 @@ def workspace_status(session):
                                            'level_origin': 'example', 'mode': provenance['mode'],
                                            'source': provenance, 'source_label': provenance['label'],
                                            'conditions': conditions}})
+    for identity, skill in data.get('hero', {}).get('skills', {}).items():
+        if skill.get('state') != 'learned' or identity not in entries:
+            continue
+        specific = skill_context(snap, identity)
+        current.append({**entries[identity], 'lookup_label': entries[identity]['name'] + ' · 已学技能 · ' + provenance['label'],
+                        'lookup_context': {**specific, 'params': {**context, **specific['params']}, 'stamp': stamp,
+                                           'level_origin': 'example', 'mode': provenance['mode'], 'source': provenance,
+                                           'source_label': provenance['label']}})
     return {**stored, 'favorite_ids': list(stored['favorites']),
-            'favorites': [entries[identity] for identity in stored['favorites'] if identity in entries],
+            'favorites': [{**entries[identity], 'available':True} if identity in entries else {
+                'id':identity,'name':identity,'available':False,'type_label':'当前资料不可用 · 原收藏保留'}
+                for identity in stored['favorites']],
             'recent': [{**entries[row['entry']], 'opened': row['opened']} for row in stored['recent']
                        if row['entry'] in entries],
             'current': current, 'common': [entries[identity] for identity in COMMON if identity in entries],
@@ -105,7 +116,8 @@ def workspace_action(session, payload):
         return resources_from_snapshot(session)
     if action in ('remember', 'favorite'):
         entry = payload.get('entry')
-        if entry not in session.rules.entries and ('com.shatteredpixel.shatteredpixeldungeon.' + str(entry)) not in session.rules.classes:
+        removing = action=='favorite' and payload.get('enabled') is False
+        if not removing and entry not in session.rules.entries and ('com.shatteredpixel.shatteredpixeldungeon.' + str(entry)) not in session.rules.classes:
             raise ValueError('资料条目尚未收录')
         if action == 'remember':
             store.remember(entry)
@@ -124,6 +136,9 @@ def workspace_action(session, payload):
         return {'revision': store.generation}
     if action == 'repair-preview':
         return store.repair_preview()
+    if action == 'repair-export':
+        return {'content':store.repair_export(payload.get('expected')).decode('utf-8'),
+                'filename':'denghuo-healthy-knowledge.json'}
     if action == 'repair':
         return store.repair(payload.get('expected'), payload.get('confirmed'))
     raise ValueError('不支持的资料库操作')

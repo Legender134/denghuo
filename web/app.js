@@ -96,6 +96,40 @@ function buffReferenceLabel(buff,hero){
   const next=Number.isInteger(buff.next_heal)?`；按该局势下一次可回 ${Math.min(buff.next_heal,Math.max(0,hero.ht-hero.hp))} 生命`:'';
   return `${buff.name} · ${source}：${remaining}${next}`;
 }
+function snapshotViewOwner(){return JSON.stringify([state?.started,state?.settings?.save_root,state?.settings?.mode,state?.active_slot,state?.run_id]);}
+function renderAdvice(tips){
+  const target=$('#advice-list'),owner=snapshotViewOwner(),signature=JSON.stringify([owner,tips]);
+  if(target._lampAdviceSignature===signature)return;
+  const sameOwner=target._lampAdviceOwner===owner,previous=new Map();let focused=null;
+  if(sameOwner)for(const article of target.querySelectorAll('article')){
+    const id=article.dataset.tipId,details=article.querySelector('details');
+    if(previous.has(id)){previous.set(id,null);continue;}
+    previous.set(id,details.open);if(details.querySelector('summary')===document.activeElement)focused=id;
+  }
+  target.innerHTML=tips.length?tips.map(t=>`<article class="advice ${t.severity}" data-tip-id="${escapeHTML(t.id)}"><div class="advice-head"><span class="severity">${{critical:'优先处理',warning:'留意',info:'提示'}[t.severity]}</span><h3>${escapeHTML(t.title)}</h3></div><p>${escapeHTML(t.body)}</p><details><summary>为什么这样建议</summary>${escapeHTML(t.basis)}</details></article>`).join(''):'<p class="muted">当前没有触发特殊风险规则。继续留意周围敌人和退路。</p>';
+  const counts=new Map();for(const tip of tips)counts.set(String(tip.id),(counts.get(String(tip.id))||0)+1);
+  for(const article of target.querySelectorAll('article')){
+    const id=article.dataset.tipId,details=article.querySelector('details');
+    if(counts.get(id)!==1||previous.get(id)==null)continue;
+    details.open=previous.get(id);if(id===focused)details.querySelector('summary').focus({preventScroll:true});
+  }
+  target._lampAdviceOwner=owner;target._lampAdviceSignature=signature;
+}
+function renderItemButtons(target,items,markup,reference){
+  const owner=snapshotViewOwner(),sameOwner=target._lampItemOwner===owner;
+  const identity=item=>JSON.stringify([item.key,item.name,item.location,item.user_note||null]);
+  let focused=null;const prior=target._lampItems||[],oldButtons=Array.from(target.querySelectorAll('button'));
+  const oldIndex=oldButtons.indexOf(document.activeElement);
+  if(sameOwner&&oldIndex>=0&&prior[oldIndex]){
+    const key=identity(prior[oldIndex]);if(prior.filter(item=>identity(item)===key).length===1)focused=key;
+  }
+  if(target._lampItemMarkup!==markup||!sameOwner){target.innerHTML=markup;target._lampItemMarkup=markup;}
+  const buttons=Array.from(target.querySelectorAll('button'));
+  buttons.forEach((button,index)=>{button.onclick=()=>showItem(items[index],reference);});
+  // Rebind unchanged nodes to the new snapshot too: their click must not use an old source stamp.
+  if(focused!==null){const matches=items.map((item,index)=>identity(item)===focused?index:-1).filter(index=>index>=0);if(matches.length===1&&buttons[matches[0]]!==document.activeElement)buttons[matches[0]]?.focus({preventScroll:true});}
+  target._lampItemOwner=owner;target._lampItems=items;
+}
 function render(){
   renderStatus();const key=JSON.stringify([state.revision,state.error,state.active_slot,state.settings.mode,state.waiting_for_save]);if(key===lastRender)return;lastRender=key;
   const data=state.data;$('#empty-state').hidden=!!data;$('#adventure').hidden=!data;
@@ -107,19 +141,20 @@ function render(){
   $('#hero-tags').innerHTML=[...data.buffs.map(b=>`<span class="tag warn">${escapeHTML(buffReferenceLabel(b,hero))}</span>`),...data.challenges.map(c=>`<span class="tag">${escapeHTML(c)}</span>`)].join('');
   const ratio=Math.max(0,Math.min(1,hero.hp/hero.ht));$('#health').textContent=`${hero.hp} / ${hero.ht}`;$('#health-percent').textContent=`${Math.round(ratio*100)}%`;$('#health-bar').style.width=`${ratio*100}%`;$('#health-bar').classList.toggle('low',ratio<.5);$('#depth').textContent=`第 ${data.depth} 层`;$('#region').textContent=data.region;$('#strength').textContent=hero.strength;$('#hunger').textContent=hero.hunger_label;$('#resources').textContent=state.settings.mode==='manual'?'金币与炼金能量未填写':`金币 ${data.gold} · 炼金能量 ${data.energy}`;
   const urgentTips=data.tips.filter(tip=>tip.severity==='critical');$('#overview-urgent').hidden=!urgentTips.length;$('#overview-urgent-summary').textContent=urgentTips.map(tip=>tip.title).join('；');
-  $('#advice-list').innerHTML=data.tips.length?data.tips.map(t=>`<article class="advice ${t.severity}"><div class="advice-head"><span class="severity">${{critical:'优先处理',warning:'留意',info:'提示'}[t.severity]}</span><h3>${escapeHTML(t.title)}</h3></div><p>${escapeHTML(t.body)}</p><details><summary>为什么这样建议</summary>${escapeHTML(t.basis)}</details></article>`).join(''):'<p class="muted">当前没有触发特殊风险规则。继续留意周围敌人和退路。</p>';
-  const equippedReference=itemSnapshotReference(),equipped=data.items.filter(item=>!['背包','收纳袋'].includes(item.location));$('#equipped').innerHTML=equipped.length?equipped.map(item=>`<button class="equipment-row"><span class="equipment-icon">${item.location==='护甲'?'◈':item.location.includes('武器')?'⚔':'◇'}</span><span><strong>${escapeHTML(item.name)}</strong>${itemNoteLabel(item)}<small>${escapeHTML(item.details.join(' · ')) || '查看物品说明'}</small></span><span class="item-place">${escapeHTML(item.location)}</span></button>`).join(''):`<p class="muted">${state.settings.mode==='manual'?'手动模式未填写装备；请在游戏中核对。':'快照中暂无装备记录；新的游戏保存到达后会自动更新。'}</p>`;
-  $$('#equipped button').forEach((button,i)=>button.addEventListener('click',()=>showItem(equipped[i],equippedReference)));
+  renderAdvice(data.tips);
+  const equippedReference=itemSnapshotReference(),equipped=data.items.filter(item=>!['背包','收纳袋'].includes(item.location));
+  renderItemButtons($('#equipped'),equipped,equipped.length?equipped.map(item=>`<button class="equipment-row"><span class="equipment-icon">${item.location==='护甲'?'◈':item.location.includes('武器')?'⚔':'◇'}</span><span><strong>${escapeHTML(item.name)}</strong>${itemNoteLabel(item)}<small>${escapeHTML(item.details.join(' · ')) || '查看物品说明'}</small></span><span class="item-place">${escapeHTML(item.location)}</span></button>`).join(''):`<p class="muted">${state.settings.mode==='manual'?'手动模式未填写装备；请在游戏中核对。':'快照中暂无装备记录；新的游戏保存到达后会自动更新。'}</p>`,equippedReference);
   $('#history').innerHTML=state.history.length?state.history.slice(0,5).map(row=>`<div class="history-row">${escapeHTML(row.text)}<time>${escapeHTML(fmtTime(row.time))}</time></div>`).join(''):state.settings.mode==='manual'?'<p class="muted">手动局势不会自动跟随游戏；恢复自动读取后，会在这里记录保存时的血量和楼层变化。</p>':'<p class="muted">新的存档快照到达后，会在这里记录血量和楼层变化。</p>';
   renderMap(data.map);renderInventory();
 }
 function renderMapText(map){
-  const summary=$('#map-summary'),list=$('#map-coordinate-list');list.replaceChildren();$('#map-coordinates').hidden=!map;
+  const summary=$('#map-summary'),list=$('#map-coordinate-list'),signature=JSON.stringify(map);$('#map-coordinates').hidden=!map;
+  if(list._lampMapSignature===signature)return;list._lampMapSignature=signature;list.replaceChildren();
   if(!map){summary.textContent='当前没有可用的地图快照；无位置或地形可读取。';return;}
-  const labels={0:'深渊',1:'地面',2:'草地',3:'干涸水井',4:'墙壁',5:'门',6:'开启的门',7:'上行楼梯',8:'下行楼梯',9:'余烬',10:'锁住的门',11:'基座',12:'墙壁',13:'障碍物',14:'地面',15:'高草',18:'已发现陷阱',19:'失效陷阱',20:'地面',21:'锁住的楼梯',22:'解锁的楼梯',24:'水井',25:'雕像',26:'雕像',27:'书架',28:'炼金装置',29:'水地',30:'草地',31:'水晶门',35:'矿晶',36:'巨石',37:'上行楼梯',38:'锁住的门',39:'水地'};
+  const labels={0:'深渊',1:'地面',2:'草地',3:'干涸水井',4:'墙壁',5:'门',6:'开启的门',7:'上行楼梯',8:'下行楼梯',9:'余烬',10:'锁住的门',11:'基座',12:'墙壁',13:'障碍物',14:'地面',15:'高草',18:'已发现陷阱',19:'失效陷阱',20:'地面',21:'锁住的楼梯',22:'解锁的楼梯',23:'不可通行的装饰',24:'水井',25:'雕像',26:'雕像',27:'书架',28:'炼金装置',29:'水地',30:'茂密犁草',31:'水晶门',32:'地面装饰',33:'不可通行的区域装饰',34:'不可通行的区域装饰',35:'矿晶',36:'巨石',37:'上行楼梯',38:'锁住的门',39:'水面装饰（不可通行）'};
   const coordinate=i=>`(${i%map.width+1}, ${Math.floor(i/map.width)+1})`;
   const hero=Number.isInteger(map.hero)&&map.hero>=0&&map.hero<map.tiles.length?map.hero:null,nearby=[];let count=0;
-  map.tiles.forEach((tile,i)=>{if(tile<0)return;count++;const label=labels[tile]||'已公开地形';const li=document.createElement('li');li.textContent=`${coordinate(i)}：${label}${i===hero?' · 英雄位置':''}`;list.append(li);if(hero!==null&&[7,8,18,19,21,22,29,37,39].includes(tile)&&Math.max(Math.abs(i%map.width-hero%map.width),Math.abs(Math.floor(i/map.width)-Math.floor(hero/map.width)))<=3)nearby.push(`${label} ${coordinate(i)}`);});
+  map.tiles.forEach((tile,i)=>{if(tile<0)return;count++;const label=labels[tile]||'已公开地形';const li=document.createElement('li');li.textContent=`${coordinate(i)}：${label}${i===hero?' · 英雄位置':''}`;list.append(li);if(hero!==null&&[7,8,18,19,21,22,29,37].includes(tile)&&Math.max(Math.abs(i%map.width-hero%map.width),Math.abs(Math.floor(i/map.width)-Math.floor(hero/map.width)))<=3)nearby.push(`${label} ${coordinate(i)}`);});
   summary.textContent=`${hero===null?'英雄位置不可用':`英雄位置 ${coordinate(hero)}`}。已探索 ${count} 格。${nearby.length?'坐标附近：'+nearby.join('；'):'坐标附近没有已公开的水地、楼梯或陷阱记录'}。${map.caption||'最近保存的快照，非实时地图'}。`;
 }
 function renderMap(map){
@@ -143,8 +178,7 @@ function showItemNote(note){
 }
 function renderInventory(){
   const reference=itemSnapshotReference(),query=$('#inventory-search').value.toLowerCase();const items=(reference.items || []).filter(item=>(item.name+' '+item.kind+' '+item.location+' '+(item.user_note?.title||'')+' '+(item.user_note?.body||'')).toLowerCase().includes(query));$('#item-count').textContent=state?.settings.mode==='manual'?`已填写 ${items.length} 项物品`:`${items.length} 项物品`;
-  $('#inventory-list').innerHTML=items.length?items.map(item=>`<button class="item-card"><span class="item-meta">${escapeHTML(item.location)} · ×${item.quantity}</span><h3>${escapeHTML(item.name)}</h3>${itemNoteLabel(item)}<p>${escapeHTML(item.details.join(' · ')) || (item.known?'已知种类':'效果未知')}</p></button>`).join(''):'<p class="no-results">没有匹配的背包物品。连接有效存档后可查看。</p>';
-  $$('#inventory-list button').forEach((button,i)=>button.addEventListener('click',()=>showItem(items[i],reference)));
+  renderItemButtons($('#inventory-list'),items,items.length?items.map(item=>`<button class="item-card"><span class="item-meta">${escapeHTML(item.location)} · ×${item.quantity}</span><h3>${escapeHTML(item.name)}</h3>${itemNoteLabel(item)}<p>${escapeHTML(item.details.join(' · ')) || (item.known?'已知种类':'效果未知')}</p></button>`).join(''):'<p class="no-results">没有匹配的背包物品。连接有效存档后可查看。</p>',reference);
 }
 let detailEntry=null;
 function showDetailContext(text){showItemNote(null);const target=$('#detail-context');if(target){target.textContent=text||'';target.hidden=!text;}}

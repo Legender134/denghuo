@@ -91,6 +91,15 @@ FILES = (
     "tools/verify_global_progress.js",
     "tools/verify_healing_workflow.js",
     "tools/verify_saved_plan_contracts.js",
+    "companion/combat_context.py",
+    "companion/public_skills.py",
+    "tests/test_combat_context.py",
+    "tests/test_library_recovery.py",
+    "tests/test_public_skills.py",
+    "tools/verify_equipment_context.js",
+    "tools/verify_library_recovery.js",
+    "tools/verify_snapshot_refresh.js",
+    "tools/verify_public_skills.js",
 )
 STAMP = (2026, 10, 2, 0, 0, 0)
 
