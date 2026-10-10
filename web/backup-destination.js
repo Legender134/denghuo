@@ -1,6 +1,7 @@
 'use strict';
 let backupDestinationState=null,backupDestinationBaseline=null,backupDestinationGeneration=0;
 let backupDestinationRequest=0,backupDestinationLoading=false,backupDestinationBusy=false,backupDestinationPreview=null;
+let backupDestinationRecovery=null;
 function backupDestinationDirty(){return $('#backup-destination-start-new').checked||(backupDestinationBaseline===null?!!$('#backup-destination-root').value:$('#backup-destination-root').value!==backupDestinationBaseline);}
 function captureBackupDestinationDraft(){return backupDestinationDirty()?{backup_root:$('#backup-destination-root').value,start_new:$('#backup-destination-start-new').checked}:null;}
 function checkedBackupDestinationDraft(draft){
@@ -16,6 +17,10 @@ function renderBackupDestinationControls(){
   $('#backup-destination-submit').disabled=backupDestinationBusy||!backupDestinationState;
   $('#backup-destination-reload').disabled=backupDestinationBusy;
   $('#backup-destination-apply').disabled=backupDestinationBusy||!backupDestinationPreview||!$('#backup-destination-confirm').checked;
+  const recoveryConfirmed=$('#backup-destination-recovery-confirm').checked;
+  $('#backup-destination-recovery-refresh').disabled=backupDestinationBusy;
+  $('#backup-destination-recovery-continue').disabled=backupDestinationBusy||!backupDestinationRecovery||!backupDestinationRecovery.can_continue||!recoveryConfirmed;
+  $('#backup-destination-recovery-cancel').disabled=backupDestinationBusy||!backupDestinationRecovery||!recoveryConfirmed;
 }
 async function loadBackupDestination(force=false){
   if(backupDestinationLoading||backupDestinationBusy)return;backupDestinationLoading=true;
@@ -29,6 +34,9 @@ async function loadBackupDestination(force=false){
       $('#backup-destination-message').textContent='备份位置已被其他窗口修改；本地草稿保留。请重新读取已保存位置，再决定是否切换。';
     }
     if(!backupDestinationState)backupDestinationState=result;
+    backupDestinationRecovery=result.recovery||null;$('#backup-destination-recovery').hidden=!backupDestinationRecovery&&!result.recovery_error;
+    $('#backup-destination-recovery-confirm').checked=false;
+    $('#backup-destination-recovery-summary').textContent=backupDestinationRecovery?`${backupDestinationRecovery.message}\n原位置：${backupDestinationRecovery.source_directory}\n目标位置：${backupDestinationRecovery.target_directory}\n目标原历史保留于：${backupDestinationRecovery.preserved_target_directory}\n原历史 ${backupDestinationRecovery.target_original_bytes} 字节。\n${backupDestinationRecovery.continue_reason||'继续会发布已校验的合并副本；取消会重新显示目标原历史，所有副本均保留。'}`:result.recovery_error||'';
     $('#backup-destination-current').textContent='当前备份目录：'+result.directory;
     $('#backup-destination-health').textContent=result.available?'此位置可用；自动备份仍按当前开关运行。':'此位置不可用：'+(result.error||'请重新连接原磁盘或明确切换位置。');
     if(force)inlineError($('#backup-destination-error'),'');
@@ -58,6 +66,29 @@ $('#backup-destination-form').addEventListener('submit',async event=>{
   }catch(error){inlineError($('#backup-destination-error'),error.message);}
   finally{backupDestinationBusy=false;renderBackupDestinationControls();}
 });
+$('#backup-destination-recovery-confirm').addEventListener('change',renderBackupDestinationControls);
+$('#backup-destination-recovery-refresh').addEventListener('click',()=>loadBackupDestination());
+async function recoverBackupDestination(direction){
+  if(backupDestinationBusy||!backupDestinationRecovery||!$('#backup-destination-recovery-confirm').checked||direction==='continue'&&!backupDestinationRecovery.can_continue)return;
+  const recovery=backupDestinationRecovery,generation=backupDestinationGeneration,edited=backupDestinationDirty();
+  backupDestinationBusy=true;settingsWriteGeneration++;backupDestinationRequest++;backupDestinationLoading=false;renderBackupDestinationControls();
+  try{
+    const result=await post('/api/backup-destination',{action:'recover',direction,expected:recovery.expected,confirmed:true,
+      expected_settings_revision:recovery.settings_revision,context:recovery.context});
+    backupDestinationBaseline=result.settings.backup_root;
+    backupDestinationState={backup_root:result.settings.backup_root,directory:result.directory,settings_revision:result.settings_revision,context:result.context};
+    backupDestinationRecovery=null;$('#backup-destination-recovery').hidden=true;$('#backup-destination-recovery-confirm').checked=false;
+    backupDestinationPreview=null;$('#backup-destination-preview').hidden=true;$('#backup-destination-confirm').checked=false;
+    if(!edited&&generation===backupDestinationGeneration){$('#backup-destination-root').value=result.settings.backup_root;$('#backup-destination-start-new').checked=false;}
+    $('#backup-destination-current').textContent='当前备份目录：'+result.directory;
+    $('#backup-destination-health').textContent=result.available?'恢复完成，当前位置可用。':'恢复完成，当前位置暂不可用：'+result.error;
+    $('#backup-destination-message').textContent=result.message+(backupDestinationDirty()?' 新的位置编辑仍是未应用草稿。':'');
+    inlineError($('#backup-destination-error'),'');await poll();
+  }catch(error){inlineError($('#backup-destination-error'),error.message);}
+  finally{backupDestinationBusy=false;renderBackupDestinationControls();}
+}
+$('#backup-destination-recovery-continue').addEventListener('click',()=>recoverBackupDestination('continue'));
+$('#backup-destination-recovery-cancel').addEventListener('click',()=>recoverBackupDestination('cancel'));
 if(typeof view!=='undefined'&&view==='play-settings')loadBackupDestination();
 $('#backup-destination-apply').addEventListener('click',async()=>{
   if(backupDestinationBusy||!backupDestinationPreview||!$('#backup-destination-confirm').checked)return;

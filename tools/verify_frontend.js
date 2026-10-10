@@ -1,25 +1,94 @@
 // Isolated component tests: no browser, user settings, or game manipulation.
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const root=path.resolve(__dirname,'..');
+const rawNumberIds=new Set([...fs.readFileSync(path.join(root,'web/index.html'),'utf8').matchAll(/<input\b(?=[^>]*data-raw-number)[^>]*\bid="([^"]+)"[^>]*>/g)].map(match=>match[1]));
+function formControls(selector,controls){return selector==='[data-raw-number]'?controls.filter(input=>rawNumberIds.has(input.id)||input.dataset.compareKey):controls;}
 function element(id=''){
-  return {id,value:'',textContent:'',className:'',innerHTML:'',childElementCount:0,hidden:false,disabled:false,
+  const node={id,value:'',textContent:'',className:'',innerHTML:'',childElementCount:0,hidden:false,disabled:false,
     checked:false,dataset:{},open:true,isConnected:true,listeners:{},children:[],
     classList:{toggle(){},contains(){return false;}},closest(){return this;},replaceChildren(...items){this.innerHTML='';this.children=[...items];this.childElementCount=items.length;},append(...items){this.children.push(...items);this.childElementCount=this.children.length;},
     close(){this.open=false;},showModal(){this.open=true;},setAttribute(name,value){this[name]=value;},getAttribute(name){return this[name]??null;},
-    validity:{valid:true},reportValidity(){return this.validity.valid;},focus(){this.focused=true;},
+    validity:{valid:true},setCustomValidity(text){this.validationMessage=text;},reportValidity(){return this.validity.valid;},focus(){this.focused=true;},
     addEventListener(name,fn){this.listeners[name]=fn;},querySelectorAll(){return [];},contains(){return false;},
     querySelector(selector){return selector.startsWith('option[')?element():null;},remove(){},insertAdjacentHTML(){}};
+  let value='';Object.defineProperty(node,'value',{get(){return value;},set(next){value=String(next);}});return node;
 }
 function harness(){
   const elements=new Map(),get=id=>{if(!elements.has(id))elements.set(id,element(id.replace(/^#/,'')));return elements.get(id);};
   const context=vm.createContext({URL,URLSearchParams,Map,Set,Number,String,Math,Promise,JSON,console,
     compareCharacterReference:null,manualCharacterReference:null,
     characterClone:value=>value==null?null:structuredClone(value),
-    $:get,$$:()=>[],document:{activeElement:null,createElement:()=>element(),createTextNode:text=>({textContent:text})},escapeHTML:String,fmtTime:String,state:null,fetch:async()=>({ok:true,json:async()=>({entries:[]})})});
+    $:get,$$:()=>[],document:{activeElement:null,addEventListener(){},createElement:()=>element(),createTextNode:text=>({textContent:text})},escapeHTML:String,fmtTime:String,state:null,fetch:async()=>({ok:true,json:async()=>({entries:[]})})});
+  const app=fs.readFileSync(path.join(root,'web/app.js'),'utf8');
+  vm.runInContext(app.slice(app.indexOf('function validRawNumericForm('),app.indexOf('\ndocument.addEventListener(',app.indexOf('function validRawNumericForm('))),context);
   return {elements,get,context,run:code=>vm.runInContext(code,context),load:name=>vm.runInContext(fs.readFileSync(path.join(root,'web',name),'utf8'),context)};
 }
 function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revision:1,started:90,stale:false,
   data:{hero:{level:1,ht:20,hp:10,strength:10},depth:1,items:[]}};}
+async function verifyGlobalHistory(){
+  const h=harness(),writes=[],reads=[],inputs=[element(),element()],portableInputs=[element(),element()];
+  inputs[0].dataset={globalRestoreName:'badges.dat',invalid:'false'};inputs[1].dataset={globalRestoreName:'rankings.dat',invalid:'true'};
+  portableInputs[0].dataset={globalPortableName:'badges.dat',invalid:'false'};portableInputs[1].dataset={globalPortableName:'rankings.dat',invalid:'true'};
+  const row={id:'a'.repeat(64),library:'b'.repeat(24),time:100,files:{'badges.dat':{valid:true,summary:{badges:3},error:''},'rankings.dat':{valid:false,summary:null,error:'损坏原始字节'}}};
+  let saved={library:row.library,context:'c1',target_root:'/synthetic/current',health:{state:'protected',files:{'badges.dat':{}}},history:[row],libraries:[{id:row.library,current:true}],storage:{bytes:300,limit:67108864,pending_originals:0},snapshot_limit:512};
+  Object.assign(h.context,{state:{backup_context:'c1'},token:'synthetic-token',$$:selector=>selector==='[data-global-restore-name]'?inputs:selector==='[data-global-portable-name]'?portableInputs:[],
+    inlineError:(target,text)=>target.textContent=text,poll:async()=>{},navigate:()=>{},getJSON:async url=>{reads.push(url);return structuredClone(saved);},
+    post:(url,payload)=>new Promise((resolve,reject)=>writes.push({url,payload,resolve,reject}))});
+  h.get('#global-history-dialog').open=false;h.load('global-history.js');await h.run('loadGlobalHistory(true)');
+  assert.equal(writes.length,0,'automatic history discovery never restores');assert.match(h.get('#global-history-health').textContent,/成就记录/);assert(!h.get('#global-history-health').textContent.includes('排行榜最近'));
+  const previewResult={id:row.id,library:row.library,context:'c1',target_root:'/synthetic/current',expected:'fresh-hash',message:'逐文件选择',files:[
+    {name:'badges.dat',valid:true,source:{badges:3},target_exists:true,same_bytes:false},
+    {name:'rankings.dat',valid:false,source:null,error:'损坏原始字节',target_exists:true,same_bytes:false}]};
+  const opening=h.run(`previewGlobalHistory('${row.id}')`);writes[0].resolve(previewResult);await opening;
+  assert(h.get('#global-history-dialog').open);assert(h.get('#global-history-restore').disabled);assert(inputs[1].disabled);
+  inputs[0].checked=true;h.get('#global-history-version').checked=true;h.get('#global-history-confirm').checked=true;h.run('renderGlobalHistoryControls()');
+  assert(!h.get('#global-history-restore').disabled);
+  const submitting=h.get('#global-history-restore-form').listeners.submit({preventDefault(){}});
+  assert.equal(writes[1].payload.choices['badges.dat'],'replace');assert.equal(writes[1].payload.choices['rankings.dat'],'keep');assert.equal(writes[1].payload.expected,'fresh-hash');
+  assert.equal(writes[1].payload.version,'4.0.2');assert.equal(writes[1].payload.version_confirmed,true);assert.equal(writes[1].payload.confirmed,true);
+  assert(h.get('#global-history-close').disabled);assert(inputs[0].disabled);let prevented=false;h.get('#global-history-dialog').listeners.cancel({preventDefault(){prevented=true;}});assert(prevented);
+  writes[1].reject(new Error('当前文件变化，请重新预览'));await submitting;
+  assert(h.get('#global-history-dialog').open);assert(!h.get('#global-history-confirm').checked);assert.match(h.get('#global-history-restore-error').textContent,/重新预览/);assert(inputs[0].checked);
+  const repreview=h.run('previewGlobalHistory(globalHistoryPreview.id,globalHistoryPreview.library)');assert(!h.get('#global-history-close').disabled);
+  h.get('#global-history-close').listeners.click();writes[2].resolve({...previewResult,expected:'late'});await repreview;
+  assert(!h.get('#global-history-dialog').open);assert.equal(h.run('globalHistoryPreview'),null,'cancelled read must not revive its dialog');
+  h.context.state.backup_context='c2';saved={...saved,context:'c2',target_root:'/synthetic/another'};await h.run('loadGlobalHistory(true)');
+  assert(!new URLSearchParams(reads.at(-1).split('?')[1]).has('library'),'new connection loads its current library');
+  const next=h.run(`previewGlobalHistory('${row.id}')`);inputs[0].checked=false;writes[3].resolve({...previewResult,context:'c2',target_root:saved.target_root,expected:'second-hash'});await next;
+  inputs[0].checked=true;h.get('#global-history-version').checked=true;h.get('#global-history-confirm').checked=true;h.run('renderGlobalHistoryControls()');
+  assert(!h.get('#global-history-restore').disabled,JSON.stringify({preview:h.run('globalHistoryPreview'),busy:h.run('globalHistoryBusy'),restoring:h.run('globalHistoryRestoring'),inputs:inputs.map(input=>({checked:input.checked,disabled:input.disabled}))}));
+  const success=h.get('#global-history-restore-form').listeners.submit({preventDefault(){}});
+  writes[4].resolve({message:'所选文件已恢复',retained_directory:'/synthetic/retained'});await success;
+  assert(!h.get('#global-history-dialog').open);assert.match(h.get('#global-history-result').textContent,/retained/);assert.equal(h.run('globalHistoryPreview'),null);
+  let download=0,revoked=0;h.context.URL={createObjectURL:()=> 'blob:synthetic',revokeObjectURL:()=>revoked++};h.context.setTimeout=callback=>callback();
+  h.context.document.createElement=()=>({...element(),click:()=>download++});h.context.fetch=async(url,options)=>{assert.equal(JSON.parse(options.body).action,'export');return {ok:true,blob:async()=>({synthetic:true})};};
+  await h.run(`exportGlobalHistory('${row.id}')`);assert.equal(download,1);assert.equal(revoked,1);
+  h.run(`openGlobalHistoryPortable('${row.id}')`);assert(h.get('#global-history-export-dialog').open);assert(h.get('#global-history-portable-export').disabled);assert(portableInputs[1].disabled);
+  portableInputs[0].checked=true;h.get('#global-history-export-version').checked=true;h.run('renderGlobalHistoryControls()');assert(!h.get('#global-history-portable-export').disabled);
+  let finishExport;h.context.fetch=(url,options)=>{
+    const request=JSON.parse(options.body);assert.equal(request.action,'portable-export');assert.deepEqual(request.selected,['badges.dat']);assert.equal(request.version,'4.0.2');assert.equal(request.version_confirmed,true);
+    return new Promise(resolve=>finishExport=resolve);
+  };
+  const exporting=h.get('#global-history-export-form').listeners.submit({preventDefault(){}});assert(h.get('#global-history-export-close').disabled);
+  finishExport({ok:false,json:async()=>({error:'原始字节已变化'})});await exporting;
+  assert(h.get('#global-history-export-dialog').open);assert(portableInputs[0].checked);assert.match(h.get('#global-history-export-error').textContent,/字节已变化/);
+  h.context.fetch=async()=>({ok:true,blob:async()=>({synthetic:true})});await h.get('#global-history-export-form').listeners.submit({preventDefault(){}});
+  assert(!h.get('#global-history-export-dialog').open);assert.equal(download,2);assert.equal(revoked,2);assert.match(h.get('#global-history-result').textContent,/搬机与迁移/);
+  h.run(`openGlobalHistoryPortable('${row.id}')`);h.context.state.backup_context='c3';saved={...saved,context:'c3'};await h.run('loadGlobalHistory(true)');
+  assert(h.get('#global-history-portable-export').disabled);assert.match(h.get('#global-history-export-error').textContent,/连接已变化/);
+  console.log(JSON.stringify({global_history_read_only_discovery:true,per_file_and_version_confirmation:true,invalid_raw_export:true,cancelled_preview_not_revived:true,restore_failure_keeps_choices:true,connection_change_rebinds:true,portable_export_explicit_selection_and_version:true}));
+}
+function verifyRawNumericValidation(){
+  const h=harness(),input=element('raw'),form=element('form');
+  const attrs={min:'-100',max:'99',step:'1'};input.getAttribute=name=>attrs[name]??null;input.required=true;
+  form.querySelectorAll=()=>[input];form.reportValidity=()=>!input.validationMessage;h.context.form=form;
+  const check=(raw,expected)=>{input.value=raw;assert.equal(h.run('validRawNumericForm(form)'),expected,raw);assert.equal(input.value,raw,'validation must preserve exact draft bytes');};
+  for(const raw of ['-','1e','','1.5','100','Infinity','NaN'])check(raw,false);
+  for(const raw of ['-100','99',' 7 ','+2','1e1'])check(raw,true);
+  attrs.min='0.5';attrs.max='2';attrs.step='any';check('1.25',true);check('0.49',false);check('2.01',false);
+  input.required=false;check('',true);check('-',false);input.disabled=true;check('-',true);
+  console.log(JSON.stringify({raw_numeric_validation:true,complete_syntax:true,bounds_and_integer_steps:true,raw_values_unchanged:true}));
+}
 async function verifyNumericalSaveTransitions(){
   const identity='items.potions.potionofhealing',tick=()=>new Promise(resolve=>setImmediate(resolve));
   const workspace=fs.readFileSync(path.join(root,'web/workspace.js'),'utf8');
@@ -88,7 +157,7 @@ function plan(id='saved-11',strength=11,wand=false){return {id,kind:'equipment',
 function setup(options={}){
   const h=harness(),catalog=[],schemas=[],comparisons=[];
   const controls=[h.get('#compare-strength'),h.get('#compare-level-a'),h.get('#compare-level-b')];
-  h.get('#equipment-comparison').querySelectorAll=()=>controls;
+  h.get('#equipment-comparison').querySelectorAll=selector=>formControls(selector,controls);
   Object.assign(h.context,{navigationSerial:0,webEditingFrozen:false,displayNumber:String,originLabel:()=> 'saved reference',calculationStamp:()=>null,exampleHTML:()=>'',inlineError:(target,message)=>{target.textContent=message;}});
   h.get('.comparison-panel').scrollIntoView=()=>{};h.get('#compare-kind').value='weapon';h.get('#compare-strength').value='10';
   h.context.fetch=url=>{
@@ -243,6 +312,34 @@ async function verifyBackupDestinationDrafts(){
   writes[count+1].resolve({settings:{backup_root:'/synthetic/new-disk'},directory:'new-disk/backups',settings_revision:'r3',context:'c3',message:'旧历史未复制，已在新位置继续'});await offlineApply;
   assert(!h.get('#backup-destination-start-new').checked);assert(!h.run('backupDestinationDirty()'));
   h.context.badDraft={backup_root:'x',start_new:'true'};assert.throws(()=>h.run('checkedBackupDestinationDraft(badDraft)'),/格式不正确/);
+  const r=harness(),recoveryWrites=[];
+  let recoveryStatus={backup_root:'',directory:'default/backups',available:true,settings_revision:'recovery-r1',context:'recovery-c1',
+    recovery:{id:'transaction',expected:'byte-bound-preview',settings_revision:'recovery-r1',context:'recovery-c1',can_continue:true,
+      source_directory:'default/backups',target_directory:'target/backups',preserved_target_directory:'target/original',target_original_bytes:300,message:'目标原历史仍保留'}};
+  Object.assign(r.context,{settingsWriteGeneration:0,inlineError:(target,text)=>target.textContent=text,poll:async()=>{},
+    getJSON:async()=>structuredClone(recoveryStatus),post:(url,payload)=>new Promise((resolve,reject)=>recoveryWrites.push({url,payload,resolve,reject}))});
+  r.load('backup-destination.js');await r.run('loadBackupDestination()');
+  assert(!r.get('#backup-destination-recovery').hidden);assert.match(r.get('#backup-destination-recovery-summary').textContent,/target\/original/);
+  assert.equal(recoveryWrites.length,0,'discovery is read-only');
+  await r.get('#backup-destination-recovery-continue').listeners.click();assert.equal(recoveryWrites.length,0,'recovery needs explicit confirmation');
+  r.get('#backup-destination-recovery-confirm').checked=true;r.get('#backup-destination-recovery-confirm').listeners.change();
+  assert(!r.get('#backup-destination-recovery-continue').disabled);
+  const continuing=r.get('#backup-destination-recovery-continue').listeners.click();
+  assert.equal(recoveryWrites[0].payload.direction,'continue');assert.equal(recoveryWrites[0].payload.expected,'byte-bound-preview');assert.equal(recoveryWrites[0].payload.confirmed,true);
+  r.get('#backup-destination-root').value='  /synthetic/new-edit  ';r.get('#backup-destination-root').listeners.input();
+  recoveryWrites[0].resolve({settings:{backup_root:'/synthetic/committed'},directory:'committed/backups',settings_revision:'recovery-r2',context:'recovery-c2',available:true,message:'已继续切换'});await continuing;
+  assert.equal(r.get('#backup-destination-root').value,'  /synthetic/new-edit  ');assert(r.run('backupDestinationDirty()'));assert(r.get('#backup-destination-recovery').hidden);
+  recoveryStatus={...recoveryStatus,recovery:{...recoveryStatus.recovery,can_continue:false,continue_reason:'原位置又有新备份，请取消后重新预览'}};
+  await r.run('loadBackupDestination()');r.get('#backup-destination-recovery-confirm').checked=true;r.get('#backup-destination-recovery-confirm').listeners.change();
+  assert(r.get('#backup-destination-recovery-continue').disabled);assert(!r.get('#backup-destination-recovery-cancel').disabled);
+  await r.get('#backup-destination-recovery-continue').listeners.click();assert.equal(recoveryWrites.length,1);
+  const cancelling=r.get('#backup-destination-recovery-cancel').listeners.click();assert.equal(recoveryWrites[1].payload.direction,'cancel');
+  recoveryWrites[1].reject(new Error('副本字节变化，全部原件保留'));await cancelling;
+  assert(!r.get('#backup-destination-recovery').hidden);assert.match(r.get('#backup-destination-error').textContent,/字节变化/);
+  assert.equal(r.get('#backup-destination-root').value,'  /synthetic/new-edit  ');
+  recoveryStatus={...recoveryStatus,recovery:null,recovery_error:'恢复关联损坏，原件保留'};await r.run('loadBackupDestination()');
+  assert.match(r.get('#backup-destination-recovery-summary').textContent,/关联损坏/);assert(r.get('#backup-destination-recovery-cancel').disabled);
+  console.log(JSON.stringify({destination_interruption_discovery:true,explicit_continue_and_cancel:true,changed_original_stops:true,new_draft_retained:true}));
   console.log(JSON.stringify({backup_destination_default_and_delayed_preview:true,apply_receipt_keeps_new_raw_draft:true,stale_read_and_recovery:true}));
 }
 async function verifyNestedBuffReference(){
@@ -277,14 +374,14 @@ function verifyNavigationHistory(){
   console.log(JSON.stringify({internal_navigation_history:true}));
 }
 async function verifyComparisonRecovery(){
-  const markup=fs.readFileSync(path.join(root,'web/index.html'),'utf8').split('<form id="equipment-comparison">')[1].split('</form>')[0];
+  const markup=fs.readFileSync(path.join(root,'web/index.html'),'utf8').match(/<form\b[^>]*id="equipment-comparison"[^>]*>([\s\S]*?)<\/form>/)[1];
   const entries=['items.weapon.melee.shortsword','items.weapon.melee.battleaxe','items.wands.wandoffireblast','items.wands.wandofprismaticlight','items.weapon.missiles.shuriken','items.weapon.missiles.trident','items.weapon.missiles.boomerang','items.weapon.missiles.darts.dart','items.weapon.missiles.shuriken$shurikeninstanttracker'].map(id=>({id,name:id}));
   function setup(){
     const h=harness(),dynamic={a:[],b:[]};let catalogCalls=0,schemaCalls=0,failCatalog=true,failSchema=true;
     const controls=[...markup.matchAll(/<(input|select)\b[^>]*\bid="([^"]+)"[^>]*>/g)].map(match=>{const input=h.get('#'+match[2]);input.value=match[0].match(/\bvalue="([^"]*)"/)?.[1]||'';return input;});
     for(const side of ['a','b'])Object.defineProperty(h.get('#compare-context-'+side),'innerHTML',{get(){return this.html||'';},set(html){this.html=html;dynamic[side]=[...html.matchAll(/<input[^>]*data-compare-key="([^"]+)"[^>]*value="([^"]*)"/g)].map(match=>{const input=element();input.dataset.compareKey=match[1];input.value=match[2];return input;});}});
     h.context.$$=selector=>selector.startsWith('#compare-context-a')?dynamic.a:selector.startsWith('#compare-context-b')?dynamic.b:[...controls,...dynamic.a,...dynamic.b];
-    h.get('#equipment-comparison').querySelectorAll=()=>[...controls,...dynamic.a,...dynamic.b];
+    h.get('#equipment-comparison').querySelectorAll=selector=>formControls(selector,[...controls,...dynamic.a,...dynamic.b]);
     Object.assign(h.context,{navigationSerial:0,calculationStamp:()=>null,displayNumber:String,exampleHTML:()=>'',inlineError:(target,text)=>target.textContent=text,
       fetch:async url=>{if(url.startsWith('/api/compare?'))return {ok:false,json:async()=>({error:'controlled calculation failure'})};catalogCalls++;const q=new URLSearchParams(url.split('?')[1]).get('q');if(q==='items.wands.'&&failCatalog){failCatalog=false;return {ok:false};}return {ok:true,json:async()=>({entries:entries.filter(row=>row.id.startsWith(q))})};},
       getJSON:async url=>{schemaCalls++;if(url.includes('wandoffireblast')&&failSchema){failSchema=false;throw Error('controlled schema failure');}return {inputs:[{key:'hp',label:'生命',value:10,min:0,max:100}]};}});
@@ -353,13 +450,13 @@ for item in items.values():item['available']=True
 print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'schemas':{i:v.detail(i) for i in (wand,sword)},'items':items,'results':{key:compare_equipment(v,args) for key,args in cases.items()}}))`;
   const child=require('node:child_process').spawnSync(python,['-B','-c',source],{cwd:root,encoding:'utf8',timeout:30000,maxBuffer:4*1024*1024,env:{...process.env,PYTHONIOENCODING:'utf-8'}});
   if(child.error)throw child.error;assert.equal(child.status,0,child.stderr);const fixture=JSON.parse(child.stdout),plain=value=>JSON.parse(JSON.stringify(value));
-  const markup=fs.readFileSync(path.join(root,'web/index.html'),'utf8').split('<form id="equipment-comparison">')[1].split('</form>')[0];
+  const markup=fs.readFileSync(path.join(root,'web/index.html'),'utf8').match(/<form\b[^>]*id="equipment-comparison"[^>]*>([\s\S]*?)<\/form>/)[1];
   async function setup(kind,item){
     const h=harness(),dynamic={a:[],b:[]},requests=[];
     const controls=[...markup.matchAll(/<(input|select)\b[^>]*\bid="([^"]+)"[^>]*>/g)].map(match=>{const input=h.get('#'+match[2]);input.value=match[0].match(/\bvalue="([^"]*)"/)?.[1]||'';return input;});
     for(const side of ['a','b'])Object.defineProperty(h.get('#compare-context-'+side),'innerHTML',{get(){return this.html||'';},set(html){this.html=html;dynamic[side]=[...html.matchAll(/<input[^>]*data-compare-key="([^"]+)"[^>]*value="([^"]*)"/g)].map(match=>{const input=element();input.dataset.compareKey=match[1];input.value=match[2];return input;});}});
     h.context.$$=selector=>selector.startsWith('#compare-context-a')?dynamic.a:selector.startsWith('#compare-context-b')?dynamic.b:[...controls,...dynamic.a,...dynamic.b];
-    h.get('#equipment-comparison').querySelectorAll=()=>[...controls,...dynamic.a,...dynamic.b];
+    h.get('#equipment-comparison').querySelectorAll=selector=>formControls(selector,[...controls,...dynamic.a,...dynamic.b]);
     Object.assign(h.context,{navigationSerial:0,webEditingFrozen:false,displayNumber:String,calculationStamp:()=>null,navigate(){},originLabel:()=> '固定参考',planSource:()=>({mode:'manual'}),cleanStoredOrigin:plain,
       inlineError:(target,text)=>target.textContent=text,exampleHTML:result=>JSON.stringify(result),
       getJSON:async url=>structuredClone(fixture.schemas[new URLSearchParams(url.split('?')[1]).get('id')]),
@@ -393,10 +490,12 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   console.log(JSON.stringify({actual_backend_upgrade_context_cases:3,public_resin_seed:true,hardened_infusion_branches:true,pending_threshold:true,plan_roundtrips:3}));
 }
 (async()=>{
+  verifyRawNumericValidation();
   verifyNavigationHistory();
   await verifyInventoryEntrySnapshots();
   await verifyNumericalSaveTransitions();
   await verifyBackupDestinationDrafts();
+  await verifyGlobalHistory();
   await verifyNestedBuffReference();
   await verifyComparisonPlanOpenings();
   await verifyComparisonRecovery();
@@ -799,7 +898,7 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   // Parse the actual generated conditional controls so undo cannot pass by
   // restoring only static selects while leaving another item's schema behind.
   const undoCompare=harness(),dynamicCompare={a:[],b:[]};
-  const comparisonMarkup=markup.split('<form id="equipment-comparison">')[1].split('</form>')[0];
+  const comparisonMarkup=markup.match(/<form\b[^>]*id="equipment-comparison"[^>]*>([\s\S]*?)<\/form>/)[1];
   const comparisonControls=[...comparisonMarkup.matchAll(/<(input|select)\b[^>]*\bid="([^"]+)"[^>]*>/g)].map(match=>{
     const input=undoCompare.get('#'+match[2]);input.value=match[0].match(/\bvalue="([^"]*)"/)?.[1]||'';return input;
   });
@@ -810,7 +909,7 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   });
   const allComparisonControls=()=>[...comparisonControls,...dynamicCompare.a,...dynamicCompare.b];
   undoCompare.context.$$=selector=>selector.startsWith('#compare-context-a')?dynamicCompare.a:selector.startsWith('#compare-context-b')?dynamicCompare.b:allComparisonControls();
-  undoCompare.get('#equipment-comparison').querySelectorAll=allComparisonControls;
+  undoCompare.get('#equipment-comparison').querySelectorAll=selector=>formControls(selector,allComparisonControls());
   Object.assign(undoCompare.context,{state:stamp(),calculationStamp:()=>({mode:'save',slot:1,modified:100}),displayNumber:String,
     inlineError:(target,message)=>{target.textContent=message;},
     fetch:async url=>({ok:true,json:async()=>({entries:String(url).includes('items.wands.')?[

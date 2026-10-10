@@ -47,8 +47,8 @@ def canonical_combat(raw, result, kind):
         result['target_context'] = validate_target(raw['target_context'])
 
 
-def ring_effect(scene, identity):
-    """Resolve one buffed ring type; unrelated unknown grades do not block it."""
+def ring_effect(scene, identity, *, buffed=True):
+    """Resolve one ring channel, including its own zero-sum Spirit fallback."""
     if scene is None:
         return {'value': 0, 'missing': [], 'source': '未附共享角色，明确按无戒指假设'}
     missing, total = [], 0
@@ -56,7 +56,7 @@ def ring_effect(scene, identity):
         return {'value': 0, 'missing': [], 'source': '魔法免疫抑制戒指'}
     if scene['magic_immune'] is None:
         missing.append('魔法免疫状态')
-    enhanced = scene.get('enhanced_rings', False)
+    enhanced = scene.get('enhanced_rings', False) if buffed else False
     for index, ring in enumerate(scene['rings']):
         if ring['identity'] is None:
             missing.append('戒指' + str(index + 1) + '身份')
@@ -79,7 +79,8 @@ def ring_effect(scene, identity):
                 else:
                     total += solo_bonus(scene['spirit_level'] + int(enhanced), scene['spirit_cursed'])
     return {'value': None if missing else total, 'missing': missing,
-            'source': '同类型普通戒指合计；为0时使用精神形态后备；增强仅加buffed等级'}
+            'source': '同类型普通戒指合计；为0时使用精神形态后备；' +
+                      ('增强计入此效果等级' if buffed else '此效果不受戒指增强影响')}
 
 
 def hit_probability(accuracy, evasion):

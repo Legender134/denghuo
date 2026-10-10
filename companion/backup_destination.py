@@ -78,10 +78,14 @@ def registry(config_path):
 
 def storage_check(config_path, backup_root):
     """Never mkdir a selected directory: its marker must survive reconnect/restart."""
-    if not backup_root:
-        return None
     def check():
-        base = unlinked(Path(backup_root))
+        from .backup_destination_recovery import load, TERMINAL
+        pending = load(config_path)
+        base = unlinked(base_directory(config_path, backup_root))
+        if pending and pending['state'] not in TERMINAL and str(base.resolve()) == pending['target']:
+            raise ValueError('此目的地有未完成的目录切换，自动备份暂停；请在备份位置中继续或取消恢复，目标原历史仍保留。')
+        if not backup_root:
+            return
         if not base.is_dir():
             raise ValueError('选定备份目录暂时不可用，自动备份已暂停；请重新连接磁盘或明确更换目录')
         expected = registry(config_path).get(backup_root)
@@ -96,16 +100,22 @@ def manager_for(config_path, backup_root, **kwargs):
 
 
 def status(session):
+    from .backup_destination_recovery import preview
     error = ''
     try:
         session.backups.ensure_storage()
     except (OSError, ValueError) as exc:
         error = str(exc)
+    recovery, recovery_error = None, ''
+    try:
+        recovery = preview(session)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        recovery_error = '未完成切换的恢复关联尚不可校验：'+str(exc)
     return {'backup_root': session.settings.get('backup_root', ''),
             'directory': str(session.backups.directory),
             'default_directory': str(session.config_path.parent.resolve() / 'backups'),
             'settings_revision': session.settings_revision, 'context': session.backup_context,
-            'available': not error, 'error': error}
+            'available': not error, 'error': error, 'recovery': recovery, 'recovery_error': recovery_error}
 
 
 def _stamp(path):
@@ -129,10 +139,10 @@ def _hash(path):
     return {'bytes': total, 'sha256': digest.hexdigest(), 'stamp': before}
 
 
-def _tree(base):
+def _tree(base, *, names=CONTAINERS):
     """Scan only the three owned containers, never arbitrary chosen-folder children."""
     files, directories, total, entries = {}, [], 0, 0
-    for name in CONTAINERS:
+    for name in names:
         container = unlinked(base / name)
         if not container.exists():
             continue
@@ -257,6 +267,7 @@ def _index_merge(relative, source, target):
 
 
 def plan(session, backup_root, *, start_new=False):
+    from .backup_destination_recovery import guard_target
     if type(start_new) is not bool:
         raise ValueError('新位置继续备份选项必须是布尔值')
     backup_root = normalize_root(backup_root)
@@ -264,6 +275,7 @@ def plan(session, backup_root, *, start_new=False):
     target = unlinked(base_directory(session.config_path, backup_root))
     if not target.is_dir():
         raise ValueError('备份目的地目录不存在；请先在本地磁盘创建目录再预览')
+    guard_target(session.config_path, target)
     if not os.access(target, os.W_OK):
         raise ValueError('备份目的地不可写，请检查本地目录的访问权限')
     save = Path(session.settings['save_root']).resolve()
@@ -364,6 +376,27 @@ def _write_file(path, raw):
         os.fsync(stream.fileno())
 
 
+def _register_destination(config_path, target, backup_root, expected_identity, destination_id=None):
+    if not backup_root:
+        return
+    if [target.stat().st_dev, target.stat().st_ino] != expected_identity:
+        raise ValueError('目标目录已变化，尚未切换；请重新预览')
+    identity = _marker(target)
+    if destination_id is not None and identity not in (None, destination_id):
+        raise ValueError('目标磁盘身份记录已变化，尚未继续切换；全部原件保留。')
+    if identity is None:
+        identity = destination_id or uuid.uuid4().hex
+        with unlinked(target / MARKER).open('x', encoding='utf-8') as stream:
+            json.dump({'format': 1, 'id': identity}, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+    roots = registry(config_path)
+    roots[backup_root] = identity
+    if len(roots) > 256:
+        raise ValueError('已记住的备份目的地过多，尚未切换')
+    atomic_json(config_path.parent / REGISTRY, roots)
+
+
 def apply(session, backup_root, expected, persist, *, start_new=False, check_current=None):
     """Caller serializes the frozen manager; persist performs the final session CAS."""
     view, binding, merged, preferences = plan(session, backup_root, start_new=start_new)
@@ -371,6 +404,7 @@ def apply(session, backup_root, expected, persist, *, start_new=False, check_cur
         raise ValueError('备份目录或内容已变化，请重新预览并确认')
     source, target = Path(binding['source']), Path(binding['target'])
     stage = preserved = None
+    journal, committed = None, False
     published, displaced = [], []
     try:
         if source != target:
@@ -410,8 +444,10 @@ def apply(session, backup_root, expected, persist, *, start_new=False, check_cur
                 raise ValueError('复制期间目标目录已变化，尚未切换')
             if check_current is not None:
                 check_current()
-            preserved = unlinked(target / ('.denghuo-destination-original-' + uuid.uuid4().hex))
+            preserved = unlinked(target / ('.denghuo-destination-original-' + stage.name.removeprefix('.denghuo-destination-stage-')))
             preserved.mkdir()
+            from . import backup_destination_recovery as recovery
+            journal = recovery.prepare(session, binding, stage, preserved)
             for name in CONTAINERS:
                 original, copied = unlinked(target / name), unlinked(stage / name)
                 if original.exists():
@@ -422,28 +458,24 @@ def apply(session, backup_root, expected, persist, *, start_new=False, check_cur
                     published.append(name)
         if check_current is not None:
             check_current()
-        if binding['backup_root']:
-            if [target.stat().st_dev, target.stat().st_ino] != binding['target_identity']:
-                raise ValueError('目标目录已变化，尚未切换；请重新预览')
-            identity = binding['marker']
-            if identity is None:
-                identity = uuid.uuid4().hex
-                with unlinked(target / MARKER).open('x', encoding='utf-8') as stream:
-                    json.dump({'format': 1, 'id': identity}, stream)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-            roots = registry(session.config_path)
-            roots[binding['backup_root']] = identity
-            if len(roots) > 256:
-                raise ValueError('已记住的备份目的地过多，尚未切换')
-            atomic_json(session.config_path.parent / REGISTRY, roots)
+        _register_destination(session.config_path, target, binding['backup_root'], binding['target_identity'],
+                              journal['destination_id'] if journal else binding['marker'])
         manager = manager_for(session.config_path, binding['backup_root'],
                               clock=session.backups.clock, closed_check=session.backups.closed_check)
         manager.enabled = binding['enabled']
         if check_current is not None:
             check_current()
         persist(binding['backup_root'], manager)
+        committed = True
+        if journal:
+            recovery.save(session.config_path, journal, 'completed')
+            manager.ensure_storage()
     except Exception:
+        if journal:
+            if not committed:
+                recovery.exchange(journal, 'cancel')
+                recovery.save(session.config_path, journal, 'rolled_back')
+            raise
         # Rename only our published copies; keep both failed stage and target originals.
         if stage is not None:
             for name in reversed(published):

@@ -267,13 +267,20 @@ class PublicSkillWorkflowTests(unittest.TestCase):
         self.session.data['buffs'] = [{'kind':'Barrier', 'current_shield': 7}]
         lookup.use_latest(); self.finish()
         self.assertEqual(lookup.raw_params()['current_shield'], '7')
-        self.assertEqual(lookup.input_origins['current_shield'], '快照')
-        for buffs in ([{'kind':'Barrier'}], [{'kind':'Barrier','current_shield':3}, {'kind':'Barrier','current_shield':4}], []):
+        self.assertIn(lookup.input_origins['current_shield'], ('最近保存的记录','旧快照记录'))
+        for buffs in ([{'kind':'Barrier'}], [{'kind':'Barrier','current_shield':3}, {'kind':'Barrier','current_shield':4}]):
             self.session.data['buffs'] = buffs
             lookup.variables['current_shield'].set('9')
             lookup.use_latest(); self.finish()
             self.assertEqual(lookup.raw_params()['current_shield'], '9')
             self.assertIn('手填保留', lookup.input_origins['current_shield'])
+        self.session.data['buffs']=[]
+        self.session.data['buffs_known']=False
+        lookup.use_latest();self.finish()
+        self.assertEqual(lookup.raw_params()['current_shield'],'9')
+        self.session.data['buffs_known']=True
+        lookup.use_latest();self.finish()
+        self.assertEqual(lookup.raw_params()['current_shield'],'0')
         open_entry('actors.buffs.healing')
         self.session.data['buffs'] = [{'kind':'Healing','left':80,'percent':.1,'flat':2,'vial_level':-1}]
         lookup.use_latest(); self.finish()

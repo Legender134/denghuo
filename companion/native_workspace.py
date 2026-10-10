@@ -352,8 +352,10 @@ class NumericLookup:
         context = self.entry_context(snap, self.identity)
         context['imported_latest'] = True
         current_keys = {'hero_level', 'max_hp', 'hp', 'strength', 'depth', 'current_shield'}
-        if self.identity.startswith('actors.hero.spells.') and '$' not in self.identity:
+        if self.identity.startswith('actors.hero.talent.') or self.identity.startswith('actors.hero.spells.') and '$' not in self.identity:
             current_keys.add('talent')
+        if self.identity in ('items.waterskin', 'items.dewdrop'):
+            current_keys.update(('shielding_dew', 'vial', 'dew_volume'))
         if self.identity == 'actors.buffs.healing':
             current_keys.update(('power', 'healing_percent', 'healing_flat', 'vial'))
         prefix = '手动局势' if context['mode'] == 'manual' else '快照'
@@ -363,7 +365,7 @@ class NumericLookup:
                 self.input_origins[key] = context.get('field_origins', {}).get(key, prefix)
             elif key in current_keys:
                 self.input_origins[key] = '手填保留 · 最新记录未确认' + (
-                    ' · ' + context['conditions'].split('；')[0] if key == 'talent' and context.get('conditions') else '')
+                    ' · ' + context['conditions'].split('；')[0] if key in ('talent', 'shielding_dew') and context.get('conditions') else '')
         self.context = context
         self.edit_revision += 1
         self.ticket = self.submitted = None

@@ -14,6 +14,10 @@ function renderBackupHealth(){
   if(!state){el.className='connection-banner error';el.textContent='服务未连接 · 自动备份状态尚未确认';return;}
   el.className='connection-banner'+(h?.state==='blocked'?' error':'');
   el.textContent=h?`${h.slot?`槽位 ${h.slot}：`:''}${healthName(h)}${h.saved?` · 游戏保存距今 ${ageLabel(Date.now()/1000-h.saved)}`:''}${h.last_success?` · 最近检查成功 ${shortTime(h.last_success)}`:''}${h.error?` · ${h.error}`:''}${h.other_errors?` · 其他槽位：${h.other_errors}`:''}`:'自动备份状态尚未确认';
+  if(h?.global_progress&&typeof globalProgressLabel==='function'){
+    el.textContent+=' · '+globalProgressLabel(h.global_progress);
+    if(['warning','blocked'].includes(h.global_progress.state))el.classList.add('error');
+  }
 }
 function syncBackupContext(context){
   if(context===backupContext)return;
@@ -43,6 +47,7 @@ function backupSummary(row){
   return `<p><strong>${escapeHTML(classNames[row.class]||row.class)} Lv.${escapeHTML(row.level??'未知')} · 第 ${escapeHTML(row.depth)} 层${row.branch?'（支线）':''}</strong><br>生命 ${escapeHTML(row.hp??'未知')}/${escapeHTML(row.ht??'未知')} · 金币 ${escapeHTML(row.gold??'未知')} · 基础力量 ${escapeHTML(row.strength??'未知')}${row.duration!=null?`<br>本局行动时间 ${escapeHTML(row.duration)} 回合`:''}<br>游戏保存 ${fmtTime(row.saved)}${items?`<br>${items}`:''}</p>`;
 }
 async function loadBackups(){
+  if(typeof loadGlobalHistory==='function')void loadGlobalHistory();
   const context=state?.backup_context;
   if(backupLoading||!context)return;backupLoading=true;
   try{

@@ -32,6 +32,8 @@ def workspace_status(session):
             params['tier'] = item['tier']
         if type(item.get('volume')) is int:
             params['dew_volume'] = item['volume']
+        specific = skill_context(snap, item['key'])
+        params.update(specific.get('params', {}))
         level_applies = item.get('level_applicable', item['key'].startswith(('items.weapon.', 'items.armor.', 'items.wands.', 'items.rings.', 'items.artifacts.', 'items.trinkets.')))
         origin = 'not_applicable' if not level_applies else 'known' if item.get('level') is not None else 'unknown'
         current.append({**entries[item['key']], 'lookup_label': item['name'] + ' · ' + provenance['label'],
@@ -41,6 +43,9 @@ def workspace_status(session):
                                            'source_label': provenance['label'],
                                            'conditions': ('角色总力量已按公开条件计算；其他加成仍需核对' if data.get('character_scene', {}).get('strength', {}).get('usable') else '基础力量参考；总力量条件尚未确认，请核对戒指、天赋与临时状态')}})
         base = current[-1]
+        if specific:
+            base['lookup_context']['field_origins'] = specific.get('field_origins', {})
+            base['lookup_context']['conditions'] += '；' + specific.get('conditions', '')
         related = [{**row, 'lookup_label': row['name'] + ' · ' + provenance['label'],
                     'lookup_context': {**base['lookup_context'], 'params': dict(params), 'ignore_drafts': True, 'capture_context': True,
                                        'conditions': row['conditions']}} for row in item.get('related', [])]
@@ -74,6 +79,18 @@ def workspace_status(session):
             continue
         specific = skill_context(snap, identity)
         current.append({**entries[identity], 'lookup_label': entries[identity]['name'] + ' · 已学技能 · ' + provenance['label'],
+                        'lookup_context': {**specific, 'params': {**context, **specific['params']}, 'stamp': stamp,
+                                           'level_origin': 'example', 'mode': provenance['mode'], 'source': provenance,
+                                            'source_label': provenance['label']}})
+    build = data.get('hero', {}).get('build') or {}
+    selected = [(identity, '已投入天赋') for identity, row in build.get('talents', {}).items() if row['state'] == 'learned']
+    if build.get('ability'):
+        selected.append((build['ability']['id'], '已选择护甲能力'))
+    for identity, label in selected:
+        if identity not in entries:
+            continue
+        specific = skill_context(snap, identity)
+        current.append({**entries[identity], 'lookup_label': entries[identity]['name'] + ' · ' + label + ' · ' + provenance['label'],
                         'lookup_context': {**specific, 'params': {**context, **specific['params']}, 'stamp': stamp,
                                            'level_origin': 'example', 'mode': provenance['mode'], 'source': provenance,
                                            'source_label': provenance['label']}})

@@ -14,6 +14,7 @@ function harness(kind,id,items){
     exampleHTML:()=>'',cellsText:()=>'',displayNumber:String,characterSummary:()=>'',characterClone:value=>JSON.parse(JSON.stringify(value)),
     numericalDetail:null,numericalDrafts:new Map(),numericalCalculated:new Map(),numericalFormDrafts:new Map(),fixedNumericalDrafts:new Map(),settingsDrafts:new Set(),manualUnsaved:false,
     post:async(url,payload)=>{payloads.push(JSON.parse(JSON.stringify(payload)));return {plan:{id:'a'.repeat(32),record_revision:'b'.repeat(64),...payload}};},loadWorkspace:async()=>{}});
+  vm.runInContext(extract(fs.readFileSync(path.join(root,'web/app.js'),'utf8'),'validRawNumericForm'),c);
   vm.runInContext(compare,c); // Initial catalog request deliberately stays pending.
   for(const name of ['planDraftKey','planSource','originLabel','cleanStoredOrigin','openPlanSave','savePlan'])vm.runInContext(extract(workspace,name),c);
   vm.runInContext("let planDialogSerial=0,planDraft=null;const planNameDrafts=new Map(),planNoteDrafts=new Map(),planMetaOriginals=new Map(),planLabels={equipment:'装备'};",c);

@@ -12,6 +12,7 @@ from .public_item_state import project_item_state, cooked_fruit_name, project_eq
 from .character_scene import scene_from_game
 from .public_source_data import MISSILE_PUBLIC_TYPES
 from .public_skills import project_skills
+from .public_build import project_build
 from .saves import SaveError, validate_map
 from .game_math import healing_tick
 
@@ -423,6 +424,7 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
         compatibility = f"存档版本码 {version} 与参考版本不同；手册和规则按 {catalog.data['version']}，差异请以游戏说明为准。"
     return {"hero": {"class": CLASSES.get(hero_class, str(hero_class)), "class_id": hero_class,
                      "skills": project_skills(game, catalog.data['version_code']),
+                     "build": project_build(game, catalog),
                      "subclass": hero.get("subClass", "NONE"), "level": int(number(hero.get("lvl"), 1)),
                      "hp": hp, "ht": ht, "strength": number(hero.get("STR"), 10),
                      "strength_label": "基础力量", "hunger": hunger,
@@ -433,6 +435,13 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
             "energy": number(game.get("energy")), "version": game.get("version"),
             "challenges": [name for bit, name in CHALLENGES.items() if challenge_mask & bit],
             "challenges_known": type(game.get('challenges')) is int and 0 <= game['challenges'] <= 511,
+            "buffs_known": type(hero.get('buffs', [])) is list and all(
+                isinstance(b, dict) and isinstance(b.get('__className'), str)
+                and b['__className'].startswith(PREFIX+'actors.buffs.')
+                and (catalog.key(b) in catalog.entry_index or catalog.key(b)+'.name' in catalog.messages
+                     or short_class(b) in ('Regeneration', 'Hunger', 'Berserk')
+                     or short_class(b).rsplit('$', 1)[-1] == 'TimeStasis')
+                for b in hero.get('buffs', [])),
             "buffs": [{"name": '时间静止' if short_class(b).rsplit('$', 1)[-1] == 'TimeStasis' else catalog.name(b),
                        "kind": short_class(b).rsplit("$", 1)[-1],
                        "reference_id": catalog.key(b) if catalog.key(b) in catalog.entry_index else None,

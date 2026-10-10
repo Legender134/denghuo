@@ -1,6 +1,21 @@
 'use strict';
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+function validRawNumericForm(form){
+  let invalid=null;
+  for(const input of form.querySelectorAll('[data-raw-number]')){
+    input.setCustomValidity('');if(input.disabled)continue;
+    const raw=input.value.trim(),value=Number(raw),min=input.getAttribute('min'),max=input.getAttribute('max'),step=input.getAttribute('step')||'1';
+    const syntax=/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(raw);
+    const increment=Number(step),base=min===null?0:Number(min);
+    const wrongStep=step!=='any'&&Math.abs((value-base)/increment-Math.round((value-base)/increment))>1e-8;
+    const bad=raw===''?input.required:!syntax||!Number.isFinite(value)||(min!==null&&value<Number(min))||(max!==null&&value>Number(max))||wrongStep;
+    if(bad){input.setCustomValidity('请填写范围内的完整数值；整数参数不能含小数。');invalid??=input;}
+  }
+  if(invalid){invalid.reportValidity();invalid.focus();return false;}
+  return form.reportValidity();
+}
+document.addEventListener('input',event=>{if(event.target.matches?.('[data-raw-number]'))event.target.setCustomValidity('');});
 const names = {overview:'冒险概览',inventory:'背包与装备',library:'地牢手册',alchemy:'炼金规划',workspace:'方案与收藏',backups:'存档时光机',migration:'搬机迁移',manual:'局势推演',settings:'连接设置',help:'帮助与关于','play-settings':'游玩显示与快捷键'};
 const icons = {WARRIOR:'⚔',MAGE:'✦',ROGUE:'◐',HUNTRESS:'➶',DUELIST:'⚔',CLERIC:'✧'};
 const initialPanelPlan=new URLSearchParams(location.search||'').get('plan');
@@ -264,7 +279,7 @@ $('#settings-form').addEventListener('submit',event=>{
   },$('#settings-error'));
 });
 $$('[data-return-save]').forEach(button=>button.addEventListener('click',()=>action(async()=>{await postSettings({mode:'save'});toast('已恢复存档读取，保留当前槽位选择');navigate('overview');})));
-$('#manual-form').addEventListener('submit',event=>{event.preventDefault();const payload=manualPayload();const nav=navigationSerial,generation=manualFormGeneration;action(async()=>{await post('/api/manual',payload);if(generation===manualFormGeneration&&typeof manualUnsaved!=='undefined'){manualUnsaved=false;manualAppliedRaw=captureNamedForm('#manual-form');}toast(generation===manualFormGeneration?'已根据提交的手动局势生成建议':'已按刚才提交的局势生成建议；新的表单修改仍是草稿');if(nav===navigationSerial&&generation===manualFormGeneration)navigate('overview');},$('#manual-error'));});
+$('#manual-form').addEventListener('submit',event=>{event.preventDefault();if(!validRawNumericForm($('#manual-form')))return;const payload=manualPayload();const nav=navigationSerial,generation=manualFormGeneration;action(async()=>{await post('/api/manual',payload);if(generation===manualFormGeneration&&typeof manualUnsaved!=='undefined'){manualUnsaved=false;manualAppliedRaw=captureNamedForm('#manual-form');}toast(generation===manualFormGeneration?'已根据提交的手动局势生成建议':'已按刚才提交的局势生成建议；新的表单修改仍是草稿');if(nav===navigationSerial&&generation===manualFormGeneration)navigate('overview');},$('#manual-error'));});
 $('#copy-current').addEventListener('click',()=>{if(!state?.data){toast('还没有可读局势',true);return;}manualFormGeneration++;if(typeof manualUnsaved!=='undefined')manualUnsaved=true;const data=state.data,form=$('#manual-form');const values={class:data.hero.class_id,hp:data.hero.hp,ht:data.hero.ht,level:data.hero.level,strength:data.hero.strength,depth:data.depth,branch:data.branch?1:0,hunger:data.hero.hunger===null?'unknown':data.hero.hunger>=450?450:data.hero.hunger>=300?300:0,healing:data.items.filter(i=>i.kind==='PotionOfHealing' && i.known && i.available).reduce((a,b)=>a+b.quantity,0)};for(const [key,value] of Object.entries(values))form.elements.namedItem(key).value=value;$$('#manual-form input[name="buff"]').forEach(input=>input.checked=data.buffs.some(b=>b.kind===input.value && (b.kind!=='Berserk' || b.active)));$$('#manual-form input[name="challenge"]').forEach(input=>input.checked=({1:'饥饿游戏',2:'信念护体',4:'药水恐惧',8:'荒芜之地',16:'集群智慧',32:'深入黑暗',64:'禁忌符文',128:'精英强敌',256:'绝命头目'}[input.value] && data.challenges.includes({1:'饥饿游戏',2:'信念护体',4:'药水恐惧',8:'荒芜之地',16:'集群智慧',32:'深入黑暗',64:'禁忌符文',128:'精英强敌',256:'绝命头目'}[input.value])));if(typeof setManualCharacterReference==='function')setManualCharacterReference(data.character_scene?{params:data.character_scene.params,source:planSource(),stamp:calculationStamp(),label:'当前公开角色条件'}:null);toast('已带入快照，请对照游戏修正后提交');});
 function calculate(){const axe=$('#calc-kind').value==='greataxe';$('#calc-tier').disabled=axe;$('#calc-tier').closest('label').hidden=axe;const tier=axe?6:Number($('#calc-tier').value),input=$('#calc-level'),level=Number(input.value);if(input.value.trim()===''||!Number.isInteger(level)||level< -10||level>100){$('#calc-result').textContent='—';$('#calc-note').textContent='请填写 -10 至 100 的整数等级；未鉴定装备请以游戏中的参考说明为准。';return;}$('#calc-result').textContent=8+2*tier-Math.floor((Math.sqrt(8*Math.max(0,level)+1)-1)/2)-($('#calc-mastery').checked?2:0);$('#calc-note').textContent=(axe?'巨斧固定为五阶，力量需求比普通五阶武器高 2 点。':'按所选阶数和已知等级计算；升级并非每次都降低需求。')+($('#calc-mastery').checked?' 已计入精通药剂降低的 2 点需求。':'');}
 ['#calc-kind','#calc-tier','#calc-level','#calc-mastery'].forEach(id=>$(id).addEventListener('input',calculate));

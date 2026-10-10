@@ -127,7 +127,8 @@ def project_skills(game, version_code):
 def skill_context(snapshot, identity):
     """Entry-specific fields only; projection metadata never becomes numeric args."""
     if not identity.startswith(SPELL_PREFIX) or '$' in identity:
-        return {}
+        from .public_build import build_context
+        return build_context(snapshot, identity)
     from .decisions import source
     data = {} if snapshot.get('error') else snapshot.get('data') or {}
     row = data.get('hero', {}).get('skills', {}).get(identity)

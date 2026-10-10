@@ -424,20 +424,20 @@ class Overlay:
             self.status.configure(text=self.action_error, fg="#edafa0")
 
     def set_pin(self):
-        self.safely(lambda: self.session.update_settings({"always_on_top": self.pin_var.get()}))
+        self.native_ui.change_connection({"always_on_top": self.pin_var.get()})
         self.pin_var.set(self.session.settings["always_on_top"])
 
     def change_slot(self, _=None):
         slot = self.slot.current()
-        self.safely(lambda: self.session.update_settings({"slot": slot if slot else "auto", "mode": "save"}))
+        self.native_ui.change_connection({"slot": slot if slot else "auto", "mode": "save"})
 
     def refresh(self):
-        self.safely(self.session.refresh)
+        self.native_ui.queue_io('正在读取存档', self.session.refresh)
 
     def choose_root(self):
         path = filedialog.askdirectory(parent=self.root, title="选择包含 game1、game2 等文件夹的存档目录")
         if path:
-            self.safely(lambda: self.session.update_settings({"save_root": path, "mode": "save", "slot": "auto"}))
+            self.native_ui.change_connection({"save_root": path, "mode": "save", "slot": "auto"})
 
     def toggle_compact(self, preserve_expanded_size=False):
         if not self.compact and not preserve_expanded_size:
@@ -495,8 +495,16 @@ class Overlay:
             label = f"槽位 {backup['slot']}："+label
         if backup.get('saved'):
             label += f" · 保存{int(max(0,time.time()-backup['saved'])/60)}分钟前"
-        self.backup_status.configure(text=label+('\n'+brief_error(backup['error']) if backup.get('error') else ''),
-                                     fg='#edafa0' if backup.get('state') == 'blocked' else MUTED)
+        global_health = backup.get('global_progress', {})
+        global_labels = {'protected': '成就与排行榜已备份', 'warning': '全局原始字节已保留，结构需核对',
+            'blocked': '全局历史新增受阻', 'paused': '全局自动历史已暂停', 'waiting': '等待游戏产生全局进度'}
+        global_label = global_labels.get(global_health.get('state'), '正在核对全局历史') if global_health else ''
+        if global_health.get('state') == 'protected' and len(global_health.get('files', {})) == 1:
+            name = next(iter(global_health['files']))
+            global_label = ('成就' if name == 'badges.dat' else '排行榜')+'已备份'
+        self.backup_status.configure(text=label+('\n'+brief_error(backup['error']) if backup.get('error') else '')
+            + ('\n'+global_label if global_label else ''),
+            fg='#edafa0' if backup.get('state') == 'blocked' or global_health.get('state') in ('blocked', 'warning') else MUTED)
         if snap.get('waiting_for_save'):
             status = '已准备好 · 等待游戏保存后自动连接'
         elif snap["error"]:

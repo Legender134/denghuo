@@ -108,6 +108,7 @@ class BackupManager:
         self._storage_cache = None
         self._preferences_loaded = False
         self._storage_error = ''
+        self.global_health = {}
         try:
             self.ensure_storage()
         except (OSError, ValueError) as exc:
@@ -754,6 +755,11 @@ class BackupManager:
             self.health_root = str(Path(root))
             self.tick_failure = ''
             self.slot_health = {}
+            from . import global_history
+            try:
+                self.global_health = global_history.capture(self, root)
+            except (OSError, ValueError) as exc:
+                self.global_health = global_history._health(self, root, 'blocked', error=str(exc))
             try:
                 rows = self.events(root)
                 recovery = self.recovery_status(root)
@@ -804,6 +810,18 @@ class BackupManager:
                 if force:
                     raise
 
+    def global_health_status(self, root):
+        """Published memory only: never turn UI health polling into file I/O."""
+        health = dict(self.global_health) if self.global_health.get('root') == str(Path(root)) else {
+            'root': str(Path(root)), 'state': 'unknown', 'protected': False, 'raw_retained': False, 'error': '', 'checked_at': None}
+        if self._storage_error:
+            health.update(state='blocked', protected=False, error=self._storage_error)
+        elif not self.enabled:
+            health.update(state='paused', protected=False)
+        elif health.get('checked_at') is not None and self.clock()-health['checked_at'] > 15:
+            health.update(state='working', protected=False)
+        return health
+
     def health_status(self, root, slot=None):
         with self.lock:
             storage_error = ''
@@ -824,6 +842,7 @@ class BackupManager:
             state = ('paused' if not self.enabled else 'blocked' if error or not Path(root).is_dir()
                      else 'waiting' if not success or self.clock() - saved > 60 else 'protected')
             return {'state': state, 'error': error, 'last_success': success, 'saved': saved, 'slot': slot,
+                    'global_progress': self.global_health_status(root),
                     'last_save_protected': bool(success and saved and not error),
                     'other_errors': self.error if current and slot is not None and self.error != error else ''}
 

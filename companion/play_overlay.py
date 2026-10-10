@@ -192,10 +192,7 @@ class PlayDisplay:
         return receipt
 
     def toggle(self):
-        self.save({'enabled': not self.state['enabled']})
-        if not self.state['enabled']:
-            self.peek_open = False
-            self.hide()
+        self.manager.native_ui.change_preferences({'enabled': not self.state['enabled']})
 
     def toggle_peek(self):
         if (self.lookup and self.lookup.visible()
@@ -206,7 +203,8 @@ class PlayDisplay:
             self.open_lookup()
             return
         if not self.state['enabled']:
-            self.save({'enabled': True})
+            self.manager.native_ui.change_preferences({'enabled': True}, self.toggle_peek)
+            return
         self.peek_open = not self.peek_open
         self.peek_key = None
 
@@ -220,8 +218,10 @@ class PlayDisplay:
     def lock_layout(self):
         self.editing, self.drag = False, None
 
-    def unlock_layout(self):
-        self.save({'enabled': True})
+    def unlock_layout(self, *, persist=True):
+        if persist:
+            self.manager.native_ui.change_preferences({'enabled': True}, lambda: self.unlock_layout(persist=False))
+            return
         self.editing = True
         self.manager.hide_to_tray()
 
@@ -244,7 +244,7 @@ class PlayDisplay:
             x, y = self.status.geometry[:2]
             scale = self.manager.ui_scale
             try:
-                self.save({'anchor': 'top_left', 'offset_x': max(0, round((x - self.game['rect'][0]) / scale)),
+                self.manager.native_ui.change_preferences({'anchor': 'top_left', 'offset_x': max(0, round((x - self.game['rect'][0]) / scale)),
                            'offset_y': max(0, round((y - self.game['rect'][1]) / scale))})
             except (ValueError, OSError):
                 logging.exception('Unable to save play position')

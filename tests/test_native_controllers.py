@@ -328,7 +328,7 @@ class SettingsControllerTests(ControllerFixture):
         self.assertEqual(settings.vars['opacity'].get(), 'invalid raw')
         settings.reload()
         self.assertEqual(settings.vars['opacity'].get(), 'invalid raw')
-        settings.handle({'action': 'settings_reload_decision', 'decision': 'discard'})
+        settings.reload(True)
         self.assertEqual(float(settings.vars['font_scale'].get()), 1.75)
         self.assertFalse(settings.has_draft())
 

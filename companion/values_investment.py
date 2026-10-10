@@ -233,30 +233,27 @@ def conditional_metrics(values, raw, side, level, *, strength=None, clear_curse=
     suffix='；'+assumptions+'；未计未填写的天赋、临时等级和目标特殊状态'
     rows=[]
     if kind=='ring':
+        from .character_comparison import comparison_scene
+        from .character_scene import empty_scene
+        from .combat_context import ring_effect
         pair=raw['ring_pair_'+side]=='1'
         other_curse=raw['ring_pair_curse_'+side]
-        if curse=='unknown' or pair and other_curse=='unknown':
-            return [{'label':'戒指效果','value':'诅咒状态未确认','unit':'','condition':'请明确填写单戒或两戒的诅咒分支后比较'+suffix}]
-        solo=min(0,level-2) if curse=='1' else level+1
-        other=(min(0,raw['ring_pair_level_'+side]-2) if other_curse=='1' else raw['ring_pair_level_'+side]+1) if pair else 0
-        bonus=solo+other
-        scene=raw.get('character_scene')
-        if scene:
-            if scene['magic_immune']:
-                bonus=0
-                suffix+='；魔法免疫抑制戒指效果'
-            elif bonus==0:
-                if scene['spirit_form'] is None or scene['spirit_form'] and scene['spirit_ring'] is None:
-                    return [{'label':'戒指效果','value':'精神形态条件未确认','unit':'','condition':suffix}]
-                if scene['spirit_form'] and scene['spirit_ring']==identity:
-                    if scene['spirit_level'] is None or scene['spirit_cursed'] is None:
-                        return [{'label':'戒指效果','value':'精神形态等级或诅咒未确认','unit':'','condition':suffix}]
-                    bonus=min(0,scene['spirit_level']-2) if scene['spirit_cursed'] else scene['spirit_level']+1
-                    suffix+='；普通戒指合计为0，计入所列精神形态后备效果'
+        replacement=comparison_scene(raw,side,level,clear_curse=clear_curse)
+        if replacement:
+            scene=replacement['params']
+        else:
+            scene=empty_scene(params['strength'])
+            scene['rings']=[{'identity':identity,'level':level,'cursed':None if curse=='unknown' else curse=='1'}]
+            if pair:
+                scene['rings'].append({'identity':identity,'level':raw['ring_pair_level_'+side],
+                                       'cursed':None if other_curse=='unknown' else other_curse=='1'})
+        bonuses={'buffed':ring_effect(scene,identity),'unbuffed':ring_effect(scene,identity,buffed=False)}
         blocks=[]
-        values.rings(identity,integer_parameters(params),blocks,set(),effective_bonus=bonus)
-        condition=('同类型两枚相加，另一枚等级与诅咒按所填条件固定' if pair else '单枚戒指')+'；本枚'+('保持诅咒分支；升级随机解咒未假定成功' if curse=='1' else '无诅咒分支')+suffix
-        rows=[{'label':'合计戒指效果等级','value':str(bonus),'unit':'点','condition':condition}]
+        values.rings(identity,integer_parameters(params),blocks,set(),bonuses=bonuses)
+        condition=('同类型两枚相加，另一枚等级与诅咒按所填条件固定' if pair else '单枚戒指')+'；本枚'+('保持诅咒分支；升级随机解咒未假定成功' if curse=='1' else '诅咒状态未确认' if curse=='unknown' else '无诅咒分支')+suffix
+        rows=[{'label':label,'value':'待确认' if state['value'] is None else str(state['value']),
+               'unit':'点','condition':'；'.join(filter(None,[condition,state['source'],'、'.join(state['missing'])]))}
+              for label,state in [('合计戒指效果等级',bonuses['buffed']),('未增强戒指效果等级',bonuses['unbuffed'])]]
         for block in blocks:
             for cell in block.get('values',[]):rows.append({**cell,'condition':'；'.join(filter(None,[cell.get('condition'),block.get('note'),condition]))})
     else:
