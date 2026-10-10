@@ -60,7 +60,7 @@ namespace Denghuo.Native {
         bool stopping;
         public bool Frozen;
         readonly ExitRequests exitRequests = new ExitRequests();
-        DecisionForm activeExit;
+        Form activeExit;
         public ManagerForm Manager;
         public LookupForm Lookup;
         public SettingsForm Settings;
@@ -127,7 +127,8 @@ namespace Denghuo.Native {
                         case "exit_request": ExitRequest(Data.Object(d, "state")); break;
                         case "exit_save_error": ExitRequest(Data.Object(d, "state"), Data.Text(d, "message", "草稿副本未能保存"), true); break;
                         case "exit_cancelled": CancelExit(Data.Text(d, "request_id", "")); break;
-                        case "exit_finished": Manager.Status.Text = Data.Text(d, "message", "最后备份结果尚未确认，请在下次启动核对退出回执。"); break;
+                        case "exit_waiting": ExitWaiting(Data.Object(d, "state"), Data.Text(d, "message", "正在等待退出确认。"), Data.Flag(d, "can_cancel")); break;
+                        case "exit_finished": CloseExitDialog(); Manager.Status.Text = Data.Text(d, "message", "最后备份结果尚未确认，请在下次启动核对退出回执。"); break;
                         case "drafts": Drafts(d); break;
                         case "raw_draft": RawDraft(d); break;
                         case "recover_settings": RecoverSettings(d); break;
@@ -149,7 +150,7 @@ namespace Denghuo.Native {
             form.Hide(); Visibility(form); if (surface == "plans" && Lookup.Visible) Lookup.Activate();
         }
         void SetFrozen(bool freeze) { Manager.Editable.Enabled = !freeze; Lookup.Editable.Enabled = !freeze; Settings.Editable.Enabled = !freeze; Plans.Enabled = !freeze; if (activeName != null) activeName.Editable.Enabled = !freeze; }
-        void CloseExitDialog() { var dialog = activeExit; activeExit = null; if (dialog != null) dialog.Close(); }
+        void CloseExitDialog() { var dialog = activeExit; activeExit = null; var waiting = dialog as ExitWaitForm; if (waiting != null) waiting.CloseSilently(); else if (dialog != null) dialog.Close(); }
         void CancelExit(string id) {
             if (!exitRequests.Cancel(id)) return;
             CloseExitDialog(); Frozen = false; SetFrozen(false);
@@ -175,6 +176,19 @@ namespace Denghuo.Native {
             if (!exitRequests.IsCurrent(id)) return;
             Send("exit_decision", "request_id", id, "decision", decision, "lookup", Lookup.Dirty || SaveDraft != null ? (object)lookup : null, "settings", Settings.Dirty ? (object)settings : null);
             if (decision == "cancel") { CloseExitDialog(); Frozen = false; SetFrozen(false); }
+            else ExitWaiting(state, "正在保存草稿副本或确认放弃；磁盘等待期间仍可取消退出。", true);
+        }
+        void ExitWaiting(Dictionary<string, object> state, string message, bool canCancel) {
+            string id = Data.Text(state, "id", "");
+            if (!exitRequests.IsCurrent(id)) return;
+            var existing = activeExit as ExitWaitForm;
+            if (existing != null) { existing.SetProgress(message, canCancel); return; }
+            CloseExitDialog();
+            var dialog = new ExitWaitForm(message, canCancel, delegate {
+                if (exitRequests.IsCurrent(id)) Send("exit_decision", "request_id", id, "decision", "cancel");
+            });
+            activeExit = dialog;
+            dialog.Show(Manager.Visible ? (IWin32Window)Manager : Lookup.Visible ? (IWin32Window)Lookup : (IWin32Window)Settings);
         }
         void Confirm(Dictionary<string, object> d) {
             Lookup.FlushEdit(); Settings.FlushEdit();
@@ -506,6 +520,45 @@ namespace Denghuo.Native {
             var save = UI.Button("保存草稿副本后继续(&S)", delegate { Decision = "saved"; DialogResult = DialogResult.OK; }); var cancel = UI.Button("取消(&C)", delegate { Decision = "cancel"; DialogResult = DialogResult.Cancel; }); var discard = UI.Button("明确放弃草稿(&D)", delegate { Decision = "discard"; DialogResult = DialogResult.No; });
             table.Controls.Add(UI.Buttons(save, cancel, discard), 0, 1); Controls.Add(table); CancelButton = cancel; AcceptButton = cancel;
         }
+    }
+
+    sealed class ExitWaitForm : Form {
+        readonly Label message;
+        readonly Button cancel;
+        readonly Action requestCancel;
+        bool canCancel, silent, cancelling;
+        public ExitWaitForm(string text, bool allowCancel, Action callback) {
+            requestCancel = callback;
+            Text = AccessibleName = "灯火 · 正在结束本次辅助";
+            TopMost = true; Font = new Font("Microsoft YaHei UI", 10F);
+            AutoScaleMode = AutoScaleMode.Font; AutoScaleDimensions = new SizeF(7F, 17F);
+            float scale; using (Graphics graphics = CreateGraphics()) scale = graphics.DpiX / 96F;
+            Size = new Size((int)(580*scale), (int)(210*scale)); MinimumSize = Size;
+            StartPosition = FormStartPosition.CenterParent; MinimizeBox = MaximizeBox = false;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            var table = UI.Table(1); table.Dock = DockStyle.Fill; table.RowCount = 2;
+            table.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            message = UI.Label(text); message.MaximumSize = new Size((int)(550*scale), 0); table.Controls.Add(message, 0, 0);
+            cancel = UI.Button("取消退出，返回编辑(&C)", delegate { CancelWaiting(); });
+            table.Controls.Add(UI.Buttons(cancel), 0, 1); Controls.Add(table);
+            CancelButton = cancel; AcceptButton = cancel;
+            FormClosing += delegate(object sender, FormClosingEventArgs e) {
+                if (!silent) { e.Cancel = true; CancelWaiting(); }
+            };
+            SetProgress(text, allowCancel);
+        }
+        void CancelWaiting() {
+            if (!canCancel || cancelling) return;
+            cancelling = true; cancel.Enabled = false;
+            message.Text = "正在取消退出；原始输入仍保留。";
+            requestCancel();
+        }
+        public void SetProgress(string text, bool allowCancel) {
+            canCancel = allowCancel; ControlBox = allowCancel;
+            if (!cancelling || !allowCancel) message.Text = text;
+            cancel.Enabled = allowCancel && !cancelling;
+        }
+        public void CloseSilently() { silent = true; Close(); }
     }
 
     sealed class NameForm : Form {

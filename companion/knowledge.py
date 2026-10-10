@@ -50,7 +50,7 @@ def identity(value):
 
 def origin(raw=None):
     raw = {} if raw is None else raw
-    if not isinstance(raw, dict) or set(raw)-{'kind','mode','snapshot_at','slot','fields'}:
+    if not isinstance(raw, dict) or set(raw)-{'kind','mode','snapshot_at','slot','fields','references'}:
         raise ValueError('方案来源不正确')
     mode = raw.get('mode', 'example')
     if mode not in ('example','manual','save'):
@@ -67,7 +67,35 @@ def origin(raw=None):
         if not isinstance(fields,dict) or len(fields)>64 or any(not isinstance(key,str) or not re.fullmatch(r'[a-z0-9_]{1,80}',key) for key in fields):
             raise ValueError('字段来源不正确')
         result['fields']={key:text(value,'字段来源',120) for key,value in fields.items()}
+    if 'references' in raw:
+        references = raw['references']
+        if not isinstance(references, dict) or set(references) != {'a', 'b'}:
+            raise ValueError('装备公开参考不完整')
+        result['references'] = {}
+        for side, item in references.items():
+            if not isinstance(item, dict) or set(item) != {'id', 'name', 'effect_id', 'user_note'}:
+                raise ValueError('装备公开参考不正确')
+            note = item['user_note']
+            if note is not None:
+                if (not isinstance(note, dict) or set(note) != {'title', 'body', 'scope'}
+                        or note['scope'] not in ('specific_item', 'item_type')):
+                    raise ValueError('装备用户记录不正确')
+                for key, maximum in (('title', 50), ('body', 500)):
+                    if not isinstance(note[key], str) or len(note[key]) > maximum:
+                        raise ValueError('装备用户记录过长')
+                    user_note(note[key])
+            result['references'][side] = {'id': identity(item['id']),
+                'name': text(item['name'], '装备公开名称', 200),
+                'effect_id': identity(item['effect_id']) if item['effect_id'] is not None else None,
+                'user_note': copy.deepcopy(note)}
     return result
+
+
+def validate_references(source, kind, params):
+    references = source.get('references')
+    if references is not None and (kind != 'equipment' or any(
+            item['id'] != params.get('id_' + side) for side, item in references.items())):
+        raise ValueError('装备公开参考与方案对象不匹配')
 
 
 def canonical_plan(session, kind, entry, raw):
@@ -229,6 +257,7 @@ class KnowledgeWorkspace:
                 raise ValueError()
             if row['origin']!=origin(row['origin']):raise ValueError()
             if set(row['origin'].get('fields', {})) - set(row['params']):raise ValueError()
+            validate_references(row['origin'], row['kind'], row['params'])
             ids.append(row['id'])
         if len(ids)!=len(set(ids)):raise ValueError()
 
@@ -294,6 +323,7 @@ class KnowledgeWorkspace:
         provenance = origin(source)
         if set(provenance.get('fields',{}))-set(canonical):
             raise ValueError('字段来源包含此方案不使用的条件')
+        validate_references(provenance, kind, canonical)
         with self.lock:
             value,stamp = self._read()
             prior = next((row for row in value['plans'] if row['id']==record_id),None)
@@ -324,10 +354,11 @@ class KnowledgeWorkspace:
         try:
             _,result = canonical_plan(self.session,row['kind'],row['entry'],row['params'])
         except ValueError as exc:
-            if row['kind'] != 'alchemy':
+            if row['kind'] not in ('alchemy', 'numeric'):
                 raise
             # Structural validation already succeeded. Keep unsupported old
-            # alchemy inputs available for explicit correction in the editor.
+            # numeric/alchemy inputs available for explicit correction; never
+            # rewrite their historical parameters to today's canonical defaults.
             result,calculation_error = None,str(exc)
         return {'plan':plan,'result':result,
                 'source_label':'保存的参考方案 · 固定参数，未跟随当前角色',

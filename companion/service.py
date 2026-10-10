@@ -492,6 +492,10 @@ class Session:
             return migration.import_preview(self, raw)
         if action == 'import':
             return migration.import_bundle(self, raw, payload)
+        if action == 'global-recovery-preview':
+            return migration.global_recovery_preview(self)
+        if action == 'global-recovery':
+            return migration.global_recovery(self, payload)
         raise ValueError('不支持的搬机迁移操作')
 
     def workspace_action(self, payload):

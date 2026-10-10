@@ -4,6 +4,8 @@ const numericalDrafts=new Map();
 const numericalFormDrafts=new Map();
 const numericalCalculated=new Map();
 const heroParameterKeys=['hero_level','max_hp','hp','depth','strength','current_shield'];
+const healingParameterKeys=['power','healing_percent','healing_flat','vial'];
+function currentParameterKeys(identity){return identity==='actors.buffs.healing'?[...heroParameterKeys,...healingParameterKeys]:heroParameterKeys;}
 const fixedNumericalDrafts=new Map();
 function rememberFixedNumericalDraft(){const d=numericalDetail;if(!d?.savedPlan)return;fixedNumericalDrafts.set(d.savedPlan.id,JSON.parse(JSON.stringify({...d,pending:false,rawDraft:numericalFormDrafts.get('plan:'+d.savedPlan.id)||{}})));}
 function heroInputOrigin(key,stamp=calculationStamp()){return (stamp===null?'参考来源未确认':stamp?.mode==='manual'?'手动局势':'快照')+(key==='strength'?(typeof currentCharacterStrengthLabel==='function'?currentCharacterStrengthLabel():'基础力量参考'):key==='current_shield'?'公开当前护盾':'');}
@@ -21,11 +23,13 @@ function displayNumber(value){
   if(typeof value==='string'&&/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?%?$/i.test(value)){const percent=value.endsWith('%');return format(Number(percent?value.slice(0,-1):value))+(percent?'%':'');}
   return value;
 }
-function visibleCalculationContext(){
+function visibleCalculationContext(identity=numericalDetail?.identity){
   const hero=state?.data?.hero;
   if(!hero)return {};
   const barriers=(state.data.buffs||[]).filter(buff=>buff.kind==='Barrier'),shield=barriers.length===1?barriers[0].current_shield:null;
-  return {hero_level:hero.level,max_hp:hero.ht,hp:hero.hp,depth:state.data.depth,strength:typeof currentCharacterStrength==='function'?currentCharacterStrength():hero.strength,...(Number.isInteger(shield)&&shield>=0&&shield<=10000?{current_shield:shield}:{})};
+  const healing=(state.data.buffs||[]).filter(buff=>buff.kind==='Healing'),conditions={};
+  if(identity==='actors.buffs.healing'&&healing.length===1){const buff=healing[0];for(const [field,key] of [['left','power'],['percent','healing_percent'],['flat','healing_flat'],['vial_level','vial']])if(typeof buff[field]==='number'&&Number.isFinite(buff[field]))conditions[key]=field==='percent'?buff[field]*100:buff[field];}
+  return {hero_level:hero.level,max_hp:hero.ht,hp:hero.hp,depth:state.data.depth,strength:typeof currentCharacterStrength==='function'?currentCharacterStrength():hero.strength,...(Number.isInteger(shield)&&shield>=0&&shield<=10000?{current_shield:shield}:{}),...conditions};
 }
 function validNumericalInputs(inputs,detail){
   const invalid=inputs.find(input=>{
@@ -52,9 +56,9 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
   if(options.fixed||options.ignoreDrafts||!numericalDetail || numericalDetail.identity!==identity){
     const drafts=options.fixed||options.ignoreDrafts?{}:numericalDrafts.get(draftKey)||{};
     const source=options.fixed?null:options.sourceStamp!==undefined?options.sourceStamp:calculationStamp();
-    numericalDetail={identity,levelOrigin,context:options.fixed?{...params}:{...(options.capturedContext?{}:visibleCalculationContext()),...params,...drafts},
+    numericalDetail={identity,levelOrigin,context:options.fixed?{...params}:{...(options.capturedContext?{}:visibleCalculationContext(identity)),...params,...drafts},
       origins:{},source,levelSource:source,unconfirmedSource:!options.fixed&&options.sourceStamp===null,fixed:!!options.fixed,savedPlan:options.savedPlan||null,rulesChanged:options.rulesChanged||false};
-    for(const key of heroParameterKeys)if(key in numericalDetail.context)numericalDetail.origins[key]=key in drafts?'手填保留':heroInputOrigin(key,numericalDetail.source);
+    for(const key of currentParameterKeys(identity))if(key in numericalDetail.context)numericalDetail.origins[key]=key in drafts?'手填保留':heroInputOrigin(key,numericalDetail.source);
     if('level' in params)numericalDetail.origins.level=keyOrigin(levelOrigin);
     if(levelOrigin==='unknown')numericalDetail.origins.level=keyOrigin(levelOrigin);
     if('tier' in params)numericalDetail.origins.tier=['known','unknown'].includes(levelOrigin)?'物品已知阶数':'示例 · 请核对';
@@ -87,9 +91,10 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
     detail.inputs=result.inputs;detail.result=result;
     if(options.commitPending)detail.sessionUnsaved=true;
     if(options.commitPending)numericalFormDrafts.delete(draftKey);
-    detail.dirty=options.restoreSession?!!options.restoreSession.detail.dirty:!!fixedDraft?.dirty;
-    if(!options.restoreSession)detail.calculated={params:Object.fromEntries(result.inputs.map(field=>[field.key,Number(field.value)])),origins:{...detail.origins},source:detail.source,levelSource:detail.levelSource,result,sessionUnsaved:!!detail.sessionUnsaved};
-    if(!detail.fixed&&!restoredResult&&(!options.ignoreDrafts||!numericalFormDrafts.has(draftKey))&&(!options.ignoreDrafts||!numericalCalculated.get(draftKey)?.sessionUnsaved)){numericalCalculated.set(draftKey,detail.calculated);if(numericalCalculated.size>64){const clean=Array.from(numericalCalculated).find(([,item])=>!item.sessionUnsaved);if(clean)numericalCalculated.delete(clean[0]);}}
+    detail.dirty=!!result.missing_inputs?.length||(options.restoreSession?!!options.restoreSession.detail.dirty:!!fixedDraft?.dirty);
+    for(const key of result.missing_inputs||[])detail.origins[key]='未确认 · 请填写';
+    if(!options.restoreSession)detail.calculated=result.missing_inputs?.length?null:{params:Object.fromEntries(result.inputs.map(field=>[field.key,Number(field.value)])),origins:{...detail.origins},source:detail.source,levelSource:detail.levelSource,result,sessionUnsaved:!!detail.sessionUnsaved};
+    if(detail.calculated&&!detail.fixed&&!restoredResult&&(!options.ignoreDrafts||!numericalFormDrafts.has(draftKey))&&(!options.ignoreDrafts||!numericalCalculated.get(draftKey)?.sessionUnsaved)){numericalCalculated.set(draftKey,detail.calculated);if(numericalCalculated.size>64){const clean=Array.from(numericalCalculated).find(([,item])=>!item.sessionUnsaved);if(clean)numericalCalculated.delete(clean[0]);}}
     if(options.commitPending&&!detail.fixed){const drafts={};for(const input of result.inputs)if((detail.origins[input.key]||'').startsWith('手填'))drafts[input.key]=Number(input.value);numericalDrafts.set(draftKey,drafts);}
     const restoreFocus=focusSelector&&(document.activeElement===document.body||previousForm.contains(document.activeElement));
     const scrollTop=$('#detail-dialog').scrollTop;
@@ -119,10 +124,11 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
       const oldDetail=JSON.parse(JSON.stringify({...detail,importUndo:null,pending:false}));
       detail.importUndo={detail:oldDetail,raw:Object.fromEntries($$('[data-value-key]').map(input=>[input.dataset.valueKey,input.value])),formDraft:numericalFormDrafts.has(draftKey)?{...numericalFormDrafts.get(draftKey)}:null,draft:numericalDrafts.has(draftKey)?{...numericalDrafts.get(draftKey)}:null,calculated:numericalCalculated.get(draftKey)||null};
       const latest=visibleCalculationContext();
-      const retainedInputs=Array.from($$('[data-value-key]')).filter(input=>!heroParameterKeys.includes(input.dataset.valueKey)||!(input.dataset.valueKey in latest));
-      for(const input of retainedInputs)if(heroParameterKeys.includes(input.dataset.valueKey)){detail.origins[input.dataset.valueKey]='手填保留 · 最新快照未确认';$(`[data-origin-key="${input.dataset.valueKey}"]`).textContent=detail.origins[input.dataset.valueKey];}
+      const currentKeys=currentParameterKeys(identity);
+      const retainedInputs=Array.from($$('[data-value-key]')).filter(input=>!currentKeys.includes(input.dataset.valueKey)||!(input.dataset.valueKey in latest));
+      for(const input of retainedInputs)if(currentKeys.includes(input.dataset.valueKey)){detail.origins[input.dataset.valueKey]='手填保留 · 最新快照未确认';$(`[data-origin-key="${input.dataset.valueKey}"]`).textContent=detail.origins[input.dataset.valueKey];}
       const raw={...numericalFormDrafts.get(draftKey)};
-      for(const input of $$('[data-value-key]'))if(heroParameterKeys.includes(input.dataset.valueKey)&&input.dataset.valueKey in latest){input.value=String(latest[input.dataset.valueKey]);input.setCustomValidity?.('');raw[input.dataset.valueKey]=input.value;detail.origins[input.dataset.valueKey]=heroInputOrigin(input.dataset.valueKey);$(`[data-origin-key="${input.dataset.valueKey}"]`).textContent=detail.origins[input.dataset.valueKey];}
+      for(const input of $$('[data-value-key]'))if(currentKeys.includes(input.dataset.valueKey)&&input.dataset.valueKey in latest){input.value=String(latest[input.dataset.valueKey]);input.setCustomValidity?.('');raw[input.dataset.valueKey]=input.value;detail.origins[input.dataset.valueKey]=heroInputOrigin(input.dataset.valueKey);$(`[data-origin-key="${input.dataset.valueKey}"]`).textContent=detail.origins[input.dataset.valueKey];}
       numericalFormDrafts.set(draftKey,raw);detail.dirty=true;
       if(!validNumericalInputs(retainedInputs,detail))return;
       const next={...context,...visibleCalculationContext()};
@@ -130,7 +136,7 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
         next[key]=Number(input.value);
         if((detail.origins[key]||'').startsWith('手填'))detail.origins[key]='手填';
       });
-      for(const key of heroParameterKeys)if(key in latest)detail.origins[key]=heroInputOrigin(key);
+      for(const key of currentKeys)if(key in latest)detail.origins[key]=heroInputOrigin(key);
       detail.source=calculationStamp();detail.unconfirmedSource=false;
       detail.fixed=false;
       loadNumericalDetail(identity,next,detail.levelOrigin,{commitPending:true});

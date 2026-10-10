@@ -5,6 +5,7 @@ from queue import Queue
 from contextlib import ExitStack
 import os
 import time
+import threading
 from unittest.mock import Mock, patch
 
 from tests.test_native_controllers import ControllerFixture
@@ -22,10 +23,22 @@ class NativeExitTests(ControllerFixture):
         self.session.register_exit_surface('native', kind='native', notify=self.ui.notify_exit)
         self.manager.native_ui = self.ui
         self.manager.open_play_settings = Mock()
+        self.addCleanup(self.close_exit_worker)
+
+    def close_exit_worker(self):
+        if hasattr(self.ui, '_exit_copy_stop'):
+            self.ui._exit_copy_stop.set()
+            self.ui._exit_copy_thread.join(timeout=2)
+
+    def wait_exit_copies(self):
+        for job in list(getattr(self.ui, '_exit_copy_jobs', [])):
+            self.assertTrue(job['done'].wait(5), 'native persistence did not finish')
+        self.ui._process_exit_copies()
 
     def decide(self, decision, **raw):
         self.ui.exit_decision({'request_id': self.session.exit_status()['id'],
                                'decision': decision, **raw})
+        self.wait_exit_copies()
 
     def test_native_damaged_original_confirmation_listing_and_inspection_preserve_raw_bytes(self):
         path = self.directory / 'exit-recovery' / ('d' * 32 + '.json.pending')
@@ -299,6 +312,7 @@ class NativeExitTests(ControllerFixture):
         self.assertEqual(self.lookup.pending_save, pending)
         self.ui.report_drafts(); self.session.request_exit('web-fixture'); self.ui.process_exit()
         self.ui.dispatch({'action': 'exit_decision', 'request_id': self.session.exit_status()['id'], 'decision': 'saved', 'lookup': raw})
+        self.wait_exit_copies()
         drafts = self.session.list_exit_drafts()
         self.assertEqual(len(drafts), 1)
         saved = self.session.load_exit_draft(drafts[0]['id'])['draft']
@@ -316,6 +330,7 @@ class NativeExitTests(ControllerFixture):
         self.assertIsNone(self.lookup.rendered)
 
     def test_failed_draft_save_remains_confirming_and_allows_retry_or_cancel(self):
+        self.ui.update = Mock()  # Manager labels are outside this controller fixture.
         self.open('items.potions.potionofhealing')
         self.lookup.variables['hp'].set('unsaved raw')
         self.ui.report_drafts()
@@ -323,11 +338,132 @@ class NativeExitTests(ControllerFixture):
         self.session.save_exit_draft = Mock(side_effect=OSError('disk fixture failure'))
         with self.assertLogs(level='ERROR'):
             self.ui.dispatch({'action': 'exit_decision', 'request_id': self.session.exit_status()['id'], 'decision': 'saved'})
+            self.wait_exit_copies()
         self.assertEqual(self.session.exit_status()['phase'], 'confirming')
         self.assertEqual(self.lookup.variables['hp'].get(), 'unsaved raw')
         self.assertEqual(self.host.commands[-1][0], 'exit_save_error')
         self.decide('cancel')
         self.assertEqual(self.session.exit_status()['phase'], 'cancelled')
+
+    def test_blocked_native_copy_allows_cancel_new_edit_and_new_request(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['hp'].set('original unfinished raw')
+        self.ui.report_drafts()
+        first = self.session.request_exit('native')
+        self.ui.process_exit()
+        entered, release = threading.Event(), threading.Event()
+        original = self.session.save_exit_draft
+        worker_threads = []
+        def blocked(*args, **kwargs):
+            worker_threads.append(threading.get_ident())
+            entered.set()
+            if not release.wait(4):
+                raise OSError('test failed to release copy')
+            return original(*args, **kwargs)
+        try:
+            with patch.object(self.session, 'save_exit_draft', side_effect=blocked):
+                started = time.monotonic()
+                self.ui.exit_decision({'request_id': first['id'], 'decision': 'saved'})
+                self.assertLess(time.monotonic() - started, .5)
+                self.assertTrue(entered.wait(2))
+                job = self.ui._exit_copy_jobs[0]
+                self.assertNotEqual(worker_threads, [threading.get_ident()])
+                self.assertEqual(self.host.commands[-1][0], 'exit_waiting')
+                self.assertTrue(self.host.commands[-1][1]['can_cancel'])
+                self.ui.exit_decision({'request_id': first['id'], 'decision': 'cancel'})
+                self.assertEqual(self.session.exit_status()['phase'], 'cancelled')
+                self.assertFalse(self.ui.frozen)
+                self.lookup.variables['hp'].set('new input after cancelling')
+                self.ui.report_drafts()
+                second = self.session.request_exit('native')
+                self.ui.process_exit()
+                before = list(self.host.commands)
+                release.set()
+                self.assertTrue(job['done'].wait(3))
+                self.ui._process_exit_copies()
+                self.assertEqual(self.host.commands, before)
+                self.assertEqual(self.lookup.variables['hp'].get(), 'new input after cancelling')
+                state = self.session.exit_status()
+                self.assertEqual((state['id'], state['phase']), (second['id'], 'confirming'))
+                self.assertIsNone(next(row for row in state['participants'] if row['surface_id'] == 'native')['ack'])
+                saved = next(row for row in self.session.list_exit_drafts() if row.get('draft_kind') == 'numeric')
+                self.assertEqual(self.session.load_exit_draft(saved['id'])['draft']['raw_params']['hp'], 'original unfinished raw')
+                self.ui.exit_decision({'request_id': second['id'], 'decision': 'cancel'})
+        finally:
+            release.set()
+
+    def test_native_persistence_queue_is_bounded_across_cancel_restart(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['hp'].set('queued raw')
+        self.ui.report_drafts()
+        entered, release = threading.Event(), threading.Event()
+        original = self.session.save_exit_draft
+        def blocked(*args, **kwargs):
+            entered.set()
+            if not release.wait(4):
+                raise OSError('test failed to release queue')
+            return original(*args, **kwargs)
+        self.ui.update = Mock()
+        try:
+            with patch.object(self.session, 'save_exit_draft', side_effect=blocked):
+                for index in range(3):
+                    state = self.session.request_exit('native')
+                    self.ui.process_exit()
+                    if index == 2:
+                        with self.assertLogs(level='ERROR'):
+                            self.ui.dispatch({'action': 'exit_decision', 'request_id': state['id'], 'decision': 'saved'})
+                    else:
+                        self.ui.dispatch({'action': 'exit_decision', 'request_id': state['id'], 'decision': 'saved'})
+                    if index == 0:
+                        self.assertTrue(entered.wait(2))
+                    if index == 2:
+                        self.assertEqual(self.host.commands[-1][0], 'exit_save_error')
+                        self.assertIn('等待磁盘', self.host.commands[-1][1]['message'])
+                    self.ui.exit_decision({'request_id': state['id'], 'decision': 'cancel'})
+                self.assertEqual(len(self.ui._exit_copy_jobs), 2)
+                self.assertLessEqual(self.ui._exit_copy_queue.qsize(), 1)
+                release.set()
+                self.wait_exit_copies()
+                self.assertEqual(self.lookup.variables['hp'].get(), 'queued raw')
+        finally:
+            release.set()
+
+    def test_native_discard_unlink_wait_keeps_cancel_available_and_restores_raw_checkpoint(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['hp'].set('raw before blocked discard')
+        self.ui.report_drafts()
+        self.assertTrue(self.session.exit_coordinator.flush_checkpoints(5))
+        state = self.session.request_exit('native')
+        self.ui.process_exit()
+        entered, release = threading.Event(), threading.Event()
+        original = Path.unlink
+        directory = self.session.exit_recovery.directory
+        def blocked(path, *args, **kwargs):
+            if path.parent == directory and path.suffix == '.json':
+                entered.set()
+                if not release.wait(4):
+                    raise OSError('test failed to release unlink')
+            return original(path, *args, **kwargs)
+        try:
+            with patch.object(Path, 'unlink', blocked):
+                self.ui.exit_decision({'request_id': state['id'], 'decision': 'discard'})
+                self.assertTrue(entered.wait(2))
+                self.assertTrue(self.host.commands[-1][1]['can_cancel'])
+                self.ui.exit_decision({'request_id': state['id'], 'decision': 'cancel'})
+                self.assertEqual(self.session.exit_status()['phase'], 'cancelled')
+                self.assertFalse(self.ui.frozen)
+                self.assertEqual(self.lookup.variables['hp'].get(), 'raw before blocked discard')
+                release.set()
+                self.wait_exit_copies()
+            self.assertTrue(self.session.exit_coordinator.flush_checkpoints(5))
+            native = next(row for row in self.session.exit_status()['participants'] if row['surface_id'] == 'native')
+            self.assertTrue(native['recovery_saved'])
+            self.assertFalse(native['recovery_pending'])
+            self.assertIsNone(native['ack'])
+            saved = self.session.exit_recovery.load(self.session.exit_recovery.identity('native'))['draft']
+            self.assertEqual(saved['numeric']['raw_params']['hp'], 'raw before blocked discard')
+        finally:
+            release.set()
 
     def test_helper_eof_preserves_individual_raw_drafts_and_marks_surface_offline(self):
         self.open('items.potions.potionofhealing')
@@ -343,6 +479,7 @@ class NativeExitTests(ControllerFixture):
         self.ui.report_drafts()
         saved = self.session.load_exit_draft(self.session.list_exit_drafts()[0]['id'])
         self.assertEqual(saved['draft']['raw_params']['hp'], '  unfinished EOF raw  ')
+        self.assertTrue(self.session.exit_coordinator.flush_checkpoints(5))
         state = self.session.request_exit('web-fixture')
         native = next(row for row in state['participants'] if row['surface_id'] == 'native')
         self.assertFalse(native['online'])

@@ -10,12 +10,14 @@ from contextlib import contextmanager
 import hashlib
 from io import BytesIO
 import json
+from pathlib import Path
 import re
 import stat
 from zipfile import BadZipFile, ZipFile, ZipInfo, ZIP_STORED
 
 from . import __version__
 from . import backup_workflows as flows
+from . import global_progress as globals
 from .backups import MAX_TOTAL, unlinked
 from .knowledge import MAX_BYTES, MAX_FAVORITES, MAX_PLANS, canonical_plan
 from .play_state import validate_preferences
@@ -24,7 +26,7 @@ from .session_exit import MAX_DRAFT_SET, checked_draft_set
 PREFERENCE_LABELS = {'enabled': '游玩显示开关', 'alerts': '快照风险提示',
                      'font_scale': '字号比例', 'opacity': '背景透明度',
                      'notice_seconds': '提示停留秒数', 'bindings': '全局快捷键'}
-MEMBERS = {'backups.zip', 'knowledge.json', 'preferences.json', 'exit-drafts.json'}
+MEMBERS = {'backups.zip', 'knowledge.json', 'preferences.json', 'exit-drafts.json'} | globals.MEMBERS
 INDEX = 'denghuo-migration.json'
 
 
@@ -55,6 +57,11 @@ def portable_record(row):
         row['note'] = portable_text(row['note'])[:1200]
     if 'fields' in row['origin']:
         row['origin']['fields'] = {key: portable_text(value)[:120] for key, value in row['origin']['fields'].items()}
+    for item in row['origin'].get('references', {}).values():
+        item['name'] = portable_text(item['name'])[:200]
+        if item.get('user_note') is not None:
+            for key, maximum in (('title', 50), ('body', 500)):
+                item['user_note'][key] = portable_text(item['user_note'][key])[:maximum]
     return row
 
 
@@ -141,7 +148,7 @@ def _preference_disk_stamp(prefs):
 
 
 def _target(session, *, include_drafts=False, include_backups=True,
-            include_knowledge=True, include_preferences=True):
+            include_knowledge=True, include_preferences=True, global_names=()):
     knowledge_stamp = None
     if include_knowledge:
         try:
@@ -152,12 +159,14 @@ def _target(session, *, include_drafts=False, include_backups=True,
     prefs = session.play_preferences
     prefs_stamp = _preference_disk_stamp(prefs) if include_preferences else None
     return {'root': session.settings['save_root'], 'context': session.backup_context,
+            'settings_revision': session.settings_revision,
             'config_error': session.config_error, 'knowledge': knowledge_stamp,
             'preferences_disk': prefs_stamp, 'preferences_loaded': prefs._disk_stamp if include_preferences else None,
             'preferences_revision': prefs.generation if include_preferences else None,
             'preferences_values': prefs.values if include_preferences else None,
             'backups': _backup_guard(session) if include_backups else None,
-            'exit_drafts': session.exit_drafts.stamp() if include_drafts else None}
+            'exit_drafts': session.exit_drafts.stamp() if include_drafts else None,
+            'global': globals.target(session.backups, session.settings['save_root'], global_names) if global_names else None}
 
 
 @contextmanager
@@ -177,6 +186,12 @@ def status(session):
         stored = session.knowledge.status()
         backup = session.backups.snapshot(session.settings['save_root'])
         rows = []
+        global_error, global_recovery = '', {'pending': False}
+        try:
+            rows.extend(globals.source_rows(session.settings['save_root']))
+            global_recovery = globals.recovery_preview(session.backups, session.settings['save_root'])
+        except (OSError, ValueError) as exc:
+            global_error = str(exc)
         for row in backup.get('history', []):
             error = row.get('integrity', {}).get('error', '') if row.get('integrity', {}).get('valid') is False else ''
             error = error or row.get('repair_error', '')
@@ -211,10 +226,12 @@ def status(session):
                          'valid': not bool(preference_error)})
         return {'rows': rows, 'application_version': __version__, 'rules_version': session.catalog.data['version'],
                 'knowledge_error': stored['error'], 'preferences_error': preference_error,
+                'global_error': global_error, 'global_recovery': global_recovery,
+                'global_reference_version': globals.VERSION,
                 'save_root': session.settings['save_root'],
                 'backup_target': str(session.backups.scope(session.settings['save_root'])),
                 'knowledge_target': str(session.knowledge.path), 'preferences_target': str(session.play_preferences.path),
-                'note': '仅迁移所选助手资料。每包最多200份草稿，可分批迁移；本机已保存的草稿原件继续保留。进度进入助手档案，回档需另行预览确认；本机目录和位置保持。'}
+                'note': '仅迁移所选项目。独立全局游戏进度默认不选，导入会覆盖所选根目录文件，需关闭游戏并单独确认。槽位进度进入助手档案，回档另行确认；本机目录和位置保持。'}
 
 
 def _export(session, payload, backup_expected=None):
@@ -222,6 +239,9 @@ def _export(session, payload, backup_expected=None):
     available = {row['key']: row for row in view['rows'] if row['valid']}
     selected = _selection(payload.get('selected'), available)
     contents = {}
+    global_names = [key.split(':', 1)[1] for key in selected if key.startswith('global:')]
+    if global_names:
+        contents.update(globals.export(session.settings['save_root'], global_names, payload))
     backups = [{'slot': available[key]['slot'], 'id': available[key]['id']} for key in selected if key.startswith('backup:')]
     if backups:
         if backup_expected is None:
@@ -250,7 +270,7 @@ def _export(session, payload, backup_expected=None):
     raw = _zip(contents)
     return {'rows': [available[key] for key in selected], 'count': len(selected), 'bytes': len(raw),
             'expected': checksum(raw), 'source': manifest['source'],
-            'note': '不含连接口令、旧机器目录、窗口坐标、最近访问记录；名称、备注和草稿原始文字中的路径与标记秘密会脱敏，普通无效文字逐字保留。请预览具体内容后再分享。'}, raw, backup_expected
+            'note': '助手资料不含连接口令、旧机器目录、窗口坐标、最近访问记录；名称、备注和草稿文字中的路径与标记秘密会脱敏。所选全局进度按原始游戏字节保留，不脱敏或重写；请核对具体文件和分享范围。'}, raw, backup_expected
 
 
 def export_preview(session, payload):
@@ -283,7 +303,7 @@ def inspect(session, raw):
         with ZipFile(BytesIO(raw)) as archive:
             infos = archive.infolist()
             names = {info.filename for info in infos}
-            if (not 2 <= len(infos) <= 5 or len(names) != len(infos) or INDEX not in names
+            if (not 2 <= len(infos) <= 8 or len(names) != len(infos) or INDEX not in names
                     or names - MEMBERS - {INDEX} or sum(info.file_size for info in infos) > MAX_TOTAL
                     or any(info.flag_bits & 1 or stat.S_IFMT(info.external_attr >> 16) not in (0, stat.S_IFREG) for info in infos)
                     or archive.getinfo(INDEX).file_size > 65536):
@@ -305,11 +325,14 @@ def inspect(session, raw):
                     raise ValueError('迁移清单与实际文件不一致')
                 if (name == 'knowledge.json' and entry['bytes'] > MAX_BYTES
                         or name == 'preferences.json' and entry['bytes'] > 16384
-                        or name == 'exit-drafts.json' and entry['bytes'] > MAX_DRAFT_SET):
+                        or name == 'exit-drafts.json' and entry['bytes'] > MAX_DRAFT_SET
+                        or name == 'global-progress.json' and entry['bytes'] > 16384
+                        or name.startswith('global/') and entry['bytes'] > globals.MAX_BYTES):
                     raise ValueError('资料或偏好超过原有大小限制')
                 contents[name] = archive.read(name)
                 if checksum(contents[name]) != entry['sha256']:
                     raise ValueError('迁移包文件校验失败，尚未导入')
+        globals.inspect(contents)
         knowledge = read_json(contents['knowledge.json']) if 'knowledge.json' in contents else {'format': 1, 'favorites': [], 'recent': [], 'plans': []}
         session.knowledge._validate(knowledge)
         if knowledge['recent']:
@@ -351,12 +374,33 @@ def _merged_plan(value, row):
 
 def _preview(session, raw):
     manifest, contents, knowledge, preferences = inspect(session, raw)
+    global_metadata = globals.inspect(contents)
+    global_names = sorted(global_metadata['files']) if global_metadata else []
     scope = {'include_drafts': 'exit-drafts.json' in contents, 'include_backups': 'backups.zip' in contents,
-             'include_knowledge': 'knowledge.json' in contents, 'include_preferences': 'preferences.json' in contents}
+             'include_knowledge': 'knowledge.json' in contents, 'include_preferences': 'preferences.json' in contents,
+             'global_names': global_names}
     target = _target(session, **scope)
     knowledge_error = target['knowledge'].get('error', '') if isinstance(target['knowledge'], dict) else ''
     value = session.knowledge._read()[0] if scope['include_knowledge'] and not knowledge_error else None
     rows = []
+    if global_metadata:
+        global_error = session.config_error
+        try:
+            if globals.pending(session.backups, session.settings['save_root']) is not None:
+                global_error = '有未完成的全局进度导入，请先返回迁移清单预览恢复原件'
+        except (OSError, ValueError) as exc:
+            global_error = str(exc)
+        version = global_metadata['version']
+        supported = version == globals.VERSION and global_metadata['version_basis'] == 'user-declared'
+        if not supported:
+            global_error = '来源游戏版本未知或不支持；请核对原机器实际游戏版本并重新声明导出，未允许写入'
+        for name, entry in global_metadata['files'].items():
+            exists = target['global']['files'][name] is not None
+            rows.append({'key': 'global:' + name, 'group': 'global', 'label': name,
+                         'detail': f'来源游戏 {version}（用户声明，文件本身不证明版本） · ' + ('目标已存在：明确选择替换后覆盖整份文件，不合并统计' if exists else '目标不存在：确认后创建整份原文件'),
+                         'valid': not bool(global_error), 'error': global_error, 'summary': entry['summary'],
+                         'source_version': version, 'target_exists': exists, 'target_sha256': target['global']['files'][name],
+                         'target': str(Path(session.settings['save_root']) / name)})
     if 'backups.zip' in contents:
         incoming = flows.import_preview(session.backups, session.settings['save_root'], contents['backups.zip'])
         history = session.backups.history(session.settings['save_root'], discover=False)
@@ -403,9 +447,9 @@ def _preview(session, raw):
               'current_rules_version': session.catalog.data['version'],
               'version_difference': manifest['source']['application_version'] != __version__ or manifest['source']['rules_version'] != session.catalog.data['version'],
               'save_root': session.settings['save_root'], 'config_error': session.config_error,
-              'note': '保留本机存档连接。需要换目录时先打开连接设置重新绑定并重新预览。导入进度只进助手档案，回档另行确认。'}
+              'note': '全局进度默认不选；所选文件需逐份选择保留或替换，关闭游戏并另行确认；替换前保留原件。槽位备份只进助手档案，回档另行确认。'}
     result['expected'] = checksum(encode({'bundle': checksum(raw), 'target': target, 'preview': result}))
-    return result, contents, knowledge, preferences
+    return result, contents, knowledge, preferences, target
 
 
 def import_preview(session, raw):
@@ -415,15 +459,41 @@ def import_preview(session, raw):
 
 def import_bundle(session, raw, payload):
     with session._backup_operation(mutating=True) as operation, _locks(session):
-        preview, contents, incoming, preferences = _preview(session, raw)
+        preview, contents, incoming, preferences, target = _preview(session, raw)
         session._check_settings_commit(operation)
         if payload.get('confirmed') is not True or payload.get('expected') != preview['expected']:
             raise ValueError('迁移包、本机目标或资料已变化，请重新预览；尚未应用')
         available = {row['key']: row for row in preview['rows']}
         selected = _selection(payload.get('selected'), available)
+        global_keys = [key for key in selected if key.startswith('global:')]
+        global_choices = payload.get('global_choices', {})
+        if global_keys:
+            if payload.get('global_confirmed') is not True:
+                raise ValueError('请单独明确确认全局游戏进度写入，并先关闭游戏；尚未应用')
+            if (not isinstance(global_choices, dict) or set(global_choices) != set(global_keys)
+                    or any(choice not in ('keep', 'replace') for choice in global_choices.values())):
+                raise ValueError('请逐份明确选择保留目标或替换全局进度；尚未应用')
         results = [{'key': key, 'ok': False, 'saved': False, 'error': available[key]['error']}
                    for key in selected if not available[key]['valid']]
         selected = [key for key in selected if available[key]['valid']]
+        global_keys = [key for key in global_keys if key in selected]
+        if global_keys:
+            replace = [key.split(':', 1)[1] for key in global_keys if global_choices[key] == 'replace']
+            if replace:
+                try:
+                    global_target = {**target['global'], 'files': {name: target['global']['files'][name] for name in replace}}
+                    # The complete preview binds every incoming global target, even unselected ones.
+                    # _preview already checked its token; apply also rejects races before publication.
+                    retained = globals.apply(session.backups, session.settings['save_root'], contents, replace,
+                                              global_target, lambda: session._check_settings_commit(operation))
+                    results.extend({'key': 'global:' + name, 'ok': True, 'saved': True,
+                                    'message': '已写入原始字节；导入前原件保留于 ' + retained['retained_directory']
+                                        + '；游戏根目录本事务暂存保留于 ' + retained['temporary_directory'],
+                                    **retained} for name in replace)
+                except (OSError, ValueError) as exc:
+                    results.extend({'key': 'global:' + name, 'ok': False, 'saved': False, 'error': str(exc)} for name in replace)
+            results.extend({'key': key, 'ok': True, 'saved': False, 'message': '明确保留本机目标，未写入全局进度'}
+                           for key in global_keys if global_choices[key] == 'keep')
         knowledge_keys = [key for key in selected if key.startswith(('plan:', 'favorite:'))]
         if knowledge_keys:
             try:
@@ -481,4 +551,30 @@ def import_bundle(session, raw, payload):
         runtime = session.play_settings()
         return {'results': results, 'success_count': sum(row['ok'] for row in results),
                 'failure_count': sum(not row['ok'] for row in results), 'restored': False,
-                'preferences_runtime': runtime, 'note': '结果逐项表示实际磁盘写入；原有资料和活跃游戏存档仍保留。重试前重新预览。'}
+                'preferences_runtime': runtime, 'note': '结果逐项表示实际磁盘写入。全局进度写入独立于槽位回档，原件保留目录见逐项结果。重试前重新预览。'}
+
+
+def global_recovery_preview(session):
+    with session._backup_io(), _locks(session):
+        preview = globals.recovery_preview(session.backups, session.settings['save_root'])
+        if preview['pending']:
+            preview['expected'] = checksum(encode({'global': preview['expected'],
+                'root': session.settings['save_root'], 'context': session.backup_context,
+                'settings_revision': session.settings_revision,
+                'config_error': session.config_error}))
+        return preview
+
+
+def global_recovery(session, payload):
+    with session._backup_operation(mutating=True) as operation, _locks(session):
+        if session.config_error:
+            raise ValueError('本机连接设置不可用，请先修复；未恢复全局进度')
+        raw_preview = globals.recovery_preview(session.backups, session.settings['save_root'])
+        expected = checksum(encode({'global': raw_preview.get('expected'),
+            'root': session.settings['save_root'], 'context': session.backup_context,
+            'settings_revision': session.settings_revision,
+            'config_error': session.config_error}))
+        if payload.get('expected') != expected:
+            raise ValueError('全局进度恢复目标或连接设置已变化，请重新预览')
+        return globals.recover(session.backups, session.settings['save_root'], {**payload, 'expected': raw_preview.get('expected')},
+                               lambda: session._check_settings_commit(operation))

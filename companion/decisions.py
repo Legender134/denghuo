@@ -58,6 +58,47 @@ def source(snapshot):
             'label':'手动填写' if snapshot['settings']['mode']=='manual' else '旧快照记录' if snapshot.get('stale') else '最近保存的记录'}
 
 
+def healing_context(buff):
+    """Use only validated public Healing conditions; absence is never an example."""
+    from .engine import public_healing
+    valid = public_healing(buff, 1)
+    fields = {'left':'power', 'percent':'healing_percent', 'flat':'healing_flat', 'vial_level':'vial'}
+    return {target:valid[key]*100 if key == 'percent' else valid[key]
+            for key,target in fields.items() if key in valid}
+
+
+def healing_comparison(buff, hp, maximum, vial):
+    from .game_math import healing_pool_with_vial, potion_healing_pool
+    from .values import heal_schedule, metric
+    existing = healing_context(buff)
+    new_pool = healing_pool_with_vial(potion_healing_pool(maximum), vial)
+    merged = {'power':max(existing['power'], new_pool),
+              'healing_percent':max(existing['healing_percent'], 25),
+              'healing_flat':max(existing['healing_flat'], 0), 'vial':vial}
+    scenarios = []
+    for label, params in (('等待当前治疗', existing), ('再次喝已知治疗药剂', merged)):
+        pool, rows = heal_schedule(params['power'], hp, maximum, params['vial'],
+                                   params['healing_percent']/100, params['healing_flat'], apply_vial=False)
+        scenarios.append({'label':label, 'params':params, 'pool':pool,
+                          'next_heal':rows[0][1] if rows else 0,
+                          'first_actual':rows[0][2] if rows else 0,
+                          'actual_heal':sum(row[2] for row in rows),
+                          'final_hp':rows[-1][3] if rows else hp, 'ticks':len(rows), 'schedule':rows})
+    wait, drink = scenarios
+    marginal = drink['actual_heal'] - wait['actual_heal']
+    values = []
+    for row in scenarios:
+        for label, key, unit in (('下一次治疗池消耗','next_heal','HP'), ('首次实际恢复','first_actual','HP'),
+                                 ('未来实际恢复','actual_heal','HP'), ('最终生命','final_hp','HP'), ('治疗池耗尽','ticks','回合')):
+            values.append(metric(row['label']+' · '+label, row[key], unit))
+    values.append(metric('再次喝药的额外实际恢复', marginal, 'HP'))
+    note = (f"等待：首次实际恢复 {wait['first_actual']} HP，未来恢复 {wait['actual_heal']} HP，最终生命 {wait['final_hp']}/{maximum}，{wait['ticks']} 回合耗尽；"
+            f"再喝：首次实际恢复 {drink['first_actual']} HP，未来恢复 {drink['actual_heal']} HP，最终生命 {drink['final_hp']}/{maximum}，{drink['ticks']} 回合耗尽；额外恢复 {marginal} HP。"
+            '治疗池、百分比和固定量分别取较大值，不相加；限速由新药剂的试管条件重新设置。药剂还会清除中毒、残废、虚弱、易伤、流血、失明、困倦、迟缓与眩晕。'
+            '以上假设期间不再受伤；回合数是治疗更新次数，不预测敌方伤害、行动顺序或安全等待时间。')
+    return {'scenarios':scenarios, 'marginal_heal':marginal}, values, note
+
+
 def context_actions(session,snapshot):
     provenance = source(snapshot)
     stamp = [snapshot.get('started'), snapshot['settings'].get('save_root'),
@@ -94,6 +135,11 @@ def context_actions(session,snapshot):
                        'source':provenance,'stamp':stamp,
                        'level_origin':'example',
                        'source_label':'资料参考 · 实际资源与行动条件请另行核对'} for entry in identities if entry in entries]
+        for reference in references:
+            if reference['entry'] == 'actors.buffs.healing':
+                active = [buff for buff in data.get('buffs', []) if buff.get('kind') == 'Healing']
+                if len(active) == 1:
+                    reference['params'].update(healing_context(active[0]))
         if tip['id'] in ('strength_主武器', 'strength_副武器', 'strength_护甲'):
             for reference in references:
                 item=next(item for item in known_available if item['key']==reference['entry'] and item['location']==tip['id'].split('_',1)[1])
@@ -137,17 +183,25 @@ def context_actions(session,snapshot):
             if kind=='PotionOfHealing':
                 if '药水恐惧' in data.get('challenges',[]):
                     option['restriction']+=('；' if option['restriction'] else '')+'药水恐惧挑战：此药剂不恢复生命，改为中毒'
-                if not 1<=hero['level']<=30 or not 0<=hero['hp']<=hero['ht']<=10000:
+                if any(type(hero[key]) is not int for key in ('level', 'hp', 'ht')) or not 1<=hero['level']<=30 or not 0<=hero['hp']<=hero['ht']<=10000:
                     option['calculation_missing']='当前角色数值超出已核对的计算范围，请在游戏中核对'
                 if data.get('compatibility_warning'):
                     option['calculation_missing']='存档与资料版本不同，先核对版本；不把参考治疗量当作此局确认结果'
-                if 'Healing' in buffs:
-                    option['calculation_missing']='已有治疗状态；治疗池和恢复速度不直接相加，请先核对当前治疗状态再试算'
+                if provenance['mode'] == 'save' and (type(data.get('version')) is not int or data['version'] != session.catalog.data['version_code']):
+                    option['calculation_missing']='存档版本未确认或与资料不同，请核对版本后计算'
+                if data.get('challenges_known') is not True:
+                    option['calculation_missing']='挑战条件未确认，请核对药水恐惧等挑战后计算'
+                healing_buffs = [buff for buff in data.get('buffs', []) if buff.get('kind') == 'Healing']
+                if healing_buffs and (len(healing_buffs) != 1 or len(healing_context(healing_buffs[0])) != 4):
+                    option['calculation_missing']='已有治疗状态的剩余治疗池、百分比、固定量或试管限速未确认，请补全后比较'
                 if not option['restriction'] and not option['calculation_missing']:
-                    result=session.values.detail(entry,option['params'])
-                    option['values']=[row for block in result['blocks'] for row in block.get('values',[])
-                                      if row['label'] in ('首次恢复','最终实际恢复','治疗池耗尽')]
-                    option['note']='逐次恢复，首次恢复与最终总量不同；治疗池不保证和正在生效的治疗叠加'
+                    if healing_buffs:
+                        option['comparison'], option['values'], option['note'] = healing_comparison(healing_buffs[0], hero['hp'], hero['ht'], option['params']['vial'])
+                    else:
+                        result=session.values.detail(entry,option['params'])
+                        option['values']=[row for block in result['blocks'] for row in block.get('values',[])
+                                          if row['label'] in ('首次恢复','最终实际恢复','治疗池耗尽')]
+                        option['note']='逐次恢复，首次恢复与最终总量不同；表中假设期间不再受伤，不保证实际行动时机或安全'
             else:
                 option['params']={key:value for key,value in option['params'].items() if key in ('hp','max_hp','vial','current_shield')}
                 if type(item.get('volume')) is int:option['params']['dew_volume']=item['volume']

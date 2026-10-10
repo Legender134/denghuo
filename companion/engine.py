@@ -11,6 +11,8 @@ from .public_item_levels import level_applies, scroll_upgradable, visible_level
 from .public_item_state import project_item_state, cooked_fruit_name, project_equipment_state
 from .character_scene import scene_from_game
 from .public_source_data import MISSILE_PUBLIC_TYPES
+from .saves import SaveError, validate_map
+from .game_math import healing_tick
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = "com.shatteredpixel.shatteredpixeldungeon."
@@ -21,6 +23,21 @@ CHALLENGES = {1: "饥饿游戏", 2: "信念护体", 4: "药水恐惧", 8: "荒�
 
 def short_class(obj: dict) -> str:
     return str(obj.get("__className", "")).rsplit(".", 1)[-1]
+
+
+def public_healing(buff, maximum):
+    """Only the Healing icon/description's bounded, player-visible conditions."""
+    projected = {}
+    for key, low, high in (("left", 0, 10000), ("flat", 0, 10000), ("vial_level", -1, 3)):
+        value = buff.get(key)
+        if type(value) is int and low <= value <= high:
+            projected[key] = value
+    percent = buff.get("percent")
+    if type(percent) in (int, float) and math.isfinite(percent) and 0 <= percent <= 1:
+        projected['percent'] = percent
+    if len(projected) == 4 and type(maximum) in (int, float) and 1 <= maximum <= 10000:
+        projected['next_heal'] = healing_tick(projected['left'], projected['percent'], projected['flat'], projected['vial_level'], maximum)
+    return projected
 
 
 def number(value, default=0):
@@ -236,23 +253,21 @@ def walk_inventory(hero):
 
 
 def known_map(level, hero_pos):
-    if not isinstance(level, dict):
+    try:
+        validate_map(level, maximum=128)
+    except SaveError:
         return None
     width, height = level.get("width"), level.get("height")
-    if not isinstance(width, int) or not isinstance(height, int) or not 1 <= width <= 128 or not 1 <= height <= 128:
-        return None
     tiles = level.get("map", [])
     visited, mapped = level.get("visited", []), level.get("mapped", [])
-    if not all(isinstance(v, list) and len(v) == width * height for v in (tiles, visited, mapped)):
-        return None
     safe_tiles = []
     for i, tile in enumerate(tiles):
         if not (visited[i] or mapped[i]):
             safe_tiles.append(-1)
         else:
             # A visited secret door/trap still looks like wall/floor in the game.
-            safe_tiles.append({16: 4, 17: 1}.get(tile, tile) if isinstance(tile, int) else -1)
-    pos = hero_pos if isinstance(hero_pos, int) and 0 <= hero_pos < len(tiles) else None
+            safe_tiles.append({16: 4, 17: 1}.get(tile, tile))
+    pos = hero_pos if type(hero_pos) is int and 0 <= hero_pos < len(tiles) else None
     return {"width": width, "height": height, "tiles": safe_tiles, "hero": pos,
             "explored": sum(t != -1 for t in safe_tiles), "caption": "最近保存的已探索地形；不代表当前视野"}
 
@@ -415,10 +430,12 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
             "compatibility_warning": compatibility,
             "energy": number(game.get("energy")), "version": game.get("version"),
             "challenges": [name for bit, name in CHALLENGES.items() if challenge_mask & bit],
+            "challenges_known": type(game.get('challenges')) is int and 0 <= game['challenges'] <= 511,
             "buffs": [{"name": '时间静止' if short_class(b).rsplit('$', 1)[-1] == 'TimeStasis' else catalog.name(b),
                        "kind": short_class(b).rsplit("$", 1)[-1],
                        "reference_id": catalog.key(b) if catalog.key(b) in catalog.entry_index else None,
                        "active": b.get("state") == "BERSERK" if short_class(b) == "Berserk" else True,
+                       **(public_healing(b, ht) if catalog.key(b) == 'actors.buffs.healing' else {}),
                        **({"current_shield": b["shielding"]} if catalog.key(b) == "actors.buffs.barrier"
                           and type(b.get("shielding")) is int and 0 <= b["shielding"] <= 10000 else {})}
                       for b in buffs if short_class(b) not in ("Regeneration", "Hunger")

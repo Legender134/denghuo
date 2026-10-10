@@ -115,6 +115,7 @@ class DataPathTests(unittest.TestCase):
             session = Session(source/'settings.json')
             session.report_exit_surface('web-12345678', 1, True, draft={'raw': '完整原始输入'},
                                         kind='web', label='自动副本')
+            self.assertTrue(session.exit_coordinator.flush_checkpoints(5), 'checkpoint did not complete')
             committed, = session.exit_recovery.directory.glob('*.json')
             pending = committed.with_name(committed.name+'.pending'); pending.write_bytes(b'{"format":900}')
             originals = {path.name: path.read_bytes() for path in (committed, pending)}

@@ -204,7 +204,7 @@ class PlayerValuesTests(unittest.TestCase):
         self.assertEqual(rows[0], ['1', '15', '15', '15', '35'])
         self.assertEqual([int(row[1]) for row in rows], [15, 10, 7, 5, 4, 3, 2, 1, 1, 1, 1])
         self.assertEqual(self.metrics('actors.buffs.healing', power=50, healing_percent=29,
-                                     hp=0, max_hp=100)['首次恢复'], '15')
+                                     healing_flat=0, vial=-1, hp=0, max_hp=100)['首次恢复'], '15')
 
     def test_healing_float_edges_keep_flat_recovery_vial_cap_and_full_health_semantics(self):
         # Fixed vectors from Healing.java's float field/product and integer clamp.
@@ -229,14 +229,14 @@ class PlayerValuesTests(unittest.TestCase):
                 self.assertEqual(sum(int(row[2]) for row in rows), min(power, 100 - hp))
 
     def test_active_healing_does_not_reapply_pool_multiplier(self):
-        metrics=self.metrics('actors.buffs.healing',max_hp=100,hp=10,power=141,vial=3)
+        metrics=self.metrics('actors.buffs.healing',max_hp=100,hp=10,power=141,vial=3,healing_percent=25,healing_flat=0)
         self.assertEqual(metrics['剩余治疗池'],'141')
         self.assertEqual(metrics['首次恢复'],'6')
-        metrics=self.metrics('actors.buffs.healing',max_hp=100,hp=10,power=100,healing_percent=0,healing_flat=20)
+        metrics=self.metrics('actors.buffs.healing',max_hp=100,hp=10,power=100,healing_percent=0,healing_flat=20,vial=-1)
         self.assertEqual(metrics['首次恢复'],'20')
         self.assertEqual(metrics['治疗池耗尽'],'5')
-        self.assertEqual(self.metrics('actors.buffs.healing',power=0)['首次恢复'],'0')
-        with self.assertRaises(ValueError):self.detail('actors.buffs.healing',power='1.5')
+        self.assertEqual(self.metrics('actors.buffs.healing',power=0,healing_percent=25,healing_flat=0,vial=-1)['首次恢复'],'0')
+        with self.assertRaises(ValueError):self.detail('actors.buffs.healing',power='1.5',healing_percent=25,healing_flat=0,vial=-1)
 
     def test_fractional_dot_values_and_expired_poison(self):
         poison=self.metrics('actors.buffs.poison',power='3.5')
