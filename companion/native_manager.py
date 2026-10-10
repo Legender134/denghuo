@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import copy
 import logging
 import os
-from queue import Queue, Empty
+from queue import Queue, Empty, Full
+import threading
 import time
 
 from .native_host import NativeHost, binding_token
@@ -97,6 +99,7 @@ class NativeManager:
         return '本次辅助已结束。' + message + ' 明确保存的未完成草稿可在下次启动后找回。'
 
     def process_exit(self):
+        self._process_exit_copies()
         try:
             while True:
                 state = self.exit_events.get_nowait()
@@ -115,6 +118,9 @@ class NativeManager:
                 elif phase in ('cancelled', 'idle'):
                     self.frozen = False
                     self.host.command('exit_cancelled', request_id=state['id'])
+                elif phase == 'backing-up':
+                    self.host.command('exit_waiting', state=state, can_cancel=False,
+                                      message='草稿确认完成，正在保留最后备份与退出回执。')
                 elif phase == 'finished':
                     self.host.command('exit_finished', state=state, message=self.finished_exit_message(state))
         except Empty:
@@ -125,12 +131,20 @@ class NativeManager:
             self.host.command('exit_cancelled', request_id=current['id'])
 
     def exit_decision(self, item):
-        # Keep request validation and raw capture atomic with web cancel/restart.
+        # Only capture controls here. Persistence never owns this lock or the UI.
         with self.session.exit_coordinator.lock:
             state = self.session.exit_status()
             if state['phase'] != 'confirming' or item.get('request_id') != state['id']:
                 return
-            self._exit_decision(item, state)
+            captured = self._exit_decision(item, state)
+        if captured is None:
+            return
+        if captured['decision'] == 'cancel':
+            self.session.acknowledge_exit(state['id'], 'native', 'cancel', captured['revision'])
+            self.frozen = False
+            self.host.command('exit_cancelled', request_id=state['id'])
+            return
+        self._queue_exit_copy(captured)
 
     def _exit_decision(self, item, state):
         self.frozen = True
@@ -141,20 +155,104 @@ class NativeManager:
             self.manager.open_play_settings(show=False)
             self.manager.play_settings.handle({'action': 'settings_edit', **item['settings']})
         decision = item.get('decision')
+        if decision not in ('clean', 'saved', 'discard', 'cancel'):
+            raise ValueError('退出选择无效；原始草稿仍保留。')
+        self.report_drafts()
+        drafts = self.drafts()
+        if decision == 'clean' and drafts:
+            self.host.command('exit_save_error', state=state, message='当前窗口仍有未保存草稿，请重新确认。')
+            return None
+        copies = []
         if decision == 'saved':
             lookup, settings = self.lookup(), self.manager.play_settings
             if lookup and lookup.has_draft():
-                lookup.save_draft_copy()
+                copies.append(lookup.exit_copy_payload())
             if settings and settings.has_draft():
-                settings.save_draft_copy()
-        self.report_drafts()
-        if decision == 'clean' and self.drafts():
-            self.host.command('exit_save_error', state=state, message='当前窗口仍有未保存草稿，请重新确认。')
+                copies.append({'kind': 'settings-raw', 'draft': settings.draft()})
+        return {'request_id': state['id'], 'decision': decision, 'revision': self.revision,
+                'fingerprint': json.dumps(drafts, ensure_ascii=False, sort_keys=True),
+                'copies': copy.deepcopy(copies)}
+
+    def _ensure_exit_copies(self):
+        if hasattr(self, '_exit_copy_queue'):
             return
-        self.session.acknowledge_exit(state['id'], 'native', decision, self.revision)
-        if decision == 'cancel':
-            self.frozen = False
-            self.host.command('exit_cancelled', request_id=state['id'])
+        self._exit_copy_queue = Queue(maxsize=1)
+        self._exit_copy_results = Queue(maxsize=2)
+        self._exit_copy_jobs = []
+        self._exit_copy_stop = threading.Event()
+        self._exit_copy_thread = threading.Thread(target=self._persist_exit_copies,
+            daemon=True, name='native-exit-copies')
+        self._exit_copy_thread.start()
+
+    def _queue_exit_copy(self, captured):
+        self._ensure_exit_copies()
+        if any(job['request_id'] == captured['request_id'] for job in self._exit_copy_jobs):
+            return
+        if len(self._exit_copy_jobs) >= 2:
+            raise RuntimeError('之前的草稿副本仍在等待磁盘；当前输入仍保留，可取消后继续编辑，稍后重试。')
+        captured['done'] = threading.Event()
+        self._exit_copy_jobs.append(captured)
+        try:
+            self._exit_copy_queue.put_nowait(captured)
+        except Full:
+            self._exit_copy_jobs.remove(captured)
+            raise RuntimeError('草稿保存队列暂时繁忙；原始输入仍保留，可取消退出。')
+        current = self.session.exit_status()
+        if current['id'] == captured['request_id'] and current['phase'] in ('confirming', 'backing-up'):
+            self.host.command('exit_waiting', state=current, can_cancel=current['phase'] == 'confirming',
+                message='正在保存草稿副本或确认放弃；磁盘等待期间仍可取消退出。'
+                if current['phase'] == 'confirming' else '草稿确认完成，正在保留最后备份与退出回执。')
+
+    def _persist_exit_copies(self):
+        while not self._exit_copy_stop.is_set():
+            try:
+                job = self._exit_copy_queue.get(timeout=.2)
+            except Empty:
+                continue
+            try:
+                current = self.session.exit_status()
+                if current['id'] != job['request_id'] or current['phase'] != 'confirming':
+                    continue
+                for payload in job['copies']:
+                    if payload['kind'] == 'plan':
+                        self.session.knowledge.save(**payload['payload'])
+                    else:
+                        settings = payload['kind'] == 'settings-raw'
+                        self.session.save_exit_draft('native', 'play-settings' if settings else 'numeric',
+                            '游玩设置未完成草稿' if settings else '数值速查未完成草稿', payload['draft'])
+                job['result'] = self.session.acknowledge_exit(job['request_id'], 'native',
+                    job['decision'], job['revision'])
+            except (ValueError, KeyError, OSError, RuntimeError) as exc:
+                job['error'] = str(exc)
+                current = self.session.exit_status()
+                if current['id'] == job['request_id'] and current['phase'] == 'confirming':
+                    logging.exception('Native exit copy not acknowledged; original inputs retained')
+                else:
+                    logging.info('Retained native exit copy completion for superseded request')
+            finally:
+                self._exit_copy_results.put(job)
+                job['done'].set()
+
+    def _process_exit_copies(self):
+        if not hasattr(self, '_exit_copy_results'):
+            return
+        while True:
+            try:
+                job = self._exit_copy_results.get_nowait()
+            except Empty:
+                return
+            self._exit_copy_jobs.remove(job)
+            current = self.session.exit_status()
+            if (current['id'] != job['request_id'] or current['phase'] not in ('confirming', 'backing-up')
+                    or self.revision != job['revision']
+                    or json.dumps(self.drafts(), ensure_ascii=False, sort_keys=True) != job['fingerprint']):
+                continue
+            if job.get('error'):
+                self.host.command('exit_save_error', state=current, message=job['error'])
+            elif job.get('result'):
+                self.host.command('exit_waiting', state=current, can_cancel=current['phase'] == 'confirming',
+                    message='本窗口草稿已确认，正在等待其他窗口。' if current['phase'] == 'confirming'
+                    else '草稿确认完成，正在保留最后备份与退出回执。')
 
     def dispatch(self, item):
         action = item.get('action')
@@ -275,6 +373,15 @@ class NativeManager:
         backup = snap.get('backup_health', {})
         texts = [self.manager.status.cget('text'), self.manager.backup_status.cget('text'),
                  self.manager.hero.cget('text'), self.manager.metrics.cget('text')]
+        for buff in data.get('buffs', []):
+            if buff.get('reference_id') == 'actors.buffs.healing':
+                source = '手动局势' if snap['settings']['mode'] == 'manual' else '最近保存'
+                remaining = f"剩余治疗 {buff['left']}" if type(buff.get('left')) is int else '治疗条件不完整'
+                next_heal = buff.get('next_heal')
+                if type(next_heal) is int:
+                    actual = min(next_heal, max(0, hero.get('ht', 0) - hero.get('hp', 0)))
+                    remaining += f'；按该局势下一次可回 {actual} 生命'
+                texts.append(f"{buff['name']} · {source}：{remaining}")
         texts += [tip['title']+'\n'+tip['body'] for tip in data.get('tips', [])]
         references, reference_texts = [], []
         try:
@@ -330,3 +437,5 @@ class NativeManager:
             self.report_drafts()
             self.session.unregister_exit_surface('native', self.revision, bool(self.drafts()), draft=self.drafts())
         self.host.close()
+        if hasattr(self, '_exit_copy_stop'):
+            self._exit_copy_stop.set()

@@ -312,6 +312,27 @@ class EngineTests(unittest.TestCase):
         self.assertIsNone(known_map({"width":10000,"height":20},0))
         self.assertIsNone(known_map({"width":2,"height":2,"map":[1]},0))
 
+    def test_map_flags_and_terrain_require_exact_primitive_types(self):
+        original = {'width': 2, 'height': 2, 'map': [16, 17, 4, 4],
+                    'visited': [False] * 4, 'mapped': [False] * 4}
+        for field, values in (('visited', ['false', 1, 0, [], {}, None]),
+                              ('mapped', ['false', 1, 0, [], {}, None]),
+                              ('map', [True, False, -1, 256, '4']),
+                              ('width', [True]), ('height', [False])):
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    level = json.loads(json.dumps(original))
+                    if field in ('width', 'height'):
+                        level[field] = value
+                    else:
+                        level[field][0] = value
+                    self.assertIsNone(known_map(level, 0))
+        self.assertEqual(known_map(original, True)['tiles'], [-1] * 4)
+        self.assertIsNone(known_map(original, True)['hero'])
+        original['mapped'][0] = True
+        original['visited'][1] = True
+        self.assertEqual(known_map(original, 0)['tiles'], [4, 1, -1, -1])
+
     def test_catalog_search_chinese_and_classname(self):
         self.assertEqual(self.catalog.search("蛇")["entries"][0]["name"],"下水道巨蛇")
         self.assertGreater(self.catalog.search("PotionOfHealing")["total"],0)
@@ -422,8 +443,30 @@ class SaveTests(unittest.TestCase):
 
     def test_branch_filename_matches_game_contract(self):
         path=self.write(game(depth=12,branch=1))
-        (path.parent/'depth12-branch1.dat').write_text(json.dumps({"level":{"width":2}}))
-        self.assertEqual(read_slot(self.root,1)[1],{"width":2})
+        level = {'width': 2, 'height': 2, 'map': [4] * 4,
+                 'visited': [False] * 4, 'mapped': [False] * 4}
+        (path.parent/'depth12-branch1.dat').write_text(json.dumps({'level': level}))
+        self.assertEqual(read_slot(self.root,1)[1], level)
+
+    def test_malformed_visibility_suppresses_only_map_and_retains_original_files(self):
+        hero_path = self.write(game())
+        hero_raw = hero_path.read_bytes()
+        level_path = hero_path.parent / 'depth4.dat'
+        for field, value in (('visited', 'false'), ('visited', 1), ('mapped', 'false'),
+                             ('mapped', 1), ('map', True), ('map', 256)):
+            with self.subTest(field=field, value=value):
+                level = {'width': 2, 'height': 2, 'map': [4] * 4,
+                         'visited': [False] * 4, 'mapped': [False] * 4}
+                level[field][0] = value
+                raw = json.dumps({'level': level}).encode()
+                level_path.write_bytes(raw)
+                os.utime(level_path, ns=(hero_path.stat().st_mtime_ns, hero_path.stat().st_mtime_ns))
+                saved, data, _, warning = read_slot(self.root, 1)
+                self.assertEqual(saved['hero']['HP'], 20)
+                self.assertIsNone(data)
+                self.assertIn('探索标记无效', warning)
+                self.assertEqual(hero_path.read_bytes(), hero_raw)
+                self.assertEqual(level_path.read_bytes(), raw)
 
     def test_outdated_map_is_not_combined(self):
         path=self.write(game())

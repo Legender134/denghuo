@@ -206,8 +206,13 @@ class Handler(BaseHTTPRequestHandler):
                 selection = self.headers.get('X-Companion-Migration-Selection', '[]')
                 if len(selection) > 60000:
                     raise ValueError('迁移选择清单过大')
+                global_choices = self.headers.get('X-Companion-Migration-Global-Choices', '{}')
+                if len(global_choices) > 1000:
+                    raise ValueError('全局进度冲突选择过大')
                 payload = {'expected': self.headers.get('X-Companion-Migration-Digest'),
                            'selected': json.loads(selection),
+                           'global_choices': json.loads(global_choices),
+                           'global_confirmed': self.headers.get('X-Companion-Migration-Global-Confirmed') == 'true',
                            'confirmed': self.headers.get('X-Companion-Migration-Confirmed') == 'true'}
                 result = self.server.session.migration_action(urlsplit(self.path).path.rsplit('/', 1)[-1], payload, raw)
                 self.send_data({'ok': True, **result})
@@ -324,7 +329,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send_data({'ok': True, **result})
                 return
-            if path in ('/api/migration/export-preview', '/api/migration/export'):
+            if path in ('/api/migration/export-preview', '/api/migration/export',
+                        '/api/migration/global-recovery-preview', '/api/migration/global-recovery'):
                 result = self.server.session.migration_action(path.rsplit('/', 1)[-1], payload)
                 if path.endswith('/export'):
                     self.send_data(result[0], mime='application/zip', filename=result[1])

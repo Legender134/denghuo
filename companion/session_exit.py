@@ -634,6 +634,136 @@ class ExitCoordinator:
         self.surfaces = {}
         self.request = None
         self.phase, self.error, self.backup_result = 'idle', '', None
+        # One ordered, bounded lane owns coordinator persistence. Never wait for
+        # its disk calls while holding the in-memory coordination lock.
+        self._persistence = []
+        self._persistence_running = None
+        self._persistence_worker = None
+        self._persistence_idle = threading.Event()
+        self._persistence_idle.set()
+        self._sequence = 0
+
+    def flush_checkpoints(self, timeout=5):
+        """Wait a bounded time for queued preservation, without claiming success."""
+        return self._persistence_idle.wait(timeout)
+
+    def _job(self, surface, *, request_id=None, decision=None, offline=False):
+        self._sequence += 1
+        return {'surface': surface, 'version': surface['version'], 'sequence': self._sequence,
+                'surface_id': surface['surface_id'], 'revision': surface['revision'],
+                'dirty': surface['dirty'], 'draft': copy.deepcopy(surface['draft']),
+                'kind': surface['kind'], 'label': surface['label'],
+                'request_id': request_id, 'decision': decision, 'offline': offline,
+                'done': threading.Event(), 'error': None, 'saved': None}
+
+    def _enqueue(self, job):
+        # Coalesce automatic work by identity, including closed/reopened windows.
+        # Explicit decisions remain ordered barriers and are never silently lost.
+        old = [item for item in self._persistence
+               if item['surface_id'] == job['surface_id'] and item['request_id'] is None]
+        remaining = [item for item in self._persistence
+                     if item['surface_id'] != job['surface_id'] or item['request_id'] is not None]
+        covered = {item['surface_id'] for item in [*remaining, job]}
+        # Closed clean-window churn must not consume the slots needed to restore
+        # live dirty input when cancellation wins an already-running clear.
+        reserved = sum(surface['dirty'] and surface['restore_required']
+                       and surface['surface_id'] not in covered
+                       for surface in self.surfaces.values())
+        if len(remaining) + 1 + reserved > 32:
+            raise ValueError('自动草稿处理队列已满，当前输入仍保留；请稍后重试或明确保存副本')
+        self._persistence[:] = [*remaining, job]
+        for item in old:
+            item['done'].set()
+        surface = job['surface']
+        if job['request_id'] is not None and surface['dirty']:
+            surface['restore_required'] = True
+        surface.update(operation=job['sequence'], recovery_pending=True, recovery_saved=False)
+        self._persistence_idle.clear()
+        if self._persistence_worker is None:
+            self._persistence_worker = threading.Thread(target=self._persist,
+                name='exit-draft-persistence', daemon=True)
+            self._persistence_worker.start()
+
+    def _schedule_checkpoint(self, surface):
+        if self.checkpoint is None:
+            return
+        # A duplicate heartbeat must neither multiply work nor invalidate an
+        # explicit decision. Changed content has a separate version counter.
+        pending = [*self._persistence]
+        if self._persistence_running is not None:
+            pending.append(self._persistence_running)
+        if any(item['surface'] is surface and item['version'] == surface['version']
+               for item in pending):
+            return
+        try:
+            self._enqueue(self._job(surface))
+        except ValueError as exc:
+            surface.update(recovery_pending=False, recovery_saved=False,
+                           recovery_error=self._preservation_error(exc))
+
+    @staticmethod
+    def _preservation_error(exc):
+        return '自动保留草稿尚未完成：' + str(exc) + '。当前窗口输入仍保留，请明确保存副本。'
+
+    def _current_decision(self, job):
+        self._check_request(job['request_id'])
+        surface = self.surfaces.get(job['surface_id'])
+        if surface is not job['surface'] or surface['version'] != job['version']:
+            raise ValueError('窗口或草稿版本已变化，请重新确认；已保存的副本仍保留')
+        return surface
+
+    def _persist(self):
+        while True:
+            with self.lock:
+                if not self._persistence:
+                    self._persistence_running = self._persistence_worker = None
+                    self._persistence_idle.set()
+                    return
+                job = self._persistence.pop(0)
+                self._persistence_running = job
+            try:
+                if job['request_id'] is not None:
+                    with self.lock:
+                        self._current_decision(job)
+                    if job['offline'] and job['decision'] == 'save':
+                        job['saved'] = self.save_draft(job['surface_id'], 'offline-' + job['kind'],
+                                                      job['label'], job['draft'])
+                    with self.lock:
+                        self._current_decision(job)
+                saved = False
+                if self.checkpoint is not None:
+                    saved = self.checkpoint(job['surface_id'], job['revision'],
+                        job['dirty'] if job['request_id'] is None else False,
+                        job['draft'], job['kind'], job['label'])
+                with self.lock:
+                    surface = job['surface']
+                    if job['request_id'] is not None:
+                        surface = self._current_decision(job)
+                        surface['ack'] = ('saved' if job['decision'] == 'save' else job['decision'])
+                    if (self.surfaces.get(job['surface_id']) is surface
+                            and surface['version'] == job['version']
+                            and surface['operation'] == job['sequence']):
+                        surface.update(recovery_saved=saved, recovery_pending=False, recovery_error='')
+                        if job['request_id'] is None and (saved or not job['dirty']):
+                            surface['restore_required'] = False
+                    if job['request_id'] is not None:
+                        self._finish_if_ready()
+            except Exception as exc:
+                job['error'] = exc
+                with self.lock:
+                    surface = job['surface']
+                    if (self.surfaces.get(job['surface_id']) is surface
+                            and surface['version'] == job['version']
+                            and surface['operation'] == job['sequence']):
+                        surface.update(recovery_saved=False, recovery_pending=False,
+                                       recovery_error=self._preservation_error(exc))
+            finally:
+                job['done'].set()
+
+    def _wait_decision(self, job):
+        job['done'].wait()
+        if job['error'] is not None:
+            raise job['error']
 
     def _identity(self, surface_id):
         if not isinstance(surface_id, str) or not SURFACE.fullmatch(surface_id):
@@ -654,7 +784,8 @@ class ExitCoordinator:
                     raise ValueError('打开的编辑窗口过多，请先关闭不用的面板')
                 self.surfaces[surface_id] = {'surface_id': surface_id, 'kind': kind, 'label': label or '编辑窗口',
                     'revision': 0, 'dirty': False, 'draft': None, 'last_seen': self.clock(),
-                    'closed': False, 'notify': notify, 'ack': None, 'recovery_saved': False, 'recovery_error': ''}
+                    'closed': False, 'notify': notify, 'ack': None, 'recovery_saved': False, 'recovery_error': '',
+                    'recovery_pending': False, 'version': 0, 'operation': 0, 'restore_required': False}
             else:
                 surface = self.surfaces[surface_id]
                 if surface['kind'] != kind:
@@ -676,7 +807,8 @@ class ExitCoordinator:
             surface = self.surfaces[surface_id]
             if revision < surface['revision']:
                 raise ValueError('草稿版本已变化，请重新确认当前窗口')
-            changed = (revision, dirty) != (surface['revision'], surface['dirty'])
+            changed = ((revision, dirty) != (surface['revision'], surface['dirty'])
+                       or draft is not None and draft != surface['draft'])
             if (revision == surface['revision'] and surface['draft'] is not None
                     and draft is not None and draft != surface['draft']):
                 raise ValueError('草稿内容已变化，请更新草稿版本')
@@ -685,14 +817,9 @@ class ExitCoordinator:
                 surface['draft'] = draft
             if changed:
                 surface['ack'] = None
+                surface['version'] += 1
             if self.checkpoint is not None and (self.phase != 'confirming' or surface['ack'] is None):
-                try:
-                    surface['recovery_saved'] = self.checkpoint(surface_id, revision, dirty,
-                        surface['draft'], surface['kind'], surface['label'])
-                    surface['recovery_error'] = ''
-                except (ValueError, OSError) as exc:
-                    surface['recovery_saved'] = False
-                    surface['recovery_error'] = '自动保留草稿尚未完成：' + str(exc) + '。当前窗口输入仍保留，请明确保存副本。'
+                self._schedule_checkpoint(surface)
             return self.status()
 
     def unregister(self, surface_id, revision, dirty, *, draft=None):
@@ -743,19 +870,41 @@ class ExitCoordinator:
         with self.lock:
             self._check_request(request_id)
             surface = self.surfaces.get(self._identity(surface_id))
-            if surface is None or type(revision) is not int or revision != surface['revision']:
+            if surface is None or type(revision) is not int or not 0 <= revision <= 2 ** 53:
                 raise ValueError('窗口或草稿版本已变化，请重新确认')
             if decision == 'cancel':
                 self.phase = 'cancelled'
                 self.error = ''
+                cancelled = [item for item in self._persistence if item['request_id'] == request_id]
+                self._persistence[:] = [item for item in self._persistence if item['request_id'] != request_id]
+                for item in cancelled:
+                    item['error'] = ValueError('退出确认已过期，请重新发起')
+                    item['done'].set()
+                # An already-running unlink cannot be interrupted. Restore dirty
+                # input behind it, including previously acknowledged surfaces.
+                for current in self.surfaces.values():
+                    if current['dirty']:
+                        current['ack'] = None
+                        if self.checkpoint is not None:
+                            if current['restore_required']:
+                                try:
+                                    self._enqueue(self._job(current))
+                                except ValueError as exc:
+                                    current.update(recovery_pending=False, recovery_saved=False,
+                                                   recovery_error=self._preservation_error(exc))
+                            else:
+                                self._schedule_checkpoint(current)
                 return self.status()
+            if revision != surface['revision']:
+                raise ValueError('窗口或草稿版本已变化，请重新确认')
             if decision not in ('clean', 'saved', 'discard'):
                 raise ValueError('请选择保存副本、取消或明确放弃')
             if decision == 'clean' and surface['dirty']:
                 raise ValueError('当前窗口仍有未保存草稿，请明确选择处理方式')
-            self._clear_checkpoint(surface)
-            surface['ack'] = decision
-            self._finish_if_ready()
+            job = self._job(surface, request_id=request_id, decision=decision)
+            self._enqueue(job)
+        self._wait_decision(job)
+        with self.lock:
             return self.status()
 
     def _check_request(self, request_id):
@@ -772,21 +921,15 @@ class ExitCoordinator:
             if decision == 'save':
                 if surface['draft'] is None:
                     raise ValueError('没有可保存的已上报草稿；请取消并返回原窗口，或明确放弃')
-                saved = self.save_draft(surface_id, 'offline-' + surface['kind'], surface['label'], surface['draft'])
             elif decision == 'discard':
-                saved = None
+                pass
             else:
                 raise ValueError('请明确保存最近上报的草稿或放弃')
-            self._clear_checkpoint(surface)
-            surface['ack'] = 'saved' if decision == 'save' else 'discard'
-            self._finish_if_ready()
-            return {'exit': self.status(), 'saved': saved}
-
-    def _clear_checkpoint(self, surface):
-        if self.checkpoint is not None:
-            self.checkpoint(surface['surface_id'], surface['revision'], False,
-                            surface['draft'], surface['kind'], surface['label'])
-            surface.update(recovery_saved=False, recovery_error='')
+            job = self._job(surface, request_id=request_id, decision=decision, offline=True)
+            self._enqueue(job)
+        self._wait_decision(job)
+        with self.lock:
+            return {'exit': self.status(), 'saved': job['saved']}
 
     def _finish_if_ready(self):
         if self.phase != 'confirming':
@@ -826,6 +969,7 @@ class ExitCoordinator:
                 row['has_recovery_draft'] = surface['draft'] is not None
                 row['has_reported_draft'] = surface['draft'] is not None
                 row['recovery_saved'] = surface['recovery_saved']
+                row['recovery_pending'] = surface['recovery_pending']
                 row['recovery_error'] = surface['recovery_error']
                 if self.checkpoint is not None:
                     row['has_recovery_draft'] = surface['recovery_saved']

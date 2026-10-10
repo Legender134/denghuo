@@ -12,6 +12,25 @@ def augmented_damage(value, factor):
     return math.floor(float32(float32(value) * float32(factor)) + .5)
 
 
+def potion_healing_pool(maximum):
+    # PotionOfHealing: cast to int after float multiplication and addition.
+    return int(float32(float32(float32(.8) * maximum) + 14))
+
+
+def healing_pool_with_vial(amount, vial):
+    return augmented_damage(amount, 1 + .125 * (vial + 1)) if vial >= 0 else amount
+
+
+def healing_tick(left, percent, flat, vial, maximum):
+    if left <= 0:
+        return 0
+    tick = min(left, max(1, augmented_damage(left, percent) + flat))
+    if vial >= 0:
+        base, factor = ((4, .15), (3, .10), (2, .07), (1, .05))[vial]
+        tick = min(tick, base + augmented_damage(maximum, factor))
+    return tick
+
+
 def monk_empowered(energy, capacity, points):
     ratio=float32(float32(energy)/float32(capacity))
     threshold=float32(float32(1.2)-float32(float32(.2)*points))

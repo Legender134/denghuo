@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from datetime import datetime, timezone
 import webbrowser
 
@@ -96,7 +97,7 @@ class NumericLookup:
 
     def has_draft(self):
         return bool(self.pending_save) or self.draft_modified or self.dirty or bool(self.saved_plan and (
-            self.calculated != self.saved_plan['params'] or self.note.get() != self.saved_plan.get('note', '')))
+            (self.calculated is not None and self.calculated != self.saved_plan['params']) or self.note.get() != self.saved_plan.get('note', '')))
 
     def schedule_search(self):
         root = self.owner.manager.root
@@ -230,8 +231,12 @@ class NumericLookup:
                       prefix+(self.context.get('strength_origin') or '力量参考 · 角色条件来源未确认')) if key == 'strength' else prefix)
                     if self.context and key in self.context['params'] else
                     '等级未知 · +0示例' if key == 'level' and self.context and self.context.get('level_unknown') else '示例 · 请核对')
+                if key in detail.get('missing_inputs', []):
+                    self.input_origins[key] = '未确认 · 请填写'
+                elif not self.saved_plan and key in (self.context or {}).get('field_origins', {}):
+                    self.input_origins[key] = prefix+' · '+self.context['field_origins'][key]
                 self.variables[key] = Value(str(field['value']), lambda key=key: self.changed(key))
-        self.calculated = {field['key']: field['value'] for field in self.inputs}
+        self.calculated = None if detail.get('missing_inputs') else {field['key']: field['value'] for field in self.inputs}
         self.dirty, self.parameter_error = False, ''
         self.refresh_origin(self.owner.manager.session.snapshot())
         self.refresh_text()
@@ -256,6 +261,8 @@ class NumericLookup:
             self.origin.text = self.parameter_error or self.plan_error or self.workspace_error
         elif self.dirty:
             self.origin.text = '参数已修改，旧结果不可继续参考；点击计算。'
+        elif self.rendered and self.rendered.get('missing_inputs'):
+            self.origin.text = '当前治疗条件未确认，请补全空白参数后计算。'
         elif self.saved_plan:
             self.origin.text = '保存的参考方案 · '+self.saved_plan['name']+' · 固定参数，未跟随当前角色'
         elif self.rendered:
@@ -355,7 +362,7 @@ class NumericLookup:
         source = dict(self.saved_plan['origin'] if self.saved_plan else (self.context or {}).get('source') or {'mode': 'example', 'snapshot_at': None, 'slot': None})
         if self.context and self.context.get('stamp') and not self.saved_plan and source.get('mode') == 'example':
             source = {'mode': self.context['mode'], 'snapshot_at': self.context['stamp'][-1], 'slot': self.context['stamp'][3]}
-        source = {key: source.get(key) for key in ('mode', 'snapshot_at', 'slot')}
+        source = {key: copy.deepcopy(source[key]) for key in ('mode', 'snapshot_at', 'slot', 'references') if key in source}
         source['fields'] = {key: self.input_origins[key] for key in self.calculated}
         payload = {'action': 'save', 'kind': 'numeric', 'name': name, 'entry': self.identity,
                    'params': dict(self.calculated), 'source': source, 'note': self.note.get()}
@@ -411,6 +418,21 @@ class NumericLookup:
             self.saved_plan, self.identity = opened['plan'], opened['plan']['entry']
             self.note.value = self.saved_plan.get('note', '')
             self.context, self.plan_error = None, ''
+            if opened['result'] is None:
+                self.rendered = self.calculated = None
+                self.dirty = self.draft_modified = False
+                self.origin.text = '当前版本无法计算；原方案参数、来源、规则版本和备注仍保留。'
+                self.show_text(self.origin.text+'\n'+opened.get('calculation_error', '')+
+                    '\n可复制下列原记录；在完整面板打开此方案可编辑参数另存或导出资料库。\n\n'+
+                    json.dumps(self.saved_plan, ensure_ascii=False, indent=2))
+                self.emit()
+                try:
+                    self.owner.manager.session.panel.request('workspace', plan_id=record_id)
+                    self.origin.text += ' 已在完整面板打开此原方案，可核对后编辑另存。'
+                except (ValueError, OSError) as exc:
+                    self.origin.text += ' 完整面板暂时无法打开：'+str(exc)+'；当前原记录仍可复制。'
+                self.emit()
+                return True
             self.render(opened['result'])
             return True
         except (ValueError, OSError) as exc:
@@ -436,6 +458,7 @@ class NumericLookup:
             self.context = {'params': dict(reference.get('params', {})), 'stamp': stamp,
                 'mode': source.get('mode') or (stamp[2] if stamp else 'example'), 'level_unknown': reference.get('level_origin') == 'unknown',
                 'source': source or {}, 'conditions': note, 'source_label': reference.get('source_label', '')}
+            self.context['field_origins'] = dict(reference.get('field_origins', {}))
             if 'strength' in self.context['params']:
                 exact_source = (stamp == self.source_stamp(snap) and source and source.get('mode') == snap['settings']['mode']
                     and source.get('snapshot_at') == snap.get('modified') and source.get('slot') == snap.get('active_slot')
@@ -514,6 +537,30 @@ class NumericLookup:
                 return
         session.save_exit_draft('native', 'numeric', '数值速查未完成草稿', self.draft())
         self.draft_modified = False
+
+    def exit_copy_payload(self):
+        """Capture an independent exit copy on the UI thread, without IO or edits."""
+        pending = self.pending_save
+        if self.identity and not self.dirty and self.rendered is not None and self.calculated:
+            name = pending['name'] if pending else self.saved_plan['name'] if self.saved_plan else self.rendered['name']
+            note = pending['note'] if pending else self.note.get()
+            try:
+                from .knowledge import text, user_note
+                name = text(name[:75]+' 草稿副本', '方案名称') if name.strip() else ''
+                user_note(note)
+            except ValueError:
+                name = ''
+            if name:
+                source = copy.deepcopy(self.saved_plan['origin'] if self.saved_plan else
+                    (self.context or {}).get('source') or {'mode': 'example', 'snapshot_at': None, 'slot': None})
+                if self.context and self.context.get('stamp') and not self.saved_plan and source.get('mode') == 'example':
+                    source = {'mode': self.context['mode'], 'snapshot_at': self.context['stamp'][-1], 'slot': self.context['stamp'][3]}
+                source = {key: source[key] for key in ('mode', 'snapshot_at', 'slot', 'references') if key in source}
+                source['fields'] = {key: self.input_origins[key] for key in self.calculated}
+                return {'kind': 'plan', 'payload': {'kind': 'numeric', 'entry': self.identity,
+                    'name': name, 'params': copy.deepcopy(self.calculated),
+                    'source': source, 'note': note}}
+        return {'kind': 'raw', 'draft': copy.deepcopy(self.draft())}
 
     def set_pending_save(self, value):
         if value is not None:

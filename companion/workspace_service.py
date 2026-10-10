@@ -3,7 +3,7 @@ import copy
 import os
 from pathlib import Path
 
-from .decisions import public_context, source
+from .decisions import public_context, source, healing_context
 
 COMMON = ('items.potions.potionofhealing', 'items.waterskin', 'items.scrolls.scrollofupgrade',
           'items.scrolls.scrollofidentify', 'items.scrolls.scrollofremovecurse')
@@ -53,11 +53,21 @@ def workspace_status(session):
         identity = buff.get('reference_id') or 'actors.buffs.' + buff['kind'].lower()
         if identity not in entries or any(row['id'] == identity for row in current):
             continue
+        params = dict(context)
+        fields = healing_context(buff) if identity == 'actors.buffs.healing' else {}
+        params.update(fields)
+        conditions = ('公开当前护盾已带入；其余强度、时长与条件需另行填写' if 'current_shield' in context else '只确认状态存在；剩余强度、时长与其他条件需另行填写')
+        origins = {}
+        if identity == 'actors.buffs.healing':
+            labels = {'power':'剩余治疗池（已包含原饰物加成）', 'healing_percent':'当前恢复百分比', 'healing_flat':'当前固定恢复', 'vial':'当前治疗来源的试管限速'}
+            origins = {key:provenance['label']+' · '+labels[key] for key in fields}
+            conditions = ('公开剩余治疗池和恢复速度已带入，不再次放大剩余额度；下一次恢复是该保存记录的参考'
+                          if len(fields) == 4 else '只带入已确认的治疗条件；缺失的治疗池、速度或试管限速需另行填写，不套用药剂示例')
         current.append({**entries[identity], 'lookup_label': entries[identity]['name'] + ' · ' + provenance['label'],
-                        'lookup_context': {'params': dict(context), 'stamp': stamp,
+                        'lookup_context': {'params': params, 'stamp': stamp, 'field_origins':origins,
                                            'level_origin': 'example', 'mode': provenance['mode'],
                                            'source': provenance, 'source_label': provenance['label'],
-                                           'conditions': '公开当前护盾已带入；其余强度、时长与条件需另行填写' if 'current_shield' in context else '只确认状态存在；剩余强度、时长与其他条件需另行填写'}})
+                                           'conditions': conditions}})
     return {**stored, 'favorite_ids': list(stored['favorites']),
             'favorites': [entries[identity] for identity in stored['favorites'] if identity in entries],
             'recent': [{**entries[row['entry']], 'opened': row['opened']} for row in stored['recent']

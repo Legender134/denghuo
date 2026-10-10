@@ -10,7 +10,7 @@ const confirming={...backing,phase:'confirming',participants:[{surface_id:'synth
 function deferred(){let resolve,reject;return {promise:new Promise((yes,no)=>{resolve=yes;reject=no;}),resolve,reject};}
 function setup(exit=null,latest=success,options={}){
   const controls=new Map(),messages=[],requests=[],timers=[];let clock=0;
-  const get=id=>{if(!controls.has(id))controls.set(id,{textContent:'',className:'',hidden:false,disabled:false,open:false,dataset:{},children:[],close(){this.open=false;},showModal(){this.open=true;},replaceChildren(){this.children=[];}});return controls.get(id);};
+  const get=id=>{if(!controls.has(id))controls.set(id,{textContent:'',className:'',hidden:false,disabled:false,open:false,dataset:{},children:[],close(){this.open=false;},showModal(){this.open=true;},replaceChildren(){this.children=[];},append(child){this.children.push(child);}});return controls.get(id);};
   const captured={revision:7,dirty:!!options.dirty,labels:options.dirty?['局势表单']:[],draft:{manual:{hp:{value:'',checked:false}},numeric:[{raw:{level:'invalid'}}]}};
   const context=vm.createContext({Date:{now:()=>clock},Promise,setTimeout:(callback,delay)=>timers.push({callback,delay}),token:'synthetic',state:{exit:latest},webSurfaceId:'synthetic',
     $:get,freezeWebEditing:frozen=>requests.push({freeze:frozen}),toast:(message,error)=>messages.push({message,error}),inlineError:(node,text)=>node.textContent=text,currentWebDraft:()=>({...captured,revision:options.changed?8:7}),renderExitParticipants(){},
@@ -18,8 +18,8 @@ function setup(exit=null,latest=success,options={}){
     post:async(url,payload)=>{requests.push({url,payload:plain(payload)});if(options.postError&&payload.action==='save-draft')throw new Error('controlled save failure');if(payload.action==='report')return {exit:options.reported||confirming};if(payload.action==='save-draft'){if(options.changeOnSave)options.changed=true;return {saved:{id:'preserved-copy'}};}if(payload.action==='ack')return {exit:options.acknowledged||backing};throw new Error('forbidden terminal mutation');},
     fetch:async()=>{throw new Error('service stopped');},syncBackupContext(){},renderBackupHealth:()=>{get('#backup-health').textContent='自动备份状态尚未确认。';},render:()=>{get('#connection-banner').textContent='普通运行状态';},renderInventory(){},followPanelRequest:async()=>{},
     polling:false,settingsWriteGeneration:0,view:'overview',lastRender:'',slotsSignature:'',initialPanelPlanHandled:true,initialPanelPlan:null,restoreTarget:null,backupState:null,backupViewKeys:new Map()});
-  vm.runInContext('let webExitState='+JSON.stringify(exit)+',webExitCompletionWatch=null,webExitHandling=false,webExitBusy=false,webEditingFrozen=false;',context);
-  for(const name of ['updateWebRecoveryStatus','renderWebExitReceipt','watchWebExitCompletion','reportWebExitSurface','handleWebExitState','decideWebExit']){if(!workspace.includes('function '+name+'('))continue;vm.runInContext(extract(workspace,name),context);}
+  vm.runInContext('let webExitState='+JSON.stringify(exit)+',webExitCompletionWatch=null,webExitHandling=false,webExitBusy=false,webEditingFrozen=false,webExitGeneration=0,webExitDecision=null;',context);
+  for(const name of ['updateWebRecoveryStatus','renderWebExitReceipt','watchWebExitCompletion','reportWebExitSurface','handleWebExitState','renderWebExitConfirmation','decideWebExit']){if(!workspace.includes('function '+name+'('))continue;vm.runInContext(extract(workspace,name),context);}
   vm.runInContext(extract(app,'poll'),context);const run=code=>vm.runInContext(code,context);
   async function advance(){assert(timers.length,'termination observer must be scheduled');const timer=timers.shift();clock+=timer.delay;timer.callback();await new Promise(setImmediate);}
   async function settle(){for(let n=0;timers.length&&n<60;n++)await advance();await run('webExitCompletionWatch');}
@@ -92,6 +92,66 @@ test('explicit saved draft keeps invalid and empty inputs',async()=>{const f=set
 test('failed draft save never acknowledges',async()=>{const f=setup(confirming,success,{dirty:true,postError:true});await f.run("decideWebExit('saved')");assert(!f.requests.some(r=>r.payload?.action==='ack'));assert.equal(f.timers.length,0);assert.match(f.get('#session-exit-error').textContent,/controlled save failure/);assert(!f.get('#session-exit-cancel').disabled);});
 test('draft edit during save cannot acknowledge older revision',async()=>{const f=setup(confirming,success,{dirty:true,changeOnSave:true});await f.run("decideWebExit('saved')");assert(!f.requests.some(r=>r.payload?.action==='ack'));assert.equal(f.timers.length,0);assert.match(f.get('#session-exit-error').textContent,/草稿已变化/);});
 test('cancel keeps editing and does not finalize',async()=>{const f=setup(confirming,success,{acknowledged:{...confirming,phase:'cancelled'}});await f.run("decideWebExit('cancel')");assert.equal(f.run('webExitState.phase'),'cancelled');assert(f.requests.some(r=>r.freeze===false));assert.equal(f.timers.length,0);});
+test('pending automatic checkpoint report cannot own status polling',async()=>{
+  const pending=deferred(),f=setup();let reads=0;
+  f.context.fetch=async()=>({ok:true,json:async()=>({token:'synthetic',exit:++reads===1?{id:null,phase:'idle',participants:[]}:success})});
+  f.context.post=async(url,payload)=>{f.requests.push({payload:plain(payload)});assert.equal(payload.action,'report');return pending.promise;};
+  await f.run('poll()');assert.equal(f.run('polling'),false);assert.equal(f.run('webExitBusy'),true);
+  await f.run('poll()');assert.equal(reads,2);assert.equal(f.run('webExitState.phase'),'finished');
+  pending.resolve({exit:{id:null,phase:'idle',participants:[]}});await new Promise(setImmediate);
+  assert.equal(f.run('webExitState.phase'),'finished');assert.equal(f.run('webExitBusy'),false);
+});
+test('cancel bypasses initial confirming report and ignores its late reply',async()=>{
+  const pending=deferred(),f=setup();
+  f.context.post=async(url,payload)=>{f.requests.push({payload:plain(payload)});if(payload.action==='report')return pending.promise;assert.equal(payload.decision,'cancel');return {exit:{...confirming,phase:'cancelled'}};};
+  const reporting=f.run('handleWebExitState('+JSON.stringify(confirming)+')');await new Promise(setImmediate);
+  assert(f.get('#session-exit-dialog').open);assert(!f.get('#session-exit-cancel').disabled);
+  await f.run("decideWebExit('cancel')");assert.equal(f.run('webExitState.phase'),'cancelled');assert(!f.get('#session-exit-dialog').open);
+  pending.resolve({exit:confirming});await reporting;
+  assert.equal(f.run('webExitState.phase'),'cancelled');assert(!f.get('#session-exit-dialog').open);
+  assert(!f.requests.some(r=>r.payload?.decision==='clean'));assert(f.requests.some(r=>r.freeze===false));
+});
+for(const fail of [false,true])test('cancel during saved copy rejects late '+(fail?'error':'success')+' after new request',async()=>{
+  const pending=deferred(),dirty={...confirming,participants:[{surface_id:'synthetic',ack:null,dirty:true,revision:7}]},f=setup(dirty,success,{dirty:true});let active=dirty;
+  f.context.post=async(url,payload)=>{f.requests.push({payload:plain(payload)});if(payload.action==='report')return {exit:active};if(payload.action==='save-draft')return pending.promise;if(payload.action==='ack'&&payload.decision==='cancel')return {exit:{...active,phase:'cancelled'}};throw new Error('late saved copy must not acknowledge');};
+  const saving=f.run("decideWebExit('saved')");await new Promise(setImmediate);
+  assert(f.get('#session-exit-save').disabled);assert(!f.get('#session-exit-cancel').disabled);
+  await f.run("decideWebExit('cancel')");active={...dirty,id:'new-request'};await f.run('handleWebExitState('+JSON.stringify(active)+')');
+  assert(f.get('#session-exit-dialog').open);const before=f.get('#session-exit-error').textContent;
+  if(fail)pending.reject(new Error('late old copy failure'));else pending.resolve({saved:{id:'retained-old-copy'}});
+  await saving;assert.equal(f.run('webExitState.id'),'new-request');assert.equal(f.run('webExitState.phase'),'confirming');
+  assert.equal(f.get('#session-exit-error').textContent,before);assert(!f.get('#session-exit-save').disabled);
+  assert(!f.requests.some(r=>r.payload?.decision==='saved'));
+});
+test('cancel during discard clear cannot revive the old request',async()=>{
+  const pending=deferred(),dirty={...confirming,participants:[{surface_id:'synthetic',ack:null,dirty:true,revision:7}]},f=setup(dirty,success,{dirty:true});let active=dirty;
+  f.context.post=async(url,payload)=>{f.requests.push({payload:plain(payload)});if(payload.action==='report')return {exit:active};if(payload.decision==='discard')return pending.promise;return {exit:{...active,phase:'cancelled'}};};
+  const discarding=f.run("decideWebExit('discard')");await new Promise(setImmediate);assert(!f.get('#session-exit-cancel').disabled);
+  await f.run("decideWebExit('cancel')");active={...dirty,id:'replacement-request'};await f.run('handleWebExitState('+JSON.stringify(active)+')');
+  pending.resolve({exit:{...dirty,phase:'backing-up'}});await discarding;
+  assert.equal(f.run('webExitState.id'),'replacement-request');assert.equal(f.run('webExitState.phase'),'confirming');assert(f.get('#session-exit-dialog').open);assert(!f.get('#session-exit-cancel').disabled);
+});
+test('pending checkpoint is visible without claiming durable preservation',async()=>{
+  const f=setup();f.run('updateWebRecoveryStatus('+JSON.stringify({...confirming,participants:[{surface_id:'synthetic',recovery_pending:true,recovery_saved:false}]})+')');
+  assert.match(f.get('#draft-recovery-status').textContent,/正在自动保留.*尚未确认保存/);assert(!f.get('#draft-recovery-status').hidden);
+});
+test('late offline resolution cannot replace a cancelled and restarted exit',async()=>{
+  const pending=deferred(),dirty={...confirming,participants:[{surface_id:'synthetic',ack:null,dirty:true,revision:7},{surface_id:'offline-other',label:'offline',online:false,ack:null,dirty:true,revision:3}]},f=setup(dirty,success,{dirty:true});let active=dirty;
+  const node=()=>({dataset:{},children:[],listeners:{},append(child){this.children.push(child);},addEventListener(name,fn){this.listeners[name]=fn;},querySelector(){return {textContent:''};}});
+  Object.assign(f.context,{document:{createElement:node},escapeHTML:String,fmtTime:String});
+  vm.runInContext(extract(workspace,'renderExitParticipants'),f.context);f.run('renderExitParticipants()');
+  const button=f.get('#session-exit-participants').children[0].children[0];
+  f.context.post=async(url,payload)=>{f.requests.push({payload:plain(payload)});if(payload.action==='resolve-offline')return pending.promise;if(payload.action==='report')return {exit:active};return {exit:{...active,phase:'cancelled'}};};
+  const resolving=button.listeners.click();await new Promise(setImmediate);assert(button.disabled);assert(!f.get('#session-exit-cancel').disabled);
+  await f.run("decideWebExit('cancel')");active={...dirty,id:'next-offline-request'};await f.run('handleWebExitState('+JSON.stringify(active)+')');
+  pending.resolve({exit:{...dirty,phase:'backing-up'}});await resolving;
+  assert.equal(f.run('webExitState.id'),'next-offline-request');assert.equal(f.run('webExitState.phase'),'confirming');assert(f.get('#session-exit-dialog').open);
+});
+test('repeated cancelled status does not repeatedly notify',async()=>{
+  const f=setup();const cancelled={...confirming,phase:'cancelled'};
+  await f.run('handleWebExitState('+JSON.stringify(cancelled)+')');await f.run('handleWebExitState('+JSON.stringify(cancelled)+')');
+  assert.equal(f.messages.filter(row=>/已取消退出/.test(row.message)).length,1);
+});
 function originalListHarness(rows){
   const elements=new Map(),posts=[],messages=[],prompts=[],links=[],downloads=[];let allow=false,fail=false;
   function node(){return {children:[],listeners:{},checked:false,disabled:false,textContent:'',innerHTML:'',className:'',append(...items){this.children.push(...items);},replaceChildren(){this.children=[];},addEventListener(name,fn){this.listeners[name]=fn;},click(){links.push({href:this.href,download:this.download});}};}

@@ -10,7 +10,7 @@ from .values_abilities import add_advanced_values
 from .values_decisions import add_operation_values
 from .values_resources import add_resource_values
 from .reference_sources import provenance
-from .game_math import augmented_damage, float32
+from .game_math import augmented_damage, float32, healing_tick, healing_pool_with_vial, potion_healing_pool
 from .public_source_data import MISSILE_PUBLIC_TYPES
 
 INPUTS = {
@@ -61,7 +61,8 @@ def integer_parameters(raw, *, signed_equipment=False, health_fields=None):
         invalid = f'{label}需要填写{expected}（{low}–{high}）'
         if isinstance(value, bool):
             raise ValueError(invalid)
-        if isinstance(value, str) and not re.fullmatch(r'[+-]?(?:\d{1,7}(?:\.\d{0,6})?|\.\d{1,6})', value):
+        syntax = r'[+-]?(?:\d{1,7}(?:\.\d{0,17})?|\.\d{1,17})' if key == 'healing_percent' else r'[+-]?(?:\d{1,7}(?:\.\d{0,6})?|\.\d{1,6})'
+        if isinstance(value, str) and not re.fullmatch(syntax, value):
             raise ValueError(invalid)
         try:
             numeric = float(value)
@@ -110,13 +111,10 @@ def table(title, columns, rows, note=''):
 def heal_schedule(amount, current, maximum, vial=-1, percent=.25, flat=0, apply_vial=True):
     """Match Healing.healingThisTick, including full-health wasted ticks and vial cap."""
     if vial >= 0 and apply_vial:
-        amount = rounded(amount * (1 + .125 * (vial+1)))
+        amount = healing_pool_with_vial(amount, vial)
     left, hp, rows = amount, current, []
-    cap = [4+rounded(.15*maximum), 3+rounded(.1*maximum), 2+rounded(.07*maximum), 1+rounded(.05*maximum)]
     while left > 0 and len(rows) < 10000:
-        tick = min(left, max(1, augmented_damage(left, percent)+flat))
-        if vial >= 0:
-            tick = min(tick, cap[vial])
+        tick = healing_tick(left, percent, flat, vial, maximum)
         actual = min(maximum-hp, tick)
         hp += actual; left -= tick
         rows.append([len(rows)+1, tick, actual, hp, left])
@@ -209,7 +207,12 @@ class PlayerValues:
             entry = {'id':identity, 'name':self.rules.title(owner).split(' · ')[0], 'category':'物品', 'description':'', 'numeric_refs':[{'class':normalized}]}
         signed_equipment = (identity in MISSILE_PUBLIC_TYPES or identity.startswith(('items.weapon.melee.', 'items.armor.'))) and '$' not in identity and not identity.endswith('.ability') and not any(part in identity for part in ('.glyphs.', '.curses.'))
         signed_equipment = signed_equipment or identity == 'items.scrolls.scrollofupgrade' or identity.startswith(('items.weapon.enchantments.', 'items.weapon.curses.', 'items.armor.glyphs.', 'items.armor.curses.')) and '$' not in identity
-        p = integer_parameters(raw or {}, signed_equipment=signed_equipment, health_fields=())
+        raw = dict(raw or {})
+        healing_fields = ('power', 'healing_percent', 'healing_flat', 'vial')
+        healing_missing = [key for key in healing_fields if key not in raw or raw[key] in ('', None)] if identity == 'actors.buffs.healing' else []
+        p = integer_parameters({key:value for key,value in raw.items() if key not in healing_missing}, signed_equipment=signed_equipment, health_fields=())
+        if identity == 'actors.buffs.healing' and 'power' not in healing_missing and p['power'] != int(p['power']):
+            raise ValueError('剩余治疗池必须是整数')
         talent_cap=4
         if identity.startswith('actors.hero.spells.'):
             name=identity.rsplit('.',1)[-1].split('$')[0].removesuffix('spell')
@@ -305,7 +308,11 @@ class PlayerValues:
                     except (UnknownFormula,KeyError):pass
                 if rows:result.append(block('出售与回收',rows))
 
-        self.dynamic(identity, entry, owner, p, result, requested)
+        if healing_missing:
+            requested.update(('max_hp', 'hp', *healing_fields))
+            result.append(block('当前治疗状态', [], '治疗池或恢复速度条件未确认，请补全空白参数后计算；只确认 Healing 存在不会推定治疗药剂速度。'))
+        else:
+            self.dynamic(identity, entry, owner, p, result, requested)
         self.rings(identity, p, result, requested)
         self.combat_effects(identity, owner, p, result, requested)
         self.world_effects(identity, owner, p, result, requested)
@@ -359,6 +366,7 @@ class PlayerValues:
         if identity=='actors.buffs.healing':
             for input_value in inputs:
                 if input_value['key']=='power':input_value.update(label='剩余治疗池（已经包含饰物加成）',step=1)
+                if input_value['key'] in healing_missing:input_value['value']=''
         if identity.split('$')[0]=='actors.buffs.monkenergy':
             for input_value in inputs:
                 if input_value['key']=='power':input_value['label']='当前内力（可填小数）'
@@ -368,6 +376,7 @@ class PlayerValues:
                 if input_value['key']=='power':input_value['label']=power_labels[identity]
         return {'id':identity,'name':entry['name'],'version':self.catalog.data['version'], 'status':'values',
                 'blocks':result, 'inputs':inputs, 'alchemy_recipes': alchemy_recipes,
+                **({'missing_inputs':healing_missing} if identity == 'actors.buffs.healing' else {}),
                 'notice': '回合指游戏时间，不是现实秒数。小数最多显示六位有效数字。',
                 'no_fixed_values':not result, 'non_numeric':self.non_numeric(identity),
                 'provenance':provenance(self, identity, owner)}
@@ -829,7 +838,7 @@ class PlayerValues:
         heal_ids={'items.potions.potionofhealing','items.potions.elixirs.elixirofhoneyedhealing'}
         if identity in heal_ids:
             requested.update(('max_hp','hp','hero_level','vial'))
-            base=math.floor(.8*maximum+14)
+            base=potion_healing_pool(maximum)
             total,schedule=heal_schedule(base,current,maximum,p['vial'])
             rows=[metric('治疗池总量',total,'HP'),metric('最终实际恢复',min(maximum-current,total),'HP'),metric('首次恢复',schedule[0][2],'HP'),metric('治疗池耗尽',len(schedule),'回合'),metric('药水恐惧挑战毒强度',4+hero//2,'点','药水恐惧时不治疗，改为中毒')]
             result.append(block('按你的生命计算',rows,f'当前生命 {current}/{maximum}；凝血试管 '+('未佩戴' if p['vial']<0 else f'+{p["vial"]}')))
@@ -839,7 +848,7 @@ class PlayerValues:
             if p['power']!=int(p['power']):raise ValueError('剩余治疗池必须是整数')
             total,schedule=heal_schedule(int(p['power']),current,maximum,p['vial'],p['healing_percent']/100,p['healing_flat'],apply_vial=False)
             rows=[metric('剩余治疗池',total,'HP'),metric('最终实际恢复',min(maximum-current,total),'HP'),metric('首次恢复',schedule[0][2] if schedule else 0,'HP'),metric('治疗池耗尽',len(schedule),'回合')]
-            result.append(block('当前治疗状态',rows,'按手填来源参数计算，不再次放大剩余额度；默认速度仅是治疗药剂示例。治疗过程中再次受伤会改变实际恢复。'))
+            result.append(block('当前治疗状态',rows,'按所填来源条件计算，不再次放大剩余额度；表中是没有再次受伤的恢复过程，不保证实际行动时机或安全。'))
             result.append(table('常见治疗速度',['来源','占剩余额度%','额外固定HP/次'],[['治疗药剂/蜂蜜治疗合剂',25,0],['护符返回首领层',0,20]],'已有治疗状态相遇时，分别保留较大的治疗池、百分比和固定治疗值；试管限速按当前来源核对。'))
             result.append(table('每回合恢复明细',['恢复次数','本次治疗池消耗','实际恢复HP','治疗后生命','剩余治疗池'],schedule))
         if identity=='items.potions.exotic.potionofshielding':

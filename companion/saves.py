@@ -70,18 +70,14 @@ def validate_location(game):
     return depth, branch
 
 
-def validate_level(bundle):
-    level = bundle.get('level')
+def validate_map(level, maximum=1024):
+    """Validate primitive map data before interpreting exploration flags."""
     if not isinstance(level, dict):
         raise SaveError('楼层存档缺少完整地图结构，尚未操作存档')
     width,height=level.get('width'),level.get('height')
     if (type(width) is not int or type(height) is not int
-            or not 1<=width<=1024 or not 1<=height<=1024):
+            or not 1<=width<=maximum or not 1<=height<=maximum):
         raise SaveError('楼层地图尺寸无效，尚未操作存档')
-    if not isinstance(level.get('__className'),str) or level['__className'] not in {'com.shatteredpixel.shatteredpixeldungeon.levels.'+name for name in LEVEL_TYPES}:
-        raise SaveError('楼层类型缺失或尚未支持，尚未操作存档')
-    if type(level.get('version')) is not int or not 1<=level['version']<=2147483647:
-        raise SaveError('楼层版本数据缺失或无效，尚未操作存档')
     length=width*height
     for name in ('map','visited','mapped'):
         cells=level.get(name)
@@ -91,6 +87,15 @@ def validate_level(bundle):
             raise SaveError('楼层地图数组不完整，尚未操作存档')
         if name == 'map' and any(not 0 <= cell < 256 for cell in cells):
             raise SaveError('楼层地形编号无效，尚未操作存档')
+    return level
+
+
+def validate_level(bundle):
+    level = validate_map(bundle.get('level'))
+    if not isinstance(level.get('__className'),str) or level['__className'] not in {'com.shatteredpixel.shatteredpixeldungeon.levels.'+name for name in LEVEL_TYPES}:
+        raise SaveError('楼层类型缺失或尚未支持，尚未操作存档')
+    if type(level.get('version')) is not int or not 1<=level['version']<=2147483647:
+        raise SaveError('楼层版本数据缺失或无效，尚未操作存档')
     return level
 
 
@@ -250,6 +255,12 @@ def read_slot(root: Path, number: int) -> tuple[dict, dict | None, float, str]:
             elif file_stamp(level_stat) != file_stamp(level_path.stat()):
                 warning = "地图正在保存，稍后自动重读"
                 level = None
+            else:
+                try:
+                    validate_map(level, maximum=128)
+                except SaveError:
+                    level = None
+                    warning = "当前地图的地形或探索标记无效，地图暂不展示；角色信息仍可查看"
         except (SaveError, OSError):
             warning = "当前地图暂时无法读取"
             level = None

@@ -48,6 +48,9 @@ jobs:
           node tools/verify_workspace_concurrency.js
           node tools/verify_alchemy_workflow.js
           node tools/verify_backup_recovery.js
+          node tools/verify_saved_plan_contracts.js
+          node tools/verify_healing_workflow.js
+          node tools/verify_global_progress.js
       - name: Build source archive
         if: matrix.python == '3.13'
         run: python tools/build_release.py

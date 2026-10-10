@@ -22,9 +22,11 @@ class RecoveryJournalTests(unittest.TestCase):
         self.config=self.directory/'settings.json'
 
     def report(self, session, suffix='a', revision=1, dirty=True, raw='  -unfinished\t  '):
-        return session.report_exit_surface('web-'+suffix*8,revision,dirty,
+        session.report_exit_surface('web-'+suffix*8,revision,dirty,
             draft={'format':2,'schema':'denghuo-web-session','numeric':[{'identity':'actors.buffs.healing','raw':{'power':raw}}]},
             label='数值与炼金原始输入',kind='web')
+        self.assertTrue(session.exit_coordinator.flush_checkpoints(5), 'checkpoint did not complete')
+        return session.exit_status()
 
     def crash_pending(self, *, initial=False, damaged=False, quota='none', raw='  -unfinished\t  '):
         script='''import os,sys
@@ -561,6 +563,8 @@ from pathlib import Path
 from companion.service import Session
 s=Session(Path(sys.argv[1]))
 s.report_exit_surface('web-aaaaaaaa',7,True,draft={'format':2,'schema':'denghuo-web-session','numeric':[{'identity':'actors.buffs.healing','raw':{'power':'  -unfinished\\t  '}}]},kind='web',label='原始数值')
+assert s.exit_coordinator.flush_checkpoints(5)
+assert s.exit_status()['participants'][0]['recovery_saved']
 os._exit(23)
 '''
         result=subprocess.run([sys.executable,'-B','-c',script,str(self.config)],cwd=Path(__file__).resolve().parents[1],capture_output=True)

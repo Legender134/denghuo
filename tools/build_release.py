@@ -83,6 +83,14 @@ FILES = (
     "tests/test_external_destination_migration.py",
     "tests/test_workspace_liveness.py",
     "tools/verify_backup_recovery.js",
+    "companion/global_progress.py",
+    "tests/test_global_progress.py",
+    "tests/test_healing_workflow.py",
+    "tests/test_exit_persistence_liveness.py",
+    "tests/test_saved_plan_contracts.py",
+    "tools/verify_global_progress.js",
+    "tools/verify_healing_workflow.js",
+    "tools/verify_saved_plan_contracts.js",
 )
 STAMP = (2026, 10, 2, 0, 0, 0)
 
