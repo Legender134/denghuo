@@ -224,6 +224,107 @@ class WorkspaceTests(unittest.TestCase):
             store.save('不使用预算的来源', 'equipment', None, args, {'fields':{'upgrade_budget':'手填'}})
         self.assertEqual(store.path.read_bytes(), prior)
 
+    def test_legacy_json_conflict_retry_preserves_all_five_kinds_after_reopen(self):
+        from companion.character_scene import empty_scene
+        store = self.session.knowledge
+        scene = empty_scene(); scene['base_strength'] = 13
+        payloads = [('numeric', 'items.potions.potionofhealing', {'hp':8,'max_hp':40}),
+            ('equipment', None, {'id_a':'items.weapon.melee.sword','id_b':'items.weapon.melee.longsword'}),
+            ('manual', None, {'hp':8,'ht':40}), ('character', None, scene),
+            ('alchemy', None, {'format':2,'recipe_version':'4.0.2',
+                'targets':[{'key':'g1','recipe':'potion-healing','quantity':1,'choices':{}}],
+                'resources':[],'energy':11,'energy_reserve':0,'energy_origin':'manual',
+                'reference_version':None,'chains':{}})]
+        originals = [store.save('分享'+kind,kind,entry,params,note='原始假设')
+            for kind,entry,params in payloads]
+        store.favorite('items.potions.potionofhealing', True)
+        shared = store.export()
+        local = [store.save('本机'+row['kind'],row['kind'],row['entry'],row['params'],
+            record_id=row['id'],expected_record_revision=row['record_revision'],note='本机新假设')
+            for row in originals]
+        first = store.import_records(shared)
+        self.assertEqual((first['plans_added'],first['conflicting_plans_kept_as_copies']),(5,5))
+        preserved = store.export()
+        reopened = Session(self.session.config_path,self.catalog).knowledge
+        again = reopened.import_records(shared)
+        self.assertEqual((again['plans_added'],again['conflicting_plans_kept_as_copies'],again.get('plans_skipped',-1)),(0,0,5))
+        self.assertEqual(reopened.export(),preserved)
+        for row in local:
+            self.assertEqual(reopened.reopen(row['id'])['plan'],row)
+        changed = json.loads(shared)
+        changed['plans'] = [changed['plans'][0]]
+        changed['plans'][0]['note'] = '确实不同的新假设'
+        result = reopened.import_records(json.dumps(changed,ensure_ascii=False).encode('utf-8'))
+        self.assertEqual((result['plans_added'],result['conflicting_plans_kept_as_copies']),(1,1))
+        self.assertEqual(len(reopened.status()['plans']),11)
+        self.assertEqual(reopened.status()['favorites'],['items.potions.potionofhealing'])
+
+    def test_legacy_json_retry_at_capacity_skips_before_capacity_and_overflow_is_atomic(self):
+        store = self.session.knowledge
+        original = store.save('分享治疗','numeric','items.potions.potionofhealing',{'hp':8,'max_hp':40})
+        shared = store.export()
+        store.save('本机治疗','numeric',original['entry'],{'hp':9,'max_hp':40},
+            record_id=original['id'],expected_record_revision=original['record_revision'])
+        store.import_records(shared)
+        value,stamp = store._read()
+        for number in range(198):
+            row = copy.deepcopy(value['plans'][0]); row['id'] = f'{number+1000:032x}'
+            row['name'] = '保留方案'+str(number); value['plans'].append(row)
+        store._write(value,stamp)
+        prior = store.path.read_bytes()
+        try:
+            retry = store.import_records(shared)
+        except ValueError as exc:
+            self.fail('已有副本的重试不应占用新容量：'+str(exc))
+        self.assertEqual((retry['plans_added'],retry.get('plans_skipped',-1)),(0,1))
+        self.assertEqual(store.path.read_bytes(),prior)
+        incoming = json.loads(shared)
+        incoming['favorites'] = ['items.waterskin']
+        incoming['plans'][0]['note'] = '另一份新假设'
+        with self.assertRaisesRegex(ValueError,'超过200项'):
+            store.import_records(json.dumps(incoming,ensure_ascii=False).encode('utf-8'))
+        self.assertEqual(store.path.read_bytes(),prior)
+
+    def test_legacy_random_import_copy_is_recognized_without_removing_explicit_copies(self):
+        store = self.session.knowledge
+        original = store.save('分享治疗','numeric','items.potions.potionofhealing',{'hp':8,'max_hp':40})
+        shared = store.export()
+        store.save('本机治疗','numeric',original['entry'],{'hp':9,'max_hp':40},
+            record_id=original['id'],expected_record_revision=original['record_revision'])
+        store.import_records(shared)
+        value,stamp = store._read()
+        imported = next(row for row in value['plans'] if row['id']!=original['id'])
+        imported['id'] = 'c'*32
+        store._write(value,stamp)
+        explicit = store.save('我的独立副本','numeric',original['entry'],{'hp':8,'max_hp':40})
+        prior = store.export()
+        retry = Session(self.session.config_path,self.catalog).knowledge.import_records(shared)
+        self.assertEqual((retry['plans_added'],retry.get('plans_skipped',-1)),(0,1))
+        self.assertEqual(store.export(),prior)
+        self.assertEqual(store.reopen(explicit['id'])['plan'],explicit)
+        self.assertEqual(len(store.status()['plans']),3)
+
+    def test_legacy_json_retry_preserves_edited_copy_and_adds_original_once(self):
+        store = self.session.knowledge
+        original = store.save('分享治疗','numeric','items.potions.potionofhealing',{'hp':8,'max_hp':40})
+        shared = store.export()
+        local = store.save('本机治疗','numeric',original['entry'],{'hp':9,'max_hp':40},
+            record_id=original['id'],expected_record_revision=original['record_revision'])
+        store.import_records(shared)
+        copy_id = next(row['id'] for row in store.status()['plans'] if row['id']!=original['id'])
+        copied = store.reopen(copy_id)['plan']
+        edited = store.save(copied['name'],copied['kind'],copied['entry'],copied['params'],copied['origin'],
+            record_id=copy_id,expected_record_revision=copied['record_revision'],note='本机继续修改导入副本')
+        retry = store.import_records(shared)
+        self.assertEqual((retry['plans_added'],retry['conflicting_plans_kept_as_copies']),(1,1))
+        self.assertEqual(store.reopen(original['id'])['plan'],local)
+        self.assertEqual(store.reopen(copy_id)['plan'],edited)
+        prior = store.path.read_bytes()
+        again = Session(self.session.config_path,self.catalog).knowledge.import_records(shared)
+        self.assertEqual((again['plans_added'],again.get('plans_skipped',-1)),(0,1))
+        self.assertEqual(store.path.read_bytes(),prior)
+        self.assertEqual(len(store.status()['plans']),3)
+
     def test_invalid_save_and_import_do_not_replace_prior_bytes(self):
         store = self.session.knowledge
         store.save('治疗', 'numeric', 'items.potions.potionofhealing', {'hp':3, 'max_hp':30})

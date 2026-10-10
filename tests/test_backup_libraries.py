@@ -89,6 +89,7 @@ class BackupLibraryTests(unittest.TestCase):
 
     def test_retention_preserves_fixed_latest_and_archived_bytes_rejoin_is_explicit(self):
         originals = {row['id']: (self.manager.scope(self.old) / (row['id'] + '.zip')).read_bytes() for row in self.rows}
+        observations = {row['id']: row for row in self.manager.history(BackupLibrary(self.identity))}
         game_originals = {path: path.read_bytes() for path in self.old.rglob('*.dat')}
         preview = self.operate('retention-preview', {'policy': {'keep_per_slot': 1}})
         self.assertEqual({row['id'] for row in preview['candidates']}, {self.rows[1]['id'], self.rows[2]['id']})
@@ -104,13 +105,77 @@ class BackupLibraryTests(unittest.TestCase):
         rejoin = self.operate('rejoin-preview', {'file': retained[0]['file']})
         with self.assertRaisesRegex(ValueError, '确认'):
             self.operate('rejoin', {'file': retained[0]['file'], 'expected': rejoin['expected']})
+        before_rejoin = observations[retained[0]['id']]
+        self.now += 600
         result = self.operate('rejoin', {'file': retained[0]['file'], 'expected': rejoin['expected'], 'confirmed': True})
         self.assertFalse(result['restored'])
         self.assertEqual(len(self.manager.history(BackupLibrary(self.identity))), 3)
+        rejoined = self.manager.selected(BackupLibrary(self.identity), before_rejoin)
+        self.assertEqual((rejoined['time'], rejoined['last_seen']), (before_rejoin['time'], before_rejoin['last_seen']))
+        self.assertEqual(rejoined['imported_at'], self.now)
+        next_preview = self.operate('retention-preview', {'policy': {'keep_per_slot': 1}})
+        self.assertIn(self.rows[-1]['id'], {row['id'] for row in next_preview['kept']})
+        self.assertNotIn(self.rows[-1]['id'], {row['id'] for row in next_preview['candidates']})
+        self.assertIn(before_rejoin['id'], {row['id'] for row in next_preview['candidates']})
         self.assertEqual(len(self.manager.retained_status(BackupLibrary(self.identity))), 2)
         for path, raw in game_originals.items():
             self.assertEqual(path.read_bytes(), raw)
         self.assertEqual(list(self.current.iterdir()), [])
+
+    def test_rejoin_preserves_a_newer_real_observation_name_and_fixed_status(self):
+        reference = BackupLibrary(self.identity)
+        old = self.manager.selected(reference, self.rows[1])
+        self.manager.remove(reference, {**old, 'confirm': '移出备份 1'})
+        retained = next(row for row in self.manager.retained_status(reference) if row['id'] == old['id'])
+        self.now += 600
+        self.capture(10)
+        observed = self.manager.selected(reference, old)
+        self.manager.manage(reference, {**old, 'label': '最近核对', 'locked': True,
+                                       'expected_metadata_revision': observed['metadata_revision']})
+        self.now += 600
+        preview = self.operate('rejoin-preview', {'file': retained['file']})
+        self.operate('rejoin', {'file': retained['file'], 'expected': preview['expected'], 'confirmed': True})
+        current = self.manager.selected(reference, old)
+        self.assertEqual((current['time'], current['last_seen']), (old['time'], observed['last_seen']))
+        self.assertEqual(current['label'], '最近核对')
+        self.assertTrue(current['locked'])
+
+    def test_legacy_retained_metadata_uses_known_first_observation(self):
+        reference = BackupLibrary(self.identity)
+        old = self.manager.selected(reference, self.rows[1])
+        self.manager.remove(reference, {**old, 'confirm': '移出备份 1'})
+        retained = next(row for row in self.manager.retained_status(reference) if row['id'] == old['id'])
+        sidecar = self.manager.directory.parent / 'backup-recycle' / self.identity / Path(retained['file']).with_suffix('.json')
+        metadata = json.loads(sidecar.read_text(encoding='utf-8'))
+        metadata.pop('last_seen')
+        sidecar.write_text(json.dumps(metadata), encoding='utf-8')
+        self.now += 600
+        preview = self.operate('rejoin-preview', {'file': retained['file']})
+        self.operate('rejoin', {'file': retained['file'], 'expected': preview['expected'], 'confirmed': True})
+        current = self.manager.selected(reference, old)
+        self.assertEqual((current['time'], current['last_seen']), (old['time'], old['time']))
+        self.assertEqual(current['imported_at'], self.now)
+
+    def test_invalid_retained_observations_keep_archives_and_game_unchanged(self):
+        reference = BackupLibrary(self.identity)
+        old = self.manager.selected(reference, self.rows[1])
+        self.manager.remove(reference, {**old, 'confirm': '移出备份 1'})
+        retained = next(row for row in self.manager.retained_status(reference) if row['id'] == old['id'])
+        archive = self.manager.directory.parent / 'backup-recycle' / self.identity / retained['file']
+        original = archive.read_bytes()
+        sidecar = archive.with_suffix('.json')
+        metadata = json.loads(sidecar.read_text(encoding='utf-8'))
+        game = {path: path.read_bytes() for path in self.old.rglob('*.dat')}
+        for value in (None, True, '1700000240', float('nan'), metadata['first_seen'] - 1):
+            with self.subTest(last_seen=value):
+                sidecar.write_text(json.dumps({**metadata, 'last_seen': value}), encoding='utf-8')
+                raw = sidecar.read_bytes()
+                with self.assertRaisesRegex(ValueError, '观察时间记录损坏'):
+                    self.manager.rejoin(reference, retained)
+                self.assertEqual(sidecar.read_bytes(), raw)
+                self.assertEqual(archive.read_bytes(), original)
+                self.assertNotIn(old['id'], {row['id'] for row in self.manager.history(reference)})
+                self.assertTrue(all(path.read_bytes() == data for path, data in game.items()))
 
     def test_changed_selection_metadata_and_other_library_cannot_reuse_preview(self):
         selected = [{'slot': 1, 'id': self.rows[1]['id']}]

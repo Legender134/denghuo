@@ -129,12 +129,12 @@ function renderBackupReceipts(){
   const retryPanels=new Map(backupFlow.receipts.map(receipt=>[receipt.id,$('#backup-receipt-retry-'+receipt.id)]).filter(([,panel])=>panel));
   target.replaceChildren();const title=document.createElement('h3');title.textContent='已提交操作回执';target.append(title);
   if(!backupFlow.receipts.length){const p=document.createElement('p');p.textContent='提交后的实际逐项结果会独立保留在这里；修改选择、取消后续确认和切换连接不会隐藏已发生的操作。';target.append(p);return;}
-  const names={import:'批量导入','single-import':'单份备份导入',retention:'移入保留目录',reclaim:'回收原件',stage:'重新尝试回档'};
+  const names={import:'批量导入','single-import':'单份备份导入',retention:'移入保留目录',reclaim:'回收原件',stage:'重新尝试回档',restore:'恢复存档',undo:'撤回上次回档',remove:'移出活动备份'};
   for(const receipt of [...backupFlow.receipts].reverse()){
     const details=document.createElement('details');details.className='rule-section';details.open=receipt===backupFlow.receipts.at(-1);const summary=document.createElement('summary');summary.textContent=`操作 ${receipt.id} · ${names[receipt.kind]||receipt.kind} · ${receipt.finished}`;details.append(summary);
     const result=receipt.result,rows=result.results||[],success=rows.filter(row=>row.ok).length,failed=rows.filter(row=>!row.ok).length;
     const info=document.createElement('p');info.className='rule-path';info.textContent=`提交目录：${receipt.root}。已完成 ${success} 项，未完成 ${failed} 项。${result.message||result.note||''}${receipt.changed?' 提交后选择、草稿或连接已变化；这些结果属于本次提交，新编辑保持，继续操作须重新预览。':''}`;details.append(info);
-    const table=document.createElement('div');table.innerHTML=flowTable(rows,{result:true,successText:{import:'已导入，未回档',retention:'已移入保留目录',reclaim:'已回收；外部原件保持',stage:'已回档；原暂存保持'}[receipt.kind]});details.append(table);
+    const table=document.createElement('div');table.innerHTML=flowTable(rows,{result:true,successText:{import:'已导入，未回档',retention:'已移入保留目录',reclaim:'已回收；外部原件保持',stage:'已回档；原暂存保持',restore:'已恢复；回档前进度保持',undo:'已撤回；撤回前进度保持',remove:'已移入保留目录，未改游戏'}[receipt.kind]});details.append(table);
     if(failed&&receipt.kind==='import'){const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='仅重新预览本次失败记录（保留当前选择）';button.addEventListener('click',()=>retryBackupImportReceipt(receipt));details.append(button);}
     const retry=retryPanels.get(receipt.id)||document.createElement('div');retry.id='backup-receipt-retry-'+receipt.id;details.append(retry);target.append(details);
   }

@@ -4,6 +4,7 @@ let compareResultArgs=null,compareSavedPlan=null,compareFixed=false;
 let compareResultFields=null;
 let comparePending=false,compareSessionUnsaved=false,compareImportUndo=null;
 let compareContextSerial={a:0,b:0};
+let compareOpenRequest=0,compareEditGeneration=0;
 const comparisonPrefixes={weapon:'items.weapon.melee.',armor:'items.armor.',wand:'items.wands.',ring:'items.rings.'};
 let compareBudgetOrigin='手填预算 · 未实际消耗资源',compareBudgetStamp=null;
 function refreshBudgetOrigin(){
@@ -14,7 +15,7 @@ function refreshBudgetOrigin(){
   const strengthNote=typeof compareCharacterReference!=='undefined'&&compareCharacterReference?'拟投入力量药剂先增加基础力量，再按每侧戒指和力大无穷天赋重新计算总力量。':'有效力量为所填力量加拟投入力量药剂数。';
   $('#compare-budget-source').textContent=compareBudgetOrigin+(compareBudgetStamp?` · ${fmtTime(compareBudgetStamp.modified)}${changed||state?.stale?' · 旧快照，请重新核对':''}`:'')+'。A、B 独立使用同一可用预算，不表示同时花费；未实际消耗资源。'+strengthNote+'已计入当前条件的药剂不得重复投入。';
 }
-$('#compare-use-resources').addEventListener('click',()=>{rememberComparisonImport();compareSessionUnsaved=true;const items=(state?.data?.items||[]).filter(i=>i.known&&i.available===true);const quantity=key=>items.filter(i=>i.key===key).reduce((n,i)=>n+(Number.isInteger(i.quantity)&&i.quantity>0?i.quantity:0),0);$('#compare-upgrade-budget').value=String(Math.min(100,quantity('items.scrolls.scrollofupgrade')));$('#compare-strength-budget').value=String(Math.min(99,quantity('items.potions.potionofstrength')));$('#compare-planning-enabled').checked=true;compareBudgetStamp=calculationStamp();compareBudgetOrigin=compareBudgetStamp?.mode==='manual'?'手动局势已知可用资源':'快照中已知且可用资源';compareDirty=true;compareError='';refreshComparisonOrigin();});
+$('#compare-use-resources').addEventListener('click',()=>{compareEditGeneration++;rememberComparisonImport();compareSessionUnsaved=true;const items=(state?.data?.items||[]).filter(i=>i.known&&i.available===true);const quantity=key=>items.filter(i=>i.key===key).reduce((n,i)=>n+(Number.isInteger(i.quantity)&&i.quantity>0?i.quantity:0),0);$('#compare-upgrade-budget').value=String(Math.min(100,quantity('items.scrolls.scrollofupgrade')));$('#compare-strength-budget').value=String(Math.min(99,quantity('items.potions.potionofstrength')));$('#compare-planning-enabled').checked=true;compareBudgetStamp=calculationStamp();compareBudgetOrigin=compareBudgetStamp?.mode==='manual'?'手动局势已知可用资源':'快照中已知且可用资源';compareDirty=true;compareError='';refreshComparisonOrigin();});
 async function initializeEquipmentComparison(){
   const lists=await Promise.all(Object.values(comparisonPrefixes).map(async q=>{
     const r=await fetch('/api/library?'+new URLSearchParams({q,category:'物品'}));
@@ -96,13 +97,14 @@ function refreshComparisonOrigin(){
 }
 $('#compare-kind').addEventListener('change',()=>{compareSessionUnsaved=true;for(const side of ['a','b']){delete $('#compare-'+side).dataset.edited;for(const field of ['level','mastery','augment','tier','level-known','curse','pair','pair-level','pair-curse'])delete $('#compare-'+field+'-'+side).dataset.manual;for(const input of $$('#compare-context-'+side+' input'))delete input.dataset.manual;}compareSignature='';compareError='';renderEquipmentComparison();});
 $('#compare-follow-strength').addEventListener('click',()=>{
-  if(!state?.data)return;rememberComparisonImport();compareSessionUnsaved=true;
+  if(!state?.data)return;compareEditGeneration++;rememberComparisonImport();compareSessionUnsaved=true;
   delete $('#compare-strength').dataset.edited;delete $('#compare-strength').dataset.manual;
   compareFixed=false;
   compareDirty=true;compareError='';renderEquipmentComparison();
 });
 for(const suffix of ['a','b'])$('#compare-'+suffix).addEventListener('change',()=>{compareSessionUnsaved=true;$('#compare-'+suffix).dataset.edited='true';fillCompareChoice(suffix);compareError='';compareDirty=true;refreshComparisonOrigin();});
-$('#equipment-comparison').addEventListener('input',e=>{compareSessionUnsaved=true;compareDirty=true;compareError='';e.target.dataset.manual='true';if(['compare-upgrade-budget','compare-strength-budget'].includes(e.target.id)){compareBudgetOrigin='手填预算';compareBudgetStamp=null;}if(/^compare-(level|augment|mastery|tier)-[ab]$/.test(e.target.id))fillCompareChoice(e.target.id.slice(-1),true);if(e.target.id==='compare-strength')e.target.dataset.edited='true';refreshComparisonOrigin();});
+$('#equipment-comparison').addEventListener('change',()=>{compareEditGeneration++;});
+$('#equipment-comparison').addEventListener('input',e=>{compareEditGeneration++;compareSessionUnsaved=true;compareDirty=true;compareError='';e.target.dataset.manual='true';if(['compare-upgrade-budget','compare-strength-budget'].includes(e.target.id)){compareBudgetOrigin='手填预算';compareBudgetStamp=null;}if(/^compare-(level|augment|mastery|tier)-[ab]$/.test(e.target.id))fillCompareChoice(e.target.id.slice(-1),true);if(e.target.id==='compare-strength')e.target.dataset.edited='true';refreshComparisonOrigin();});
 $('#equipment-comparison').addEventListener('submit',async event=>{
   event.preventDefault();const seq=++compareRequest,button=$('#compare-submit'),signature=compareSignature;compareError='';button.disabled=true;comparePending=true;
   let args;try{args=readComparisonArgs();}catch(error){comparePending=false;button.disabled=false;compareError=error.message;refreshComparisonOrigin();return;}
@@ -138,24 +140,38 @@ function renderPlanningResult(planning){
   if(!planning)return '';
   return `<section class="comparison-explanation"><h3>预算规划 · ${planning.mode==='min_strength'?'最小力量门槛':'完整投入 0 到预算'}</h3><p>升级卷轴预算 ${escapeHTML(planning.upgrade_budget)}；拟投入力量药剂 ${escapeHTML(planning.strength_budget)}；规划有效力量 ${escapeHTML(planning.effective_strength)}。未实际消耗资源。</p><div class="restore-comparison">${(planning.choices||[]).map((choice,index)=>{const alternatives=choice.alternatives||[],cells=choice.metric_rows||[],labels=cells.map(c=>c.label),notes=cells.map(c=>`${c.label}${c.unit?'（'+c.unit+'）':''}：${c.condition||'见条件'}`).join('；');return `<article class="resource-card"><h3>${index?'B':'A'} · ${escapeHTML(choice.name)}</h3>${choice.needed_upgrades!==undefined?`<p>最小力量门槛需 ${choice.needed_upgrades===null?'超出等级范围':escapeHTML(choice.needed_upgrades)+' 张卷轴'}；${choice.within_budget?'预算足够达标':'预算内仍有力量缺口'}。</p>`:''}<p>选定模式的最终等级 ${escapeHTML(choice.planned_level)}；投入 ${escapeHTML(choice.spent_upgrades)} 张卷轴；剩余 ${escapeHTML(choice.remaining_upgrades)} 张。</p>${exampleHTML({title:'选定模式的规划后数值',values:cells})}${alternatives.length?exampleHTML({title:'每个预算内投入的完整结果与相对当前变化',columns:['投入卷轴','最终等级','剩余卷轴','投入力量药剂','剩余拟投入药剂',...cells.map(c=>c.label+(c.unit?'（'+c.unit+'）':''))],rows:alternatives.map(row=>[row.upgrades,row.level,row.remaining_upgrades,row.spent_strength,row.remaining_strength,...labels.map(label=>{const c=row.metric_rows.find(c=>c.label===label),change=row.changes.find(c=>c.label===label);return c?`${c.value}${change?'；Δ '+change.difference:''}`:'不适用';})]),note:notes}):''}${alternatives.some(row=>row.after_curse_removed)?`<details><summary>各投入下已解咒的条件分支（非保证）</summary>${alternatives.filter(row=>row.after_curse_removed).map(row=>exampleHTML({title:`投入 ${row.upgrades} 张 · 等级 ${row.level} · 已解咒`,values:row.after_curse_removed})).join('')}</details>`:''}<p class="muted">${escapeHTML(choice.explanation)}</p>${alternatives.some(row=>row.character_scene)?`<details><summary>每个投入的角色力量来源</summary>${alternatives.filter(row=>row.character_scene).map(row=>`<p>投入 ${escapeHTML(row.upgrades)} 张：${escapeHTML(characterSummary(row.character_scene))}；${escapeHTML(row.character_scene.replacement)}</p>`).join('')}</details>`:''}</article>`;}).join('')}</div><p class="muted">${escapeHTML(planning.notice)}</p></section>`;
 }
-async function fillComparisonParams(params){
-  const nav=navigationSerial;await comparisonReady;if(nav!==navigationSerial)return false;
-  $('#compare-kind').value=Object.keys(comparisonPrefixes).find(kind=>params.id_a.startsWith(comparisonPrefixes[kind]));compareSignature='';renderEquipmentComparison();
-  for(const suffix of ['a','b']){
-    const index=compareItems.findIndex(i=>i.key===params['id_'+suffix]&&!i.owned);if(index<0)throw new Error('此装备没有普通比较入口；请查资料确认支持范围。');
+async function fillComparisonParams(params,isCurrent=()=>true){
+  const nav=navigationSerial;await comparisonReady;if(!isCurrent()||nav!==navigationSerial)return false;
+  const kind=Object.keys(comparisonPrefixes).find(kind=>params.id_a.startsWith(comparisonPrefixes[kind]));
+  if(!kind)throw new Error('此装备没有普通比较入口；请查资料确认支持范围。');
+  const entries=['a','b'].map(side=>compareCatalog.find(item=>item.id===params['id_'+side]&&item.id.startsWith(comparisonPrefixes[kind])));
+  if(entries.some(item=>!item))throw new Error('此装备没有普通比较入口；请查资料确认支持范围。');
+  // Fetch and validate every schema before applying any saved field.
+  const contexts=await Promise.all(entries.map(async (item,index)=>['wand','ring'].includes(kind)?comparisonContextMarkup(await getJSON('/api/values?'+new URLSearchParams({id:item.id})),item.id,index?'b':'a'):null));
+  if(!isCurrent()||nav!==navigationSerial)return false;
+  $('#compare-kind').value=kind;compareSignature='';renderEquipmentComparison();
+  for(const [position,suffix] of ['a','b'].entries()){
+    const index=compareItems.findIndex(i=>i.key===params['id_'+suffix]&&!i.owned);
+    const target=$('#compare-context-'+suffix);compareContextSerial[suffix]++;
+    target.dataset.identity=contexts[position]===null?'':entries[position].id;target.innerHTML=contexts[position]||'';
     $('#compare-'+suffix).value=String(index);$('#compare-'+suffix).dataset.edited='true';fillCompareChoice(suffix);
-    for(const field of ['level','tier','augment','mastery']){const input=$('#compare-'+field+'-'+suffix);input.dataset.manual='true';if(field==='mastery')input.checked=params['mastery_'+suffix]==='1';else input.value=String(params[field+'_'+suffix]);}fillCompareChoice(suffix,true);await loadComparisonContext(suffix,compareItems[index]);
-    if(['wand','ring'].includes($('#compare-kind').value)){$('#compare-level-known-'+suffix).checked=params['level_known_'+suffix]==='1';$('#compare-curse-'+suffix).value=params['curse_'+suffix]||'0';$('#compare-pair-'+suffix).checked=params['ring_pair_'+suffix]==='1';$('#compare-pair-level-'+suffix).value=String(params['ring_pair_level_'+suffix]??0);$('#compare-pair-curse-'+suffix).value=params['ring_pair_curse_'+suffix]||'0';for(const input of $$('#compare-context-'+suffix+' input'))if(input.dataset.compareKey in params)input.value=String(params[input.dataset.compareKey]);}
+    for(const field of ['level','tier','augment','mastery']){const input=$('#compare-'+field+'-'+suffix);input.dataset.manual='true';if(field==='mastery')input.checked=params['mastery_'+suffix]==='1';else input.value=String(params[field+'_'+suffix]);}fillCompareChoice(suffix,true);
+    if(['wand','ring'].includes(kind)){$('#compare-level-known-'+suffix).checked=params['level_known_'+suffix]==='1';$('#compare-curse-'+suffix).value=params['curse_'+suffix]||'0';$('#compare-pair-'+suffix).checked=params['ring_pair_'+suffix]==='1';$('#compare-pair-level-'+suffix).value=String(params['ring_pair_level_'+suffix]??0);$('#compare-pair-curse-'+suffix).value=params['ring_pair_curse_'+suffix]||'0';for(const input of $$('#compare-context-'+suffix+' input'))if(input.dataset.compareKey in params)input.value=String(params[input.dataset.compareKey]);}
   }
-  $('#compare-investment-mode').value=params.investment_mode||(['weapon','armor'].includes($('#compare-kind').value)?'min_strength':'all');
+  $('#compare-investment-mode').value=params.investment_mode||(['weapon','armor'].includes(kind)?'min_strength':'all');
   $('#compare-planning-enabled').checked=params.planning==='1';$('#compare-planning').open=params.planning==='1';
   $('#compare-upgrade-budget').value=String(params.upgrade_budget??0);$('#compare-strength-budget').value=String(params.strength_budget??0);compareBudgetOrigin='保存预算 · 固定参考';compareBudgetStamp=null;
   if(typeof compareCharacterReference!=='undefined')compareCharacterReference=params.character_scene?{params:characterClone(params.character_scene),source:{mode:'manual',snapshot_at:null,slot:null},stamp:null,label:'保存的共享角色条件',signature:JSON.stringify(params.character_scene)}:null;
   $('#compare-scene-slot').value=String(params.scene_ring_slot??0);
-  $('#compare-strength').value=String(params.strength);$('#compare-strength').dataset.edited='true';compareRequest++;compareDirty=true;compareError='';$('.comparison-panel').open=true;refreshComparisonOrigin();return true;
+  $('#compare-strength').value=String(params.strength);$('#compare-strength').dataset.edited='true';
+  compareRequest++;comparePending=false;$('#compare-submit').disabled=false;
+  $('#equipment-comparison').querySelectorAll('input,select').forEach(input=>input.disabled=false);
+  compareDirty=true;compareError='';$('.comparison-panel').open=true;refreshComparisonOrigin();return true;
 }
 async function openEquipmentPlan(plan,result,rulesChanged){
-  try{if(!await fillComparisonParams(plan.params))return;compareSavedPlan=plan;compareFixed=true;compareStamp=null;if(compareCharacterReference){compareCharacterReference.source=cleanStoredOrigin(plan.origin);compareCharacterReference.label='方案「'+plan.name+'」的角色条件';}compareResultArgs=canonicalComparisonParams(plan.params);compareResultFields=plan.origin?.fields||{};for(const suffix of ['a','b'])$('#compare-origin-'+suffix).textContent=plan.origin?.fields?.['level_'+suffix]||'保存参数 · 固定参考';$('#compare-user-note').textContent=plan.note?'用户用途 / 假设（非游戏事实）：'+plan.note:'';$('#compare-user-note').hidden=!plan.note;renderComparisonResult(result);compareDirty=false;compareSessionUnsaved=false;compareError=rulesChanged?'规则版本已有变化；按保存参数和当前资料重新计算，请核对。':'';refreshComparisonOrigin();$('#compare-strength').focus();$('.comparison-panel').scrollIntoView({block:'start'});}catch(error){compareError=error.message;refreshComparisonOrigin();}
+  const request=++compareOpenRequest,generation=compareEditGeneration,nav=navigationSerial;
+  const isCurrent=()=>request===compareOpenRequest&&generation===compareEditGeneration&&nav===navigationSerial&&(typeof webEditingFrozen==='undefined'||!webEditingFrozen);
+  try{if(!await fillComparisonParams(plan.params,isCurrent)||!isCurrent())return false;compareSavedPlan=plan;compareFixed=true;compareStamp=null;if(compareCharacterReference){compareCharacterReference.source=cleanStoredOrigin(plan.origin);compareCharacterReference.label='方案「'+plan.name+'」的角色条件';}compareResultArgs=canonicalComparisonParams(plan.params);compareResultFields=plan.origin?.fields||{};for(const suffix of ['a','b'])$('#compare-origin-'+suffix).textContent=plan.origin?.fields?.['level_'+suffix]||'保存参数 · 固定参考';$('#compare-user-note').textContent=plan.note?'用户用途 / 假设（非游戏事实）：'+plan.note:'';$('#compare-user-note').hidden=!plan.note;renderComparisonResult(result);compareDirty=false;compareSessionUnsaved=false;compareError=rulesChanged?'规则版本已有变化；按保存参数和当前资料重新计算，请核对。':'';refreshComparisonOrigin();$('#compare-strength').focus();$('.comparison-panel').scrollIntoView({block:'start'});return true;}catch(error){if(isCurrent()){compareError=error.message;refreshComparisonOrigin();}return false;}
 }
 function comparisonFields(){
   const fields={strength:$('#compare-strength').dataset.edited?'手填有效力量':state?.data?(typeof currentCharacterStrengthLabel==='function'?currentCharacterStrengthLabel():'基础力量参考'):'力量10为示例'};
@@ -168,6 +184,7 @@ function comparisonFields(){
   return fields;
 }
 async function compareRiskReference(reference){
+  compareOpenRequest++;
   const nav=navigationSerial;await comparisonReady;if(nav!==navigationSerial)return;navigate('inventory');
   $('#compare-kind').value=reference.entry.startsWith('items.armor.')?'armor':'weapon';compareSignature='';renderEquipmentComparison();
   const index=compareItems.findIndex(i=>i.owned&&i.key===reference.entry&&(!reference.location||i.location===reference.location));
@@ -189,13 +206,16 @@ function readComparisonArgs(){
   }
   if($('#compare-planning-enabled').checked)Object.assign(args,{planning:'1',upgrade_budget:$('#compare-upgrade-budget').value,strength_budget:$('#compare-strength-budget').value,investment_mode:$('#compare-investment-mode').value});return args;
 }
+function comparisonContextMarkup(result,identity,side){
+  const fields=result.inputs.filter(f=>!['level','strength'].includes(f.key));if(identity.endsWith('wandoffireblast'))fields.push({key:'charges',label:'本次消耗充能',value:1,min:1,max:3,step:1});
+  return fields.map(f=>`<label>${escapeHTML(f.label)} · 示例，需手填核对<input type="number" data-compare-key="${f.key}_${side}" value="${f.value}" min="${f.min}" max="${f.max}" step="${f.step||1}" required></label>`).join('');
+}
 async function loadComparisonContext(side,item,checkRecovery=()=>{}){
   const target=$('#compare-context-'+side),identity=item?.key||'';
   if(!/^(items.wands.|items.rings.)/.test(identity)){target.replaceChildren();target.dataset.identity='';return;}
   if(target.dataset.identity===identity)return;const serial=++compareContextSerial[side];target.dataset.identity='';
   try{const result=await getJSON('/api/values?'+new URLSearchParams({id:identity}));if(serial!==compareContextSerial[side])return;checkRecovery();
-    const fields=result.inputs.filter(f=>!['level','strength'].includes(f.key));if(identity.endsWith('wandoffireblast'))fields.push({key:'charges',label:'本次消耗充能',value:1,min:1,max:3,step:1});
-    target.dataset.identity=identity;target.innerHTML=fields.map(f=>`<label>${escapeHTML(f.label)} · 示例，需手填核对<input type="number" data-compare-key="${f.key}_${side}" value="${f.value}" min="${f.min}" max="${f.max}" step="${f.step||1}" required></label>`).join('');
+    target.dataset.identity=identity;target.innerHTML=comparisonContextMarkup(result,identity,side);
   }catch(error){if(serial===compareContextSerial[side]){target.dataset.identity='';compareError=error.message;refreshComparisonOrigin();}}
 }
 function captureComparisonRaw(){return Object.fromEntries($$('#equipment-comparison input, #equipment-comparison select').map(input=>[input.id||input.dataset.compareKey,{value:input.value,checked:input.checked,manual:input.dataset.manual||'',edited:input.dataset.edited||''}]));}
@@ -206,7 +226,7 @@ function rememberComparisonImport(){
   compareImportUndo={contexts,signature:compareSignature,characterReference:typeof compareCharacterReference!=='undefined'?characterClone(compareCharacterReference):null,raw:captureComparisonRaw(),items:JSON.parse(JSON.stringify(compareItems)),stamp:compareStamp,budgetStamp:compareBudgetStamp,budgetOrigin:compareBudgetOrigin,dirty:compareDirty,fixed:compareFixed,saved:compareSavedPlan,args:compareResultArgs,fields:compareResultFields,error:compareError,result:$('#compare-result').innerHTML,text:$('#compare-copy-text').textContent,unsaved:compareSessionUnsaved};$('#compare-undo-import').hidden=false;
 }
 $('#compare-undo-import').addEventListener('click',()=>{
-  const old=compareImportUndo;if(!old)return;
+  const old=compareImportUndo;if(!old)return;compareEditGeneration++;
   compareRequest++;comparePending=false;$('#compare-submit').disabled=false;
   $('#equipment-comparison').querySelectorAll('input,select').forEach(el=>el.disabled=false);
   for(const side of ['a','b'])compareContextSerial[side]++;

@@ -15,12 +15,99 @@ function harness(){
   const context=vm.createContext({URL,URLSearchParams,Map,Set,Number,String,Math,Promise,JSON,console,
     compareCharacterReference:null,manualCharacterReference:null,
     characterClone:value=>value==null?null:structuredClone(value),
-    $:get,$$:()=>[],document:{activeElement:null},escapeHTML:String,fmtTime:String,state:null,fetch:async()=>({ok:true,json:async()=>({entries:[]})})});
+    $:get,$$:()=>[],document:{activeElement:null,createElement:()=>element(),createTextNode:text=>({textContent:text})},escapeHTML:String,fmtTime:String,state:null,fetch:async()=>({ok:true,json:async()=>({entries:[]})})});
   return {elements,get,context,run:code=>vm.runInContext(code,context),load:name=>vm.runInContext(fs.readFileSync(path.join(root,'web',name),'utf8'),context)};
 }
 function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revision:1,started:90,stale:false,
   data:{hero:{level:1,ht:20,hp:10,strength:10},depth:1,items:[]}};}
+async function verifyComparisonPlanOpenings(){
+const entries=[['items.weapon.melee.shortsword','shortsword'],['items.weapon.melee.battleaxe','battleaxe'],['items.wands.wandoffireblast','fireblast'],['items.wands.wandofprismaticlight','prismatic']].map(([id,name])=>({id,name}));
+const result={family:'weapon',choices:[{name:'shortsword',level:0,upgrade_risk:0,current_metrics:[],upgraded_metrics:[]},{name:'battleaxe',level:5,upgrade_risk:0,current_metrics:[],upgraded_metrics:[]}],rows:[],notice:'',version:'4.0.2'};
+const schema={inputs:[{key:'hp',label:'生命',value:10,min:0,max:100},{key:'max_hp',label:'最大生命',value:100,min:1,max:1000}]};
+const tick=()=>new Promise(resolve=>setImmediate(resolve));
+function plan(id='saved-11',strength=11,wand=false){return {id,kind:'equipment',name:id,origin:{mode:'example'},params:{strength,id_a:entries[wand?2:0].id,id_b:entries[wand?3:1].id,level_a:0,level_b:5,tier_a:3,tier_b:3,mastery_a:'0',mastery_b:'0',augment_a:'NONE',augment_b:'NONE',level_known_a:'1',level_known_b:'1',hp_a:7,hp_b:8,max_hp_a:100,max_hp_b:100}};}
+function setup(options={}){
+  const h=harness(),catalog=[],schemas=[],comparisons=[];
+  const controls=[h.get('#compare-strength'),h.get('#compare-level-a'),h.get('#compare-level-b')];
+  h.get('#equipment-comparison').querySelectorAll=()=>controls;
+  Object.assign(h.context,{navigationSerial:0,webEditingFrozen:false,displayNumber:String,originLabel:()=> 'saved reference',calculationStamp:()=>null,exampleHTML:()=>'',inlineError:(target,message)=>{target.textContent=message;}});
+  h.get('.comparison-panel').scrollIntoView=()=>{};h.get('#compare-kind').value='weapon';h.get('#compare-strength').value='10';
+  h.context.fetch=url=>{
+    if(url.startsWith('/api/compare?'))return new Promise(resolve=>comparisons.push(resolve));
+    const response={ok:true,json:async()=>({entries:entries.filter(item=>url.includes(item.id.startsWith('items.wands.')?'items.wands.':'items.weapon.melee.'))})};
+    return options.catalogDeferred?new Promise(resolve=>catalog.push(()=>resolve(response))):Promise.resolve(response);
+  };
+  h.context.getJSON=url=>options.schemasDeferred?new Promise((resolve,reject)=>schemas.push({url,resolve,reject})):Promise.resolve(structuredClone(schema));
+  h.load('compare.js');
+  h.context.plan=plan();h.context.result=structuredClone(result);
+  const input=(value='17')=>{h.get('#compare-strength').value=value;h.get('#equipment-comparison').listeners.input({target:h.get('#compare-strength')});};
+  return {h,catalog,schemas,comparisons,input,controls,open:p=>{h.context.plan=p||plan();return h.run('openEquipmentPlan(plan,result,false)');},ready:()=>h.run('comparisonReady')};
+}
+  const checks=[];
+  async function test(name,fn){await fn();checks.push(name);}
+  await test('new input during catalog read remains dirty and unsaved',async()=>{
+    const t=setup({catalogDeferred:true}),opening=t.open();t.input();t.catalog.forEach(done=>done());assert.equal(await opening,false);assert.equal(t.h.get('#compare-strength').value,'17');assert(t.h.run('compareDirty&&compareSessionUnsaved'));assert.equal(t.h.run('compareSavedPlan'),null);
+  });
+  await test('navigation during catalog read cancels saved-plan application',async()=>{
+    const t=setup({catalogDeferred:true}),opening=t.open();t.h.run('navigationSerial++');t.catalog.forEach(done=>done());assert.equal(await opening,false);assert.equal(t.h.run('compareSavedPlan'),null);
+  });
+  await test('schema wait applies no saved fields and preserves new input',async()=>{
+    const t=setup({schemasDeferred:true});await t.ready();t.h.get('#compare-level-a').value='23';const opening=t.open(plan('wand',11,true));await tick();assert.equal(t.schemas.length,2);assert.equal(t.h.get('#compare-kind').value,'weapon');assert.equal(t.h.get('#compare-level-a').value,'23');t.input();t.schemas.forEach(request=>request.resolve(structuredClone(schema)));assert.equal(await opening,false);assert.equal(t.h.get('#compare-strength').value,'17');assert.equal(t.h.get('#compare-level-a').value,'23');assert(t.h.run('compareDirty&&compareSessionUnsaved'));
+  });
+  await test('navigation during schema read leaves original form',async()=>{
+    const t=setup({schemasDeferred:true});await t.ready();const opening=t.open(plan('wand',11,true));await tick();t.h.run('navigationSerial++');t.schemas.forEach(request=>request.resolve(structuredClone(schema)));assert.equal(await opening,false);assert.equal(t.h.get('#compare-kind').value,'weapon');assert.equal(t.h.run('compareSavedPlan'),null);
+  });
+  await test('newer plan wins when previous schemas arrive last',async()=>{
+    const t=setup({schemasDeferred:true});await t.ready();const first=t.open(plan('old-wand',11,true));await tick();assert.equal(t.schemas.length,2);assert.equal(await t.open(plan('new-weapon',19)),true);t.schemas.forEach(request=>request.resolve(structuredClone(schema)));assert.equal(await first,false);assert.equal(t.h.get('#compare-strength').value,'19');assert.equal(t.h.run('compareSavedPlan.id'),'new-weapon');assert.equal(t.h.get('#compare-kind').value,'weapon');
+  });
+  await test('normal saved weapon open returns true and marks matching fields saved',async()=>{
+    const t=setup();await t.ready();assert.equal(await t.open(),true);assert.equal(t.h.get('#compare-strength').value,'11');assert.equal(t.h.run('compareSavedPlan.id'),'saved-11');assert(!t.h.run('compareDirty||compareSessionUnsaved'));
+  });
+  await test('normal saved wand open installs both schemas with correct side keys',async()=>{
+    const t=setup();await t.ready();assert.equal(await t.open(plan('wand',11,true)),true);assert.equal(t.h.get('#compare-kind').value,'wand');assert(t.h.get('#compare-context-a').innerHTML.includes('data-compare-key="hp_a"'));assert(t.h.get('#compare-context-b').innerHTML.includes('data-compare-key="hp_b"'));assert(t.h.get('#compare-context-a').innerHTML.includes('data-compare-key="charges_a"'));assert.equal(t.h.get('#compare-context-a').dataset.identity,entries[2].id);
+  });
+  await test('failed schema load reports failure and keeps original inputs',async()=>{
+    const t=setup({schemasDeferred:true});await t.ready();t.h.get('#compare-strength').value='13';const opening=t.open(plan('wand',11,true));await tick();t.schemas[0].reject(new Error('资料读取失败'));t.schemas[1].resolve(structuredClone(schema));assert.equal(await opening,false);assert.equal(t.h.get('#compare-kind').value,'weapon');assert.equal(t.h.get('#compare-strength').value,'13');assert.equal(t.h.run('compareError'),'资料读取失败');assert.equal(t.h.run('compareSavedPlan'),null);
+  });
+  await test('saved plan supersedes calculation and releases all pending controls',async()=>{
+    const t=setup();await t.ready();const submitting=t.h.get('#equipment-comparison').listeners.submit({preventDefault(){}});assert(t.h.run('comparePending'));assert(t.controls.every(control=>control.disabled));assert.equal(await t.open(),true);assert(!t.h.run('comparePending'));assert(!t.h.get('#compare-submit').disabled);assert(t.controls.every(control=>!control.disabled));t.comparisons[0]({ok:false,json:async()=>({error:'old request failed'})});await submitting;assert(!t.h.run('comparePending'));assert.equal(t.h.run('compareError'),'');assert.equal(t.h.run('compareSavedPlan.id'),'saved-11');
+  });
+  await test('exit editing freeze cancels a pending plan application',async()=>{
+    const t=setup({catalogDeferred:true}),opening=t.open();t.h.run('webEditingFrozen=true');t.catalog.forEach(done=>done());assert.equal(await opening,false);assert.equal(t.h.run('compareSavedPlan'),null);
+  });
+  await test('change event invalidates a pending plan without a text input event',async()=>{
+    const t=setup({catalogDeferred:true}),opening=t.open();t.h.get('#equipment-comparison').listeners.change({target:t.h.get('#compare-kind')});t.catalog.forEach(done=>done());assert.equal(await opening,false);assert.equal(t.h.run('compareSavedPlan'),null);
+  });
+  await test('explicit resource import cancels a pending saved plan',async()=>{
+    const t=setup({catalogDeferred:true}),opening=t.open();t.h.context.state={data:{items:[]}};t.h.get('#compare-use-resources').listeners.click();t.catalog.forEach(done=>done());assert.equal(await opening,false);assert(t.h.run('compareSessionUnsaved'));assert.equal(t.h.run('compareSavedPlan'),null);
+  });
+  await test('character import outside comparison form cancels an older open',async()=>{
+    const t=setup({catalogDeferred:true}),opening=t.open();
+    Object.assign(t.h.context,{characterReference:()=>({params:{base_strength:19},source:{mode:'manual'}}),characterResult:{strength:{effective:19}},navigate(){},renderComparisonCharacterReference(){}});
+    const code=fs.readFileSync(path.join(root,'web/character.js'),'utf8');
+    const start=code.indexOf("$('#character-to-comparison').addEventListener");
+    const end=code.indexOf('\n',code.indexOf("$('#compare-character-clear').addEventListener",start));
+    t.h.run(code.slice(start,end));t.h.get('#character-to-comparison').listeners.click();t.catalog.forEach(done=>done());
+    assert.equal(await opening,false);assert.equal(t.h.get('#compare-strength').value,'19');assert.equal(t.h.context.compareCharacterReference.params.base_strength,19);assert(t.h.run('compareSessionUnsaved'));assert.equal(t.h.run('compareSavedPlan'),null);
+  });
+  await test('clearing a character reference outside comparison form cancels an older open',async()=>{
+    const t=setup({catalogDeferred:true}),opening=t.open();
+    t.h.context.compareCharacterReference={params:{base_strength:19}};t.h.context.renderComparisonCharacterReference=()=>{};
+    const code=fs.readFileSync(path.join(root,'web/character.js'),'utf8');
+    const start=code.indexOf("$('#compare-character-clear').addEventListener");const end=code.indexOf('\n',start);
+    t.h.run(code.slice(start,end));t.h.get('#compare-character-clear').listeners.click();t.catalog.forEach(done=>done());
+    assert.equal(await opening,false);assert.equal(t.h.context.compareCharacterReference,null);assert(t.h.run('compareSessionUnsaved'));assert.equal(t.h.run('compareSavedPlan'),null);
+  });
+  await test('workspace reports a failed equipment, alchemy or character application explicitly',async()=>{
+    for(const kind of ['equipment','alchemy','character']){
+    const t=setup();t.h.context.view='inventory';Object.assign(t.h.context,{rememberWorkspaceDetailFocus(){},getJSON:async()=>({plan:{...plan(),kind},result}),navigate(){},openEquipmentPlan:async()=>false,openAlchemyPlan:async()=>false,openCharacterPlan:async()=>false});t.h.run('let planRequest=0;');
+    const code=fs.readFileSync(path.join(root,'web/workspace.js'),'utf8');t.h.run(code.slice(code.indexOf('async function openPlan('),code.indexOf('function manualPayload(')));t.h.get('#detail-dialog').open=false;t.h.get('#plan-dialog').open=false;assert.equal(await t.h.run("openPlan('saved-11',null,true)"),false);
+    }
+  });
+  console.log(JSON.stringify({comparison_saved_plan_race_cases:checks.length}));
+}
 (async()=>{
+  await verifyComparisonPlanOpenings();
   const markup=fs.readFileSync(path.join(root,'web','index.html'),'utf8'),ids=[...markup.matchAll(/\bid="([^"]+)"/g)].map(match=>match[1]);
   assert.equal(new Set(ids).size,ids.length,'form and error targets require unique document IDs');
   for(const page of ['workspace','help','play-settings'])assert(markup.includes(`id="view-${page}"`)&&markup.includes(`data-view="${page}"`));
@@ -581,7 +668,8 @@ function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revis
   assert(!scoped.get('#repair-submit').disabled);
 
   // Undo enters through its real history button and requires a fresh current-slot preview.
-  const undoFlow=harness();undoFlow.load('backups.js');undoFlow.run('initializeBackups()');
+  const undoFlow=harness();undoFlow.load('backups.js');undoFlow.load('backup-workflows.js');undoFlow.run('initializeBackups()');
+  undoFlow.run("backupFlow.context='undo-root';loadBackupFlowStorage=async()=>{}");
   undoFlow.context.state={backup_context:'undo-root',active_slot:2,settings:{save_root:'/synthetic/undo-root'}};
   undoFlow.context.toast=()=>{};undoFlow.context.action=work=>work();
   const undoRow={id:'restore-journal',slot:2,time:100,before:{class:'MAGE',depth:4,hp:5,ht:30,equipment:[]}};
@@ -632,8 +720,9 @@ function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revis
   assert.equal(undoPosts[1].payload.expected_current,undoDigest);assert.equal(undoPosts[1].payload.action,'undo');
   assert(!undoFlow.get('#restore-dialog').open);assert.equal(undoFlow.run('restoreTarget'),null);
 
-  const backups=harness();backups.load('backups.js');backups.run('initializeBackups()');
-  backups.run("restoreTarget={id:'fixture',slot:2,operation:'restore'}");
+  const backups=harness();backups.load('backups.js');backups.load('backup-workflows.js');backups.run('initializeBackups()');
+  backups.context.state={backup_context:'restore-root',settings:{save_root:'/synthetic/restore-root'}};
+  backups.run("backupFlow.context='restore-root';openConfirm({id:'fixture',slot:2,expected_current:'a'.repeat(64)},'restore','restore-root')");
   backups.get('#restore-confirm').checked=true;
   backups.context.post=async()=>{throw new Error('请先完全退出游戏');};
   backups.get('#restore-form').listeners.submit({preventDefault(){}});
@@ -642,7 +731,7 @@ function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revis
   assert(backups.get('#restore-error').textContent.includes('请先完全退出游戏'));
   assert(backups.get('#restore-dialog').open);
   assert(!backups.get('#restore-confirm').checked,'restore failure must clear the old confirmation');
-  backups.run("backupState={history:[],retained:[],undo:[],slots:[]};renderBackups()");
+  backups.run("backupState={context:'restore-root',history:[],retained:[],undo:[],slots:[]};renderBackups()");
   assert(backups.get('#restore-error').textContent.includes('请先完全退出游戏'));
   const card=backups.run("backupCard({id:'fixture',saved:1,time:1,last_seen:1,class:'WARRIOR',depth:1,equipment:[]},['1 分钟前','50 秒前'],'node')");
   assert(card.includes('node-tags')&&card.includes('将回到')&&card.includes('1 分钟前')&&card.includes('50 秒前'));
