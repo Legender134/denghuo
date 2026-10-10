@@ -19,7 +19,8 @@ from tests.test_native_controllers import Host, Root
 class NativeDiskActionsTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='lamp-native-disk-')
-        self.directory = Path(self.temporary.name)
+        # Windows CI may expose TEMP through an 8.3 alias; Session canonicalizes roots.
+        self.directory = Path(self.temporary.name).resolve()
         saves = self.directory/'synthetic-saves'
         saves.mkdir()
         config = self.directory/'settings.json'
