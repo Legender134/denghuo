@@ -20,7 +20,8 @@ async function post(path,payload={}){
 async function action(work,target=null){try{await work();if(target)inlineError(target,'');await poll();}catch(error){if(target)inlineError(target,error.message);else toast(error.message,true);}}
 const viewPositions=new Map();
 let navigationSerial=0;
-function navigate(next){
+if('scrollRestoration' in history)history.scrollRestoration='manual';
+function navigate(next,historyMode='push'){
   if(!names[next])next='overview';
   const changed=view!==next;
   if(changed)navigationSerial++;
@@ -28,7 +29,10 @@ function navigate(next){
   view=next;
   for(const el of $$('.view'))el.hidden=el.id!==`view-${next}`;
   for(const el of $$('.nav')){el.classList.toggle('active',el.dataset.view===next);el.setAttribute('aria-current',el.dataset.view===next?'page':'false');}
-  $('#page-name').textContent=names[next];history.replaceState(null,'',`#${next}`);
+  $('#page-name').textContent=names[next];
+  const hash=`#${next}`;
+  if(changed&&historyMode==='push')history.pushState(null,'',hash);
+  else if(location.hash!==hash||historyMode==='replace')history.replaceState(null,'',hash);
   if(next==='library'&&!$('#library-search').value&&$('#library-category').value==='全部'&&typeof loadWorkspace==='function')loadWorkspace();
   else if(next==='library'&&!$('#library-results').childElementCount)searchLibrary();
   if(next==='inventory')renderInventory();if(next==='settings')loadSettings();if(next==='backups')loadBackups();
@@ -45,7 +49,13 @@ $('#nav-toggle').addEventListener('click',()=>setNavigationExpanded($('#nav-togg
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&$('#nav-toggle').getAttribute('aria-expanded')==='true'&&($('#main-nav').contains(event.target)||event.target===$('#nav-toggle'))){event.preventDefault();setNavigationExpanded(false);$('#nav-toggle').focus();}});
 $$('[data-goto]').forEach(el=>el.addEventListener('click',()=>navigate(el.dataset.goto)));
 $('.brand').addEventListener('click',event=>{event.preventDefault();navigate('overview');});
-window.addEventListener('hashchange',()=>navigate(location.hash.slice(1)));
+function restoreNavigation(){
+  const next=location.hash.slice(1);
+  if(names[next]&&view===next)return;
+  navigate(next,'restore');
+}
+window.addEventListener('popstate',restoreNavigation);
+window.addEventListener('hashchange',restoreNavigation);
 window.addEventListener('DOMContentLoaded',()=>{if(view==='alchemy'&&typeof loadAlchemy==='function')loadAlchemy();if(view==='migration'&&typeof loadMigration==='function')loadMigration();});
 function handlePageShortcut(event){
   const search=(event.ctrlKey&&!event.altKey&&event.key.toLowerCase()==='f')||(event.key==='/'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName));
@@ -124,7 +134,7 @@ let detailEntry=null;
 function showDetailContext(text){const target=$('#detail-context');if(target){target.textContent=text||'';target.hidden=!text;}}
 function showDetail(title,text,category,meta){showDetailContext('');cancelNumericalDetail();detailEntry=null;$('#detail-rules').replaceChildren();$('#detail-tools')?.replaceChildren();$('#detail-related')?.replaceChildren();$('#detail-title').textContent=title;$('#detail-text').textContent=text || '此条目没有独立说明，请参考游戏中的检查界面。';$('#detail-category').textContent=category;$('#detail-meta').textContent=meta;if(!$('#detail-dialog').open)$('#detail-dialog').showModal();$('#detail-dialog').scrollTop=0;}
 function showRelatedReferences(rows,context={}){const target=$('#detail-related');if(!target)return;target.replaceChildren();for(const row of rows||[]){const button=document.createElement('button');button.className='secondary';button.textContent='查看 '+row.name;button.addEventListener('click',()=>showReference({...row,lookup_context:row.lookup_context||{...context,ignore_drafts:true,capture_context:true,conditions:row.conditions}}));target.append(button);}}
-function showItem(item){showDetail(item.name,item.description,item.location,item.details.join(' · ')+(item.known?'':' · 未鉴定物品保留未知身份')+(item.available===false?' · 当前记录中不可用；仅供阅读参考':''));if(item.known){const params={...(typeof visibleCalculationContext==='function'?visibleCalculationContext():{}),...(item.level==null?{}:{level:item.level}),...(item.tier?{tier:item.tier}:{}),...(Number.isInteger(item.volume)&&item.volume>=0&&item.volume<=20?{dew_volume:item.volume}:{})},origin=item.level_applicable===false?'not_applicable':item.level==null?'unknown':'known',stamp=typeof calculationStamp==='function'?calculationStamp():null;if(typeof setDetailEntry==='function')setDetailEntry(item.key);const context={params,level_origin:origin,stamp:stamp?[stamp.started,null,stamp.mode,stamp.slot,stamp.revision,stamp.modified]:undefined};loadNumericalDetail(item.key,params,origin,typeof lookupCalculationOptions==='function'?lookupCalculationOptions(context):{});showRelatedReferences(item.related,context);}}
+function showItem(item){showDetail(item.name,item.description,item.location,item.details.join(' · ')+(item.known?'':' · 未鉴定物品保留未知身份')+(item.available===false?' · 当前记录中不可用；仅供阅读参考':''));if(item.known){const params={...(typeof visibleCalculationContext==='function'?visibleCalculationContext():{}),...(item.level==null?{}:{level:item.level}),...(item.tier?{tier:item.tier}:{}),...(Number.isInteger(item.volume)&&item.volume>=0&&item.volume<=20?{dew_volume:item.volume}:{})},origin=item.level_applicable===false?'not_applicable':item.level==null?'unknown':'known',stamp=typeof calculationStamp==='function'?calculationStamp():null;if(typeof setDetailEntry==='function')setDetailEntry(item.key);const context={params,level_origin:origin,stamp:stamp?[stamp.started,null,stamp.mode,stamp.slot,stamp.revision,stamp.modified]:undefined};loadNumericalDetail(item.key,params,origin,typeof lookupCalculationOptions==='function'?lookupCalculationOptions(context):{});showRelatedReferences(item.related,context);if(item.available===true&&typeof comparisonFamily==='function'&&comparisonFamily(item.key)){const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='比较这件装备与升级预算';const snapshot={items:state?.data?.items,stamp:calculationStamp()};button.addEventListener('click',()=>compareInventoryItem(item,snapshot));$('#detail-related')?.append(button);}}}
 function showReference(row,version){showDetail(row.name,row.description+(row.hint?'\n\n'+row.hint:''),row.category,`游戏版本 ${version||state?.catalog_version||'以条目为准'}`);if(typeof setDetailEntry==='function')setDetailEntry(row.id);const context=row.lookup_context||{};showDetailContext(Array.isArray(context.conditions)?context.conditions.join('；'):context.conditions);showRelatedReferences(row.related,context);loadNumericalDetail(row.id,context.params||{},context.level_origin||'manual',{...(typeof lookupCalculationOptions==='function'?lookupCalculationOptions(context):{}),ignoreDrafts:context.ignore_drafts===true,capturedContext:context.capture_context===true});}
 // Async backup previews may replace their original trigger during a status poll.
 const backupDialogTriggers=new Map();
@@ -207,4 +217,4 @@ let polling=false;
 const panelClient=crypto.randomUUID();let panelAcknowledged=null,panelHandling=null;
 async function followPanelRequest(){try{const result=await post('/api/panel',{action:'heartbeat',client:panelClient,ack:panelAcknowledged});if(result.command&&panelHandling!==result.command.serial){panelHandling=result.command.serial;try{navigate(result.command.page);if(result.command.plan_id&&typeof openPlan==='function')await openPlan(result.command.plan_id);panelAcknowledged=result.command.serial;window.focus();}finally{panelHandling=null;}}}catch(error){/* Main connection state is handled by poll. */}}
 async function poll(){if(polling)return;polling=true;const writeGeneration=settingsWriteGeneration;try{const response=await fetch('/api/status');if(!response.ok)throw new Error('连接失败');const next=await response.json();if(writeGeneration!==settingsWriteGeneration)return;state=next;token=state.token;syncBackupContext(state.backup_context);render();renderBackupHealth();if(view==='settings')loadSettings();if(typeof refreshNumericalOrigin==='function')refreshNumericalOrigin();if(typeof renderEquipmentComparison==='function')renderEquipmentComparison();if(view==='backups')await loadBackups();if(typeof refreshWorkspaceViews==='function')refreshWorkspaceViews();await followPanelRequest();if(typeof handleWebExitState==='function'&&['backing-up','finished'].includes(state.exit?.phase))await handleWebExitState(state.exit);else if(typeof reportWebExitSurface==='function')await reportWebExitSurface();if(!initialPanelPlanHandled&&initialPanelPlan&&typeof openPlan==='function'){initialPanelPlanHandled=true;navigate('workspace');await openPlan(initialPanelPlan);} }catch(error){state=null;token=null;syncBackupContext(null);renderBackupHealth();lastRender='';slotsSignature='';$('#connection-banner').className='connection-banner error';$('#connection-banner').textContent='助手服务已停止或连接中断。重新打开「灯火」，需要面板时点击「更多功能」。';$('#connection-short').textContent='服务未连接';$('#sidebar-dot').className='dot error';$('#stop-countdown').textContent='';$('#adventure').hidden=true;$('#empty-state').hidden=false;$('#empty-title').textContent='助手连接已中断';$('#empty-description').textContent='连接中断，上一局势已失效。恢复连接后重新读取。';renderInventory();if(typeof refreshNumericalOrigin==='function')refreshNumericalOrigin();if(typeof decisionRequest!=='undefined'){decisionRequest++;decisionSignature='';decisionState=null;$('#decision-options').replaceChildren();} $('#restore-dialog').close();restoreTarget=null;backupState=null;backupViewKeys.clear();$('#backup-history').replaceChildren();$('#backup-retained').replaceChildren();$('#backup-undo').replaceChildren();$('#backup-nodes').textContent='连接中断，请重新启动助手后查看备份。';$('#backup-status').textContent='自动备份状态尚未确认。';if(typeof renderWebExitReceipt==='function')renderWebExitReceipt();}finally{polling=false;}}
-initializeBackups();calculate();navigate(location.hash.slice(1) || 'overview');poll().then(()=>{if(view==='settings')loadSettings();});setInterval(poll,2000);
+initializeBackups();calculate();navigate(location.hash.slice(1) || 'overview','replace');poll().then(()=>{if(view==='settings')loadSettings();});setInterval(poll,2000);

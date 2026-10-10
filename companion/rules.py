@@ -400,6 +400,7 @@ class NumericRules:
         return result
 
     def examples(self, identity, selected_level=0):
+        from .public_source_data import MISSILE_PUBLIC_TYPES
         row, result = self.classes[identity], []
         constants = self.constants(identity)
         short = key_for(row)
@@ -426,7 +427,10 @@ class NumericRules:
         methods = ("min", "max") if "items.weapon.weapon" in chain or "items.wands.damagewand" in chain else ()
         for name in methods:
             try:
-                calculated = [display(self.calculate(identity, name, [lvl], lvl)) for lvl in levels]
+                calculated = [self.calculate(identity, name, [lvl], lvl) for lvl in levels]
+                if short in MISSILE_PUBLIC_TYPES:
+                    calculated = [max(0,value) for value in calculated]
+                calculated = [display(value) for value in calculated]
                 columns.append(LABELS[name])
                 values.append(calculated)
             except UnknownFormula:
@@ -450,6 +454,10 @@ class NumericRules:
             strength_tier = 6 if short == "items.weapon.melee.greataxe" else tier
             result.append({"title": "力量需求", "note": "有效等级 L，未使用精通药剂；已使用时再减 2。巨斧有单独需求规则。",
                            "columns": ["L", "力量"], "rows": [[str(l), str(strength_requirement(strength_tier,l))] for l in levels]})
+        if short in MISSILE_PUBLIC_TYPES:
+            from .engine import missile_strength_requirement
+            result.append({"title": "力量需求", "note": "普通投掷武器比同阶普通武器少需1点力量；负等级按+0需求。未使用精通药剂，使用后再减2。",
+                           "columns": ["L", "力量"], "rows": [[str(l), str(missile_strength_requirement(MISSILE_PUBLIC_TYPES[short][0],l))] for l in levels]})
         if short.startswith("items.rings.ringof"):
             # Evaluate only direct expressions, explicitly under the solo uncursed assumption.
             ring_fields = []

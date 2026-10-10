@@ -3,7 +3,7 @@ let characterLatest=null,characterCatalog=[],characterResult=null,characterSaved
 let characterSource={mode:'example',snapshot_at:null,slot:null},characterStamp=null;
 let characterDirty=false,characterUnsaved=false,characterRequest=0,characterImportUndo=null;
 let manualCharacterReference=null,manualCharacterUndo=null,compareCharacterReference=null;
-let characterCatalogLoading=false;
+let characterCatalogLoading=null,characterCatalogLoaded=false,characterCatalogError='';
 const characterClone=value=>value==null?null:JSON.parse(JSON.stringify(value));
 function blankCharacterScene(){return {format:1,base_strength:10,rings:[],strongman:0,adrenaline:0,magic_immune:false,spirit_form:false,spirit_ring:null,spirit_level:null,spirit_cursed:null};}
 function characterOptionalInteger(value,label,min,max){
@@ -41,14 +41,22 @@ function ensureCharacterIdentity(select,identity){
     const option=document.createElement('option');option.value=identity;option.textContent=characterCatalog.find(row=>row.id===identity)?.name||identity;select.append(option);
   }
 }
-async function loadCharacterCatalog(){
-  try{const result=await getJSON('/api/library?'+new URLSearchParams({q:'items.rings.ringof',category:'物品'}));characterCatalog=result.entries.filter(row=>/^items\.rings\.ringof[a-z]+$/.test(row.id));
+function loadCharacterCatalog(){
+  if(characterCatalogLoaded)return Promise.resolve(true);
+  if(characterCatalogLoading)return characterCatalogLoading;
+  characterCatalogLoading=(async()=>{try{const result=await getJSON('/api/library?'+new URLSearchParams({q:'items.rings.ringof',category:'物品'}));characterCatalog=result.entries.filter(row=>/^items\.rings\.ringof[a-z]+$/.test(row.id));
     for(const select of [$('#character-ring-0'),$('#character-ring-1'),$('#character-spirit-ring')]){
       const current=select.value;for(const row of characterCatalog)ensureCharacterIdentity(select,row.id);select.value=current;
     }
-  }catch(error){inlineError($('#character-error'),'戒指资料暂时未读取，已有身份和草稿保留；可以重新刷新资料库。');}
+    characterCatalogLoaded=true;
+    if(characterCatalogError&&$('#character-error').textContent===characterCatalogError)inlineError($('#character-error'),'');
+    characterCatalogError='';return true;
+  }catch(error){const previous=characterCatalogError;characterCatalogError='戒指资料暂时未读取，已有身份和草稿保留；可以重新刷新资料库。';
+    if(!$('#character-error').textContent||$('#character-error').textContent===previous)inlineError($('#character-error'),characterCatalogError);return false;
+  }finally{characterCatalogLoading=null;}})();
+  return characterCatalogLoading;
 }
-function initializeCharacterScene(context){characterLatest=context||null;if(!characterCatalogLoading){characterCatalogLoading=true;loadCharacterCatalog();}renderCharacterOrigin();}
+function initializeCharacterScene(context){characterLatest=context||null;loadCharacterCatalog();renderCharacterOrigin();}
 function characterContextLabel(source=characterSource,stamp=characterStamp){
   const prefix=source.mode==='save'?`槽位 ${source.slot??'—'} 已知快照`:source.mode==='manual'?'手填角色条件':'手填示例条件';
   return prefix+(source.snapshot_at?' · '+fmtTime(source.snapshot_at):'')+(stamp&&(state?.stale||JSON.stringify(stamp)!==JSON.stringify(calculationStamp()))?' · 原快照已变化或过期，请核对':'')+'；固定参考';

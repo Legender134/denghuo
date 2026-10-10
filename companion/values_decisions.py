@@ -1,6 +1,12 @@
-"""Reviewed operation risks and equipment comparisons for players."""
+"""Reviewed operation risks and equipment comparisons for players.
+
+Missile/upgrade rules derived from SPD 4.0.2, GPL-3.0-or-later,
+commit 57a4e06a4caf162446d1c28caa7983f0493fecf0.
+Oleg Dolya 2012-2015; Evan Debenham 2014-2026.
+"""
 import math
 from .game_math import augmented_damage
+from .public_source_data import MISSILE_PUBLIC_TYPES
 
 DEFENSIVE_WEAPONS={'roundshield':(3,4,1),'greatshield':(5,6,2),
                    'quarterstaff':(2,2,0),'katana':(4,3,0),'rapier':(1,1,0)}
@@ -28,11 +34,15 @@ def add_operation_values(identity, p, result, requested):
         requested.add('level')
         level = p['level']
         result.append(block(f'从 {level:+d} 升到 {level+1:+d} 的风险', [
-            metric('普通附魔 / 刻印消失', upgrade_risk(level), '%', '有正常附魔或刻印，且未硬化'),
-            metric('硬化保护消失', upgrade_risk(level, True), '%', '装备已硬化且有附魔或刻印；本次保留附魔或刻印'),
+            metric('普通附魔 / 刻印消失', upgrade_risk(level), '%', '普通近战/投掷武器的正常附魔或护甲正常刻印，且未硬化'),
+            metric('硬化保护消失', upgrade_risk(level, True), '%', '近战/投掷武器或护甲已硬化且有附魔或刻印，包括诅咒效果；本次保留效果，只判定硬化保护'),
             metric('无附魔 / 刻印时硬化保护消失', 0, '%', '无附魔或刻印的硬化装备，升级不会触发损失判定'),
-            metric('诅咒附魔 / 刻印移除', 100/3, '%', '有诅咒附魔或刻印且未硬化；不是普通附魔消失概率'),
-            metric('装备绑定诅咒解除', 100, '%', '不等于保证移除诅咒附魔或刻印'),
+            metric('诅咒附魔 / 刻印移除', 100/3, '%', '近战/投掷武器或护甲有诅咒附魔或刻印且未硬化；硬化时不进入此分支'),
+            metric('装备绑定诅咒解除', 100, '%', '仅普通近战武器与护甲；不等于保证移除诅咒附魔或刻印，不适用于法杖、戒指或投掷武器'),
+            metric('法杖 / 戒指诅咒解除', 100/3, '%', '原本被诅咒的法杖或戒指；一次升级仅三分之一机会解除'),
+            metric('投掷武器绑定诅咒解除', 100/3, '%', '原本被诅咒，带诅咒附魔且未硬化；仅移除该附魔时同时解除，附魔保留则绑定诅咒保留'),
+            metric('硬化诅咒投掷武器解咒', 0, '%', '原本被诅咒且带硬化诅咒附魔；本次只判定硬化损失，即使硬化消失仍保留附魔与绑定诅咒'),
+            metric('无诅咒附魔投掷武器解咒', 100, '%', '原本被诅咒但没有诅咒附魔；普通升级解除绑定诅咒'),
         ], '等级填写升级前的装备等级。普通、硬化、诅咒三种分支分别判断，不把概率相加。护甲刻印的普通概率按无蜕变刻印转移天赋计算。'))
         result.append(table('普通附魔与硬化风险对照', ['升级前等级', '普通附魔 / 刻印消失%', '硬化保护消失%'],
                             [[f'+{n}', upgrade_risk(n), upgrade_risk(n, True)] for n in range(11)],
@@ -81,8 +91,68 @@ def equipment_metrics(values, identity, level, tier=3):
     return {key: metrics[key] for key in labels if key in metrics}
 
 
+def missile_metrics(values, identity, level, mastery='0', augment='NONE', strength=14, level_known=None, starting_level=None):
+    """Ordinary single-hit references; world/proc conditions remain separate."""
+    from .engine import missile_strength_requirement
+    from .values import metric
+    tier = MISSILE_PUBLIC_TYPES[identity][0]
+    owner = values.identity(next(e for e in values.catalog.entries if e['id']==identity))
+    damage_factor = {'NONE':1,'SPEED':.7,'DAMAGE':1.5}[augment]
+    delay_factor = {'NONE':1,'SPEED':2/3,'DAMAGE':5/3}[augment]
+    need = missile_strength_requirement(tier,level,mastery=='1')
+    deficit = max(0,need-strength)
+    damage = [augmented_damage(max(0,values.rules.calculate(owner,name,[level],level)),damage_factor) for name in ('min','max')]
+    if level_known=='1':
+        assumptions = ('；当前等级已在游戏中确认' if starting_level is None or level==starting_level else
+                       '；以已知当前等级为起点的升级试算，未实际升级')
+    else:
+        assumptions = '；手填等级假设，未确认游戏鉴定' if level_known=='0' else '；所填等级参考'
+    base = '按所填力量、精通与强化；未计神射之戒、附魔、临时等级、天赋、目标防御或抗性'+assumptions
+    accuracy = '已计力量不足时每缺1点除以1.5；这是内部命中倍率，不是最终命中概率；未计诅咒等额外修正'
+    delay = '已计强化与力量不足时每缺1点乘1.2；未计狂怒之戒、剑舞等攻速效果'
+    readiness = '；手里剑快速投掷冷却标记存在时' if identity.endswith('.shuriken') else ''
+    rows = [metric('最低基础伤害',damage[0],'HP',base+'；普通直接命中，特殊触发另列'),
+        metric('最高基础伤害',damage[1],'HP',base+'；普通直接命中，特殊触发另列'),
+        metric('力量需求',need,'点','同阶普通力量需求减1；精通再减2'+assumptions),
+        metric('力量缺口',deficit,'点','按所填有效力量'+assumptions),
+        metric('额外力量伤害',f'0–{max(0,strength-need)}','HP','超出需求的力量单独随机追加，不乘基础伤害强化倍率'+assumptions),
+        metric('相邻投掷命中倍率',.5/1.5**deficit,'倍','目标相邻且贴身投掷天赋0点；'+accuracy),
+        metric('非相邻投掷命中倍率',1.5/1.5**deficit,'倍','目标非相邻；'+accuracy),
+        metric('贴身投掷天赋命中分支','按点数核对','倍','目标相邻时，基础倍率为0.5+0.25×贴身投掷天赋点数，再应用力量不足惩罚；当前点数未填写，不推断实际生效值'),
+        metric('目标投掷耗时',delay_factor*1.2**deficit,'回合','投向其他角色'+readiness+'；'+delay)]
+    if identity.endswith('.forcecube'):
+        rows.extend([metric('非坑空格投掷耗时',delay_factor*1.2**deficit,'回合','震爆方石落点无角色且不是坑；'+delay),
+                     metric('坑空格投掷耗时',1,'回合','落点为无角色的坑；使用物品基础投掷时间')])
+    else:
+        rows.append(metric('空格投掷耗时',1,'回合','落点无其他角色'+readiness+'；使用物品基础投掷时间，不套用武器强化或力量耗时惩罚'))
+    if identity.endswith('.shuriken'):
+        rows.append(metric('快速投掷就绪耗时',0,'回合','手里剑快速投掷冷却标记不存在时；目标与空格投掷均瞬发。未读取当前标记，不能据此确认当前已就绪'))
+    if identity.endswith('.heavyboomerang'):
+        rows.append(metric('回旋命中倍率',1.5/1.5**deficit,'倍','重型回旋镖实际回旋攻击时，与相邻性无关；'+accuracy+'；回旋目标、地点与时机未确认，不保证再次命中'))
+    special = {'bolas':'套索附带残废单独触发，未折算为直接伤害',
+        'fishingspear':'捕鱼矛对食人鱼的伤害至少为目标当前生命的一半；目标未填写，未并入基础伤害',
+        'forcecube':'震爆方石分别攻击落点和周围八格的角色，可能击中英雄；未保证命中数量或群体总伤害',
+        'kunai':'苦无偷袭会把基础随机下限向上限推进60%并取整，再应用强化和力量追加；当前未按偷袭计算',
+        'throwingknife':'飞刀偷袭会把基础随机下限向上限推进75%并取整，再应用强化和力量追加；当前未按偷袭计算',
+        'tomahawk':'飞斧流血单独随机取值并应用强化；未合并为直接伤害或保证总扣血',
+        'throwingclub':'飞棍拾取耗时0，和投掷耗时不同',
+        'throwinghammer':'飞锤拾取耗时0，和投掷耗时不同'}
+    tail=identity.rsplit('.',1)[-1]
+    if tail in special:rows.append(metric('特殊效果边界','另行核对','',special[tail]))
+    rows.append(metric('升级与耐久边界','整组升级','', '普通升级恢复整组耐久并重置数量；未读取精确耐久、当前可安全投掷次数或实时状态。诅咒附魔保留时，原有绑定诅咒仍保留'))
+    return rows
+
+
+def physical_metric_rows(values, raw, side, level, strength):
+    identity=raw['id_'+side]
+    if identity in MISSILE_PUBLIC_TYPES:
+        return missile_metrics(values,identity,level,raw['mastery_'+side],raw['augment_'+side],strength,raw['level_known_'+side],raw['level_'+side])
+    from .values_investment import structured_physical
+    return structured_physical(adjusted_equipment_metrics(values,identity,level,raw['tier_'+side],raw['mastery_'+side],raw['augment_'+side],strength))
+
+
 def compare_equipment(values, raw):
-    from .values_investment import canonical_comparison, family, compare_conditional, structured_physical, comparison_rows
+    from .values_investment import canonical_comparison, family, compare_conditional, comparison_rows
     raw = canonical_comparison(values, raw)
     if family(raw['id_a']) in ('wand','ring'):
         return compare_conditional(values, raw)
@@ -90,8 +160,8 @@ def compare_equipment(values, raw):
     for suffix in ('a', 'b'):
         identity = raw.get('id_'+suffix, '')
         entry = next((e for e in values.catalog.entries if e['id'] == identity), None)
-        if not entry or not identity.startswith(('items.weapon.melee.', 'items.armor.')) or '$' in identity or identity.endswith('.ability'):
-            raise ValueError('请选择普通近战武器或护甲')
+        if not entry or not (identity in MISSILE_PUBLIC_TYPES or identity.startswith(('items.weapon.melee.', 'items.armor.'))) or '$' in identity or identity.endswith('.ability'):
+            raise ValueError('请选择已核对的普通近战武器、投掷武器或护甲')
         level = bounded_integer(raw.get('level_'+suffix, 0), '比较等级', -100, 99)
         armor_tier=bounded_integer(raw.get('tier_'+suffix,3), '原护甲阶数', 1, 5)
 
@@ -102,22 +172,27 @@ def compare_equipment(values, raw):
             raise ValueError('请核对精通和强化选项')
         from .character_comparison import comparison_strength
         strength = comparison_strength(raw, suffix, level)
-        current = adjusted_equipment_metrics(values, identity, level, armor_tier, mastery, augment, strength)
-        upgraded = adjusted_equipment_metrics(values, identity, level+1, armor_tier, mastery, augment, strength)
+        current_rows = physical_metric_rows(values,raw,suffix,level,strength)
+        upgraded_rows = physical_metric_rows(values,raw,suffix,level+1,strength)
+        current = {row['label']:row['value'] for row in current_rows}
+        upgraded = {row['label']:row['value'] for row in upgraded_rows}
         if not current or not upgraded:
             raise ValueError('这件特殊装备尚不能比较；请查看它的独立数值页')
         choices.append({'id': identity, 'name': entry['name'], 'level': level, 'current': current, 'upgraded': upgraded,
-                        'upgrade_risk': upgrade_risk(level)})
+                        'upgrade_risk': upgrade_risk(level),'current_metrics':current_rows,'upgraded_metrics':upgraded_rows})
     if choices[0]['id'].startswith('items.armor.') != choices[1]['id'].startswith('items.armor.'):
         raise ValueError('武器与武器、护甲与护甲分别比较')
-    for choice in choices:
-        choice['current_metrics'] = structured_physical(choice['current'])
-        choice['upgraded_metrics'] = structured_physical(choice['upgraded'])
     rows = comparison_rows(choices)
     from .decisions import explain_comparison
     result = {'family':family(raw['id_a']), 'params':raw, 'choices': choices, 'rows': rows, 'version': values.catalog.data['version'],
             'notice': '普通攻击与持装备的基础数值，已计所填有效力量、强化和精通；伤害与力量追加分列。减伤已扣力量不足惩罚，护甲闪避加值在惩罚后计入。未合并戒指、天赋、诅咒、偷袭伤害和临时状态；信念护体一行仅在该挑战生效，不能当作最终总效果。未知等级手填试算不代表已鉴定。'}
     result['explanation'] = explain_comparison(result)
+    if result['family']=='missile':
+        result['notice']='普通投掷武器的单次基础直接伤害，已计所填力量、精通和强化；额外力量伤害单列。相邻、非相邻、空格与特殊耗时均为条件参考，未确认实际位置或快速投掷冷却。未合并除力量来源外的戒指、天赋、附魔、诅咒、偷袭与其他特殊触发；没有推断精确耐久或安全投掷次数。未知等级的手填试算不代表鉴定。'
+        result['explanation']['tradeoff']='先核对相邻性、力量缺口与投掷耗时，再比较单次基础伤害和各物品特殊效果；回旋与群体效果不保证额外命中。'
+        result['explanation']['boundary']=result['notice']
+        for explanation,choice in zip(result['explanation']['choices'],choices):
+            explanation['timing_and_accuracy']='；'.join(row['label']+' '+row['value']+row['unit']+'（'+row['condition']+'）' for row in choice['current_metrics'] if '命中倍率' in row['label'] or '耗时' in row['label'])
     if raw.get('planning', '0') == '1':
         result['planning'] = plan_equipment(values, raw, choices)
     elif raw.get('planning', '0') != '0':
@@ -127,6 +202,8 @@ def compare_equipment(values, raw):
 
 def adjusted_equipment_metrics(values, identity, actual_level, armor_tier, mastery, augment, strength):
     from .rules import display
+    if identity in MISSILE_PUBLIC_TYPES:
+        return {row['label']:row['value'] for row in missile_metrics(values,identity,actual_level,mastery,augment,strength)}
     stats = equipment_metrics(values, identity, actual_level, armor_tier)
     armor = identity.startswith('items.armor.')
     if '力量需求' in stats:
@@ -173,7 +250,7 @@ def bounded_integer(value, label, low, high):
 
 def plan_equipment(values, raw, choices):
     from .engine import strength_requirement
-    from .values_investment import structured_physical, phase_changes
+    from .values_investment import phase_changes
     mode = raw.get('investment_mode', 'min_strength')
     upgrade_budget = bounded_integer(raw.get('upgrade_budget', 0), '升级卷轴预算', 0, 100)
     strength_budget = bounded_integer(raw.get('strength_budget', 0), '拟投入力量药剂', 0, 99)
@@ -184,7 +261,8 @@ def plan_equipment(values, raw, choices):
         identity, level = choice['id'], choice['level']
         tail = identity.rsplit('.',1)[-1]
         armor_tier = bounded_integer(raw.get('tier_'+suffix, 3), '原护甲阶数', 1, 5)
-        tier = armor_tier if tail in CLASS_ARMORS else next((v for k,v in values.catalog.data['tiers'].items() if k.lower()==tail), None)
+        missile=identity in MISSILE_PUBLIC_TYPES
+        tier = MISSILE_PUBLIC_TYPES[identity][0] if missile else armor_tier if tail in CLASS_ARMORS else next((v for k,v in values.catalog.data['tiers'].items() if k.lower()==tail), None)
         if tier is None:
             raise ValueError('该装备的阶数尚未确认，无法规划力量门槛')
         req_tier = tier + 1 if tail == 'greataxe' else tier
@@ -192,7 +270,7 @@ def plan_equipment(values, raw, choices):
         augment = raw.get('augment_'+suffix,'NONE')
         needed, thresholds, previous = None, [], None
         for spent in range(101-level):
-            required = strength_requirement(req_tier, level+spent, mastery=='1')
+            required = strength_requirement(req_tier, level+spent, mastery=='1') - (1 if missile else 0)
             if spent == 0 or required != previous:
                 thresholds.append({'upgrades':spent,'level':level+spent,'strength_requirement':required,
                                    'strength_deficit':max(0,required-strength),'within_budget':spent<=upgrade_budget})
@@ -201,10 +279,11 @@ def plan_equipment(values, raw, choices):
                 needed = spent
         spent = min(upgrade_budget, 100-level, (needed if needed is not None else 100-level) if mode == 'min_strength' else upgrade_budget)
         planned_level = level+spent
-        metrics = adjusted_equipment_metrics(values, identity, planned_level, armor_tier, mastery, augment, strength)
+        metric_rows = physical_metric_rows(values,raw,suffix,planned_level,strength)
+        metrics = {row['label']:row['value'] for row in metric_rows}
         alternatives = []
         for investment in range(min(upgrade_budget,100-level)+1):
-            cells = structured_physical(adjusted_equipment_metrics(values,identity,level+investment,armor_tier,mastery,augment,strength))
+            cells = physical_metric_rows(values,raw,suffix,level+investment,strength)
             alternatives.append({'upgrades':investment,'spent_upgrades':investment,'level':level+investment,
                 'remaining_upgrades':upgrade_budget-investment,'spent_strength':strength_budget,'remaining_strength':0,
                 'metric_rows':cells,'metrics':{cell['label']:cell['value'] for cell in cells},
@@ -213,7 +292,7 @@ def plan_equipment(values, raw, choices):
                         'within_budget':needed is not None and needed <= upgrade_budget,
                         'planned_level':planned_level,'spent_upgrades':spent,
                         'remaining_strength_deficit':int(metrics.get('力量缺口','0')),
-                        'metrics':metrics,'metric_rows':structured_physical(metrics),'thresholds':thresholds,
+                        'metrics':metrics,'metric_rows':metric_rows,'thresholds':thresholds,
                         'remaining_upgrades':upgrade_budget-spent,'alternatives':alternatives,
                         'explanation':'力量药剂每瓶按增加1点基础力量试算；负等级装备先补回等级，再按非负等级核对力量门槛。仅列装备基础条件，不代表最终伤害或实际消耗。'})
     return {'mode':mode,'upgrade_budget':upgrade_budget,'strength_budget':strength_budget,'effective_strength':strength,

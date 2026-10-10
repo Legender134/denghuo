@@ -12,6 +12,7 @@ import re
 from .alchemy import COMMIT, JAVA_ROOT, MAX_INT, POTIONS, SCROLLS, VERSION, VERSION_CODE, integer, item_id, recipe_list
 from .game_math import float32 as f
 from .public_source_data import MISSILE_PUBLIC_TYPES
+from .public_talents import MAXIMUM as TALENT_MAXIMUM
 
 SEEDS = dict(zip(
     ('blindweed', 'mageroyal', 'earthroot', 'fadeleaf', 'firebloom', 'icecap',
@@ -399,7 +400,6 @@ class Ledger:
                     hero, preservation = state.get('hero_class'), state.get('wand_preservation')
                     if hero is None: unresolved.append(row['key'] + ':职业')
                     if hero != 'MAGE' and preservation is None: unresolved.append(row['key'] + ':法杖保存天赋')
-                    if preservation is not None and not 0 <= preservation <= 3: raise ValueError('法杖保存天赋点数不正确')
                     if base is not None:
                         produced += 2 * (base + 1) + (preservation or 0 if hero != 'MAGE' else 0)
                 if recipe == 'liquid-metal' and all(state.get(n) is not None for n in ('level', 'tier', 'default_quantity')):
@@ -646,6 +646,12 @@ class Ledger:
 
 def calculate(catalog, raw, values=None):
     args = validate_plan(raw)
+    # Current rule limits belong to calculation, not the structural reader:
+    # older fixed plans must remain readable and editable without being clamped.
+    for row in args['resources']:
+        preservation = row['state'].get('wand_preservation')
+        if preservation is not None and not 0 <= preservation <= TALENT_MAXIMUM['WAND_PRESERVATION']:
+            raise ValueError('法杖保存天赋点数必须为0–2的整数；未确认请留空')
     if args['recipe_version'] != VERSION:
         raise ValueError('此方案的炼金规则版本尚未核对，固定参数仍保留')
     recipe_list(catalog)  # Enforce pinned catalog and source evidence.

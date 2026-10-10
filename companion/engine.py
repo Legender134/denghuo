@@ -10,6 +10,7 @@ import re
 from .public_item_levels import level_applies, scroll_upgradable, visible_level
 from .public_item_state import project_item_state, cooked_fruit_name, project_equipment_state
 from .character_scene import scene_from_game
+from .public_source_data import MISSILE_PUBLIC_TYPES
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = "com.shatteredpixel.shatteredpixeldungeon."
@@ -86,12 +87,16 @@ class Catalog:
         level_known = bool(item.get("levelKnown")) or reveal
         cursed_known = bool(item.get("cursedKnown")) or reveal
         level = visible_level(item, game, known=level_known)
-        tier = self.tiers.get(kind)
+        missile = key in MISSILE_PUBLIC_TYPES
+        tier = MISSILE_PUBLIC_TYPES[key][0] if missile else self.tiers.get(kind)
         if kind in self.data.get("class_armors", []):
             saved_tier = item.get("armortier")
             tier = saved_tier if type(saved_tier) is int and 1 <= saved_tier <= 5 else None
         requirement = None
-        if tier is not None:
+        if missile:
+            if level is not None:
+                requirement = missile_strength_requirement(tier, level, bool(item.get("mastery_potion_bonus")))
+        elif tier is not None:
             # Greataxe deliberately requires two more strength than normal tier 5.
             req_tier = tier + 1 if kind == "Greataxe" else tier
             requirement = strength_requirement(req_tier, level if level is not None else 0, bool(item.get("mastery_potion_bonus")))
@@ -110,7 +115,9 @@ class Catalog:
             details.append("已知诅咒")
         elif upgradable:
             details.append("已知无诅咒" if cursed_known else "诅咒未知")
-        if tier:
+        if missile and requirement is None:
+            details.append(f"{tier} 阶 · 力量需求待核对（等级未知或暂缺上下文）")
+        elif tier:
             details.append(f"{tier} 阶 · 力量 {requirement}" + ("（+0参考）" if not level_known else ""))
         if "curCharges" in item and (item.get("curChargeKnown") or reveal):
             details.append(f"{item['curCharges']} 次充能")
@@ -174,6 +181,14 @@ class Catalog:
 def strength_requirement(tier, level, mastery=False):
     tier, level = int(tier), max(0, int(level))
     return 8 + 2 * tier - (math.isqrt(8 * level + 1) - 1) // 2 - (2 if mastery else 0)
+
+
+def missile_strength_requirement(tier, level, mastery=False):
+    """SPD 4.0.2 MissileWeapon.STRReq: ordinary tier requirement minus one.
+
+    GPL-3.0-or-later; Oleg Dolya 2012-2015, Evan Debenham 2014-2026.
+    """
+    return strength_requirement(tier, level, mastery) - 1
 
 
 def walk_inventory(hero):

@@ -11,6 +11,7 @@ from .values_decisions import add_operation_values
 from .values_resources import add_resource_values
 from .reference_sources import provenance
 from .game_math import augmented_damage
+from .public_source_data import MISSILE_PUBLIC_TYPES
 
 INPUTS = {
     'level': ('装备等级', 0, 0, 100),
@@ -206,7 +207,7 @@ class PlayerValues:
                 raise KeyError(identity)
             owner = self.rules.classes[normalized]
             entry = {'id':identity, 'name':self.rules.title(owner).split(' · ')[0], 'category':'物品', 'description':'', 'numeric_refs':[{'class':normalized}]}
-        signed_equipment = identity.startswith(('items.weapon.melee.', 'items.armor.')) and '$' not in identity and not identity.endswith('.ability') and not any(part in identity for part in ('.glyphs.', '.curses.'))
+        signed_equipment = (identity in MISSILE_PUBLIC_TYPES or identity.startswith(('items.weapon.melee.', 'items.armor.'))) and '$' not in identity and not identity.endswith('.ability') and not any(part in identity for part in ('.glyphs.', '.curses.'))
         signed_equipment = signed_equipment or identity == 'items.scrolls.scrollofupgrade' or identity.startswith(('items.weapon.enchantments.', 'items.weapon.curses.', 'items.armor.glyphs.', 'items.armor.curses.')) and '$' not in identity
         p = integer_parameters(raw or {}, signed_equipment=signed_equipment, health_fields=())
         talent_cap=4
@@ -242,6 +243,9 @@ class PlayerValues:
                     continue
                 copied = dict(example)
                 copied['note'] = '基础数值；未加其他装备、天赋、精英和临时效果。'
+                if identity in MISSILE_PUBLIC_TYPES:
+                    copied['note'] = (example.get('note','') if example['title']=='力量需求' else
+                        '普通投掷的基础直接伤害；无强化、神射之戒、临时等级和特殊触发，负端点按0处理。力量追加另列。')
                 if copied.get('columns'):
                     copied['columns'] = [x.replace('L','装备等级').replace('C=','消耗').replace('伤害','充能 · 伤害') if x.startswith('C=') else x.replace('L','装备等级') for x in copied['columns']]
                     requested.add('level')
@@ -282,7 +286,12 @@ class PlayerValues:
                 if rows: result.append(block('进食数值',rows))
             if identity.startswith('items.artifacts.') and '$' not in identity:
                 result.append(block('神器等级',[metric('最高显示等级',10,'级')]))
-            if identity.startswith('items.weapon.') and '.ability' not in identity:
+            if identity in MISSILE_PUBLIC_TYPES:
+                from .values_decisions import missile_metrics
+                requested.update(('level','strength'))
+                result.append(block('投掷条件', missile_metrics(self,identity,p['level'],strength=p['strength'])[2:],
+                    '无精通药剂与强化的条件参考；精通与强化可在装备比较中填写。命中倍率不是最终命中概率；投掷路径受地形和实际目标影响，近战攻击距离不表示投掷射程。'))
+            elif identity.startswith('items.weapon.') and not identity.startswith('items.weapon.missiles.') and '.ability' not in identity:
                 rows=[]
                 for name,label,unit in [('ACC','命中倍率','倍'),('DLY','攻击耗时','回合'),('RCH','攻击距离','格')]:
                     if name in constants: rows.append(metric(label,constants[name],unit,'力量达标、无强化与其他修正'))
