@@ -52,7 +52,7 @@ try:
     with patch.object(Path,'replace',interrupted_replace),patch.object(Path,'write_text',interrupted_write if sys.argv[3]=='damaged' else write_text):
         report(2 if sys.argv[2]=='initial' else 1,sys.argv[5])
 except ValueError as exc:
-    print(str(exc))
+    sys.stderr.buffer.write(str(exc).encode('utf-8'))
     raise SystemExit(24)
 '''
         return subprocess.run([sys.executable,'-B','-c',script,str(self.directory),
@@ -84,6 +84,7 @@ except ValueError as exc:
     def test_crash_pending_bytes_are_bounded_across_new_sessions(self):
         results=[self.crash_pending(quota='bytes',raw='x'*1000) for _ in range(3)]
         self.assertEqual([row.returncode for row in results],[23,23,24])
+        self.assertIn('自动草稿空间已满',results[-1].stderr.decode('utf-8'))
         files=list((self.directory/'exit-recovery').glob('*.json.pending'))
         self.assertEqual(len(files),2)
         self.assertLessEqual(sum(path.stat().st_size for path in files),4096)
@@ -98,6 +99,7 @@ except ValueError as exc:
     def test_crash_pending_count_is_bounded_across_new_sessions(self):
         results=[self.crash_pending(quota='count') for _ in range(3)]
         self.assertEqual([row.returncode for row in results],[23,23,24])
+        self.assertIn('自动草稿空间已满',results[-1].stderr.decode('utf-8'))
         from companion import session_exit
         with patch.object(session_exit,'MAX_RECOVERY_RECORDS',2):
             state=self.report(Session(self.config))
