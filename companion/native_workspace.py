@@ -246,7 +246,9 @@ class NumericLookup:
         if self.input_origins.get('strength') == '手填' and '力量' in bounds:
             bounds = '原记录条件（当前力量已改为手填）：' + bounds
         note = '用户用途/假设备注（未验证）：\n'+self.note.get() if self.note.get() else ''
-        self.show_text('\n\n'.join(text for text in (source, bounds, strength_bounds, detail_text(self.rendered), note, self.workspace_error) if text))
+        item_note = (self.context or {}).get('user_note')
+        saved_note = ('游戏中的用户记录（非游戏规则）：\n' + item_note['title'] + '\n' + item_note['body']) if item_note else ''
+        self.show_text('\n\n'.join(text for text in (source, bounds, strength_bounds, saved_note, detail_text(self.rendered), note, self.workspace_error) if text))
 
     def refresh_origin(self, snap):
         if self.parameter_error or self.plan_error or self.workspace_error:

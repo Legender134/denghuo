@@ -69,6 +69,11 @@ FILES = (
     "tools/verify_web_exit_receipt.js",
     "tools/verify_workspace_concurrency.js",
     "tools/verify_alchemy_workflow.js",
+    "companion/backup_destination.py",
+    "web/backup-destination.js",
+    "tests/test_backup_destination.py",
+    "tests/test_upgrade_context.py",
+    "tests/test_player_records.py",
 )
 STAMP = (2026, 10, 2, 0, 0, 0)
 

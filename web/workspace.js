@@ -187,7 +187,7 @@ function renderDecisions(){
 }
 async function openBuffReference(buff){
   const nav=navigationSerial,detailSeq=numericalRequest;
-  try{const result=await getJSON('/api/library?'+new URLSearchParams({q:buff.kind,category:'状态'}));if(nav!==navigationSerial||detailSeq!==numericalRequest)return;const row=result.entries.find(r=>r.name===buff.name)||result.entries.find(r=>r.id==='actors.buffs.'+buff.kind.toLowerCase());if(!row){navigate('library');$('#library-search').value=buff.name;$('#library-category').value='状态';searchLibrary();return;}showReference(row,result.version);}catch(error){inlineError($('#decision-error'),error.message);}
+  try{const identity=buff.reference_id||'actors.buffs.'+buff.kind.toLowerCase();const result=await getJSON('/api/library?'+new URLSearchParams({q:identity,category:'全部'}));if(nav!==navigationSerial||detailSeq!==numericalRequest)return;const row=result.entries.find(r=>r.id===identity);if(!row){navigate('library');$('#library-search').value=buff.name;$('#library-category').value='全部';searchLibrary();return;}showReference(row,result.version);}catch(error){inlineError($('#decision-error'),error.message);}
 }
 function openDecisionReference(ref,kind='reference'){
   showDetail(ref.name,kind==='resource'?(ref.note||'核对当前游戏画面中的资源与条件；阅读不会执行游戏行动。'):'参考相关游戏机制；资源是否可用需要另行核对。','当前局势的资料入口',ref.source_label||'资料参考');
@@ -303,6 +303,7 @@ function webDirtySummary(){
   if(manualUnsaved)labels.push('局势表单');
   if(typeof characterDraftLabel==='function'&&characterDraftLabel())labels.push('共享角色条件');
   if(settingsDrafts.size)labels.push('连接设置');
+  if(typeof backupDestinationDirty==='function'&&backupDestinationDirty())labels.push('备份存放位置');
   if(typeof playDirty!=='undefined'&&playDirty)labels.push('游玩设置');
   if(typeof backupMetadataDraftLabel==='function'){const backupLabel=backupMetadataDraftLabel();if(backupLabel)labels.push(backupLabel);}
   if(typeof alchemyDraftLabel==='function'&&alchemyDraftLabel())labels.push('炼金规划');
@@ -321,6 +322,7 @@ function collectWebDraft(){
     character:typeof captureCharacterDraft==='function'?captureCharacterDraft():null,
     comparison:compareSessionUnsaved?{form:captureComparisonRaw(),choices:{a:compareItems[Number($('#compare-a').value)]?.key,b:compareItems[Number($('#compare-b').value)]?.key},fixed:compareFixed,saved_id:compareSavedPlan?.id||null,saved_revision:compareSavedPlan?.record_revision||null,saved_name:compareSavedPlan?.name||null,saved_origin:compareSavedPlan?.origin||null,note:compareSavedPlan?.note||'',budget_origin:compareBudgetOrigin,budget_stamp:compareBudgetStamp,stamp:compareStamp,character_reference:typeof compareCharacterReference!=='undefined'?characterClone(compareCharacterReference):null}:null,
     settings:settingsDrafts.size?captureSettingsDraft():null,
+    backup_destination:typeof captureBackupDestinationDraft==='function'?captureBackupDestinationDraft():null,
     play:typeof playDirty!=='undefined'&&playDirty?capturePlayDraft():null,
     backup_metadata:typeof captureBackupMetadataDrafts==='function'?captureBackupMetadataDrafts():[],
     alchemy:typeof captureAlchemyDraft==='function'?captureAlchemyDraft():null,
@@ -502,6 +504,7 @@ async function loadUnfinishedDraft(id){
       throw new Error('此副本使用原生窗口的草稿格式，请在原生管理窗口选择「载入未完成草稿」。原件保留。');
     }
     if(draft.backup_metadata&&typeof checkedBackupMetadataDrafts==='function')checkedBackupMetadataDrafts(draft.backup_metadata);
+    if(draft.backup_destination){if(typeof checkedBackupDestinationDraft!=='function')throw new Error('备份位置入口尚未载入，原副本保留。');checkedBackupDestinationDraft(draft.backup_destination);}
     const settingsRecovery=draft.settings?await prepareSettingsRecovery('connection',draft.settings):null;
     const playRecovery=draft.play?await prepareSettingsRecovery('play',draft.play):null;
     checkRecovery();
@@ -523,7 +526,7 @@ async function loadUnfinishedDraft(id){
       compareSessionUnsaved=true;compareDirty=true;compareFixed=!!saved&&!!c.fixed;compareStamp=c.stamp||null;compareBudgetOrigin=c.budget_origin||'找回的手填预算';compareBudgetStamp=c.budget_stamp||null;compareResultArgs=null;compareSavedPlan=saved;updateComparisonSavedNote();$('#compare-result').replaceChildren();$('#compare-copy-text').textContent='';$('.comparison-panel').open=true;refreshComparisonOrigin();}
     for(const meta of draft.plan_meta||[]){if(typeof meta.key!=='string'||typeof meta.name!=='string'||meta.name.length>80||typeof meta.note!=='string'||meta.note.length>1200)throw new Error('方案备注草稿格式不正确');planNameDrafts.set(meta.key,meta.name);planNoteDrafts.set(meta.key,meta.note);if(meta.original)planMetaOriginals.set(meta.key,meta.original);}
     if(draft.numeric?.length){for(const item of draft.numeric){await restoreNumericSession(item,checkRecovery);checkRecovery();}}
-    else if(draft.character)navigate('workspace');else if(draft.alchemy||draft.alchemy_plan_meta?.length)navigate('alchemy');else if(draft.migration)navigate('migration');else if(draft.manual)navigate('manual');else if(draft.comparison)navigate('inventory');else if(draft.settings)navigate('settings');else if(draft.play)navigate('play-settings');else if(draft.backup_metadata?.length)navigate('backups');
+    else if(draft.character)navigate('workspace');else if(draft.alchemy||draft.alchemy_plan_meta?.length)navigate('alchemy');else if(draft.migration)navigate('migration');else if(draft.manual)navigate('manual');else if(draft.comparison)navigate('inventory');else if(draft.settings)navigate('settings');else if(draft.backup_destination||draft.play)navigate('play-settings');else if(draft.backup_metadata?.length)navigate('backups');
     // Navigation above belongs to this recovery, before awaiting naming metadata.
     navForRecovery=navigationSerial;
     if(draft.open_plan){const old=draft.open_plan;let existing=null,conflict=false;if(old.existing_revision!=null&&!/^[a-f0-9]{64}$/.test(old.existing_revision))throw new Error('命名草稿关联版本格式不正确；原始副本仍保留');if(old.existing_id){try{const latest=(await getJSON('/api/workspace/plan?'+new URLSearchParams({id:old.existing_id}))).plan;if(latest.kind!==old.payload.kind)throw new Error('关联方案类型已经变化');conflict=latest.record_revision!==old.existing_revision;existing={...latest,record_revision:old.existing_revision||'',name:old.existing_name||old.name||latest.name,note:old.existing_note??old.note??'',origin:old.existing_origin||old.payload.source||latest.origin};}catch(error){conflict=true;/* Keep as a new independent draft. */}}checkRecovery();openPlanSave(old.payload,existing,old.name);$('#plan-name').value=old.name;$('#plan-note').value=old.note||'';if(conflict)inlineError($('#plan-error'),'关联方案已变化；原始条件、名称和备注按旧版本保留。可另存副本，或明确重新读取最新方案；旧草稿不能覆盖新内容。');}
@@ -532,6 +535,7 @@ async function loadUnfinishedDraft(id){
     await Promise.all([verifySettingsRecovery(settingsRecovery),verifySettingsRecovery(playRecovery)]);
     checkRecovery();
     applySettingsRecovery(settingsRecovery);applySettingsRecovery(playRecovery);
+    if(draft.backup_destination)restoreBackupDestinationDraft(draft.backup_destination);
     if(draft.backup_metadata?.length&&typeof restoreBackupMetadataDrafts==='function')restoreBackupMetadataDrafts(draft.backup_metadata);
     toast('已找回原始草稿；未计算、未提交局势、未应用设置。');inlineError($('#draft-error'),'');
   }catch(error){inlineError($('#draft-error'),error.message);toast(error.message,true);}

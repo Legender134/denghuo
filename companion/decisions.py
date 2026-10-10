@@ -24,7 +24,7 @@ RISK_REFERENCES = {
     'burning':('actors.buffs.burning','actors.buffs.levitation'),
     'ooze':('actors.buffs.ooze',),
     'corrosion':('actors.buffs.corrosion',),
-    'dot':('actors.buffs.poison','actors.buffs.bleeding'),
+    'dot':('actors.buffs.poison','actors.buffs.bleeding','items.armor.glyphs.viscosity$defereddamage'),
     'roots':('actors.buffs.roots','items.stones.stoneofblink'),
     'cripple':('actors.buffs.cripple',),
     'lost_inventory':('actors.buffs.lostinventory',),
@@ -84,7 +84,9 @@ def context_actions(session,snapshot):
             boss = {4:'goo',9:'tengu',14:'dm300',19:'dwarfking',24:'yogdzewa'}.get(data['depth'])
             identities = ('actors.mobs.'+boss,) if boss else ()
         if tip['id']=='dot':
-            identities = tuple(entry for entry in identities if entry.rsplit('.',1)[-1] in {kind.lower() for kind in buffs})
+            present = {buff.get('reference_id') or 'actors.buffs.' + buff['kind'].lower()
+                       for buff in data.get('buffs', [])}
+            identities = tuple(entry for entry in identities if entry in present)
         references = [{'entry':entry,'name':entries[entry]['name'],'params':dict(common_params),
                        'level_origin':'example',
                        'source_label':'资料参考 · 实际资源与行动条件请另行核对'} for entry in identities if entry in entries]

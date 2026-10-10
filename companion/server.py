@@ -136,6 +136,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_data({"error": "查询参数或数值资料不正确"}, 400)
             except OSError:
                 self.send_data({"error": "数值资料缺失，请完整解压交付包后启动"}, 503)
+        elif url.path == '/api/backup-destination':
+            try:
+                self.send_data(self.server.session.backup_destination_status())
+            except (OSError, ValueError) as exc:
+                self.send_data({'error': str(exc)}, 400)
         elif url.path == '/api/backup-libraries':
             args = parse_qs(url.query)
             try:
@@ -168,7 +173,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_data(result)
             except (OSError, ValueError) as exc:
                 self.send_data({'error': str(exc)}, 400)
-        elif url.path in ("/", "/index.html", "/app.js", "/backups.js", "/rules.js", "/compare.js", "/workspace.js", "/help.js", "/play.js", "/backup-workflows.js", "/backup-libraries.js", "/migration.js", "/alchemy.js", "/character.js", "/style.css", "/icon.svg"):
+        elif url.path in ("/", "/index.html", "/app.js", "/backups.js", "/rules.js", "/compare.js", "/workspace.js", "/help.js", "/play.js", "/backup-workflows.js", "/backup-libraries.js", "/backup-destination.js", "/migration.js", "/alchemy.js", "/character.js", "/style.css", "/icon.svg"):
             path = WEB / ("index.html" if url.path == "/" else url.path[1:])
             try:
                 mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
@@ -307,6 +312,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_data(result[0], mime='application/zip', filename=result[1])
                 else:
                     self.send_data({'ok': True, **result})
+                return
+            if path == '/api/backup-destination':
+                self.send_data({'ok': True, **self.server.session.backup_destination_action(payload)})
                 return
             if path == '/api/backups/workflow':
                 action = payload.get('action')

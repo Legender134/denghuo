@@ -37,6 +37,34 @@ def clean_text(text: str) -> str:
     return re.sub(r"%(?:\d+\$)?[\d.]*[sdf]", "（随局势变化）", text).replace("%%", "%")
 
 
+def item_user_note(item, game, *, identity_known):
+    """Read the game's existing notes without using a hidden item class as a clue.
+
+    SPD 4.0.2 Item.customNote / Notes.findCustomRecord, GPL-3.0-or-later;
+    Oleg Dolya 2012-2015, Evan Debenham 2014-2026.
+    """
+    records = game.get('records', [])
+    if not isinstance(records, list):
+        return None
+    records = [record for record in records if isinstance(record, dict)
+               and record.get('__className') == PREFIX + 'journal.Notes$CustomRecord']
+    identity = item.get('custom_note_id')
+    selected = next((record for record in records if type(identity) is int and identity > 0
+                     and type(record.get('id_number')) is int and record['id_number'] == identity), None)
+    scope = 'specific_item'
+    if selected is None and identity_known:
+        selected = next((record for record in records if record.get('type') == 'ITEM_TYPE'
+                         and record.get('item_class') == item.get('__className')), None)
+        scope = 'item_type'
+    if selected is None:
+        return None
+    title, body = selected.get('title', ''), selected.get('body', '')
+    if not isinstance(title, str) or not isinstance(body, str) or not (title or body):
+        return None
+    # Game note limits. Keep user punctuation and line breaks, unlike game markup.
+    return {'title': title[:50], 'body': body[:500], 'scope': scope}
+
+
 class Catalog:
     def __init__(self, path=None):
         self.data = json.loads((path or ROOT / "data/catalog.json").read_text(encoding="utf-8"))
@@ -137,6 +165,7 @@ class Catalog:
                 "augmentation": item.get('augment', 'NONE') if visible else None,
                 "volume": volume}
         public["alchemy_state"] = project_item_state(item, game, public)
+        public['user_note'] = item_user_note(item, game, identity_known=known)
         equipment = project_equipment_state(item, key, cursed_known, self.entry_index)
         public['equipment_state'] = equipment
         public['related'] = []
@@ -386,11 +415,15 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
             "compatibility_warning": compatibility,
             "energy": number(game.get("energy")), "version": game.get("version"),
             "challenges": [name for bit, name in CHALLENGES.items() if challenge_mask & bit],
-            "buffs": [{"name": catalog.name(b), "kind": short_class(b).rsplit("$", 1)[-1],
+            "buffs": [{"name": '时间静止' if short_class(b).rsplit('$', 1)[-1] == 'TimeStasis' else catalog.name(b),
+                       "kind": short_class(b).rsplit("$", 1)[-1],
+                       "reference_id": catalog.key(b) if catalog.key(b) in catalog.entry_index else None,
                        "active": b.get("state") == "BERSERK" if short_class(b) == "Berserk" else True,
                        **({"current_shield": b["shielding"]} if catalog.key(b) == "actors.buffs.barrier"
                           and type(b.get("shielding")) is int and 0 <= b["shielding"] <= 10000 else {})}
-                      for b in buffs if short_class(b) not in ("Regeneration", "Hunger")],
+                      for b in buffs if short_class(b) not in ("Regeneration", "Hunger")
+                      and (catalog.key(b) in catalog.entry_index or catalog.key(b) + '.name' in catalog.messages
+                           or short_class(b) == 'Berserk' or short_class(b).rsplit('$', 1)[-1] == 'TimeStasis')],
             "items": items, "tips": tips, "map": known_map(level, hero.get("pos")),
             "region": region(depth, branch), "reveal": reveal}
 

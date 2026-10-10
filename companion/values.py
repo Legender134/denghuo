@@ -10,7 +10,7 @@ from .values_abilities import add_advanced_values
 from .values_decisions import add_operation_values
 from .values_resources import add_resource_values
 from .reference_sources import provenance
-from .game_math import augmented_damage
+from .game_math import augmented_damage, float32
 from .public_source_data import MISSILE_PUBLIC_TYPES
 
 INPUTS = {
@@ -861,8 +861,12 @@ class PlayerValues:
             requested.add('depth');result.append(block('中毒',[metric('起始毒强度',5+rounded(2*depth/3),'点')]))
         if identity=='items.scrolls.scrollofretribution':
             requested.update(('max_hp','hp','target_hp','target_max_hp'))
-            power=min(4,4.45*(maximum-current)/maximum)
-            amount=rounded(p['target_max_hp']/10+p['target_hp']*power*.225)
+            # ScrollOfRetribution.doRead uses Java float at every operation.
+            ratio=float32((maximum-current)/float32(maximum))
+            power=min(4,float32(float32(4.45)*ratio))
+            damage=float32(float32(p['target_max_hp']/float32(10))
+                           +float32(float32(p['target_hp']*power)*float32(.225)))
+            amount=rounded(damage)
             result.append(block('当前伤势下的效果',[metric('单个目标伤害',amount,'HP','未计目标抗性'),metric('自身失明',self.duration('Blindness'),'回合'),metric('自身虚弱',self.duration('Weakness'),'回合')]))
         if identity=='items.scrolls.exotic.scrollofpsionicblast':
             requested.update(('max_hp','target_hp','target_max_hp','targets'))

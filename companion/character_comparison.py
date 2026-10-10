@@ -80,9 +80,11 @@ def attach_scenes(result, raw):
         return result
     for side, choice in zip(('a', 'b'), result['choices']):
         choice['character_scene'] = comparison_scene(raw, side, choice['level'])
-        choice['upgraded_character_scene'] = comparison_scene(raw, side, choice['level'] + 1)
+        upgraded_level = choice.get('upgraded_level', choice['level'] + 1)
+        choice['upgraded_character_scene'] = (comparison_scene(raw, side, upgraded_level)
+                                              if upgraded_level is not None else None)
         if choice.get('after_curse_removed'):
-            choice['uncursed_character_scene'] = comparison_scene(raw, side, choice['level'] + 1, clear_curse=True)
+            choice['uncursed_character_scene'] = comparison_scene(raw, side, choice.get('after_curse_removed_level', choice['level'] + 1), clear_curse=True)
     result['notice'] = result['notice'].replace('未合并戒指、天赋、诅咒、偷袭伤害和临时状态', '未合并除力量来源外的戒指、天赋、诅咒、偷袭伤害和临时战斗效果').replace('未计其他戒指、天赋、魔法免疫或临时等级', '未计未填写的其他戒指、天赋或临时等级')
     result['notice'] += ' 共享角色条件已计入基础力量、根骨之戒、力大无穷天赋及所列临时力量；未计其他战斗效果。戒指比较按明确槽位替换，A、B各自计算，不重复佩戴原戒指。'
     if result.get('explanation'):
