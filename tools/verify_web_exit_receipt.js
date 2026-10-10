@@ -78,4 +78,53 @@ test('explicit saved draft keeps invalid and empty inputs',async()=>{const f=set
 test('failed draft save never acknowledges',async()=>{const f=setup(confirming,success,{dirty:true,postError:true});await f.run("decideWebExit('saved')");assert(!f.requests.some(r=>r.payload?.action==='ack'));assert.equal(f.timers.length,0);assert.match(f.get('#session-exit-error').textContent,/controlled save failure/);assert(!f.get('#session-exit-cancel').disabled);});
 test('draft edit during save cannot acknowledge older revision',async()=>{const f=setup(confirming,success,{dirty:true,changeOnSave:true});await f.run("decideWebExit('saved')");assert(!f.requests.some(r=>r.payload?.action==='ack'));assert.equal(f.timers.length,0);assert.match(f.get('#session-exit-error').textContent,/草稿已变化/);});
 test('cancel keeps editing and does not finalize',async()=>{const f=setup(confirming,success,{acknowledged:{...confirming,phase:'cancelled'}});await f.run("decideWebExit('cancel')");assert.equal(f.run('webExitState.phase'),'cancelled');assert(f.requests.some(r=>r.freeze===false));assert.equal(f.timers.length,0);});
+function originalListHarness(rows){
+  const elements=new Map(),posts=[],messages=[],prompts=[],links=[],downloads=[];let allow=false,fail=false;
+  function node(){return {children:[],listeners:{},checked:false,disabled:false,textContent:'',innerHTML:'',className:'',append(...items){this.children.push(...items);},replaceChildren(){this.children=[];},addEventListener(name,fn){this.listeners[name]=fn;},click(){links.push({href:this.href,download:this.download});}};}
+  const get=id=>{if(!elements.has(id))elements.set(id,node());return elements.get(id);};
+  const context=vm.createContext({$:get,token:'synthetic-token',document:{createElement:()=>node()},window:{confirm:text=>{prompts.push(text);return allow;}},
+    escapeHTML:String,fmtTime:String,inlineError:(target,text)=>{target.textContent=text;},toast:text=>messages.push(text),setTimeout:fn=>fn(),
+    URL:{createObjectURL:blob=>{assert.equal(blob,'byte-exact-blob');return 'blob:synthetic';},revokeObjectURL(){}},
+    post:async(url,payload)=>{posts.push(plain(payload));if(payload.action==='draft-list')return {drafts:rows,archived_count:rows.filter(row=>row.state==='archived').length};if(fail)throw new Error('synthetic preservation failure; original retained');return {};},
+    fetch:async(url,options)=>{downloads.push({url,...options});return {ok:true,blob:async()=> 'byte-exact-blob'};},loadUnfinishedDraft:id=>messages.push('load:'+id)});
+  vm.runInContext('let exitDraftListRequest=0;',context);
+  for(const name of ['loadExitDrafts','downloadRecoveryOriginal'])vm.runInContext(extract(workspace,name),context);
+  return {context,get,posts,messages,prompts,links,downloads,run:code=>vm.runInContext(code,context),confirm:value=>{allow=value;},fail:value=>{fail=value;}};
+}
+const damagedOriginal={id:'a'.repeat(32)+'.pending',label:'interrupted',state:'active',saved:0,error:'incompatible',raw_preservable:true,bytes:15,path:'synthetic/exit-recovery/a.json.pending',sha256:'b'.repeat(64),state_revision:'b'.repeat(64)};
+const archivedOriginal={id:'raw-'+'c'.repeat(32),label:'preserved original',state:'archived',saved:1,raw_original:true,bytes:15,path:'synthetic/exit-recovery-preserved/c.raw',source_name:'a'.repeat(32)+'.json.pending',sha256:'b'.repeat(64),state_revision:'b'.repeat(64)};
+test('damaged original has explicit byte-bound confirmation and never a form load',async()=>{
+  const h=originalListHarness([damagedOriginal]);await h.run('loadExitDrafts()');
+  const row=h.get('#session-drafts').children[0],buttons=row.children[0].children;
+  assert.equal(buttons.length,1);assert.equal(buttons[0].textContent,'保留原始文件并归档');
+  assert(row.innerHTML.includes(damagedOriginal.path));assert(row.innerHTML.includes(damagedOriginal.sha256));assert(row.innerHTML.includes('15 字节'));
+  await buttons[0].listeners.click();assert.equal(h.posts.filter(row=>row.action==='draft-preserve-raw').length,0);
+  h.confirm(true);await buttons[0].listeners.click();
+  assert.deepEqual(h.posts.find(row=>row.action==='draft-preserve-raw'),{action:'draft-preserve-raw',id:damagedOriginal.id,expected_revision:damagedOriginal.state_revision,confirmed:true});
+  assert(h.prompts.every(text=>text.includes(damagedOriginal.path)&&text.includes(damagedOriginal.sha256)&&text.includes('15 字节')));
+  assert(!h.messages.some(text=>text.startsWith('load:')));assert(h.messages.some(text=>text.includes('独立保留并核验')));
+});
+test('unreadable original has no action and failed preservation retains truthful error',async()=>{
+  const unreadable={...damagedOriginal,raw_preservable:false};delete unreadable.state_revision;
+  const denied=originalListHarness([unreadable]);await denied.run('loadExitDrafts()');assert.equal(denied.get('#session-drafts').children[0].children.length,0);
+  const h=originalListHarness([damagedOriginal]);h.confirm(true);h.fail(true);await h.run('loadExitDrafts()');
+  await h.get('#session-drafts').children[0].children[0].children[0].listeners.click();
+  assert.match(h.get('#draft-error').textContent,/synthetic preservation failure/);assert.equal(h.messages.length,0);
+});
+test('archived original only offers authenticated byte revision download',async()=>{
+  const h=originalListHarness([archivedOriginal]);h.get('#draft-include-archived').checked=true;await h.run('loadExitDrafts()');
+  const buttons=h.get('#session-drafts').children[0].children[0].children;assert.equal(buttons.length,1);assert.equal(buttons[0].textContent,'获取原始文件');
+  await buttons[0].listeners.click();assert.equal(h.downloads.length,1);
+  assert.equal(h.downloads[0].headers['X-Companion-Token'],'synthetic-token');
+  assert.deepEqual(JSON.parse(h.downloads[0].body),{action:'draft-original-download',id:archivedOriginal.id,expected_revision:archivedOriginal.state_revision});
+  assert.equal(h.links[0].download,archivedOriginal.source_name);assert(!h.posts.some(row=>row.action==='draft-state'||row.action==='draft-load'));
+  h.context.fetch=async()=>({ok:false,json:async()=>({error:'stored bytes changed'})});await buttons[0].listeners.click();
+  assert.match(h.get('#draft-error').textContent,/stored bytes changed/);assert.equal(h.links.length,1);
+});
+test('valid draft keeps existing load and archive actions',async()=>{
+  const h=originalListHarness([{id:'d'.repeat(32),state:'active',saved:1,label:'valid',state_revision:'e'.repeat(64)}]);await h.run('loadExitDrafts()');
+  const buttons=h.get('#session-drafts').children[0].children[0].children;assert.equal(buttons.length,2);
+  await buttons[0].listeners.click();assert(h.messages.includes('load:'+'d'.repeat(32)));
+  await buttons[1].listeners.click();assert(h.posts.some(row=>row.action==='draft-state'&&row.state==='archived'));
+});
 (async()=>{const results=[];for(const item of cases){try{await item.work();results.push({name:item.name,passed:true});}catch(error){results.push({name:item.name,passed:false,error:error.message});}}console.log(JSON.stringify({passed:results.every(row=>row.passed),cases:results.length,results,scope:'actual extracted functions and actual poll; deterministic transport/DOM, no GUI/service'}));if(results.some(row=>!row.passed))process.exitCode=1;})().catch(error=>{console.error(error);process.exitCode=1;});

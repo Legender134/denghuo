@@ -294,7 +294,12 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('请求格式需要是一个对象')
             path = urlsplit(self.path).path
             if path == '/api/session-exit':
-                self.send_data({'ok': True, **self.server.session.exit_action(payload)})
+                if payload.get('action') == 'draft-original-download':
+                    value, original = self.server.session.exit_recovery.original(
+                        payload.get('id'), payload.get('expected_revision'))
+                    self.send_data(original, mime='application/octet-stream', filename=value['source_name'])
+                else:
+                    self.send_data({'ok': True, **self.server.session.exit_action(payload)})
                 return
             if path == '/api/backup-libraries':
                 result = self.server.session.backup_library_action(payload)

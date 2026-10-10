@@ -222,6 +222,84 @@ class SessionExitTests(unittest.TestCase):
         self.assertIn('未完成', second['error'])
 
 
+class RecoveryOriginalHTTPTests(unittest.TestCase):
+    def setUp(self):
+        from companion.server import Server
+        from companion.service import Session
+        self.temporary = tempfile.TemporaryDirectory(prefix='denghuo-raw-original-http-')
+        self.addCleanup(self.temporary.cleanup)
+        self.directory = Path(self.temporary.name)
+        self.session = Session(self.directory / 'settings.json')
+        self.server = Server(self.session)
+        self.worker = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.worker.start()
+        self.addCleanup(self.close_server)
+        self.path = self.directory / 'exit-recovery' / ('b' * 32 + '.json.pending')
+        self.path.parent.mkdir(exist_ok=True)
+        self.original = b'{"partial":"\xff\x00\xfe'
+        self.path.write_bytes(self.original)
+
+    def close_server(self):
+        self.server.shutdown(); self.server.server_close(); self.worker.join(timeout=3)
+
+    def request(self, payload, token=True):
+        from http.client import HTTPConnection
+        connection = HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)
+        headers = {'Content-Type': 'application/json', 'Origin': self.server.origin}
+        if token: headers['X-Companion-Token'] = self.server.token
+        connection.request('POST', '/api/session-exit', json.dumps(payload).encode(), headers)
+        response = connection.getresponse()
+        result = response.status, dict(response.getheaders()), response.read()
+        connection.close()
+        return result
+
+    def test_confirmed_original_download_is_byte_exact_authenticated_and_never_loads_a_form(self):
+        status, _, raw = self.request({'action': 'draft-list'})
+        self.assertEqual(status, 200)
+        row, = json.loads(raw)['drafts']
+        payload = {'action': 'draft-preserve-raw', 'id': row['id'], 'expected_revision': row['state_revision']}
+        self.assertEqual(self.request(payload)[0], 400)
+        self.assertEqual(self.path.read_bytes(), self.original)
+        payload['confirmed'] = True
+        self.assertEqual(self.request(payload, token=False)[0], 403)
+        self.assertEqual(self.path.read_bytes(), self.original)
+        self.assertEqual(self.request(payload)[0], 200)
+        self.assertFalse(self.path.exists())
+        self.assertEqual(json.loads(self.request({'action': 'draft-list'})[2])['drafts'], [])
+        archived, = json.loads(self.request({'action': 'draft-list', 'include_archived': True})[2])['drafts']
+        self.assertTrue(archived['raw_original'])
+        self.assertEqual(archived['bytes'], len(self.original))
+        self.assertEqual(Path(archived['path']).read_bytes(), self.original)
+        download = {'action': 'draft-original-download', 'id': archived['id'], 'expected_revision': archived['state_revision']}
+        self.assertEqual(self.request(download, token=False)[0], 403)
+        status, headers, raw = self.request(download)
+        self.assertEqual(status, 200); self.assertEqual(raw, self.original)
+        self.assertEqual(headers['Content-Type'], 'application/octet-stream')
+        self.assertEqual(headers['Content-Length'], str(len(self.original)))
+        self.assertIn(self.path.name, headers['Content-Disposition'])
+        self.assertEqual(self.request({**download, 'expected_revision': '0' * 64})[0], 400)
+        self.assertEqual(self.request({'action': 'draft-load', 'id': archived['id']})[0], 400)
+        self.assertEqual(self.request({'action': 'draft-state', 'id': archived['id'], 'state': 'active',
+            'expected_revision': archived['state_revision']})[0], 400)
+        Path(archived['path']).write_bytes(b'replaced archived original')
+        self.assertEqual(self.request(download)[0], 400)
+        self.assertFalse((self.directory / 'settings.json').exists())
+
+    def test_recovery_migration_notice_distinguishes_unusable_originals_from_verified_drafts(self):
+        from companion.service import Session
+        report = {'unavailable_exit_recovery': [{'file': self.path.name}],
+                  'unavailable_preserved_recovery': [{'preserved_copy': 'exit-recovery-preserved-unavailable/a.raw',
+                      'bytes': 0, 'sha256': hashlib.sha256(b'').hexdigest()}],
+                  'source_recognition': 'bounded-recovery-originals'}
+        (self.directory / 'migration.json').write_text(json.dumps(report), encoding='utf-8')
+        notice = Session(self.directory / 'settings.json').configuration_notice
+        self.assertIn('未发现可用的已验证草稿', notice)
+        self.assertIn('未完成草稿列表', notice)
+        self.assertIn('exit-recovery-preserved-unavailable', notice)
+        self.assertIn('未载入、计算或应用', notice)
+        self.assertEqual(self.path.read_bytes(), self.original)
+
+
 class FinalCaptureTests(unittest.TestCase):
     def test_missing_default_is_only_allowed_before_any_protected_progress(self):
         missing = self.root / 'never-created-default'

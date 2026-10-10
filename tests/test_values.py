@@ -415,6 +415,25 @@ class PlayerValuesTests(unittest.TestCase):
         intuition=self.detail('actors.hero.talent.unencumbered_spirit')
         self.assertEqual(next(b for b in intuition['blocks'] if b['title']=='各级天赋实际数值')['rows'][-1],['3','100','75','50','0'])
 
+    def test_deathmark_uses_visible_initial_health_without_a_hidden_maximum(self):
+        for identity in ('actors.hero.abilities.rogue.deathmark',
+                         'actors.hero.abilities.rogue.deathmark$deathmarktracker'):
+            for health, expected in ((0, ['0', '0', '0', '0', '0']),
+                                     (100, ['0', '13', '25', '38', '50']),
+                                     (10000, ['0', '1250', '2500', '3750', '5000'])):
+                with self.subTest(identity=identity, health=health):
+                    detail = self.detail(identity, target_hp=str(health))
+                    self.assertEqual([field['key'] for field in detail['inputs']], ['target_hp'])
+                    rows = next(block['rows'] for block in detail['blocks'] if block['title'] == '死亡耐性')
+                    self.assertEqual([row[1] for row in rows], expected)
+            for invalid in ('未填写', '-1', '10001', '1.5'):
+                with self.subTest(identity=identity, invalid=invalid), self.assertRaises(ValueError):
+                    self.detail(identity, target_hp=invalid)
+        for identity, raw in (('items.potions.potionofhealing', {'hp': 40, 'max_hp': 20}),
+                              ('items.weapon.enchantments.grim', {'target_hp': 100, 'target_max_hp': 40})):
+            with self.subTest(identity=identity), self.assertRaisesRegex(ValueError, '当前生命不能超过最大生命'):
+                self.detail(identity, **raw)
+
     def test_invalid_values_are_rejected_and_defaults_fit_health(self):
         self.assertEqual(integer_parameters({'max_hp':20})['hp'],20)
         for raw in ({'hp':True},{'level':'1.5'},{'level':-1},{'hp':40,'max_hp':20},{'target_hp':41},{'level':'__import__("os")'},{'vial':4}):

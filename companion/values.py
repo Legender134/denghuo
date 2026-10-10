@@ -49,7 +49,7 @@ INPUTS = {
 }
 
 
-def integer_parameters(raw, *, signed_equipment=False):
+def integer_parameters(raw, *, signed_equipment=False, health_fields=None):
     result = {}
     for key, (label, default, low, high) in INPUTS.items():
         if key == 'level' and signed_equipment:
@@ -78,9 +78,15 @@ def integer_parameters(raw, *, signed_equipment=False):
         result['hp'] = min(result['hp'], result['max_hp'])
     if 'target_hp' not in raw:
         result['target_hp'] = min(result['target_hp'], result['target_max_hp'])
-    if result['hp'] > result['max_hp'] or result['target_hp'] > result['target_max_hp']:
-        raise ValueError('当前生命不能超过最大生命')
+    validate_health_parameters(result, INPUTS if health_fields is None else health_fields)
     return result
+
+
+def validate_health_parameters(parameters, fields):
+    # A relation is meaningful only when this formula exposes both inputs.
+    for current, maximum in (('hp', 'max_hp'), ('target_hp', 'target_max_hp')):
+        if current in fields and maximum in fields and parameters[current] > parameters[maximum]:
+            raise ValueError('当前生命不能超过最大生命')
 
 
 def rounded(value):
@@ -202,7 +208,7 @@ class PlayerValues:
             entry = {'id':identity, 'name':self.rules.title(owner).split(' · ')[0], 'category':'物品', 'description':'', 'numeric_refs':[{'class':normalized}]}
         signed_equipment = identity.startswith(('items.weapon.melee.', 'items.armor.')) and '$' not in identity and not identity.endswith('.ability') and not any(part in identity for part in ('.glyphs.', '.curses.'))
         signed_equipment = signed_equipment or identity == 'items.scrolls.scrollofupgrade' or identity.startswith(('items.weapon.enchantments.', 'items.weapon.curses.', 'items.armor.glyphs.', 'items.armor.curses.')) and '$' not in identity
-        p = integer_parameters(raw or {}, signed_equipment=signed_equipment)
+        p = integer_parameters(raw or {}, signed_equipment=signed_equipment, health_fields=())
         talent_cap=4
         if identity.startswith('actors.hero.spells.'):
             name=identity.rsplit('.',1)[-1].split('$')[0].removesuffix('spell')
@@ -324,6 +330,7 @@ class PlayerValues:
             facts=[] if identity.startswith('actors.hero.spells.lifelinkspell') else description_numbers(entry.get('description',''))
             if facts: result.append(block('其他明确数值',facts))
         requested.update(self.special_inputs(identity))
+        validate_health_parameters(p, requested)
         alchemy_recipes = [row for row in self.catalog.data.get('alchemy_recipes', [])
                            if row['id'] in entry.get('alchemy_recipe_ids', [])]
         for recipe in alchemy_recipes:

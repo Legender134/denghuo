@@ -13,6 +13,12 @@ from tools.build_release import FILES, build_release
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_source_archive_contains_the_complete_regression_suite(self):
+        tests = Path(__file__).resolve().parent
+        expected = {'tests/' + path.name for pattern in ('test_*.py', 'verify_*.js')
+                    for path in tests.glob(pattern)}
+        self.assertEqual({name for name in FILES if name.startswith('tests/')}, expected)
+
     def test_cli_unicode_path_works_with_legacy_pipe_encoding(self):
         script = Path(__file__).resolve().parents[1] / "tools/build_release.py"
         with tempfile.TemporaryDirectory(prefix="lamp-cli-中文 空格-") as folder:

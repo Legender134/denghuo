@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import Mock
-from companion.panel import PanelBridge
+from companion.panel import BrowserOpenError, PanelBridge
 
 
 class PanelTests(unittest.TestCase):
@@ -35,6 +35,23 @@ class PanelTests(unittest.TestCase):
         command=self.bridge.heartbeat(self.client)
         self.assertIsNone(self.bridge.heartbeat('abcdef0123456789',command['serial']))
         self.assertEqual(self.bridge.heartbeat(self.client)['page'],'library')
+
+    def test_browser_failure_is_explicit_and_does_not_leave_a_retry_pending(self):
+        for outcome in (False, OSError('controlled opener failure')):
+            with self.subTest(outcome=outcome):
+                self.open.reset_mock(side_effect=True, return_value=True)
+                if isinstance(outcome, Exception):
+                    self.open.side_effect = outcome
+                else:
+                    self.open.return_value = outcome
+                with self.assertRaisesRegex(BrowserOpenError, '浏览器未能打开'):
+                    self.bridge.request()
+                self.assertIsNone(self.bridge.pending)
+                self.assertEqual(self.bridge.last_open, -1000)
+        self.open.side_effect = None
+        self.open.return_value = True
+        self.bridge.request()
+        self.assertIsNotNone(self.bridge.pending)
 
     def test_invalid_page_or_client_rejected(self):
         with self.assertRaises(ValueError):self.bridge.request('https://example.com')

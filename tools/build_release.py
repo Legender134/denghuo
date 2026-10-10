@@ -40,6 +40,7 @@ FILES = (
     "web/migration.js",
     "web/alchemy.js",
     "tests/test_session_exit.py",
+    "tests/test_recovery_journal.py",
     "tests/test_game_process.py",
     "tests/test_native_controllers.py",
     "tests/test_native_exit_controls.py",

@@ -16,6 +16,7 @@ import webbrowser
 from .server import Server
 from .service import Session, ROOT
 from .paths import data_directory, migrate_data
+from .panel import BrowserOpenError
 import sys
 
 
@@ -123,7 +124,15 @@ def main(argv=None):
         panel_start = not (args.no_browser or args.start_hidden) and (
             args.web or args.no_overlay or session.settings.get('startup_surface', 'panel') == 'panel')
         if panel_start:
-            session.panel.request()
+            try:
+                session.panel.request()
+            except BrowserOpenError as exc:
+                if args.web or args.no_overlay:
+                    raise RuntimeError('默认浏览器未能打开，助手服务已关闭。请检查默认浏览器后重试，或使用普通启动入口打开管理窗口。') from exc
+                notice = '浏览器未能打开，已显示管理窗口。完整面板仍可手动访问：'+url
+                session.configuration_notice = ' '.join(filter(None, (session.configuration_notice, notice)))
+                logging.warning('Browser unavailable; showing native manager at %s', url)
+                panel_start = False
         if args.no_overlay:
             session.stop.wait()
         else:

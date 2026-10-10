@@ -6,7 +6,7 @@ function controls(){const map=new Map();return id=>{if(!map.has(id))map.set(id,{
 function recoveryHarness(){
   const elements=new Map(),events=new Map(),messages=[],pending=[];
   function element(id=''){return {id,value:'',checked:false,disabled:false,hidden:false,dataset:{},children:[],listeners:{},options:[],textContent:'',innerHTML:'',open:false,
-    addEventListener(name,fn){this.listeners[name]=fn;},querySelectorAll(){return [];},querySelector(){return null;},append(...rows){this.children.push(...rows);this.options.push(...rows);},replaceChildren(...rows){this.children=rows;},focus(){},close(){this.open=false;},showModal(){this.open=true;},scrollIntoView(){}};}
+    addEventListener(name,fn){this.listeners[name]=fn;},querySelectorAll(){return [];},querySelector(){return null;},append(...rows){this.children.push(...rows);this.options.push(...rows);},replaceChildren(...rows){this.children=rows;},focus(){this.focused=true;},close(){this.open=false;},showModal(){this.open=true;},scrollIntoView(){this.scrolled=true;}};}
   const get=selector=>{if(!elements.has(selector))elements.set(selector,element(selector.replace(/^#/,'')));return elements.get(selector);};
   const hp=element();hp.name='hp';hp.value='20';hp.closest=()=>get('#manual-form');get('#manual-form').querySelectorAll=()=>[hp];
   const context=vm.createContext({URLSearchParams,$:get,$$:()=>[],document:{activeElement:null,createElement:()=>element(),addEventListener(name,fn){if(!events.has(name))events.set(name,[]);events.get(name).push(fn);}},
@@ -85,6 +85,22 @@ function savedManualDraft(value='8'){return {draft:{draft_kind:'web-session',dra
   assert.equal(character.get('#character-base').value,'17');assert(character.run('characterDirty&&characterUnsaved'));assert.match(character.get('#character-error').textContent,/新编辑/);recoveryCases++;
   const unchanged=characterHarness(),openingNormally=unchanged.run('openCharacterPlan(plan,result,false)');unchanged.pending[0]({entries:[]});assert.equal(await openingNormally,true);
   assert.equal(Number(unchanged.get('#character-base').value),8);assert(!unchanged.run('characterDirty||characterUnsaved'));recoveryCases++;
+  assert(unchanged.get('#character-disclosure').open);assert(unchanged.get('#character-base').focused);
+  const opener={focus(){this.focused=true;}},savedRow={dataset:{planId:'c'.repeat(32)},querySelector:()=>opener};
+  unchanged.get('#workspace-plans').children=[savedRow];unchanged.get('#workspace-search').value='retained filter';
+  unchanged.context.document.querySelector=()=>null;unchanged.run("rememberWorkspaceDetailFocus('c'.repeat(32))");
+  unchanged.get('#character-back-to-plans').listeners.click();
+  assert(!unchanged.get('#character-disclosure').open);assert(opener.focused);
+  assert.equal(unchanged.get('#workspace-search').value,'retained filter');recoveryCases++;
+  unchanged.get('#workspace-character-open').listeners.click();
+  assert(unchanged.get('#character-disclosure').open);assert(unchanged.get('#character-editor').scrolled);
+  unchanged.get('#character-back-to-plans').listeners.click();
+  assert(unchanged.get('#workspace-search').focused);recoveryCases++;
+  const recovered=characterHarness();recovered.context.raw={format:1,form:{base:'invalid raw'}};
+  recovered.context.restoreNamedForm=()=>{recovered.get('#character-base').value='invalid raw';};
+  const restoreOnly=recovered.run('restoreCharacterDraft(raw)');recovered.pending[0]({entries:[]});await restoreOnly;
+  assert(recovered.get('#character-disclosure').open);assert.equal(recovered.get('#character-base').value,'invalid raw');
+  assert(recovered.run('characterDirty&&characterUnsaved'));assert.equal(recovered.run('characterResult'),null);recoveryCases++;
   const dependency=characterHarness();dependency.context.raw={format:1,form:{},saved:{id:'c'.repeat(32),record_revision:'d'.repeat(64)}};
   dependency.context.restoreNamedForm=()=>{throw new Error('New input must not be overwritten');};
   const restoreCharacter=dependency.run('restoreCharacterDraft(raw)');dependency.pending[0]({entries:[]});await new Promise(resolve=>setImmediate(resolve));

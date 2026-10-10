@@ -397,6 +397,47 @@ class MigrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '重新预览'):
             migration.import_bundle(self.target, raw, {'expected': preview['expected'], 'selected': [preview['rows'][0]['key']], 'confirmed': True})
 
+    def test_export_observation_ticks_keep_original_preview_and_real_change_guards(self):
+        selected = [row['key'] for row in migration.status(self.source)['rows'] if row['valid']]
+        preview = migration.export_preview(self.source, {'selected': selected})
+        root = self.source.settings['save_root']
+        observations = {row['id']: row['last_seen'] for row in self.source.backups.history(root)}
+        original_game = self.game_bytes(self.source)
+        self.source.backups.clock = lambda: 1700010012
+        self.source.backups.tick(root, force=True)
+        fresh = migration.export_preview(self.source, {'selected': selected})
+        self.assertNotEqual(preview['expected'], fresh['expected'])
+        raw, _ = migration.export_bundle(self.source,
+            {'selected': selected, 'expected': preview['expected']})
+        self.assertEqual(migration.checksum(raw), preview['expected'])
+        with ZipFile(BytesIO(raw)) as archive:
+            with ZipFile(BytesIO(archive.read('backups.zip'))) as backups:
+                index = json.loads(backups.read('denghuo-transfer.json'))
+                for row in index['entries']:
+                    self.assertEqual(row['last_observed'], observations[row['id']])
+        self.assertEqual(self.game_bytes(self.source), original_game)
+        migration.export_bundle(self.source, {'selected': selected, 'expected': fresh['expected']})
+        record = self.source.backups.history(root)[0]
+        self.source.backups.manage(root, {'slot': record['slot'], 'id': record['id'],
+            'locked': True, 'expected_metadata_revision': record['metadata_revision']})
+        with self.assertRaisesRegex(ValueError, '重新预览'):
+            migration.export_bundle(self.source, {'selected': selected, 'expected': preview['expected']})
+
+    def test_export_previews_remain_independent_and_expire_with_bounded_history(self):
+        selected = ['preference:font_scale']
+        previews = []
+        for scale in range(33):
+            self.source.play_preferences.update({'font_scale': 1 + scale / 100})
+            previews.append(migration.export_preview(self.source, {'selected': selected}))
+        with self.assertRaisesRegex(ValueError, '预览已过期'):
+            migration.export_bundle(self.source, {'selected': selected, 'expected': previews[0]['expected']})
+        raw, _ = migration.export_bundle(self.source,
+            {'selected': selected, 'expected': previews[-1]['expected']})
+        self.assertEqual(migration.checksum(raw), previews[-1]['expected'])
+        for invalid in (None, {}, [], 'invalid'):
+            with self.subTest(expected=invalid), self.assertRaises(ValueError):
+                migration.export_bundle(self.source, {'selected': selected, 'expected': invalid})
+
     def test_knowledge_or_disk_preference_update_after_preview_rejected(self):
         raw = self.bundle()
         for action in ('knowledge', 'preferences'):

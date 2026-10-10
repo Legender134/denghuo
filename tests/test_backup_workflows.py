@@ -154,6 +154,65 @@ class BackupWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'重新预览'):
             flows.export_batch(self.manager,self.root,{'selected':selected,'expected':preview['expected']})
 
+    def test_export_keeps_preview_observations_across_ticks_and_other_previews(self):
+        rows = [self.capture(5, 1), self.capture(15, 2)]
+        self.manager.tick(self.root, force=True)
+        selected = self.selected(rows)
+        preview = flows.export_preview(self.manager, self.root, {'selected': selected})
+        original_game = {p: p.read_bytes() for p in self.root.rglob('*.dat')}
+        self.clock += 12
+        self.manager.tick(self.root)
+        fresh = flows.export_preview(self.manager, self.root, {'selected': selected})
+        self.assertNotEqual(fresh['expected'], preview['expected'])
+        for expected in (preview, fresh):
+            raw, _ = flows.export_batch(self.manager, self.root,
+                {'selected': selected, 'expected': expected['expected']})
+            with ZipFile(BytesIO(raw)) as archive:
+                index = json.loads(archive.read('denghuo-transfer.json'))
+                self.assertEqual(index['entries'], expected['rows'])
+                for row in index['entries']:
+                    content = archive.read(row['file'])
+                    self.assertEqual(hashlib.sha256(content).hexdigest(), row['sha256'])
+                    with ZipFile(BytesIO(content)) as inner:
+                        transfer = json.loads(inner.read('manifest.json'))['transfer']
+                    self.assertEqual(transfer['last_observed'], row['last_observed'])
+        self.assertEqual({p: p.read_bytes() for p in original_game}, original_game)
+
+    def test_observation_tolerance_still_checks_protection_selection_and_archive(self):
+        rows = [self.capture(5, 1), self.capture(15, 2)]
+        selected = self.selected(rows)
+        preview = flows.export_preview(self.manager, self.root, {'selected': selected})
+        self.clock += 12
+        self.manager.capture(self.root, 1)
+        with self.assertRaisesRegex(ValueError, '重新预览'):
+            flows.export_batch(self.manager, self.root,
+                {'selected': selected[:1], 'expected': preview['expected']})
+        self.manage(self.root, {**selected[0], 'locked': True})
+        with self.assertRaisesRegex(ValueError, '重新预览'):
+            flows.export_batch(self.manager, self.root,
+                {'selected': selected, 'expected': preview['expected']})
+        preview = flows.export_preview(self.manager, self.root, {'selected': selected})
+        path = self.manager.scope(self.root) / (rows[0]['id'] + '.zip')
+        path.write_bytes(b'controlled invalid archive')
+        with self.assertRaises(ValueError):
+            flows.export_batch(self.manager, self.root,
+                {'selected': selected, 'expected': preview['expected']})
+
+    def test_old_export_previews_expire_after_bounded_new_previews(self):
+        row = self.capture(5)
+        selected = self.selected([row])
+        previews = []
+        for _ in range(flows.MAX_BATCH + 1):
+            previews.append(flows.export_preview(self.manager, self.root, {'selected': selected}))
+            self.clock += 12
+            self.manager.capture(self.root, 1)
+        with self.assertRaisesRegex(ValueError, '预览已过期'):
+            flows.export_batch(self.manager, self.root,
+                {'selected': selected, 'expected': previews[0]['expected']})
+        raw, _ = flows.export_batch(self.manager, self.root,
+            {'selected': selected, 'expected': previews[-1]['expected']})
+        self.assertTrue(raw)
+
     def test_corrupt_one_member_reports_partial_import_and_retries_only_selected_failure(self):
         raw,_=self.batch([self.capture(5,1),self.capture(15,2)])
         with ZipFile(BytesIO(raw)) as archive:

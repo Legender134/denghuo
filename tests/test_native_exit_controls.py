@@ -1,4 +1,6 @@
 """Cross-surface native exit protects the real controller drafts."""
+import hashlib
+from pathlib import Path
 from queue import Queue
 from contextlib import ExitStack
 import os
@@ -24,6 +26,34 @@ class NativeExitTests(ControllerFixture):
     def decide(self, decision, **raw):
         self.ui.exit_decision({'request_id': self.session.exit_status()['id'],
                                'decision': decision, **raw})
+
+    def test_native_damaged_original_confirmation_listing_and_inspection_preserve_raw_bytes(self):
+        path = self.directory / 'exit-recovery' / ('d' * 32 + '.json.pending')
+        path.parent.mkdir(exist_ok=True); original = b'{native interrupted original'; path.write_bytes(original)
+        row = next(row for row in self.ui.draft_rows() if row['id'].endswith('.pending'))
+        self.assertTrue(row['raw_preservable']); self.assertTrue(row['error'])
+        self.ui.update = Mock(); self.ui.report_drafts = Mock(); self.ui.error = Mock()
+        request = {'action': 'preserve_raw_draft', 'id': row['id'], 'expected_revision': row['state_revision']}
+        self.ui.dispatch(request)
+        self.ui.error.assert_called_once(); self.assertEqual(path.read_bytes(), original)
+        self.ui.error.reset_mock()
+        self.ui.dispatch({**request, 'confirmed': True, 'include_archived': True})
+        self.ui.error.assert_not_called(); self.assertFalse(path.exists())
+        action, payload = self.host.commands[-1]
+        self.assertEqual(action, 'drafts')
+        archived = next(row for row in payload['rows'] if row.get('raw_original'))
+        self.assertEqual(archived['bytes'], len(original))
+        self.assertEqual(archived['sha256'], hashlib.sha256(original).hexdigest())
+        self.ui.dispatch({'action': 'inspect_raw_draft', 'id': archived['id'],
+            'expected_revision': archived['state_revision']})
+        action, payload = self.host.commands[-1]
+        self.assertEqual(action, 'raw_draft')
+        self.assertEqual(Path(payload['original']['path']).read_bytes(), original)
+        self.assertEqual(payload['original']['bytes'], len(original))
+        self.ui.restore_draft = Mock()
+        self.ui.dispatch({'action': 'load_draft', 'id': archived['id']})
+        self.ui.restore_draft.assert_not_called(); self.ui.error.assert_called_once()
+        self.assertEqual(Path(payload['original']['path']).read_bytes(), original)
 
     def test_cancel_immediate_reexit_hands_off_clean_and_dirty_native_requests(self):
         self.open('items.potions.potionofhealing')

@@ -129,6 +129,7 @@ namespace Denghuo.Native {
                         case "exit_cancelled": CancelExit(Data.Text(d, "request_id", "")); break;
                         case "exit_finished": Manager.Status.Text = Data.Text(d, "message", "最后备份结果尚未确认，请在下次启动核对退出回执。"); break;
                         case "drafts": Drafts(d); break;
+                        case "raw_draft": RawDraft(d); break;
                         case "recover_settings": RecoverSettings(d); break;
                         case "error": Fail(Data.Text(d, "message", "原生操作未完成")); break;
                         case "shutdown": Shutdown(); return;
@@ -211,13 +212,39 @@ namespace Denghuo.Native {
                 var open = UI.Button("载入所选草稿（不自动应用）", delegate { var choice = list.SelectedItem as Choice; if (choice != null) { Send("load_draft", "id", choice.Id, "component", choice.Component); form.CloseForShutdown(); } });
                 var archived = UI.Name(new CheckBox { Text = "显示已归档", AutoSize = true }, "显示已归档"); archived.Checked = Data.Flag(d, "include_archived");
                 archived.CheckedChanged += delegate { Send("list_drafts", "include_archived", archived.Checked); form.CloseForShutdown(); };
-                var archive = UI.Button("已处理，归档副本", delegate { var choice = list.SelectedItem as Choice; if (choice == null) return; var row = draftRows[choice.Id]; if (Data.Text(row, "error", "").Length > 0) return; Send("draft_state", "id", choice.Id, "state", Data.Text(row, "state", "active") == "archived" ? "active" : "archived", "expected_revision", Data.Text(row, "state_revision", ""), "include_archived", archived.Checked); form.CloseForShutdown(); });
-                list.SelectedIndexChanged += delegate { var choice = list.SelectedItem as Choice; if (choice == null) { open.Enabled = archive.Enabled = false; return; } var row = draftRows[choice.Id]; open.Enabled = archive.Enabled = Data.Text(row, "error", "").Length == 0; archive.Text = Data.Text(row, "state", "active") == "archived" ? "恢复到未完成列表" : "已处理，归档副本"; archive.AccessibleName = archive.Text; };
+                var inspect = UI.Button("核对及获取原始文件", delegate { var choice = list.SelectedItem as Choice; if (choice == null) return; var row = draftRows[choice.Id]; Send("inspect_raw_draft", "id", choice.Id, "expected_revision", Data.Text(row, "state_revision", "")); form.CloseForShutdown(); });
+                var archive = UI.Button("已处理，归档副本", delegate {
+                    var choice = list.SelectedItem as Choice; if (choice == null) return; var row = draftRows[choice.Id];
+                    if (Data.Flag(row, "raw_preservable")) {
+                        string details = "此文件无法载入为表单。确认先独立保留原始文件、核验后移出未完成列表？\n位置：" + Data.Text(row, "path", "") + "\n" + Data.Text(row, "bytes", "") + " 字节\nSHA-256：" + Data.Text(row, "sha256", "") + "\n保留后可勾选「显示已归档」核对和获取。";
+                        if (MessageBox.Show(form, details, "灯火 · 保留原始文件", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+                        Send("preserve_raw_draft", "id", choice.Id, "expected_revision", Data.Text(row, "state_revision", ""), "confirmed", true, "include_archived", archived.Checked);
+                    } else {
+                        if (Data.Text(row, "error", "").Length > 0 || Data.Flag(row, "raw_original")) return;
+                        Send("draft_state", "id", choice.Id, "state", Data.Text(row, "state", "active") == "archived" ? "active" : "archived", "expected_revision", Data.Text(row, "state_revision", ""), "include_archived", archived.Checked);
+                    }
+                    form.CloseForShutdown();
+                });
+                list.SelectedIndexChanged += delegate {
+                    var choice = list.SelectedItem as Choice; if (choice == null) { open.Enabled = archive.Enabled = inspect.Enabled = false; return; }
+                    var row = draftRows[choice.Id]; bool raw = Data.Flag(row, "raw_original"), readable = Data.Text(row, "error", "").Length == 0;
+                    open.Enabled = readable && !raw; archive.Enabled = !raw && (readable || Data.Flag(row, "raw_preservable")); inspect.Enabled = raw && readable;
+                    archive.Text = Data.Flag(row, "raw_preservable") ? "保留原始文件并归档" : Data.Text(row, "state", "active") == "archived" ? "恢复到未完成列表" : "已处理，归档副本"; archive.AccessibleName = archive.Text;
+                };
                 table.RowCount = 4; table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-                table.Controls.Add(archived, 0, 0); table.Controls.Add(list, 0, 1); table.Controls.Add(UI.Label("载入不会自动归档。归档保留原始副本，可显示后恢复。"), 0, 2); table.Controls.Add(UI.Buttons(open, archive), 0, 3); form.Controls.Add(table);
-                open.Enabled = archive.Enabled = false;
+                table.Controls.Add(archived, 0, 0); table.Controls.Add(list, 0, 1); table.Controls.Add(UI.Label("完整草稿可恢复。无法核对的文件仅保留原始字节，可核对和获取，不能载入为表单。"), 0, 2); table.Controls.Add(UI.Buttons(open, archive, inspect), 0, 3); form.Controls.Add(table);
+                open.Enabled = archive.Enabled = inspect.Enabled = false;
                 if (list.Items.Count > 0) list.SelectedIndex = 0;
                 form.ShowDialog(Manager);
+            }
+        }
+        void RawDraft(Dictionary<string, object> d) {
+            var row = Data.Object(d, "original"); string path = Data.Text(row, "path", "");
+            using (var form = new BaseForm(this, "drafts", "灯火 · 已核对的原始文件", 720, 360)) {
+                var table = UI.Table(1); table.Dock = DockStyle.Fill;
+                var details = UI.Name(new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, Dock = DockStyle.Fill, Text = "仅保留原始字节，不能载入为表单。\r\n来源：" + Data.Text(row, "source_name", "") + "\r\n位置：" + path + "\r\n" + Data.Text(row, "bytes", "") + " 字节\r\nSHA-256：" + Data.Text(row, "sha256", "") }, "原始文件核对结果");
+                var locate = UI.Button("定位原始文件以复制取回", delegate { try { Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + path + "\"") { UseShellExecute = true }); } catch (Exception e) { MessageBox.Show(form, "文件定位未完成：" + e.Message + "\n原始副本仍保留。", "灯火 · 原始文件", MessageBoxButtons.OK, MessageBoxIcon.Warning); } });
+                table.RowCount = 2; table.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.Controls.Add(details, 0, 0); table.Controls.Add(UI.Buttons(locate), 0, 1); form.Controls.Add(table); form.ShowDialog(Manager);
             }
         }
         void RecoverSettings(Dictionary<string, object> d) {

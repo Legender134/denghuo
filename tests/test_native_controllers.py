@@ -69,6 +69,36 @@ class ControllerFixture(unittest.TestCase):
 
 
 class NumericControllerTests(ControllerFixture):
+    def test_deathmark_visible_health_calculates_saves_and_reopens(self):
+        for identity in ('actors.hero.abilities.rogue.deathmark',
+                         'actors.hero.abilities.rogue.deathmark$deathmarktracker'):
+            for health in ('100', '10000'):
+                with self.subTest(identity=identity, health=health):
+                    self.open(identity)
+                    self.lookup.variables['target_hp'].set(health)
+                    ticket = self.worker.ticket
+                    self.lookup.calculate()
+                    self.assertEqual(self.worker.ticket, ticket + 1)
+                    self.finish()
+                    self.assertEqual(self.lookup.calculated['target_hp'], int(health))
+                    self.assertTrue(self.lookup.save_plan('死亡耐性 ' + health))
+                    plan = self.lookup.saved_plan
+                    self.lookup.open_plan(plan['id'], False)
+                    self.assertEqual(self.lookup.calculated['target_hp'], int(health))
+                    self.assertEqual([field['key'] for field in self.lookup.inputs], ['target_hp'])
+            self.lookup.variables['target_hp'].set('未填写')
+            ticket = self.worker.ticket
+            self.lookup.calculate()
+            self.assertEqual(self.worker.ticket, ticket)
+            self.assertEqual(self.lookup.variables['target_hp'].get(), '未填写')
+        self.open('items.weapon.enchantments.grim')
+        self.lookup.variables['target_hp'].set('100')
+        self.lookup.variables['target_max_hp'].set('40')
+        ticket = self.worker.ticket
+        self.lookup.calculate()
+        self.assertEqual(self.worker.ticket, ticket)
+        self.assertIn('当前生命不能超过最大生命', self.lookup.parameter_error)
+
     def test_actual_signed_bounds_recompute_save_and_reopen(self):
         self.open('items.weapon.melee.sword')
         self.assertEqual(next(field for field in self.lookup.inputs if field['key'] == 'level')['min'], -100)
