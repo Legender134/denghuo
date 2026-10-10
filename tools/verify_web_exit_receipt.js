@@ -18,13 +18,25 @@ function setup(exit=null,latest=success,options={}){
     fetch:async()=>{throw new Error('service stopped');},syncBackupContext(){},renderBackupHealth:()=>{get('#backup-health').textContent='自动备份状态尚未确认。';},render:()=>{get('#connection-banner').textContent='普通运行状态';},renderInventory(){},followPanelRequest:async()=>{},
     polling:false,settingsWriteGeneration:0,view:'overview',lastRender:'',slotsSignature:'',initialPanelPlanHandled:true,initialPanelPlan:null,restoreTarget:null,backupState:null,backupViewKeys:new Map()});
   vm.runInContext('let webExitState='+JSON.stringify(exit)+',webExitCompletionWatch=null,webExitHandling=false,webExitBusy=false,webEditingFrozen=false;',context);
-  for(const name of ['renderWebExitReceipt','watchWebExitCompletion','reportWebExitSurface','handleWebExitState','decideWebExit']){if(name==='renderWebExitReceipt'&&!workspace.includes('function '+name+'('))continue;vm.runInContext(extract(workspace,name),context);}
+  for(const name of ['updateWebRecoveryStatus','renderWebExitReceipt','watchWebExitCompletion','reportWebExitSurface','handleWebExitState','decideWebExit']){if(!workspace.includes('function '+name+'('))continue;vm.runInContext(extract(workspace,name),context);}
   vm.runInContext(extract(app,'poll'),context);const run=code=>vm.runInContext(code,context);
   async function advance(){assert(timers.length,'termination observer must be scheduled');const timer=timers.shift();clock+=timer.delay;timer.callback();await new Promise(setImmediate);}
   async function settle(){for(let n=0;timers.length&&n<60;n++)await advance();await run('webExitCompletionWatch');}
   return {context,get,messages,requests,timers,captured,run,advance,settle};
 }
 const cases=[],test=(name,work)=>cases.push({name,work});
+test('dirty report exposes durable checkpoint failure in a persistent status',async()=>{
+  const options={dirty:true,reported:{id:null,phase:'idle',participants:[{surface_id:'synthetic',dirty:true,recovery_error:'自动保留草稿尚未完成：disk full'}]}};
+  const f=setup(null,success,options);await f.run('reportWebExitSurface()');
+  assert.match(f.get('#draft-recovery-status').textContent,/自动保留草稿尚未完成/);assert.equal(f.get('#draft-recovery-status').hidden,false);
+  options.reported={id:null,phase:'idle',participants:[{surface_id:'synthetic',dirty:true,recovery_saved:true,recovery_error:''}]};
+  await f.run('reportWebExitSurface()');assert.equal(f.get('#draft-recovery-status').hidden,true);
+});
+test('lost dirty report does not claim raw input was persisted',async()=>{
+  const f=setup(null,success,{dirty:true});f.context.post=async()=>{throw new Error('report response lost');};
+  await f.run('reportWebExitSurface()');assert.match(f.get('#draft-recovery-status').textContent,/尚未确认自动保留/);
+  assert.equal(f.get('#draft-recovery-status').hidden,false);assert.equal(f.captured.draft.numeric[0].raw.level,'invalid');
+});
 test('terminal report reads without posting',async()=>{const failed={...success,error:'最后备份未完成，原件保留'};const f=setup(backing,failed);await f.run('reportWebExitSurface()');assert.equal(f.run('webExitState.phase'),'finished');assert.match(f.messages[0].message,/最后备份未完成/);assert(!f.requests.some(r=>r.payload));});
 test('direct backing-up starts read observer',async()=>{const f=setup();await f.run('handleWebExitState('+JSON.stringify(backing)+')');await f.settle();assert.equal(f.run('webExitState.phase'),'finished');assert.equal(f.requests.filter(r=>r.read).length,1);});
 test('finished ignores stale backing-up state',async()=>{const f=setup(success,backing);await f.run('handleWebExitState('+JSON.stringify(backing)+')');assert.equal(f.run('webExitState.phase'),'finished');assert.equal(f.messages.length,0);});
@@ -54,6 +66,11 @@ for(const [name,result,error,expected] of [
   ['missing-result',null,'',/结果尚未确认/],['future-state',{ok:true,state:'unchanged',captured:[],error:''},'',/结果尚未确认/],
   ['empty-capture',{ok:true,state:'captured',captured:[],error:''},'',/结果尚未确认/],['receipt-warning',{...success.backup_result,receipt_error:'退出检查记录无法写入'},'',/退出检查记录无法写入/]
 ])test('terminal '+name+' survives disconnect',async()=>{const f=setup(),finished={...success,backup_result:result,error};await f.run('handleWebExitState('+JSON.stringify(finished)+')');await f.run('poll()');assert.match(f.get('#backup-status').textContent,expected);assert.match(f.get('#connection-banner').textContent,/本次辅助已结束/);if(name!=='captured'&&name!=='receipt-warning')assert(!f.get('#backup-status').textContent.includes('最后备份已完成'));});
+test('partial receipt retains completed slots without hiding failed slots after disconnect',async()=>{
+  const completed=[{slot:1,id:'a'.repeat(64)},{slot:3,id:'b'.repeat(64)}],result={ok:false,state:'partial',captured:completed,error:'槽位 2 未完成；本次最后备份重试已结束'},f=setup();
+  const finished={...success,backup_result:result,error:result.error};await f.run('handleWebExitState('+JSON.stringify(finished)+')');await f.run('poll()');
+  for(const key of ['#connection-banner','#backup-health','#backup-status']){const text=f.get(key).textContent;assert.match(text,/槽位 2 未完成/);assert.match(text,/已完成.*槽位 1（aaaaaaaaaaaa）.*槽位 3（bbbbbbbbbbbb）/);assert.match(f.get(key).className||f.get('#connection-banner').className,/error/);}
+});
 test('unknown exit disconnect never claims completion',async()=>{const f=setup(null,success,{readError:true});await f.run('handleWebExitState('+JSON.stringify(backing)+')');await f.settle();await f.run('poll()');assert.match(f.get('#backup-status').textContent,/结果尚未确认/);assert(!f.get('#connection-banner').textContent.includes('本次辅助已结束'));});
 test('ordinary disconnect keeps generic error',async()=>{const f=setup();await f.run('poll()');assert.match(f.get('#connection-banner').textContent,/服务已停止或连接中断/);assert.match(f.get('#backup-status').textContent,/自动备份状态尚未确认/);});
 test('dirty raw draft waits for other windows',async()=>{const dirty={...confirming,participants:[{surface_id:'synthetic',ack:null,dirty:true},{surface_id:'other',ack:null,dirty:true}]},f=setup(null,success,{dirty:true,reported:dirty});await f.run('handleWebExitState('+JSON.stringify(dirty)+')');assert(!f.requests.some(r=>r.payload?.action==='ack'));assert(f.get('#session-exit-dialog').open);assert.equal(f.timers.length,0);assert.deepEqual(f.requests.find(r=>r.payload?.action==='report').payload.draft,f.captured.draft);});

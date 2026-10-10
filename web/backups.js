@@ -156,14 +156,22 @@ async function openRestore(row,context,operation='restore'){
   if(!response.ok)throw new Error(preview.error);
   if(context!==state?.backup_context||preview.context!==context)throw new Error('存档连接已变化，请重新选择备份并预览');
   if(request!==restorePreview)return;
-  openConfirm({...row,expected_current:preview.expected_current},operation,preview.context);
+  openConfirm({...row,expected_current:preview.expected_current,
+    summary:operation==='undo'&&preview.original_existed===false?{empty:true}:preview.target},operation,preview.context);
   const targetTitle=operation==='undo'?'撤回后回到的进度':'将恢复的进度';
   const target=operation==='undo'&&preview.original_existed===false?'<p>回档前槽位为空；撤回后当前进度会完整保留，活动槽位将恢复为空。</p>':backupSummary(preview.target);
   $('#restore-description').innerHTML=`<div class="restore-comparison"><section><h3>现在的进度</h3>${backupSummary(preview.current)}</section><section><h3>${targetTitle}</h3>${target}</section></div><p>${preview.same_run?'种子和职业一致，请核对是否同一局冒险。':'不同冒险或无法确认是否同一局，请核对目标。'}${row.version<850?` 此旧档当前${escapeHTML(state?.catalog_version||'参考游戏')}无法继续。`:''}</p>`;
 }
+function backupReceiptSummary(row){
+  if(!row||typeof row!=='object')return null;
+  const fields=['class','level','depth','branch','hp','ht','gold','strength','duration','saved','equipment','empty','warning'];
+  const known=fields.filter(key=>Object.prototype.hasOwnProperty.call(row,key));
+  return known.length?JSON.parse(JSON.stringify(Object.fromEntries(known.map(key=>[key,row[key]])))):null;
+}
 function openConfirm(row, operation,context){
   if(context!==state?.backup_context){toast('存档连接已变化，请重新选择备份。',true);return;}
-  restorePreview++;restoreTarget={...row,operation,context,root:backupState?.save_root||state.settings.save_root};
+  restorePreview++;restoreTarget={...row,summary:backupReceiptSummary(row.summary??(operation==='undo'?row.before:row)),
+    operation,context,root:backupState?.save_root||state.settings.save_root};
   $('#restore-repreview').hidden=!['restore','undo'].includes(operation);
   const phrase={restore:'恢复槽位',undo:'撤回槽位',remove:'移出备份'}[operation];
   $('#restore-title').textContent={restore:'恢复前，核对这份进度',undo:'撤回上次回档',remove:'移出活动备份库'}[operation];
@@ -333,7 +341,7 @@ function initializeBackups(){
     const phrase={restore:'恢复槽位',undo:'撤回槽位',remove:'移出备份'}[target.operation];
     const submitted=freezeBackupReceipt({action:target.operation,root:target.root,context:target.context,
       scope:{root:target.root,context:target.context},slot:target.slot,id:target.id,
-      expected_current:target.expected_current,confirm:`${phrase} ${target.slot}`,label:target.label||''});
+      expected_current:target.expected_current,confirm:`${phrase} ${target.slot}`,label:target.label||'',summary:target.summary});
     const ticket=Object.freeze({...backupFlowTicket(),context:submitted.context,root:submitted.root});
     const current=()=>restoreTarget===target&&restorePreview===preview&&backupFlowCurrent(ticket);
     button.disabled=true;$('#restore-error').hidden=true;

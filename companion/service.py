@@ -135,14 +135,23 @@ class Session:
         self._shutdown_thread = None
         self._shutdown_deadline = None
         self._shutdown_result = None
+        self._shutdown_captured = []
         self._consumed_stop_at = None
-        from .session_exit import ExitCoordinator, ExitDraftStore
+        from .session_exit import ExitCoordinator, ExitDraftStore, ExitRecoveryJournal
         self.exit_drafts = ExitDraftStore(self.config_path.parent / 'exit-drafts')
-        self.exit_coordinator = ExitCoordinator(self.prepare_shutdown, self.save_exit_draft, on_finished=self._exit_finished)
+        self.exit_recovery = ExitRecoveryJournal(self.config_path.parent / 'exit-recovery', self.exit_drafts)
+        self.exit_coordinator = ExitCoordinator(self.prepare_shutdown, self.save_exit_draft,
+            on_finished=self._exit_finished, checkpoint=self.exit_recovery.checkpoint)
         self.settings = dict(DEFAULTS)
         self.settings_revision = uuid.uuid4().hex
         self.config_error = ""
         self.configuration_notice = ""
+        try:
+            count = len(self.exit_recovery.list())
+            self.draft_recovery_notice = (f'找到 {count} 份之前或其他会话自动保留的未完成输入；'
+                '请从未完成草稿列表核对、明确载入或归档。' if count else '')
+        except (ValueError, OSError):
+            self.draft_recovery_notice = '自动保留的草稿暂时无法读取，原件仍保留；请在未完成草稿列表核对。'
         try:
             receipt_path = self.config_path.parent / 'last-exit.json'
             with receipt_path.open('rb') as stream:
@@ -244,10 +253,23 @@ class Session:
         return self.exit_drafts.save(surface_id, kind, label, draft)
 
     def list_exit_drafts(self, include_archived=False):
-        return self.exit_drafts.list(include_archived=include_archived)
+        rows = self.exit_drafts.list(include_archived=include_archived) + self.exit_recovery.list()
+        count = sum(bool(row.get('recovery')) for row in rows)
+        self.draft_recovery_notice = (f'找到 {count} 份之前或其他会话自动保留的未完成输入；'
+            '请从未完成草稿列表核对、明确载入或归档。' if count else '')
+        return sorted(rows, key=lambda row: row['saved'], reverse=True)
 
     def load_exit_draft(self, identity):
+        if self.exit_recovery.contains(identity):
+            return self.exit_recovery.load(identity)
         return self.exit_drafts.load(identity)
+
+    def set_exit_draft_lifecycle(self, identity, state, expected_revision):
+        if self.exit_recovery.contains(identity):
+            if state != 'archived':
+                raise ValueError('自动保留副本尚未归档；可明确载入或归档保留原始内容')
+            return self.exit_recovery.archive(identity, expected_revision)
+        return self.exit_drafts.set_lifecycle(identity, state, expected_revision)
 
     def exit_action(self, payload):
         if not isinstance(payload, dict):
@@ -276,7 +298,7 @@ class Session:
         elif action == 'draft-load':
             return {'draft': self.load_exit_draft(payload.get('id'))}
         elif action == 'draft-state':
-            return {'draft_state': self.exit_drafts.set_lifecycle(payload.get('id'), payload.get('state'),
+            return {'draft_state': self.set_exit_draft_lifecycle(payload.get('id'), payload.get('state'),
                 payload.get('expected_revision'))}
         elif action == 'resolve-offline':
             return self.exit_coordinator.resolve_offline(payload.get('request_id'), surface, payload.get('decision'), payload.get('revision'))
@@ -291,6 +313,11 @@ class Session:
                 and str(root.resolve()) not in self._observed_progress_roots
                 and not root.exists())
 
+    def _record_shutdown_capture(self, row):
+        with self._shutdown_lock:
+            if self._shutdown_result is None:
+                self._shutdown_captured.append(copy.deepcopy(row))
+
     def _capture_for_shutdown(self, root, deadline, config_error):
         try:
             with self.lock:
@@ -298,10 +325,13 @@ class Session:
             result = ({'ok': False, 'state': 'configuration-error', 'captured': [],
                        'error': '最后一次备份未完成：连接设置尚未修复；已有原件仍保留。'}
                       if config_error else self.backups.final_capture(root, deadline,
-                          allow_missing_default=allow_missing_default))
+                          allow_missing_default=allow_missing_default,
+                          on_capture=self._record_shutdown_capture))
         except Exception:
             logging.exception('Final backup capture failed')
-            result = {'ok': False, 'state': 'failed', 'captured': [],
+            with self._shutdown_lock:
+                captured = copy.deepcopy(self._shutdown_captured)
+            result = {'ok': False, 'state': 'partial' if captured else 'failed', 'captured': captured,
                       'error': '最后一次备份未完成；已有备份与活动存档原件仍保留。'}
         with self._shutdown_lock:
             if self._shutdown_result is None:
@@ -323,8 +353,9 @@ class Session:
         self._shutdown_done.wait(max(0, deadline - time.monotonic()))
         with self._shutdown_lock:
             if self._shutdown_result is None:
-                self._shutdown_result = {'ok': False, 'state': 'timeout', 'captured': [],
-                    'error': '最后一次备份检查未能在3秒内完成；已有备份与活动存档原件仍保留。'}
+                captured = copy.deepcopy(self._shutdown_captured)
+                self._shutdown_result = {'ok': False, 'state': 'partial' if captured else 'timeout', 'captured': captured,
+                    'error': '最后一次备份检查未能在结束前完成；其余槽位的结果尚未确认。已有备份与活动存档原件仍保留；下次启动助手后，请检查存档历史与备份状态。'}
             result = copy.deepcopy(self._shutdown_result)
         try:
             unlinked(self.config_path.parent).mkdir(parents=True, exist_ok=True)
@@ -781,6 +812,7 @@ class Session:
                                   "error": self.error, "warning": self.warning, "modified": self.modified,
                                   "waiting_for_save": self.waiting_for_save,
                                   "configuration_notice": self.configuration_notice,
+                                  "draft_recovery_notice": self.draft_recovery_notice,
                                   "age_seconds": age, "stale": age is None or age > 60,
                                   "active_slot": self.active_slot, "revision": self.revision,
                                   "run_id": (hashlib.sha256(repr((self.start_time, self._run_generation,

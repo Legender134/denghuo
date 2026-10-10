@@ -174,8 +174,8 @@ async function backupFlowRun(key,errorId,work){
 }
 function flowTable(rows,{select='',reason=false,result=false,successText='已导入'}={}){
   if(!rows.length)return '<p class="muted">没有记录。</p>';
-  const progress=row=>row.summary?`${row.summary.class||'未知角色'} · 等级 ${row.summary.level??'—'} · 第 ${row.summary.depth??'—'} 层 · 生命 ${row.summary.hp??'—'}/${row.summary.ht??'—'}`:row.class?`${row.class} · 等级 ${row.level??'—'} · 第 ${row.depth??'—'} 层`:'摘要不可验证';
-  const sourceTime=row=>`${(row.saved??row.summary?.saved)!=null?`游戏保存 ${fmtTime(row.saved??row.summary?.saved)}`:'源保存时间未提供'}${row.first_observed!=null?` · 源首次观察 ${fmtTime(row.first_observed)}`:''}${row.last_observed!=null?` · 源最近观察 ${fmtTime(row.last_observed)}`:''}${row.time!=null?` · 副本记录 ${fmtTime(row.time)}`:''}`;
+  const progress=row=>row.summary?.empty?'空槽位（没有活动进度）':row.summary?`${row.summary.class||'未知角色'} · 等级 ${row.summary.level??'—'} · 第 ${row.summary.depth??'—'} 层 · 生命 ${row.summary.hp??'—'}/${row.summary.ht??'—'}`:row.class?`${row.class} · 等级 ${row.level??'—'} · 第 ${row.depth??'—'} 层`:row.valid===false?'摘要不可验证':'未提供进度摘要';
+  const sourceTime=row=>`${row.summary?.empty?'空槽位，无游戏保存时间':(row.saved??row.summary?.saved)!=null?`游戏保存 ${fmtTime(row.saved??row.summary?.saved)}`:'源保存时间未提供'}${row.first_observed!=null?` · 源首次观察 ${fmtTime(row.first_observed)}`:''}${row.last_observed!=null?` · 源最近观察 ${fmtTime(row.last_observed)}`:''}${row.time!=null?` · 副本记录 ${fmtTime(row.time)}`:''}`;
   return `<div class="table-scroll"><table><thead><tr>${select?'<th scope="col">选择</th>':''}<th scope="col">名称 / 文件</th><th scope="col">槽位</th><th scope="col">游戏保存 / 副本时间</th><th scope="col">大小</th>${reason||result?'<th scope="col">原因 / 状态</th>':''}</tr></thead><tbody>${rows.map(row=>{
     const name=row.label||row.file||row.id||'未命名进度',key=select==='export'?flowKey(row):row.file;
     const selectable=select!=='import'||row.valid;

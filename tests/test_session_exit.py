@@ -2,6 +2,7 @@ import copy
 import gzip
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -307,6 +308,120 @@ class FinalCaptureTests(unittest.TestCase):
         self.assertEqual(clock[0], 1000.15)
         self.assertEqual(self.hashes(), before)
         self.assertFalse(list(self.manager.directory.rglob('*.zip')))
+
+    def test_exhausted_inconsistent_snapshot_has_one_slot_and_actionable_final_receipt(self):
+        import os
+        original = self.hashes()
+        saved = (self.folder / 'game.dat').stat().st_mtime
+        os.utime(self.folder / 'depth2.dat', (saved - 120, saved - 120))
+        clock = [1000.0]
+        actual = self.manager.capture
+        def expire_after_real_attempt(root, slot, *, deadline=None):
+            try:
+                return actual(root, slot, deadline=deadline)
+            finally:
+                clock[0] = 1000.2
+        with (patch('companion.backups.time.monotonic', side_effect=lambda: clock[0]),
+              patch.object(self.manager, 'capture', side_effect=expire_after_real_attempt)):
+            result = self.manager.final_capture(self.root, 1000.2)
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['state'], 'failed')
+        self.assertIn('一致存档', result['error'])
+        self.assertEqual(result['error'].count('槽位 1：'), 1)
+        self.assertNotIn('稍后自动重试', result['error'])
+        self.assertIn('重试已结束', result['error'])
+        self.assertIn('下次启动', result['error'])
+        self.assertEqual(self.hashes(), original)
+        self.assertFalse(list(self.manager.directory.rglob('*.zip')))
+
+    def test_exhausted_save_errors_do_not_promise_future_retries(self):
+        for message in ('角色存档在读取期间无法访问，稍后自动重试',
+                        '游戏正在写入存档，稍后重试', '游戏正在保存，下一次重试'):
+            with self.subTest(message=message):
+                clock = [1000.0]
+                def fail(root, slot, *, deadline=None):
+                    clock[0] = 1000.2
+                    raise ValueError(message)
+                with (patch('companion.backups.time.monotonic', side_effect=lambda: clock[0]),
+                      patch.object(self.manager, 'capture', side_effect=fail)):
+                    result = self.manager.final_capture(self.root, 1000.2)
+                self.assertFalse(result['ok'])
+                self.assertIn(message.split('，')[0], result['error'])
+                self.assertNotIn('稍后', result['error'])
+                self.assertNotIn('下一次重试', result['error'])
+                self.assertIn('重试已结束', result['error'])
+                self.assertIn('下次启动', result['error'])
+
+    def test_timeline_write_failure_keeps_the_verified_archive_in_final_receipt(self):
+        from companion.backups import atomic_json
+        original = self.hashes()
+        def fail_timeline(path, value):
+            if Path(path).name == 'timeline.json':
+                raise OSError('controlled timeline write failure')
+            return atomic_json(path, value)
+        with patch('companion.backups.atomic_json', side_effect=fail_timeline):
+            result = self.manager.final_capture(self.root, time.monotonic() + 2)
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['state'], 'partial')
+        self.assertEqual([row['slot'] for row in result['captured']], [1])
+        self.assertIn('controlled timeline write failure', result['error'])
+        _, payloads, _, _ = self.manager.checked_archive(self.root, result['captured'][0]['id'], 1)
+        self.assertEqual(payloads, {p.name: p.read_bytes() for p in self.folder.iterdir()})
+        self.assertEqual(self.hashes(), original)
+
+    def test_deadline_keeps_already_verified_slot_and_late_worker_cannot_rewrite_receipt(self):
+        from companion.service import Session
+        second = self.root / 'game2'
+        second.mkdir()
+        for path in self.folder.iterdir():
+            # Directory iteration order must not manufacture an inconsistent save.
+            stamp = path.stat()
+            copied = second / path.name
+            copied.write_bytes(path.read_bytes())
+            os.utime(copied, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        original = {str(p.relative_to(self.root)): p.read_bytes()
+                    for p in self.root.rglob('*') if p.is_file()}
+        config = Path(self.temporary.name) / 'settings.json'
+        config.write_text(json.dumps({'save_root': str(self.root), 'slot': 1, 'mode': 'save'}), encoding='utf-8')
+        session = Session(config)
+        entered_second, release_second = threading.Event(), threading.Event()
+        actual_capture = session.backups.capture
+        actual_wait = session._shutdown_done.wait
+        def capture(root, slot, *, deadline=None):
+            if slot == 2:
+                entered_second.set()
+                if not release_second.wait(5):
+                    raise RuntimeError('test did not release second capture')
+            return actual_capture(root, slot, deadline=deadline)
+        def expire_parent_wait(timeout):
+            if not entered_second.wait(5):
+                raise AssertionError('first real capture never finished')
+            return False
+        try:
+            with (patch.object(session.backups, 'capture', side_effect=capture),
+                  patch('companion.service.time.monotonic', return_value=1000.0),
+                  patch.object(session._shutdown_done, 'wait', side_effect=expire_parent_wait)):
+                result = session.prepare_shutdown()
+                persisted = (config.parent / 'last-exit.json').read_bytes()
+                self.assertFalse(result['ok'])
+                self.assertEqual(result['state'], 'partial')
+                self.assertEqual([row['slot'] for row in result['captured']], [1])
+                self.assertIn('尚未确认', result['error'])
+                self.assertEqual(json.loads(persisted)['backup'], result)
+                identity = result['captured'][0]['id']
+                release_second.set()
+                self.assertTrue(actual_wait(5))
+                _, payloads, _, _ = session.backups.checked_archive(self.root, identity, 1)
+                self.assertEqual(payloads, {p.name: p.read_bytes() for p in self.folder.iterdir()})
+                self.assertEqual(session._shutdown_result, result)
+                self.assertEqual((config.parent / 'last-exit.json').read_bytes(), persisted)
+                self.assertEqual(len(session.backups.history(self.root)), 2)
+                self.assertEqual({str(p.relative_to(self.root)): p.read_bytes()
+                                  for p in self.root.rglob('*') if p.is_file()}, original)
+        finally:
+            release_second.set()
+            if session._shutdown_thread:
+                session._shutdown_thread.join(5)
 
     def test_paused_backup_is_respected_and_no_save_is_a_normal_exit(self):
         self.manager.set_enabled(False)

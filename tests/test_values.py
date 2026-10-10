@@ -188,6 +188,37 @@ class PlayerValuesTests(unittest.TestCase):
         self.assertEqual(metrics['首次恢复'],'6')
         self.assertEqual(metrics['最终实际恢复'],'90')
 
+    def test_active_healing_uses_single_precision_half_boundary(self):
+        detail = self.detail('actors.buffs.healing', power=50, healing_percent=29,
+                             healing_flat=0, hp=0, max_hp=100, vial=-1)
+        rows = next(block['rows'] for block in detail['blocks'] if block['title'] == '每回合恢复明细')
+        self.assertEqual(rows[0], ['1', '15', '15', '15', '35'])
+        self.assertEqual([int(row[1]) for row in rows], [15, 10, 7, 5, 4, 3, 2, 1, 1, 1, 1])
+        self.assertEqual(self.metrics('actors.buffs.healing', power=50, healing_percent=29,
+                                     hp=0, max_hp=100)['首次恢复'], '15')
+
+    def test_healing_float_edges_keep_flat_recovery_vial_cap_and_full_health_semantics(self):
+        # Fixed vectors from Healing.java's float field/product and integer clamp.
+        # Expected values do not call the production float32 or schedule helpers.
+        for percent, flat, power, vial, hp, first, ticks in (
+            (28.99999, 0, 50, -1, 0, 14, None),
+            (28.999999, 0, 50, -1, 0, 15, None),
+            (29.000001, 0, 50, -1, 0, 15, None),
+            (29, 2, 50, -1, 0, 17, [17, 12, 8, 6, 4, 3]),
+            (25, 0, 10, -1, 0, 3, [3, 2, 1, 1, 1, 1, 1]),
+            (0, 0, 5, -1, 0, 1, [1, 1, 1, 1, 1]),
+            (29, 20, 50, 3, 99, 6, [6, 6, 6, 6, 6, 6, 6, 6, 2])):
+            with self.subTest(percent=percent, flat=flat, vial=vial):
+                detail = self.detail('actors.buffs.healing', power=power, healing_percent=percent,
+                                     healing_flat=flat, hp=hp, max_hp=100, vial=vial)
+                rows = next(block['rows'] for block in detail['blocks'] if block['title'] == '每回合恢复明细')
+                self.assertEqual(int(rows[0][1]), first)
+                if ticks is not None:
+                    self.assertEqual([int(row[1]) for row in rows], ticks)
+                self.assertEqual(sum(int(row[1]) for row in rows), power)
+                self.assertEqual(int(rows[-1][4]), 0)
+                self.assertEqual(sum(int(row[2]) for row in rows), min(power, 100 - hp))
+
     def test_active_healing_does_not_reapply_pool_multiplier(self):
         metrics=self.metrics('actors.buffs.healing',max_hp=100,hp=10,power=141,vial=3)
         self.assertEqual(metrics['剩余治疗池'],'141')

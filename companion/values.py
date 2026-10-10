@@ -10,6 +10,7 @@ from .values_abilities import add_advanced_values
 from .values_decisions import add_operation_values
 from .values_resources import add_resource_values
 from .reference_sources import provenance
+from .game_math import augmented_damage
 
 INPUTS = {
     'level': ('装备等级', 0, 0, 100),
@@ -106,7 +107,7 @@ def heal_schedule(amount, current, maximum, vial=-1, percent=.25, flat=0, apply_
     left, hp, rows = amount, current, []
     cap = [4+rounded(.15*maximum), 3+rounded(.1*maximum), 2+rounded(.07*maximum), 1+rounded(.05*maximum)]
     while left > 0 and len(rows) < 10000:
-        tick = min(left, max(1, rounded(left*percent)+flat))
+        tick = min(left, max(1, augmented_damage(left, percent)+flat))
         if vial >= 0:
             tick = min(tick, cap[vial])
         actual = min(maximum-hp, tick)

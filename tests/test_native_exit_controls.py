@@ -21,6 +21,120 @@ class NativeExitTests(ControllerFixture):
         self.manager.native_ui = self.ui
         self.manager.open_play_settings = Mock()
 
+    def decide(self, decision, **raw):
+        self.ui.exit_decision({'request_id': self.session.exit_status()['id'],
+                               'decision': decision, **raw})
+
+    def test_cancel_immediate_reexit_hands_off_clean_and_dirty_native_requests(self):
+        self.open('items.potions.potionofhealing')
+        web = 'web-cccccccc'
+        self.session.report_exit_surface(web, 1, True, draft={'raw': {'hp': ''}})
+        for dirty in (False, True):
+            with self.subTest(dirty=dirty):
+                if dirty:
+                    self.lookup.variables['hp'].set('  unfinished invalid hp  ')
+                self.ui.report_drafts()
+                first = self.session.request_exit(web)
+                self.ui.process_exit()
+                self.decide('saved' if dirty else 'clean')
+                self.session.acknowledge_exit(first['id'], web, 'cancel', 1)
+                second = self.session.request_exit(web)
+                self.ui.process_exit()
+                commands = [(action, payload) for action, payload in self.host.commands
+                            if action in ('exit_request', 'exit_cancelled')]
+                self.assertEqual([action for action, _ in commands[-3:]],
+                                 ['exit_request', 'exit_cancelled', 'exit_request'])
+                self.assertEqual(commands[-2][1]['request_id'], first['id'])
+                self.assertEqual(commands[-1][1]['state']['id'], second['id'])
+                self.decide('cancel')
+                self.assertEqual(self.session.exit_status()['phase'], 'cancelled')
+                if dirty:
+                    self.assertEqual(self.lookup.variables['hp'].get(), '  unfinished invalid hp  ')
+                    copies = [row for row in self.session.list_exit_drafts()
+                              if row.get('draft_kind') == 'numeric']
+                    self.assertEqual(len(copies), 1)
+                    self.assertEqual(self.session.load_exit_draft(copies[0]['id'])['draft']['raw_params']['hp'],
+                                     '  unfinished invalid hp  ')
+
+    def test_late_old_native_decisions_cannot_ack_cancel_or_replace_current_raw(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['hp'].set('current unfinished raw')
+        web = 'web-cccccccc'
+        self.session.report_exit_surface(web, 1, True, draft={'raw': {'hp': ''}})
+        self.ui.report_drafts()
+        first = self.session.request_exit(web)
+        self.ui.process_exit()
+        self.session.acknowledge_exit(first['id'], web, 'cancel', 1)
+        second = self.session.request_exit(web)
+        self.ui.process_exit()
+        before = self.ui.drafts()
+        for request_id in (first['id'], None):
+            for decision in ('clean', 'saved', 'discard', 'cancel'):
+                with self.subTest(request_id=request_id, decision=decision):
+                    self.ui.exit_decision({'request_id': request_id, 'decision': decision,
+                        'lookup': {'values': {'hp': 'old overwritten raw'}, 'note': 'old note',
+                                   'draft_revision': self.lookup.edit_revision + 1}})
+                    state = self.session.exit_status()
+                    self.assertEqual((state['id'], state['phase']), (second['id'], 'confirming'))
+                    self.assertIsNone(next(row for row in state['participants']
+                                           if row['surface_id'] == 'native')['ack'])
+                    self.assertEqual(self.ui.drafts(), before)
+                    self.assertEqual(self.session.exit_drafts.list(), [])
+        self.decide('discard')
+        self.assertEqual(next(row for row in self.session.exit_status()['participants']
+                              if row['surface_id'] == 'native')['ack'], 'discard')
+        self.assertEqual(self.ui.drafts(), before)
+        self.session.acknowledge_exit(second['id'], web, 'cancel', 1)
+
+    def test_late_old_start_notification_cannot_replace_new_request_or_finished_receipt(self):
+        web = 'web-cccccccc'
+        self.session.report_exit_surface(web, 1, True, draft={'raw': {'hp': ''}})
+        self.ui.report_drafts()
+        first = self.session.request_exit(web)
+        self.session.acknowledge_exit(first['id'], web, 'cancel', 1)
+        second = self.session.request_exit(web)
+        self.ui.process_exit()
+        self.ui.notify_exit(first)
+        before = list(self.host.commands)
+        self.ui.process_exit()
+        self.assertEqual(self.host.commands, before)
+        self.assertEqual(self.ui.exit_state['id'], second['id'])
+        self.decide('clean')
+        self.session.acknowledge_exit(second['id'], web, 'cancel', 1)
+        self.ui.process_exit()
+        self.assertFalse(self.ui.frozen)
+        self.assertEqual(self.host.commands[-1], ('exit_cancelled', {'request_id': second['id']}))
+
+    def test_finished_exit_receipt_survives_the_next_manager_render(self):
+        from types import SimpleNamespace
+        import copy
+        self.ui.signature = None
+        for label in ('status', 'backup_status', 'hero', 'metrics'):
+            setattr(self.manager, label, SimpleNamespace(cget=lambda _: '当前普通状态'))
+        self.manager.action_error = ''
+        for name, result, expected in (
+            ('captured', {'ok': True, 'state': 'captured', 'captured': [{'slot': 1, 'id': 'a'*64}]}, '槽位 1（aaaaaaaaaaaa）'),
+            ('no-save', {'ok': True, 'state': 'no-save', 'captured': []}, '没有游戏存档需要备份'),
+            ('paused', {'ok': True, 'state': 'paused', 'captured': []}, '自动备份已暂停'),
+            ('failed', {'ok': False, 'state': 'failed', 'captured': [], 'error': '受控磁盘写入失败'}, '受控磁盘写入失败'),
+            ('partial', {'ok': False, 'state': 'partial', 'captured': [{'slot': 3, 'id': 'b'*64}], 'error': '槽位 2 未完成'}, '槽位 3（bbbbbbbbbbbb）'),
+            ('unknown', None, '结果尚未确认'),
+            ('receipt-warning', {'ok': True, 'state': 'no-save', 'captured': [], 'receipt_error': '退出检查记录无法写入'}, '退出检查记录无法写入')):
+            with self.subTest(state=name):
+                state = {'id': name, 'phase': 'finished', 'backup_result': result, 'error': '', 'participants': []}
+                frozen = copy.deepcopy(state)
+                self.session.exit_status = Mock(return_value=state)
+                self.ui.exit_events.put(state)
+                self.ui.update(self.session.snapshot(), force=True)
+                receipt = next(payload for action, payload in reversed(self.host.commands) if action == 'exit_finished')
+                self.assertIn(expected, receipt.get('message', ''))
+                rendered = next(payload for action, payload in reversed(self.host.commands) if action == 'manager_state')
+                self.assertIn(expected, rendered['error'])
+                self.assertIn('本次辅助已结束', rendered['error'])
+                if name == 'partial':
+                    self.assertIn('槽位 2 未完成', rendered['error'])
+                self.assertEqual(state, frozen)
+
     def test_web_request_then_native_cancel_keeps_raw_generation_and_session(self):
         self.open('items.potions.potionofhealing')
         self.lookup.variables['hp'].set('invalid raw')
@@ -28,7 +142,7 @@ class NativeExitTests(ControllerFixture):
         self.session.request_exit('web-fixture')
         self.ui.process_exit()
         self.assertTrue(self.ui.frozen)
-        self.ui.exit_decision({'decision': 'cancel'})
+        self.decide('cancel')
         self.assertFalse(self.session.stop.is_set())
         self.assertEqual(self.lookup.variables['hp'].get(), 'invalid raw')
         self.assertEqual(self.session.exit_status()['phase'], 'cancelled')
@@ -87,7 +201,7 @@ class NativeExitTests(ControllerFixture):
         self.ui.report_drafts()
         self.session.request_exit('web-fixture')
         self.ui.process_exit()
-        self.ui.exit_decision({'decision': 'saved'})
+        self.decide('saved')
         self.assertEqual({row['draft_kind'] for row in self.session.list_exit_drafts()}, {'numeric', 'play-settings'})
         deadline = time.monotonic()+4
         while self.session.exit_status()['phase'] != 'finished' and time.monotonic() < deadline:
@@ -102,7 +216,7 @@ class NativeExitTests(ControllerFixture):
         self.ui.report_drafts()
         self.session.request_exit('web-fixture')
         self.lookup.variables['hp'].set('2')
-        self.ui.exit_decision({'decision': 'clean'})
+        self.decide('clean')
         self.assertEqual(self.session.exit_status()['phase'], 'confirming')
         self.assertFalse(self.session.stop.is_set())
 
@@ -115,7 +229,7 @@ class NativeExitTests(ControllerFixture):
         self.lookup.handle({'action':'save_dialog_edit','pending_save':pending})
         self.assertTrue(self.lookup.has_draft())
         self.ui.report_drafts();self.session.request_exit('web-fixture');self.ui.process_exit()
-        self.ui.exit_decision({'decision':'saved'})
+        self.decide('saved')
         plans=self.session.workspace_status()['plans']
         copied=next(row for row in plans if row['id']!=original)
         self.assertEqual(copied['name'],'弹窗未提交名称 草稿副本')
@@ -126,7 +240,7 @@ class NativeExitTests(ControllerFixture):
         self.open('items.weapon.melee.sword')
         self.ui.report_drafts();self.session.request_exit('web-fixture')
         pending = {'name':'最新弹窗','note':'第一行\n第二行\n第三行','update':True}
-        self.ui.exit_decision({'decision':'clean','lookup':{'values':self.lookup.raw_params(),'note':'','pending_save':pending}})
+        self.decide('clean', lookup={'values':self.lookup.raw_params(),'note':'','pending_save':pending})
         self.assertEqual(self.session.exit_status()['phase'],'confirming')
         self.assertEqual(self.lookup.pending_save,pending)
         self.assertEqual(self.lookup.draft()['note'],pending['note'])
@@ -154,7 +268,7 @@ class NativeExitTests(ControllerFixture):
         self.ui.dispatch({'action': 'edit', 'surface': 'lookup', **raw})
         self.assertEqual(self.lookup.pending_save, pending)
         self.ui.report_drafts(); self.session.request_exit('web-fixture'); self.ui.process_exit()
-        self.ui.dispatch({'action': 'exit_decision', 'decision': 'saved', 'lookup': raw})
+        self.ui.dispatch({'action': 'exit_decision', 'request_id': self.session.exit_status()['id'], 'decision': 'saved', 'lookup': raw})
         drafts = self.session.list_exit_drafts()
         self.assertEqual(len(drafts), 1)
         saved = self.session.load_exit_draft(drafts[0]['id'])['draft']
@@ -178,11 +292,11 @@ class NativeExitTests(ControllerFixture):
         self.session.request_exit('web-fixture')
         self.session.save_exit_draft = Mock(side_effect=OSError('disk fixture failure'))
         with self.assertLogs(level='ERROR'):
-            self.ui.dispatch({'action': 'exit_decision', 'decision': 'saved'})
+            self.ui.dispatch({'action': 'exit_decision', 'request_id': self.session.exit_status()['id'], 'decision': 'saved'})
         self.assertEqual(self.session.exit_status()['phase'], 'confirming')
         self.assertEqual(self.lookup.variables['hp'].get(), 'unsaved raw')
         self.assertEqual(self.host.commands[-1][0], 'exit_save_error')
-        self.ui.exit_decision({'decision': 'cancel'})
+        self.decide('cancel')
         self.assertEqual(self.session.exit_status()['phase'], 'cancelled')
 
     def test_helper_eof_preserves_individual_raw_drafts_and_marks_surface_offline(self):
