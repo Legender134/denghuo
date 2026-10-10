@@ -181,6 +181,16 @@ def migrate_data(destination, sources):
             recognition = _recognise_default_data(source)
             if recognition is None:
                 continue
+        from .backup_destination import REGISTRY, registry
+        destination_record = unlinked(source/REGISTRY)
+        destination_digest = None
+        if destination_record.exists():
+            try:
+                destination_digest = _migration_digest(destination_record, 65536)
+                registry(source/'settings.json')
+            except (OSError, ValueError, UnicodeError, RecursionError) as exc:
+                raise ValueError('旧备份目的地身份记录无法核对，原件仍保留，尚未迁移；'
+                                 '请在旧版核对备份目录及身份记录后重试') from exc
         temporary = unlinked(destination.with_name(destination.name+'.migration-'+uuid.uuid4().hex))
         temporary.mkdir(parents=True)
         copied_sources = {}
@@ -193,6 +203,10 @@ def migrate_data(destination, sources):
             validate_settings(json.loads((temporary/'settings.json').read_text(encoding='utf-8-sig')),
                               require_existing_root=False)
         carried_preferences = []
+        if destination_digest is not None:
+            copy_file(destination_record, temporary/REGISTRY, 65536, expected=destination_digest)
+            registry(temporary/'settings.json')
+            carried_preferences.append(REGISTRY)
         # Retain corrupt but bounded originals too; their readers report the error
         # without preventing unrelated save monitoring or backup work.
         for name, maximum in (('knowledge.json', 16*1024*1024), ('play-mode.json', 16*1024*1024)):

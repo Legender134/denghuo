@@ -5,7 +5,7 @@ import copy
 from datetime import datetime, timezone
 import webbrowser
 
-from .native_host import Value, TextState, NativeWindow
+from .native_host import Value, TextState, NativeWindow, binding_token
 from .quick_reference import detail_text
 
 
@@ -222,7 +222,8 @@ class NumericLookup:
         if not self.variables:
             for field in self.inputs:
                 key = field['key']
-                prefix = '手动局势' if self.context and self.context.get('mode') == 'manual' else '快照'
+                prefix = ('参考来源未确认' if self.context and not self.context.get('stamp') else
+                          '手动局势' if self.context and self.context.get('mode') == 'manual' else '快照')
                 self.input_origins[key] = (self.saved_plan['origin'].get('fields', {}).get(key, '保存的参考参数') if self.saved_plan else
                     (prefix+'已知等级' if key == 'level' else prefix+'已知阶数' if key == 'tier' else
                      (self.context.get('strength_origin') if self.context.get('strength_origin', '').startswith('保存的') else
@@ -258,11 +259,15 @@ class NumericLookup:
         elif self.saved_plan:
             self.origin.text = '保存的参考方案 · '+self.saved_plan['name']+' · 固定参数，未跟随当前角色'
         elif self.rendered:
-            uses = any(value.startswith(('快照', '手动局势')) for value in self.input_origins.values())
-            old = uses and (snap.get('error') or not snap.get('data') or snap.get('stale') or tuple(self.context['stamp']) != self.source_stamp(snap))
+            uses = any(value.startswith(('快照', '手动局势', '参考来源未确认')) for value in self.input_origins.values())
+            stamp = (self.context or {}).get('stamp')
+            old = uses and (not stamp or snap.get('error') or not snap.get('data') or snap.get('stale') or tuple(stamp) != self.source_stamp(snap))
             if uses and self.input_origins.get('strength', '').startswith(('快照', '手动局势')) and 'character_scene' in self.context:
                 old = old or self.context['character_scene'] != (snap.get('data') or {}).get('character_scene')
-            source = '旧参考：快照已变/过期，请核对。' if old else ('手动局势' if snap['settings']['mode'] == 'manual' else f"槽位 {snap['active_slot']} 快照")+'；其余示例/手填。' if uses else '示例/手填；未自动读取当前角色。'
+            source = ('参考来源未确认；请核对原参数。' if uses and not stamp else
+                      '旧参考：快照已变/过期，请核对。' if old else
+                      ('手动局势' if snap['settings']['mode'] == 'manual' else f"槽位 {snap['active_slot']} 快照")+'；其余示例/手填。' if uses else
+                      '示例/手填；未自动读取当前角色。')
             self.origin.text = '百科 '+self.rendered['version']+' · '+source
 
     def changed(self, key=None):
@@ -348,7 +353,7 @@ class NumericLookup:
                               note=self.note.get(), existing=bool(self.saved_plan), pending_save=self.pending_save)
             return False
         source = dict(self.saved_plan['origin'] if self.saved_plan else (self.context or {}).get('source') or {'mode': 'example', 'snapshot_at': None, 'slot': None})
-        if self.context and not self.saved_plan and source.get('mode') == 'example':
+        if self.context and self.context.get('stamp') and not self.saved_plan and source.get('mode') == 'example':
             source = {'mode': self.context['mode'], 'snapshot_at': self.context['stamp'][-1], 'slot': self.context['stamp'][3]}
         source = {key: source.get(key) for key in ('mode', 'snapshot_at', 'slot')}
         source['fields'] = {key: self.input_origins[key] for key in self.calculated}
@@ -418,17 +423,21 @@ class NumericLookup:
             self.guard('重新读取最新方案', lambda: self.open_plan(self.saved_plan['id'], False))
 
     def open_reference(self, reference, source=None, note=''):
+        reference = copy.deepcopy(reference)
+        source = copy.deepcopy(source if source is not None else reference.get('source') or {})
+        captured = reference.get('stamp')
+        stamp = tuple(captured) if isinstance(captured, (list, tuple)) and len(captured) == 6 else None
         def apply():
             self.undo_state = self.draft(include_result=True)
             snap = self.owner.manager.session.snapshot()
             self.clear_params()
             self.saved_plan, self.plan_error = None, ''
             self.identity = reference['entry']
-            self.context = {'params': dict(reference.get('params', {})), 'stamp': self.source_stamp(snap),
-                'mode': snap['settings']['mode'], 'level_unknown': reference.get('level_origin') == 'unknown',
+            self.context = {'params': dict(reference.get('params', {})), 'stamp': stamp,
+                'mode': source.get('mode') or (stamp[2] if stamp else 'example'), 'level_unknown': reference.get('level_origin') == 'unknown',
                 'source': source or {}, 'conditions': note, 'source_label': reference.get('source_label', '')}
             if 'strength' in self.context['params']:
-                exact_source = (source and source.get('mode') == snap['settings']['mode']
+                exact_source = (stamp == self.source_stamp(snap) and source and source.get('mode') == snap['settings']['mode']
                     and source.get('snapshot_at') == snap.get('modified') and source.get('slot') == snap.get('active_slot')
                     and self.context['params']['strength'] == self.hero_context(snap).get('strength'))
                 if exact_source:
@@ -529,7 +538,14 @@ class NumericLookup:
             self.note.set(item.get('note', '')[:1200])
             self.edit_revision = max(self.edit_revision, int(item.get('draft_revision', 0)))
         elif action == 'select':
-            self.list.selection_set(item['index'])
+            index = item.get('index', -1)
+            if (type(index) is not int or not 0 <= index < len(self.rows)
+                    or item.get('token') != binding_token(self.rows[index])):
+                self.workspace_error = self.origin.text = '搜索结果已更新，请核对后重新选择；当前草稿仍保留。'
+                self.emit()
+                return
+            self.workspace_error = ''
+            self.list.selection_set(index)
             self.select()
         elif action == 'first':
             self.open_first_result()
@@ -567,20 +583,29 @@ class NumericLookup:
         elif action == 'source_link' and self.rendered:
             links = self.rendered.get('provenance', {}).get('links', [])
             index = item.get('index', -1)
-            if type(index) is int and 0 <= index < len(links):
-                webbrowser.open(links[index]['url'])
+            if (type(index) is not int or not 0 <= index < len(links)
+                    or item.get('token') != self.source_token()):
+                self.workspace_error = self.origin.text = '资料来源已更新，请重新打开官方依据菜单；当前草稿仍保留。'
+                self.emit()
+                return
+            self.workspace_error = ''
+            webbrowser.open(links[index]['url'])
         elif action == 'hide':
             self.hide()
         self.emit()
+
+    def source_token(self):
+        return binding_token({'entry': self.identity, 'provenance': (self.rendered or {}).get('provenance', {})})
 
     def emit(self):
         self.host.revision += 1
         fields = [{**field, 'raw': self.variables[field['key']].get(), 'origin': self.input_origins.get(field['key'], '')} for field in self.inputs if field['key'] in self.variables]
         self.host.command('lookup_state', draft_revision=self.edit_revision, query=self.query.get(),
-            rows=[{'text': text} for text in self.list.values], fields=fields, note=self.note.get(),
+            rows=[{'text': text, 'token': binding_token(row)} for text, row in zip(self.list.values, self.rows)], fields=fields, note=self.note.get(),
             result=self.text.text, status=self.origin.text, dirty=self.has_draft(),
             can_more=self.suggested or len(self.rows) < self.total, undo=bool(self.undo_state),
-            sources=self.rendered.get('provenance', {}).get('links', []) if self.rendered else [])
+            sources=self.rendered.get('provenance', {}).get('links', []) if self.rendered else [],
+            sources_token=self.source_token())
         self.owner.manager.native_ui.report_drafts()
 
     def open_first_result(self, _=None):

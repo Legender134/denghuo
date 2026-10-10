@@ -220,8 +220,7 @@ class BackupLibraryTests(unittest.TestCase):
 
     def test_service_keeps_library_management_available_with_broken_connection_settings(self):
         from companion.service import Session
-        session = Session.__new__(Session)
-        session.lock = threading.RLock()
+        session = Session(self.manager.directory.parent/'test-service-settings.json')
         session.backups = self.manager
         session.settings = {'save_root': str(self.current)}
         session.config_error = 'Preserve invalid original settings'
@@ -248,8 +247,7 @@ class BackupLibraryTests(unittest.TestCase):
         from companion.panel import PanelBridge
         from companion.server import Server
         from companion.service import Session
-        session = Session.__new__(Session)
-        session.lock = threading.RLock()
+        session = Session(self.manager.directory.parent/'test-http-settings.json')
         session.backups = self.manager
         session.settings = {'save_root': str(self.current)}
         session.backup_context = 'current-connection-generation'

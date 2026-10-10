@@ -94,6 +94,32 @@ class UpgradeContextTests(unittest.TestCase):
             planning='1',upgrade_budget=3,strength_budget=0)['planning']['choices'][0]
         self.assertEqual((enough['spent_upgrades'],enough['planned_level'],enough['remaining_strength_deficit']),(3,12,0))
 
+    def test_summary_does_not_promote_one_infusion_branch_to_a_guarantee(self):
+        result=self.compare(level_a=5,strength=11,infusion_a='1',hardened_a='0')
+        choice=result['choices'][0];explanation=result['explanation']['choices'][0]
+        self.assertEqual({b['metrics']['力量缺口'] for b in choice['upgrade_branches']},{'0','1'})
+        self.assertIn('部分结果可跨过力量门槛',explanation['summary'])
+        self.assertIn('其他结果仍差 1 点',explanation['summary'])
+        self.assertIn('不能保证',explanation['summary'])
+        self.assertIn(choice['upgrade_branches'][0]['condition'],explanation['timing_and_accuracy'])
+        self.assertTrue(all(choice['upgrade_branches'][0]['condition'] in row['condition']
+                            for row in explanation['upgrade_changes']))
+
+    def test_summary_warns_when_effect_removal_makes_sufficient_strength_insufficient(self):
+        result=self.compare(level_a=10,strength=10,infusion_a='1',hardened_a='0')
+        choice=result['choices'][0];summary=result['explanation']['choices'][0]['summary']
+        self.assertEqual(choice['current']['力量缺口'],'0')
+        self.assertEqual({b['metrics']['力量缺口'] for b in choice['upgrade_branches']},{'0','1'})
+        self.assertIn('部分结果会出现 1 点力量缺口',summary)
+
+    def test_summary_preserves_guaranteed_and_equal_strength_outcomes(self):
+        ordinary=self.compare(level_a=5,strength=11,infusion_a='0')['explanation']['choices'][0]
+        self.assertIn('所有可达结果均可跨过力量门槛',ordinary['summary'])
+        equal=self.compare(level_a=6,strength=11,infusion_a='1',hardened_a='0')
+        self.assertEqual({b['metrics']['力量需求'] for b in equal['choices'][0]['upgrade_branches']},{'11'})
+        self.assertIn('当前达到力量需求',equal['explanation']['choices'][0]['summary'])
+        self.assertNotIn('会出现',equal['explanation']['choices'][0]['summary'])
+
     def test_wand_uncursing_clears_infusion_and_uses_uncursed_grade(self):
         result=self.compare('items.wands.wandofmagicmissile',infusion_a='1',curse_a='1',
             planning='1',upgrade_budget=2,strength_budget=0)

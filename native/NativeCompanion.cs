@@ -301,6 +301,7 @@ namespace Denghuo.Native {
     sealed class LookupForm : BaseForm {
         readonly TextBox search = UI.Edit("搜索物品、敌人或技能");
         readonly ListBox rows = UI.List("搜索结果列表");
+        readonly List<string> rowTokens = new List<string>();
         readonly TableLayoutPanel parameters = UI.Table(2);
         readonly Panel parameterScroll = new Panel { AutoScroll = true, Dock = DockStyle.Fill };
         readonly RichTextBox result = UI.Read("数值结果与适用条件");
@@ -338,8 +339,8 @@ namespace Denghuo.Native {
             Controls.Add(outer); Controls.Add(menu);
             search.MaxLength = 200; search.TextChanged += delegate { if (!rendering && !Host.Frozen) Host.Send("query", "surface", "lookup", "text", search.Text); };
             search.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.Enter) { Host.Send("first", "surface", "lookup"); e.SuppressKeyPress = true; } else if (e.KeyCode == Keys.Down) { rows.Focus(); if (rows.Items.Count > 0 && rows.SelectedIndex < 0) rows.SelectedIndex = 0; e.SuppressKeyPress = true; } };
-            rows.SelectedIndexChanged += delegate { if (!rendering && rows.SelectedIndex >= 0 && !Host.Frozen) Host.Send("select", "surface", "lookup", "index", rows.SelectedIndex); };
-            rows.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.Enter && rows.SelectedIndex >= 0) { Host.Send("select", "surface", "lookup", "index", rows.SelectedIndex); e.SuppressKeyPress = true; } };
+            rows.SelectedIndexChanged += delegate { if (!rendering && !Host.Frozen) SendSelection(); };
+            rows.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.Enter && rows.SelectedIndex >= 0) { SendSelection(); e.SuppressKeyPress = true; } };
             note.TextChanged += delegate { Edited(); };
             KeyDown += delegate(object sender, KeyEventArgs e) { if (e.Control && e.KeyCode == Keys.F) { FocusSearch(); e.SuppressKeyPress = true; } };
         }
@@ -351,16 +352,17 @@ namespace Denghuo.Native {
         }
         public void FlushEdit() { if (!changed) return; changed = false; var raw = Raw(); Host.Send("edit", "surface", "lookup", "values", raw["values"], "note", raw["note"], "draft_revision", draftRevision); }
         public void FocusSearch() { search.Focus(); search.SelectAll(); }
+        void SendSelection() { int index = rows.SelectedIndex; if (index >= 0 && index < rowTokens.Count && !Host.Frozen) Host.Send("select", "surface", "lookup", "index", index, "token", rowTokens[index]); }
         public void Render(Dictionary<string, object> d) {
             if (Data.Number(d, "draft_revision") < draftRevision) return;
             rendering = true;
             try {
                 draftRevision = Data.Number(d, "draft_revision"); Dirty = Data.Flag(d, "dirty");
                 if (!search.Focused) search.Text = Data.Text(d, "query", "");
-                int selected = rows.SelectedIndex; string old = selected >= 0 ? Convert.ToString(rows.SelectedItem) : "";
-                var texts = new List<string>(); foreach (object raw in Data.Array(d, "rows")) texts.Add(Data.Text((Dictionary<string, object>)raw, "text", ""));
+                int selected = rows.SelectedIndex; string old = selected >= 0 && selected < rowTokens.Count ? rowTokens[selected] : "";
+                var texts = new List<string>(); var tokens = new List<string>(); foreach (object raw in Data.Array(d, "rows")) { var row = (Dictionary<string, object>)raw; texts.Add(Data.Text(row, "text", "")); tokens.Add(Data.Text(row, "token", "")); }
                 string newRows = String.Join("\n", texts.ToArray()); var oldRows = new List<string>(); foreach (object item in rows.Items) oldRows.Add(Convert.ToString(item));
-                if (newRows != String.Join("\n", oldRows.ToArray())) { rows.BeginUpdate(); rows.Items.Clear(); rows.Items.AddRange(texts.ToArray()); rows.SelectedIndex = old == "" ? -1 : rows.Items.IndexOf(old); rows.EndUpdate(); }
+                if (newRows != String.Join("\n", oldRows.ToArray()) || String.Join("|", tokens.ToArray()) != String.Join("|", rowTokens.ToArray())) { rows.BeginUpdate(); rows.Items.Clear(); rows.Items.AddRange(texts.ToArray()); rowTokens.Clear(); rowTokens.AddRange(tokens); rows.SelectedIndex = old == "" ? -1 : rowTokens.IndexOf(old); rows.EndUpdate(); }
                 rows.ItemHeight = Font.Height + 7; more.Enabled = Data.Flag(d, "can_more"); undo.Enabled = Data.Flag(d, "undo");
                 var fields = Data.Array(d, "fields"); var keys = new List<string>(); foreach (object raw in fields) keys.Add(Data.Text((Dictionary<string, object>)raw, "key", ""));
                 string signature = String.Join("|", keys.ToArray());
@@ -378,7 +380,7 @@ namespace Denghuo.Native {
                 }
                 string noteText = UI.Multiline(Data.Text(d, "note", "")); if (note.Text != noteText) note.Text = noteText;
                 UI.ReplaceText(result, Data.Text(d, "result", "")); UI.ReplaceText(status, Data.Text(d, "status", ""));
-                sources.DropDownItems.Clear(); int index = 0; foreach (object raw in Data.Array(d, "sources")) { var link = (Dictionary<string, object>)raw; int selectedLink = index++; var item = new ToolStripMenuItem(Data.Text(link, "label", "官方依据")); item.Click += delegate { Host.Send("source_link", "surface", "lookup", "index", selectedLink); }; sources.DropDownItems.Add(item); }
+                sources.DropDownItems.Clear(); int index = 0; string sourcesToken = Data.Text(d, "sources_token", ""); foreach (object raw in Data.Array(d, "sources")) { var link = (Dictionary<string, object>)raw; int selectedLink = index++; var item = new ToolStripMenuItem(Data.Text(link, "label", "官方依据")); item.Click += delegate { Host.Send("source_link", "surface", "lookup", "index", selectedLink, "token", sourcesToken); }; sources.DropDownItems.Add(item); }
                 sources.Enabled = sources.DropDownItems.Count > 0;
             } finally { rendering = false; }
         }
@@ -414,6 +416,7 @@ namespace Denghuo.Native {
         readonly ComboBox slot = UI.Combo("存档槽位", new[] { "自动跟随", "槽位 1", "槽位 2", "槽位 3", "槽位 4", "槽位 5", "槽位 6" });
         readonly CheckBox top = UI.Name(new CheckBox { Text = "管理窗口置顶", AutoSize = true }, "管理窗口置顶");
         readonly ListBox references = UI.List("风险与资源参考资料");
+        readonly List<string> referenceTokens = new List<string>();
         readonly Panel options = new Panel { Dock = DockStyle.Fill, AutoSize = true, Visible = false };
         readonly Button compact;
         bool rendering, isCompact;
@@ -432,11 +435,12 @@ namespace Denghuo.Native {
             top.CheckedChanged += delegate { if (!rendering) Host.Send("pin_manager", "checked", top.Checked); };
             references.DoubleClick += delegate { Reference(); }; references.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.Enter) { Reference(); e.SuppressKeyPress = true; } };
         }
-        void Reference() { if (references.SelectedIndex >= 0) Host.Send("reference", "index", references.SelectedIndex); }
+        void Reference() { int index = references.SelectedIndex; if (index >= 0 && index < referenceTokens.Count) Host.Send("reference", "index", index, "token", referenceTokens[index]); }
         public void Render(Dictionary<string, object> d) {
             rendering = true; try { UI.ReplaceText(summary, Data.Text(d, "text", "")); UI.ReplaceText(Status, Data.Text(d, "error", "") + "\n" + Data.Text(d, "capabilities", "")); slot.SelectedIndex = (int)Math.Max(0, Math.Min(6, Data.Number(d, "slot"))); top.Checked = Data.Flag(d, "topmost"); if (TopMost != top.Checked) TopMost = top.Checked;
                 var items = new List<string>(); foreach (object raw in Data.Array(d, "references")) items.Add(Convert.ToString(raw)); var old = new List<string>(); foreach (object raw in references.Items) old.Add(Convert.ToString(raw));
-                if (String.Join("\n", items.ToArray()) != String.Join("\n", old.ToArray())) { string previous = references.SelectedItem == null ? "" : references.SelectedItem.ToString(); references.BeginUpdate(); references.Items.Clear(); references.Items.AddRange(items.ToArray()); references.SelectedIndex = references.Items.IndexOf(previous); references.EndUpdate(); }
+                var tokens = new List<string>(); foreach (object raw in Data.Array(d, "reference_tokens")) tokens.Add(Convert.ToString(raw));
+                if (String.Join("\n", items.ToArray()) != String.Join("\n", old.ToArray()) || String.Join("|", tokens.ToArray()) != String.Join("|", referenceTokens.ToArray())) { int selected = references.SelectedIndex; string previous = selected >= 0 && selected < referenceTokens.Count ? referenceTokens[selected] : ""; references.BeginUpdate(); references.Items.Clear(); references.Items.AddRange(items.ToArray()); referenceTokens.Clear(); referenceTokens.AddRange(tokens); references.SelectedIndex = previous == "" ? -1 : referenceTokens.IndexOf(previous); references.EndUpdate(); }
             } finally { rendering = false; }
         }
     }

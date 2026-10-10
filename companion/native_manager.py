@@ -7,7 +7,7 @@ import os
 from queue import Queue, Empty
 import time
 
-from .native_host import NativeHost
+from .native_host import NativeHost, binding_token
 
 
 class NativeManager:
@@ -199,9 +199,11 @@ class NativeManager:
                 self.manager.commands.put(('capture', None))
             elif action == 'reference':
                 index = item.get('index', -1)
-                if type(index) is int and 0 <= index < len(self.references):
-                    row, source, note = self.references[index]
-                    self.manager.open_reference(row, source, note)
+                if (type(index) is not int or not 0 <= index < len(self.references)
+                        or item.get('token') != binding_token(self.references[index])):
+                    raise ValueError('参考列表已更新，请核对后重新选择；当前草稿仍保留。')
+                row, source, note = self.references[index]
+                self.manager.open_reference(row, source, note)
             elif action == 'list_drafts':
                 include_archived = item.get('include_archived', False)
                 self.host.command('drafts', rows=self.draft_rows(include_archived), include_archived=include_archived)
@@ -279,7 +281,7 @@ class NativeManager:
             decisions = self.session.decisions(snap)
             for risk in decisions['risks']:
                 for row in risk['references']:
-                    references.append((row, None, ''))
+                    references.append((row, row.get('source'), ''))
                     reference_texts.append(risk['title']+' · '+row['name']+'资料')
             for row in decisions['options']:
                 note = '\n'.join(filter(None, (row['restriction'], row['calculation_missing'], row['note'])))
@@ -303,6 +305,7 @@ class NativeManager:
             texts.append(snap['draft_recovery_notice'])
         state = {'text': '\n\n'.join(filter(None, texts)), 'slot': 0 if snap['settings']['slot'] == 'auto' else snap['settings']['slot'],
             'topmost': snap['settings']['always_on_top'], 'references': reference_texts,
+            'reference_tokens': [binding_token(row) for row in references],
             'capabilities': registration, 'error': '\n'.join(filter(None, [self.manager.action_error] +
                 [row.get('recovery_error', '') for row in snap.get('exit', {}).get('participants', [])
                  if row['surface_id'] == 'native']))}

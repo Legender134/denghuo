@@ -74,6 +74,15 @@ FILES = (
     "tests/test_backup_destination.py",
     "tests/test_upgrade_context.py",
     "tests/test_player_records.py",
+    "companion/backup_recovery.py",
+    "tests/test_backup_recovery.py",
+    "tests/test_backup_recovery_destination.py",
+    "tests/test_backup_recovery_service.py",
+    "tests/test_service_liveness.py",
+    "tests/test_reference_handoff.py",
+    "tests/test_external_destination_migration.py",
+    "tests/test_workspace_liveness.py",
+    "tools/verify_backup_recovery.js",
 )
 STAMP = (2026, 10, 2, 0, 0, 0)
 

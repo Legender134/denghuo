@@ -46,7 +46,7 @@ def verify(archive):
             package.extractall(folder)
         root = folder / archive.stem
         result = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"],
-                                cwd=root, env=env, capture_output=True, timeout=180, encoding="utf-8", errors="replace")
+                                cwd=root, env=env, capture_output=True, timeout=300, encoding="utf-8", errors="replace")
         if result.returncode:
             raise RuntimeError(result.stdout + result.stderr)
         test_summary = result.stderr.strip().splitlines()[-3:]

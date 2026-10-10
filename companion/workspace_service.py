@@ -120,40 +120,40 @@ def workspace_action(session, payload):
 
 
 def play_status(session):
+    prefs = session.play_preferences
     with session.lock:
-        prefs = session.play_preferences
-        with prefs.lock:
-            caps = copy.deepcopy(session.ui_capabilities)
-            return {'settings': copy.deepcopy(prefs.values), 'error': prefs.error,
-                    'revision': prefs.generation,
-                    'desktop_available': bool(session.manager_available and caps.get('play_available')),
-                    'desktop_status': caps}
+        caps = copy.deepcopy(session.ui_capabilities)
+        manager_available = session.manager_available
+    with prefs.lock:
+        return {'settings': copy.deepcopy(prefs.values), 'error': prefs.error,
+                'revision': prefs.generation,
+                'desktop_available': bool(manager_available and caps.get('play_available')),
+                'desktop_status': caps}
 
 
 def update_play(session, payload):
     if not isinstance(payload, dict) or set(payload) != {'settings', 'revision'}:
         raise ValueError('游玩设置请求格式不正确')
-    with session.lock:
-        with session.play_preferences.lock:
-            session.play_preferences.update(payload['settings'], expected_generation=payload['revision'])
-            result = play_status(session)
-        if session.manager_available:
-            session.manager_commands.put(('play_settings_changed', result['revision']))
+    prefs = session.play_preferences
+    with prefs.lock:
+        prefs.update(payload['settings'], expected_generation=payload['revision'])
+        result = play_status(session)
+    if session.manager_available:
+        session.manager_commands.put(('play_settings_changed', result['revision']))
     return result
 
 
 def reload_play(session, payload):
     if not isinstance(payload, dict) or set(payload) != {'revision'} or type(payload['revision']) is not int:
         raise ValueError('重新读取游玩设置请求格式不正确')
-    with session.lock:
-        prefs = session.play_preferences
-        with prefs.lock:
-            if payload['revision'] != prefs.generation:
-                raise ValueError('另一窗口刚修改配置，请先查看当前已保存设置再重新读取')
-            prefs.reload()
-            result = play_status(session)
-        if session.manager_available:
-            session.manager_commands.put(('play_settings_changed', result['revision']))
+    prefs = session.play_preferences
+    with prefs.lock:
+        if payload['revision'] != prefs.generation:
+            raise ValueError('另一窗口刚修改配置，请先查看当前已保存设置再重新读取')
+        prefs.reload()
+        result = play_status(session)
+    if session.manager_available:
+        session.manager_commands.put(('play_settings_changed', result['revision']))
     return result
 
 

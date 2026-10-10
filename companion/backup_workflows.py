@@ -61,6 +61,10 @@ def inspect_stage(manager, root, payload):
                   'verification': '未通过完整核验', 'error': '', 'applied': False}
         stamp = _stage_stat(path)
         try:
+            from .backup_recovery import protection
+            pending_names, _, pending_error = protection(manager, root)
+            if pending_names is None or name in pending_names:
+                raise ValueError(pending_error or '此暂存关联未完成的回档或撤回，请先使用恢复关联入口；原件受保护')
             owner = manager.stage_records(root).get(name)
             if owner is None:
                 raise ValueError('没有匹配的助手暂存来源记录；可导出原件核对，不能直接回档或回收')
@@ -123,6 +127,12 @@ def retry_stage(manager, root, payload):
 
 def protected_records(manager, root, records):
     protected = {(row['slot'], row['id']):'已固定保留' for row in records if row.get('locked')}
+    from .backup_recovery import protection
+    _, pending_archives, pending_error = protection(manager, root)
+    if pending_archives is None:
+        protected.update({(row['slot'], row['id']): pending_error for row in records})
+    else:
+        protected.update({key: '未完成的回档或撤回恢复需要此备份' for key in pending_archives})
     for journal in manager.journals(root):
         if not journal['active']:
             continue
@@ -153,6 +163,8 @@ def _storage_inventory(manager, root):
         quarantine = [{'file':path.name, 'bytes':path.stat().st_size, 'time':path.stat().st_mtime,
                        'reason':'自动校验发现损坏后隔离，保留排查原件'} for path in quarantine_dir.glob('*.zip') if unlinked(path).is_file()]
         journals = manager.journals(root)
+        from .backup_recovery import protection
+        pending_names, _, pending_error = protection(manager, root)
         if isinstance(root, BackupLibrary):
             manager._storage_cache = None
             return {'default_policy': 'preserve-all', 'groups': [
@@ -170,9 +182,12 @@ def _storage_inventory(manager, root):
                 continue
             journal = next((row for row in journals if row['original']==path.name), None)
             active_undo = bool(journal and journal['active'] and journal['existed'])
+            pending = pending_names is None or path.name in pending_names
             before.append({'file':path.name,'slot':int(match[1]),'bytes':folder_size(path), 'time':path.stat().st_mtime,
-                           'protected':active_undo, 'undo_id':journal['id'] if active_undo else None,
-                           'reason':'当前撤回操作需要这个完整副本' if active_undo else
+                           'protected':active_undo or pending, 'recovery_protected':pending,
+                           'undo_id':journal['id'] if active_undo else None,
+                           'reason':pending_error or '未完成的回档或撤回恢复需要此副本' if pending else
+                                    '当前撤回操作需要这个完整副本' if active_undo else
                                     '先前回档的完整原进度，默认保留' if journal else
                                     '撤回前或未关联的完整进度，默认保留，请自行核对'})
         try:
@@ -186,18 +201,19 @@ def _storage_inventory(manager, root):
             if not match or not path.is_dir():
                 continue
             owner = owners.get(path.name)
+            pending = pending_names is None or path.name in pending_names
             checked = getattr(manager, 'stage_checks', {}).get((str(Path(root).resolve()), path.name))
             signature = _stage_stat(path)
             if checked and checked['stamp'] != signature:
                 checked = None
             stages.append({'file': path.name, 'slot': int(match[1]), 'bytes': folder_size(path),
                            'time': path.stat().st_mtime, 'owned': bool(owner),
-                           'reason': owner['reason'] if owner else owner_error or
+                           'reason': (pending_error or '未完成的回档或撤回恢复需要此副本') if pending else owner['reason'] if owner else owner_error or
                                      '旧版或未关联的回档暂存；未应用到活动存档，归属尚未核验',
                            'verification': checked['verification'] if checked else '尚未检查完整内容',
                            'retryable': bool(checked and checked['retryable']),
                            'error': checked.get('error', '') if checked else '',
-                           'protected': not bool(owner)})
+                           'protected': pending or not bool(owner), 'recovery_protected':pending})
         manager._storage_cache = None  # Include newly interrupted stages immediately.
         return {'default_policy':'preserve-all', 'groups':[
                     {'kind':'active','title':'活动历史','rows':active,'directory':str(scope)},
@@ -581,6 +597,7 @@ def _reclaim_inventory(manager, root):
                       if row['last_seen']==latest[row['slot']]['last_seen']
                       and (row['slot'],row['id']) not in protected})
     journals = manager.journals(root)
+    recovery = manager.recovery_status(root)
     for group in view['groups']:
         for row in group['rows']:
             path = unlinked(Path(group['directory'])/row['file'])
@@ -589,6 +606,10 @@ def _reclaim_inventory(manager, root):
                 row['bytes'] += unlinked(path.with_suffix('.json')).stat().st_size
             row['reclaimable'] = False
             row['reclaim_reason'] = '活动记录需先明确移出，原件默认保留'
+            if not recovery['available'] or row.get('recovery_protected'):
+                reason = recovery['error'] or '未完成的回档或撤回恢复需要此副本'
+                row.update(protected=True, reclaim_reason=reason, reason=reason)
+                continue
             if group['kind']=='active':
                 reason = protected.get((row['slot'],row['id']))
                 if reason:
@@ -790,7 +811,7 @@ def reclaim_execute(manager, root, payload):
         guard_groups = _reclaim_inventory(manager,root)['groups']
         def indexes():
             return {name:manager._index_bytes(manager.scope(root)/name)
-                    for name in ('history.json','restores.json','timeline.json')}
+                    for name in ('history.json','restores.json','timeline.json','restores-pending.json')}
         guard_indexes = indexes()
         results,halted = [],False
         for row in preview['rows']:

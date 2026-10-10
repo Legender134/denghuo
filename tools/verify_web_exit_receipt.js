@@ -1,6 +1,7 @@
 // Actual extracted exit and poll functions; no browser, service, or mirrored implementation.
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
 const workspace=fs.readFileSync(path.join(__dirname,'../web/workspace.js'),'utf8'),app=fs.readFileSync(path.join(__dirname,'../web/app.js'),'utf8');
+const backups=fs.readFileSync(path.join(__dirname,'../web/backups.js'),'utf8');
 function extract(source,name){const found=new RegExp('^(?:async )?function '+name+'\\(','m').exec(source);assert(found,name);const start=found.index,lineEnd=source.indexOf('\n',start);if(source.slice(start,lineEnd).trimEnd().endsWith('}'))return source.slice(start,lineEnd).trimEnd();const end=source.indexOf('\n}',start);assert(end>start,name);return source.slice(start,end+2);}
 const plain=value=>JSON.parse(JSON.stringify(value));
 const backing={id:'own-request',phase:'backing-up',participants:[],error:''};
@@ -53,6 +54,19 @@ for(const transition of ['ack','report'])test('clean '+transition+' already fini
 });
 test('clean report enters backing-up before ack',async()=>{const f=setup(null,success,{reported:{...backing,participants:[{surface_id:'synthetic',ack:'clean'}]}});await f.run('handleWebExitState('+JSON.stringify(confirming)+')');assert.equal(f.timers.length,1);await f.settle();assert.match(f.get('#backup-status').textContent,/最后备份已完成/);assert.equal(f.requests.filter(r=>r.payload?.action==='ack').length,0);});
 test('actual poll finishes then disconnects',async()=>{const f=setup();f.context.fetch=async()=>({ok:true,json:async()=>({token:'synthetic',exit:success})});await f.run('poll()');f.context.fetch=async()=>{throw new Error('offline');};await f.run('poll()');assert.match(f.get('#connection-banner').textContent,/本次辅助已结束/);assert.match(f.get('#backup-status').textContent,/最后备份已完成/);});
+test('slow backup history cannot block status polling or the exit receipt',async()=>{
+  const pending=deferred(),f=setup();let reads=0,reports=0;
+  Object.assign(f.context,{view:'backups',backupLoading:false,healthName:()=> '最近保存已备份',renderBackups(){},reportWebExitSurface:async()=>{reports++;},
+    fetch:async url=>{if(url.startsWith('/api/backups?'))return pending.promise;reads++;return {ok:true,json:async()=>({token:'synthetic',backup_context:'bound',exit:reads===1?{phase:'idle'}:success})};}});
+  vm.runInContext(extract(backups,'loadBackups'),f.context);
+  const first=f.run('poll()');await new Promise(setImmediate);
+  assert.equal(f.run('polling'),false,'disk-bound backup history must not own the status poll');
+  assert.equal(reports,1);await f.run('poll()');
+  assert.equal(reads,2);assert.match(f.get('#backup-status').textContent,/最后备份已完成/);
+  pending.resolve({ok:true,json:async()=>({context:'bound',save_root:'/save',enabled:true,health:'protected',error:'',notice:'',storage_bytes:0,storage_limit:1,history:[],slots:[]})});
+  await new Promise(setImmediate);await first;
+  assert.equal(f.run('backupLoading'),false);assert.match(f.get('#backup-status').textContent,/最后备份已完成/,'a late history read must not replace the final receipt');
+});
 test('late observer error cannot replace finished poll result',async()=>{
   const pending=deferred(),f=setup(null,success,{read:()=>pending.promise});await f.run('handleWebExitState('+JSON.stringify(backing)+')');await f.advance();
   f.context.fetch=async()=>({ok:true,json:async()=>({token:'synthetic',exit:success})});await f.run('poll()');pending.reject(new Error('late offline'));await new Promise(setImmediate);await f.run('webExitCompletionWatch');

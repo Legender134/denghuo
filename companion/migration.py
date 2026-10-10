@@ -6,6 +6,7 @@ a design reference; no third-party source code is copied.
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import hashlib
 from io import BytesIO
 import json
@@ -159,19 +160,20 @@ def _target(session, *, include_drafts=False, include_backups=True,
             'exit_drafts': session.exit_drafts.stamp() if include_drafts else None}
 
 
+@contextmanager
 def _locks(session):
-    # Caller holds session.lock first, matching existing UI preference workflows.
+    # Caller holds the operation gate; disk reads and copies never own session.lock.
     from contextlib import ExitStack
-    stack = ExitStack()
-    stack.enter_context(session.knowledge.lock)
-    stack.enter_context(session.play_preferences.lock)
-    stack.enter_context(session.backups.lock)
-    stack.enter_context(session.exit_drafts.lock)
-    return stack
+    with ExitStack() as stack:
+        stack.enter_context(session.knowledge.lock)
+        stack.enter_context(session.play_preferences.lock)
+        stack.enter_context(session.backups.lock)
+        stack.enter_context(session.exit_drafts.lock)
+        yield
 
 
 def status(session):
-    with session.lock, _locks(session):
+    with session._backup_io(), _locks(session):
         stored = session.knowledge.status()
         backup = session.backups.snapshot(session.settings['save_root'])
         rows = []
@@ -252,7 +254,7 @@ def _export(session, payload, backup_expected=None):
 
 
 def export_preview(session, payload):
-    with session.lock, _locks(session):
+    with session._backup_io(), _locks(session):
         preview, _, backup_expected = _export(session, payload)
         if not hasattr(session, '_migration_export_previews'):
             session._migration_export_previews = {}
@@ -263,7 +265,7 @@ def export_preview(session, payload):
 
 
 def export_bundle(session, payload):
-    with session.lock, _locks(session):
+    with session._backup_io(), _locks(session):
         expected = payload.get('expected')
         previews = getattr(session, '_migration_export_previews', {})
         if not isinstance(expected, str) or expected not in previews:
@@ -407,13 +409,14 @@ def _preview(session, raw):
 
 
 def import_preview(session, raw):
-    with session.lock, _locks(session):
+    with session._backup_io(), _locks(session):
         return _preview(session, raw)[0]
 
 
 def import_bundle(session, raw, payload):
-    with session.lock, _locks(session):
+    with session._backup_operation(mutating=True) as operation, _locks(session):
         preview, contents, incoming, preferences = _preview(session, raw)
+        session._check_settings_commit(operation)
         if payload.get('confirmed') is not True or payload.get('expected') != preview['expected']:
             raise ValueError('迁移包、本机目标或资料已变化，请重新预览；尚未应用')
         available = {row['key']: row for row in preview['rows']}
@@ -435,6 +438,7 @@ def import_bundle(session, raw, payload):
                 if len(merged['plans']) > MAX_PLANS or len(merged['favorites']) > MAX_FAVORITES:
                     raise ValueError('合并后超过原有方案/收藏数量上限，请减少选择')
                 if merged != value:
+                    session._check_settings_commit(operation)
                     session.knowledge._write(merged, stamp)
                 results.extend({'key': key, 'ok': True, 'saved': True, 'message': available[key]['detail']} for key in knowledge_keys)
             except (OSError, ValueError) as exc:
@@ -444,6 +448,7 @@ def import_bundle(session, raw, payload):
             try:
                 patch = {key.split(':', 1)[1]: preferences[key.split(':', 1)[1]] for key in preference_keys}
                 # Actual target settings are retained for every unselected or nonportable field.
+                session._check_settings_commit(operation)
                 session.play_preferences.update(patch, expected_generation=session.play_preferences.generation)
                 if session.manager_available:
                     session.manager_commands.put(('play_settings_changed', session.play_preferences.generation))
@@ -456,6 +461,7 @@ def import_bundle(session, raw, payload):
                 results.extend({'key': key, 'ok': False, 'saved': False, 'error': '本机连接设置尚未修复，请重新绑定后预览；尚未导入进度'} for key in backup_keys)
             else:
                 try:
+                    session._check_settings_commit(operation)
                     transfer = flows.import_batch(session.backups, session.settings['save_root'], contents['backups.zip'], checksum(contents['backups.zip']), [key.split(':', 1)[1] for key in backup_keys], True)
                     results.extend({**row, 'key': 'backup:' + row['source_file'], 'saved': row['ok'], 'message': '已保存到助手档案；未回档'} for row in transfer['results'])
                     session.backups._storage_cache = None
@@ -467,6 +473,7 @@ def import_bundle(session, raw, payload):
                 if key not in selected:
                     continue
                 try:
+                    session._check_settings_commit(operation)
                     imported = session.exit_drafts.import_record(record)
                     results.append({'key': key, 'ok': True, 'saved': True, **imported})
                 except (OSError, ValueError) as exc:
