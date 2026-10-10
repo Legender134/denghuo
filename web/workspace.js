@@ -347,6 +347,10 @@ function renderWebExitReceipt(showToast=false){
       warning=false;message='最后备份已完成：'+result.captured.map(row=>`槽位 ${row.slot}（${row.id.slice(0,12)}）`).join('、')+'。';
     }else if(result?.ok===true&&result.state==='no-save'){warning=false;message='本次没有游戏存档需要备份。';}
     else if(result?.ok===true&&result.state==='paused'){warning=false;message='自动备份已暂停，本次结束未执行最后备份。';}
+    if(result?.ok===false&&Array.isArray(result.captured)){
+      const completed=result.captured.filter(row=>Number.isInteger(row?.slot)&&row.slot>=1&&row.slot<=6&&typeof row.id==='string'&&/^[a-f0-9]{64}$/.test(row.id));
+      if(completed.length)message+=' 已完成的槽位：'+completed.map(row=>`槽位 ${row.slot}（${row.id.slice(0,12)}）`).join('、')+'。';
+    }
     if(result?.receipt_error){warning=true;message+=' '+result.receipt_error;}
     message+=' 明确保存的未完成草稿可在下次启动后找回。';
   }
@@ -368,15 +372,22 @@ async function watchWebExitCompletion(){
   })();
   try{await webExitCompletionWatch;}finally{webExitCompletionWatch=null;}
 }
+function updateWebRecoveryStatus(exit,message=''){
+  const own=exit?.participants?.find(row=>row.surface_id===webSurfaceId);
+  const status=$('#draft-recovery-status');if(!status)return;
+  const error=message||own?.recovery_error||'',text=error||state?.draft_recovery_notice||'';
+  if(status.textContent!==text)status.textContent=text;
+  status.className=error?'rule-warning':'connection-banner';status.hidden=!text;
+}
 async function reportWebExitSurface(){
   if(['backing-up','finished'].includes(webExitState?.phase)){
     if(state?.exit?.id===webExitState.id)await handleWebExitState(state.exit);
     return;
   }
 
-  if(!token||webExitBusy)return;webExitBusy=true;
-  try{const captured=currentWebDraft();const result=await post('/api/session-exit',{action:'report',surface_id:webSurfaceId,kind:'web',label:'完整网页面板',revision:captured.revision,dirty:captured.dirty,draft:captured.draft});await handleWebExitState(result.exit);}
-  catch(error){if(webEditingFrozen)inlineError($('#session-exit-error'),error.message);}
+  if(!token||webExitBusy)return;webExitBusy=true;let captured;
+  try{captured=currentWebDraft();const result=await post('/api/session-exit',{action:'report',surface_id:webSurfaceId,kind:'web',label:'完整网页面板',revision:captured.revision,dirty:captured.dirty,draft:captured.draft});updateWebRecoveryStatus(result.exit);await handleWebExitState(result.exit);}
+  catch(error){if(captured?.dirty)updateWebRecoveryStatus(null,'未完成输入尚未确认自动保留：'+error.message+'。当前窗口输入仍保留，可明确保存草稿副本。');if(webEditingFrozen)inlineError($('#session-exit-error'),error.message);}
   finally{webExitBusy=false;}
 }
 async function requestWebSessionExit(){
@@ -384,6 +395,7 @@ async function requestWebSessionExit(){
   catch(error){toast(error.message,true);}
 }
 async function handleWebExitState(exit){
+  updateWebRecoveryStatus(exit);
   if(!exit||webExitHandling)return;if(exit.id&&exit.id===webExitState?.id&&(webExitState.phase==='finished'||webExitState.phase==='backing-up'&&exit.phase==='confirming')){renderWebExitReceipt();return;}webExitState=exit;
   if(exit.phase!=='confirming'){freezeWebEditing(exit.phase==='backing-up'||exit.phase==='finished');if($('#session-exit-dialog').open)$('#session-exit-dialog').close();if(exit.phase==='cancelled')toast('已取消退出，全部草稿仍保留');if(exit.phase==='finished')renderWebExitReceipt(true);if(exit.phase==='backing-up'){renderWebExitReceipt();void watchWebExitCompletion();}return;}
   webExitHandling=true;freezeWebEditing(true);

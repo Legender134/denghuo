@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import threading
@@ -21,6 +23,8 @@ MAX_DRAFT_FILE = 8 * MAX_DRAFT
 # Portable batch bound; explicitly saved local drafts are retained across batches.
 MAX_SAVED_DRAFTS = 200
 MAX_DRAFT_SET = 16 * 1024 * 1024
+MAX_RECOVERY_RECORDS = 200
+MAX_RECOVERY_BYTES = 64 * 1024 * 1024
 ONLINE_SECONDS = 12
 CLEAN_LEASE_SECONDS = 120
 
@@ -289,10 +293,200 @@ class ExitDraftStore:
             return sorted(rows, key=lambda row: row['saved'], reverse=True)
 
 
+class ExitRecoveryJournal:
+    """Bounded recent raw reports, separate from explicitly saved user drafts."""
+    def __init__(self, directory, saved_drafts):
+        self.directory, self.saved_drafts = Path(directory), saved_drafts
+        self.session_id = uuid.uuid4().hex
+        self.lock = threading.RLock()
+        self.fingerprints = {}
+
+    def identity(self, surface_id, session_id=None):
+        return hashlib.sha256(((session_id or self.session_id) + '\0' + surface_id).encode()).hexdigest()[:32]
+
+    @contextmanager
+    def _storage_lock(self):
+        # One OS lock serializes checkpoint/archive CAS across assistant processes.
+        # The OS releases it on a crash; the small lock file can safely stay in place.
+        directory = unlinked(self.directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        with unlinked(directory / '.lock').open('a+b') as stream:
+            deadline = time.monotonic() + 1
+            while True:
+                try:
+                    stream.seek(0)
+                    if os.name == 'nt':
+                        import msvcrt
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise ValueError('自动草稿正在由另一个窗口处理，请稍后重试')
+                    time.sleep(.02)
+            try:
+                if stream.seek(0, 2) == 0:
+                    stream.write(b'\0')
+                    stream.flush()
+                yield
+            finally:
+                stream.seek(0)
+                if os.name == 'nt':
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+    def _path(self, identity):
+        # A selector distinguishes interrupted bytes from the committed sibling.
+        original = identity[:-8] if isinstance(identity, str) and identity.endswith('.pending') else identity
+        if not isinstance(original, str) or not DRAFT_ID.fullmatch(original):
+            raise ValueError('自动草稿身份不正确')
+        return unlinked(self.directory / (original + '.json' + ('.pending' if original != identity else ''))), original
+
+    def _files(self):
+        directory = unlinked(self.directory)
+        return [*directory.glob('*.json'), *directory.glob('*.json.pending')]
+
+    def _read(self, identity):
+        path, original = self._path(identity)
+        with path.open('rb') as stream:
+            raw = stream.read(MAX_DRAFT_FILE + 1)
+        if len(raw) > MAX_DRAFT_FILE:
+            raise ValueError('自动草稿文件过大，原件保留')
+        try:
+            value = json.loads(raw)
+            if (not isinstance(value, dict) or set(value) != {'format', 'kind', 'session_id', 'revision', 'record'}
+                    or type(value['format']) is not int or value['format'] != 1
+                    or value['kind'] != 'denghuo-recovery-checkpoint'
+                    or not isinstance(value['session_id'], str) or not DRAFT_ID.fullmatch(value['session_id'])
+                    or type(value['revision']) is not int or not 0 <= value['revision'] <= 2 ** 53):
+                raise ValueError('自动草稿版本不兼容')
+            record = checked_saved_draft(value['record'], original)
+            if original != self.identity(record['surface_id'], value['session_id']):
+                raise ValueError('自动草稿会话与窗口不匹配')
+            return value, raw
+        except (UnicodeError, RecursionError, ValueError) as exc:
+            raise ValueError('自动草稿无法核对，原件仍保留；尚未载入') from exc
+
+    def checkpoint(self, surface_id, revision, dirty, draft, kind, label):
+        if not isinstance(surface_id, str) or not SURFACE.fullmatch(surface_id):
+            raise ValueError('自动草稿窗口身份不正确')
+        identity = self.identity(surface_id)
+        signature = None
+        with self.lock:
+            path = unlinked(self.directory / (identity + '.json'))
+            interrupted = unlinked(self.directory / (identity + '.json.pending')).exists()
+            if not dirty and not path.exists() and not interrupted:
+                self.fingerprints.pop(identity, None)
+                return False
+            if dirty and draft is not None:
+                draft = checked_draft(draft)
+                signature = json.dumps([revision, draft, kind, label], ensure_ascii=True, sort_keys=True)
+                known = self.fingerprints.get(identity)
+                if known and known[0] == signature and path.exists() and not interrupted:
+                    _, raw = self._read(identity)
+                    if hashlib.sha256(raw).hexdigest() != known[1]:
+                        raise ValueError('自动草稿落盘副本已变化，原件保留；请明确保存当前窗口的草稿副本')
+                    return True
+        with self.lock, self._storage_lock():
+            path = unlinked(self.directory / (identity + '.json'))
+            if unlinked(self.directory / (identity + '.json.pending')).exists():
+                raise ValueError('自动草稿有中断副本，原件保留；请在未完成草稿中核对并明确归档后重试')
+            if not dirty:
+                if path.exists():
+                    value, _ = self._read(identity)
+                    if value['session_id'] != self.session_id or revision < value['revision']:
+                        raise ValueError('自动草稿版本已变化，原件保留')
+                    path.unlink()
+                self.fingerprints.pop(identity, None)
+                return False
+            if draft is None:
+                return False
+            if path.exists():
+                previous, _ = self._read(identity)
+                if previous['session_id'] != self.session_id or revision < previous['revision']:
+                    raise ValueError('自动草稿版本已变化，原件保留')
+            record = {'format': 2, 'kind': 'denghuo-unfinished-draft', 'id': identity,
+                'surface_id': surface_id, 'draft_kind': 'offline-native' if kind == 'native' else 'web-session',
+                'label': '自动保留 · ' + label[:110], 'saved': time.time(), 'draft': draft, 'lifecycle': 'active'}
+            value = {'format': 1, 'kind': 'denghuo-recovery-checkpoint', 'session_id': self.session_id,
+                     'revision': revision, 'record': checked_saved_draft(record, identity)}
+            size = len(json.dumps(value, ensure_ascii=True, indent=2).replace('\n', os.linesep).encode('utf-8'))
+            directory = unlinked(self.directory)
+            directory.mkdir(parents=True, exist_ok=True)
+            files = self._files()
+            # Reserve the physical write peak: a crash can retain both siblings.
+            if (len(files) + 1 > MAX_RECOVERY_RECORDS
+                    or sum(unlinked(item).stat().st_size for item in files) + size > MAX_RECOVERY_BYTES):
+                raise ValueError('自动草稿空间已满；请在未完成草稿中核对并归档旧副本，已有原件保留')
+            atomic_json(path, value)
+            written, raw = self._read(identity)
+            if written != value:
+                raise ValueError('自动草稿写入核验未完成，原件保留；请明确保存当前窗口的草稿副本')
+            self.fingerprints[identity] = (signature, hashlib.sha256(raw).hexdigest())
+            return True
+
+    def load(self, identity):
+        with self.lock, self._storage_lock():
+            value, _ = self._read(identity)
+            return copy.deepcopy(value['record'])
+
+    def contains(self, identity):
+        path, _ = self._path(identity)
+        return path.exists()
+
+    def list(self):
+        with self.lock:
+            if not self.directory.exists():
+                return []
+            with self._storage_lock():
+                rows = []
+                for path in self._files():
+                    pending = path.name.endswith('.json.pending')
+                    original = path.name[:-13] if pending else path.stem
+                    if not DRAFT_ID.fullmatch(original):
+                        continue
+                    identity = original + ('.pending' if pending else '')
+                    try:
+                        value, raw = self._read(identity)
+                        if not pending and value['session_id'] == self.session_id:
+                            continue
+                        record = value['record']
+                        rows.append({**{key: record[key] for key in ('draft_kind', 'label', 'saved', 'surface_id')},
+                                     'id': identity, 'label': ('中断副本 · ' if pending else '') + record['label'],
+                                     'state': 'active', 'state_revision': hashlib.sha256(raw).hexdigest(),
+                                     'recovery': True, 'pending': pending})
+                    except (ValueError, OSError) as exc:
+                        rows.append({'id': identity, 'saved': 0, 'recovery': True, 'pending': pending,
+                                     'label': '无法核对的中断副本' if pending else '无法核对的自动草稿', 'error': str(exc)})
+            return sorted(rows, key=lambda row: row['saved'], reverse=True)
+
+    def archive(self, identity, expected_revision):
+        with self.lock, self._storage_lock():
+            value, raw = self._read(identity)
+            if not identity.endswith('.pending') and value['session_id'] == self.session_id:
+                raise ValueError('这是当前窗口的自动副本，请先保存或明确处理当前草稿')
+            if hashlib.sha256(raw).hexdigest() != expected_revision:
+                raise ValueError('自动草稿已更新，请重新读取列表；双方内容仍保留')
+            # Preserve a durable, independently identified copy before consuming a checkpoint.
+            record = {**value['record'], 'id': uuid.uuid4().hex, 'lifecycle': 'archived'}
+            saved = self.saved_drafts.import_record(record)
+            if not self.saved_drafts.same_content(self.saved_drafts.load(saved['id']), record):
+                raise ValueError('归档副本尚未核对，自动草稿原件保留')
+            path, _ = self._path(identity)
+            if hashlib.sha256(path.read_bytes()).hexdigest() != expected_revision:
+                raise ValueError('归档期间自动草稿已更新；旧内容已另行归档，新原件保留，请重新读取')
+            path.unlink()
+            return {'id': saved['id'], **self.saved_drafts.lifecycle(saved['id']), 'applied': False}
+
+
 class ExitCoordinator:
-    def __init__(self, finalize, save_draft, clock=time.time, on_finished=None):
+    def __init__(self, finalize, save_draft, clock=time.time, on_finished=None, checkpoint=None):
         self.finalize, self.save_draft, self.clock = finalize, save_draft, clock
         self.on_finished = on_finished
+        self.checkpoint = checkpoint
         self.lock = threading.RLock()
         self.surfaces = {}
         self.request = None
@@ -317,7 +511,7 @@ class ExitCoordinator:
                     raise ValueError('打开的编辑窗口过多，请先关闭不用的面板')
                 self.surfaces[surface_id] = {'surface_id': surface_id, 'kind': kind, 'label': label or '编辑窗口',
                     'revision': 0, 'dirty': False, 'draft': None, 'last_seen': self.clock(),
-                    'closed': False, 'notify': notify, 'ack': None}
+                    'closed': False, 'notify': notify, 'ack': None, 'recovery_saved': False, 'recovery_error': ''}
             else:
                 surface = self.surfaces[surface_id]
                 if surface['kind'] != kind:
@@ -348,6 +542,14 @@ class ExitCoordinator:
                 surface['draft'] = draft
             if changed:
                 surface['ack'] = None
+            if self.checkpoint is not None and (self.phase != 'confirming' or surface['ack'] is None):
+                try:
+                    surface['recovery_saved'] = self.checkpoint(surface_id, revision, dirty,
+                        surface['draft'], surface['kind'], surface['label'])
+                    surface['recovery_error'] = ''
+                except (ValueError, OSError) as exc:
+                    surface['recovery_saved'] = False
+                    surface['recovery_error'] = '自动保留草稿尚未完成：' + str(exc) + '。当前窗口输入仍保留，请明确保存副本。'
             return self.status()
 
     def unregister(self, surface_id, revision, dirty, *, draft=None):
@@ -408,6 +610,7 @@ class ExitCoordinator:
                 raise ValueError('请选择保存副本、取消或明确放弃')
             if decision == 'clean' and surface['dirty']:
                 raise ValueError('当前窗口仍有未保存草稿，请明确选择处理方式')
+            self._clear_checkpoint(surface)
             surface['ack'] = decision
             self._finish_if_ready()
             return self.status()
@@ -427,14 +630,20 @@ class ExitCoordinator:
                 if surface['draft'] is None:
                     raise ValueError('没有可保存的已上报草稿；请取消并返回原窗口，或明确放弃')
                 saved = self.save_draft(surface_id, 'offline-' + surface['kind'], surface['label'], surface['draft'])
-                surface['ack'] = 'saved'
             elif decision == 'discard':
                 saved = None
-                surface['ack'] = 'discard'
             else:
                 raise ValueError('请明确保存最近上报的草稿或放弃')
+            self._clear_checkpoint(surface)
+            surface['ack'] = 'saved' if decision == 'save' else 'discard'
             self._finish_if_ready()
             return {'exit': self.status(), 'saved': saved}
+
+    def _clear_checkpoint(self, surface):
+        if self.checkpoint is not None:
+            self.checkpoint(surface['surface_id'], surface['revision'], False,
+                            surface['draft'], surface['kind'], surface['label'])
+            surface.update(recovery_saved=False, recovery_error='')
 
     def _finish_if_ready(self):
         if self.phase != 'confirming':
@@ -472,6 +681,11 @@ class ExitCoordinator:
                 row = {key: surface[key] for key in ('surface_id', 'kind', 'label', 'revision', 'dirty', 'last_seen', 'ack')}
                 row['online'] = not surface['closed'] and now - surface['last_seen'] <= ONLINE_SECONDS
                 row['has_recovery_draft'] = surface['draft'] is not None
+                row['has_reported_draft'] = surface['draft'] is not None
+                row['recovery_saved'] = surface['recovery_saved']
+                row['recovery_error'] = surface['recovery_error']
+                if self.checkpoint is not None:
+                    row['has_recovery_draft'] = surface['recovery_saved']
                 participants.append(row)
             return copy.deepcopy({**(self.request or {'id': None, 'reason': '', 'initiator': ''}),
                                   'phase': self.phase, 'participants': participants,

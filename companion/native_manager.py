@@ -71,32 +71,68 @@ class NativeManager:
         self.report_drafts()
         self.session.request_exit('native', reason)
 
+    @staticmethod
+    def finished_exit_message(state):
+        result = state.get('backup_result') or {}
+        completed = [row for row in result.get('captured', [])
+                     if isinstance(row, dict) and type(row.get('slot')) is int and 1 <= row['slot'] <= 6
+                     and isinstance(row.get('id'), str) and len(row['id']) == 64
+                     and all(char in '0123456789abcdef' for char in row['id'])]
+        slots = '、'.join(f"槽位 {row['slot']}（{row['id'][:12]}）" for row in completed)
+        error = state.get('error') or result.get('error')
+        if error or result.get('ok') is False:
+            message = error or '最后备份未完成；已有备份与活动存档原件仍保留。'
+            if slots:
+                message += ' 已完成的槽位：' + slots + '。'
+        elif result.get('ok') is True and result.get('state') == 'captured' and slots:
+            message = '最后备份已完成：' + slots + '。'
+        elif result.get('ok') is True and result.get('state') == 'no-save':
+            message = '本次没有游戏存档需要备份。'
+        elif result.get('ok') is True and result.get('state') == 'paused':
+            message = '自动备份已暂停，本次结束未执行最后备份。'
+        else:
+            message = '最后备份结果尚未确认，请在下次启动核对退出回执。'
+        if result.get('receipt_error'):
+            message += ' ' + result['receipt_error']
+        return '本次辅助已结束。' + message + ' 明确保存的未完成草稿可在下次启动后找回。'
+
     def process_exit(self):
         try:
             while True:
                 state = self.exit_events.get_nowait()
+                current = self.session.exit_status()
+                if state['id'] != current['id'] or state['phase'] != current['phase']:
+                    continue  # A delayed start callback cannot revive a cancelled request.
+                previous = self.exit_state
                 self.exit_state = state
                 phase = state['phase']
                 if phase == 'confirming':
+                    if self.frozen and previous and previous['id'] != state['id']:
+                        self.host.command('exit_cancelled', request_id=previous['id'])
                     self.frozen = True
                     self.report_drafts()
                     self.host.command('exit_request', state=state)
                 elif phase in ('cancelled', 'idle'):
                     self.frozen = False
-                    self.host.command('exit_cancelled')
+                    self.host.command('exit_cancelled', request_id=state['id'])
                 elif phase == 'finished':
-                    self.host.command('exit_finished', state=state)
+                    self.host.command('exit_finished', state=state, message=self.finished_exit_message(state))
         except Empty:
             pass
         current = self.session.exit_status()
         if self.frozen and current['phase'] in ('cancelled', 'idle'):
             self.frozen = False
-            self.host.command('exit_cancelled')
+            self.host.command('exit_cancelled', request_id=current['id'])
 
     def exit_decision(self, item):
-        state = self.session.exit_status()
-        if state['phase'] != 'confirming':
-            return
+        # Keep request validation and raw capture atomic with web cancel/restart.
+        with self.session.exit_coordinator.lock:
+            state = self.session.exit_status()
+            if state['phase'] != 'confirming' or item.get('request_id') != state['id']:
+                return
+            self._exit_decision(item, state)
+
+    def _exit_decision(self, item, state):
         self.frozen = True
         # The helper flushes its newest raw controls before showing the exit dialog.
         if item.get('lookup') and self.lookup():
@@ -113,12 +149,12 @@ class NativeManager:
                 settings.save_draft_copy()
         self.report_drafts()
         if decision == 'clean' and self.drafts():
-            self.host.command('exit_request', state=state)
+            self.host.command('exit_save_error', state=state, message='当前窗口仍有未保存草稿，请重新确认。')
             return
         self.session.acknowledge_exit(state['id'], 'native', decision, self.revision)
         if decision == 'cancel':
             self.frozen = False
-            self.host.command('exit_cancelled')
+            self.host.command('exit_cancelled', request_id=state['id'])
 
     def dispatch(self, item):
         action = item.get('action')
@@ -172,14 +208,16 @@ class NativeManager:
             elif action == 'load_draft':
                 self.restore_draft(self.session.load_exit_draft(item['id']), item.get('component'))
             elif action == 'draft_state':
-                self.session.exit_drafts.set_lifecycle(item['id'], item.get('state'), item.get('expected_revision'))
+                self.session.set_exit_draft_lifecycle(item['id'], item.get('state'), item.get('expected_revision'))
                 self.host.command('drafts', rows=self.draft_rows(item.get('include_archived', False)),
                                   include_archived=item.get('include_archived', False))
             self.report_drafts()
             self.update(self.session.snapshot(), force=True)
         except (ValueError, KeyError, OSError, RuntimeError) as exc:
             if action == 'exit_decision':
-                self.host.command('exit_save_error', message=str(exc), state=self.session.exit_status())
+                state = self.session.exit_status()
+                if state['phase'] == 'confirming' and item.get('request_id') == state['id']:
+                    self.host.command('exit_save_error', message=str(exc), state=state)
                 logging.exception('Native exit draft save failed; retaining the original draft')
             else:
                 self.error(str(exc))
@@ -254,9 +292,15 @@ class NativeManager:
             texts.append('存档读取完整原因：'+snap['error'])
         if backup.get('error'):
             texts.append('自动备份完整原因：'+backup['error'])
+        if snap.get('draft_recovery_notice'):
+            texts.append(snap['draft_recovery_notice'])
         state = {'text': '\n\n'.join(filter(None, texts)), 'slot': 0 if snap['settings']['slot'] == 'auto' else snap['settings']['slot'],
             'topmost': snap['settings']['always_on_top'], 'references': reference_texts,
-            'capabilities': registration, 'error': self.manager.action_error}
+            'capabilities': registration, 'error': '\n'.join(filter(None, [self.manager.action_error] +
+                [row.get('recovery_error', '') for row in snap.get('exit', {}).get('participants', [])
+                 if row['surface_id'] == 'native']))}
+        if self.exit_state and self.exit_state.get('phase') == 'finished':
+            state['error'] = self.finished_exit_message(self.exit_state)
         signature = json.dumps(state, ensure_ascii=False, sort_keys=True)
         if force or signature != self.signature:
             self.signature = signature

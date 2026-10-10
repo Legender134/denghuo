@@ -31,6 +31,24 @@ namespace Denghuo.Native {
         public override string ToString() { return Text; }
     }
 
+    // Request identity outlives a modal dialog and its delayed return.
+    sealed class ExitRequests {
+        readonly HashSet<string> retired = new HashSet<string>();
+        string current;
+        public bool IsCurrent(string id) { return !String.IsNullOrEmpty(id) && current == id; }
+        public bool Begin(string id) {
+            if (String.IsNullOrEmpty(id) || retired.Contains(id) || IsCurrent(id)) return false;
+            if (current != null) retired.Add(current);
+            current = id; return true;
+        }
+        public bool Cancel(string id) {
+            if (String.IsNullOrEmpty(id)) return false;
+            retired.Add(id);
+            if (!IsCurrent(id)) return false;
+            current = null; return true;
+        }
+    }
+
     sealed class Helper : ApplicationContext {
         const int MaxLine = 524288;
         readonly string session;
@@ -41,6 +59,8 @@ namespace Denghuo.Native {
         long request, revision;
         bool stopping;
         public bool Frozen;
+        readonly ExitRequests exitRequests = new ExitRequests();
+        DecisionForm activeExit;
         public ManagerForm Manager;
         public LookupForm Lookup;
         public SettingsForm Settings;
@@ -105,9 +125,9 @@ namespace Denghuo.Native {
                         case "name_plan": NamePlan(d); break;
                         case "confirm": Confirm(d); break;
                         case "exit_request": ExitRequest(Data.Object(d, "state")); break;
-                        case "exit_save_error": Frozen = false; ExitRequest(Data.Object(d, "state"), Data.Text(d, "message", "草稿副本未能保存")); break;
-                        case "exit_cancelled": Frozen = false; SetFrozen(false); break;
-                        case "exit_finished": Manager.Status.Text = Data.Text(Data.Object(d, "state"), "error", "最后备份处理完成，正在退出。"); break;
+                        case "exit_save_error": ExitRequest(Data.Object(d, "state"), Data.Text(d, "message", "草稿副本未能保存"), true); break;
+                        case "exit_cancelled": CancelExit(Data.Text(d, "request_id", "")); break;
+                        case "exit_finished": Manager.Status.Text = Data.Text(d, "message", "最后备份结果尚未确认，请在下次启动核对退出回执。"); break;
                         case "drafts": Drafts(d); break;
                         case "recover_settings": RecoverSettings(d); break;
                         case "error": Fail(Data.Text(d, "message", "原生操作未完成")); break;
@@ -128,8 +148,15 @@ namespace Denghuo.Native {
             form.Hide(); Visibility(form); if (surface == "plans" && Lookup.Visible) Lookup.Activate();
         }
         void SetFrozen(bool freeze) { Manager.Editable.Enabled = !freeze; Lookup.Editable.Enabled = !freeze; Settings.Editable.Enabled = !freeze; Plans.Enabled = !freeze; if (activeName != null) activeName.Editable.Enabled = !freeze; }
-        void ExitRequest(Dictionary<string, object> state, string error = "") {
-            if (Frozen) return;
+        void CloseExitDialog() { var dialog = activeExit; activeExit = null; if (dialog != null) dialog.Close(); }
+        void CancelExit(string id) {
+            if (!exitRequests.Cancel(id)) return;
+            CloseExitDialog(); Frozen = false; SetFrozen(false);
+        }
+        void ExitRequest(Dictionary<string, object> state, string error = "", bool retry = false) {
+            string id = Data.Text(state, "id", "");
+            if (retry ? !exitRequests.IsCurrent(id) : !exitRequests.Begin(id)) return;
+            CloseExitDialog();
             Lookup.FlushEdit(); Settings.FlushEdit();
             Frozen = true; SetFrozen(true);
             var lookup = Lookup.Raw(); var settings = Settings.Raw();
@@ -137,12 +164,16 @@ namespace Denghuo.Native {
             string decision = "clean";
             if (dirty) {
                 using (var dialog = new DecisionForm("退出灯火", (error.Length > 0 ? "保存副本未完成：" + error + "\n原始草稿仍保留。\n" : "") + "数值速查或游玩设置有未保存草稿。保存副本会保留全部草稿；取消可返回继续编辑。")) {
-                    dialog.ShowDialog(Manager.Visible ? (IWin32Window)Manager : Lookup.Visible ? (IWin32Window)Lookup : (IWin32Window)Settings);
-                    decision = dialog.Decision;
+                    activeExit = dialog;
+                    try {
+                        dialog.ShowDialog(Manager.Visible ? (IWin32Window)Manager : Lookup.Visible ? (IWin32Window)Lookup : (IWin32Window)Settings);
+                        decision = dialog.Decision;
+                    } finally { if (activeExit == dialog) activeExit = null; }
                 }
             }
-            Send("exit_decision", "decision", decision, "lookup", Lookup.Dirty || SaveDraft != null ? (object)lookup : null, "settings", Settings.Dirty ? (object)settings : null);
-            if (decision == "cancel") { Frozen = false; SetFrozen(false); }
+            if (!exitRequests.IsCurrent(id)) return;
+            Send("exit_decision", "request_id", id, "decision", decision, "lookup", Lookup.Dirty || SaveDraft != null ? (object)lookup : null, "settings", Settings.Dirty ? (object)settings : null);
+            if (decision == "cancel") { CloseExitDialog(); Frozen = false; SetFrozen(false); }
         }
         void Confirm(Dictionary<string, object> d) {
             Lookup.FlushEdit(); Settings.FlushEdit();

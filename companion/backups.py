@@ -606,12 +606,13 @@ class BackupManager:
         self.register(root, row)
         return row
 
-    def final_capture(self, root, deadline, *, allow_missing_default=False):
+    def final_capture(self, root, deadline, *, allow_missing_default=False, on_capture=None):
         """A last stable capture, with retries and a shared monotonic deadline."""
         remaining = max(0, deadline - time.monotonic())
         if not self.lock.acquire(timeout=remaining):
             return {'ok': False, 'state': 'timeout', 'captured': [],
                     'error': '最后一次备份未完成：备份任务仍在处理；已有备份与活动存档原件仍保留。'}
+        captured = []
         try:
             if not self.enabled:
                 return {'ok': True, 'state': 'paused', 'captured': [], 'error': '',
@@ -625,7 +626,7 @@ class BackupManager:
                         'error': '最后一次备份未完成：存档目录暂时不可用；已有备份与原件仍保留。'}
             check_capture_deadline(deadline)
             slots = list_slots(Path(root))
-            pending, problems, captured = [], {}, []
+            pending, problems = [], {}
             for slot in slots:
                 if slot['valid']:
                     pending.append(slot['id'])
@@ -642,6 +643,8 @@ class BackupManager:
                         pending.remove(slot)
                         problems.pop(slot, None)
                         self.slot_health[slot] = {'error': '', 'saved': row['saved'], 'last_success': self.clock()}
+                        if on_capture is not None:
+                            on_capture(dict(captured[-1]))
                     except (OSError, ValueError) as exc:
                         problems[slot] = str(exc)
                 if pending:
@@ -659,14 +662,21 @@ class BackupManager:
                 if len(rows) > 3000:
                     raise ValueError('备份时间记录已满，最后进度已保存在历史中；请打开存档历史检查')
                 atomic_json(self.scope(root) / 'timeline.json', rows)
-            error = '；'.join(f'槽位 {slot}：{problems.get(slot, "结束前未形成稳定存档")}' for slot in pending)
+            failures = []
+            for slot in pending:
+                problem = problems.get(slot, '结束前未形成稳定存档')
+                for suffix in ('，稍后自动重试', '，稍后重试', '，下一次重试'):
+                    problem = problem.removesuffix(suffix)
+                prefix = f'槽位 {slot}：'
+                failures.append(problem if problem.startswith(prefix) else prefix + problem)
+            error = '；'.join(failures)
             if error:
                 self.error = error
                 return {'ok': False, 'state': 'partial' if captured else 'failed', 'captured': captured,
-                        'error': '最后一次备份未完成：' + error + '；已有备份与活动存档原件仍保留。'}
+                        'error': '最后一次备份未完成：' + error + '；已有备份与活动存档原件仍保留。本次最后备份重试已结束；下次启动助手后，请检查存档历史与备份状态。'}
             return {'ok': True, 'state': 'captured' if captured else 'no-save', 'captured': captured, 'error': ''}
         except (OSError, ValueError) as exc:
-            return {'ok': False, 'state': 'failed', 'captured': [],
+            return {'ok': False, 'state': 'partial' if captured else 'failed', 'captured': captured,
                     'error': '最后一次备份未完成：' + str(exc) + '；已有备份与活动存档原件仍保留。'}
         finally:
             self.lock.release()

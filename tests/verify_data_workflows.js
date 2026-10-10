@@ -158,7 +158,7 @@ const plain=value=>JSON.parse(JSON.stringify(value));
     restore.run("initializeBackups();backupContext='context-a';backupFlow.context='context-a';backupFlow.epoch=1;backupState={context:'context-a',save_root:'/synthetic/a',history:[]};loadBackups=async()=>{};loadBackupFlowStorage=async()=>{}");
     restore.context.completed=[];
     restore.run("loadBackups=async()=>{completed.push(state.backup_context)}");
-    restore.run(`openConfirm({slot:1,id:'original-id',label:'原始目标',expected_current:'original-digest'},'${operation}','context-a')`);
+    restore.run(`openConfirm({slot:1,id:'original-id',label:'原始目标',expected_current:'original-digest',class:'WARRIOR',level:3,depth:4,hp:8,ht:30,saved:1000,before:{class:'MAGE',level:2,depth:3,hp:5,ht:25,saved:900}},'${operation}','context-a')`);
     restore.get('#restore-confirm').checked=true;
     const deferredResult=deferred();let submitted,nextPreview,previewing;
     restore.context.post=async(url,payload)=>{submitted=plain(payload);return deferredResult.promise;};
@@ -197,6 +197,14 @@ const plain=value=>JSON.parse(JSON.stringify(value));
     assert.equal(receipt.submitted.expected_current,'original-digest');
     assert.equal(receipt.result.results[0].ok,outcome==='success');
     assert.equal(receipt.result.results[0].id,'original-id');assert.equal(receipt.result.results[0].label,'原始目标');
+    const progress=receipt.result.results[0].summary;
+    assert(progress,`${operation}/${outcome}/${interrupt}: preserve preview progress in the immutable receipt`);
+    assert.equal(progress.class,operation==='undo'?'MAGE':'WARRIOR');
+    assert.equal(progress.hp,operation==='undo'?5:8);assert.equal(progress.ht,operation==='undo'?25:30);
+    assert.equal(progress.saved,operation==='undo'?900:1000);
+    const receiptTable=restore.run('flowTable(backupFlow.receipts[0].result.results,{result:true})');
+    assert(receiptTable.includes(operation==='undo'?'生命 5/25':'生命 8/30'));
+    assert(!receiptTable.includes('摘要不可验证'));assert(!receiptTable.includes('源保存时间未提供'));
     assert(restore.run('Object.isFrozen(backupFlow.receipts[0].submitted.scope)'));
     assert(restore.run('Object.isFrozen(backupFlow.receipts[0].result.results[0])'));
     const rendered=restore.get('#backup-operation-receipts').children;
@@ -233,5 +241,26 @@ const plain=value=>JSON.parse(JSON.stringify(value));
     for(const outcome of ['success','failure'])for(const interrupt of ['none','close','escape','connection','new-target','pending-preview'])await restoreReceiptCase(operation,outcome,interrupt);
     await restoreReceiptCase(operation,'unknown','connection');
   }
+  // The verified preview supersedes stale card metadata, including an originally empty slot.
+  for(const [operation,empty] of [['restore',false],['undo',false],['undo',true]]){
+    const preview=harness('backups.js');preview.run(fs.readFileSync(path.join(root,'web','backup-workflows.js'),'utf8'));
+    preview.run("initializeBackups();backupFlow.context='context-a';backupFlow.epoch=1;backupState={save_root:'/synthetic/a'};loadBackups=async()=>{};loadBackupFlowStorage=async()=>{}");
+    const target=empty?{empty:true}:{class:'CLERIC',level:9,depth:8,hp:17,ht:40,saved:2000};
+    preview.context.fetch=async()=>({ok:true,json:async()=>({context:'context-a',expected_current:'preview-digest',original_existed:!empty,current:{empty:true},target})});
+    await preview.run(`openRestore({slot:1,id:'preview-id',class:'WARRIOR',hp:99,ht:100,saved:1},'context-a','${operation}')`);
+    preview.get('#restore-confirm').checked=true;
+    const result=deferred();preview.context.post=async()=>result.promise;
+    const completing=preview.get('#restore-form').listeners.submit({preventDefault(){}});
+    target.hp=999;target.saved=9999;
+    preview.run("state.backup_context='context-b';state.settings.save_root='/synthetic/b';syncBackupContext('context-b')");
+    result.resolve({ok:true});await completing;
+    const receipt=plain(preview.run('backupFlow.receipts[0]'));
+    const table=preview.run('flowTable(backupFlow.receipts[0].result.results,{result:true})');
+    if(empty){assert.equal(receipt.submitted.summary.empty,true);assert(table.includes('空槽位'));assert(!table.includes('摘要不可验证'));}
+    else {assert.equal(receipt.submitted.summary.hp,17);assert.equal(receipt.submitted.summary.saved,2000);assert(table.includes('生命 17/40'));assert(table.includes('游戏保存 2000'));}
+    assert.equal(receipt.root,'/synthetic/a');receiptChecks++;
+  }
+  assert(flow.run("flowTable([{ok:true,id:'metadata-absent'}],{result:true})").includes('未提供进度摘要'));
+  assert(flow.run("flowTable([{valid:false,error:'ZIP校验失败'}],{result:true})").includes('摘要不可验证'));
   console.log(JSON.stringify({passed:true,deferred_workflow_cases:checks,restore_receipt_cases:receiptChecks,scope:'actual JS components with deferred requests; browser/native E2E remains separate'}));
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -10,7 +10,7 @@ const discover=params=>python("import json,sys;from companion.engine import Cata
 const stock=(id,quantity=1,key='s1',state={},origin='manual',reserve=0)=>({key,id,quantity,reserve,origin,state});
 const target=(recipe,quantity=1,choices={},key='g1')=>({key,recipe,quantity,choices});
 const plan=(targets,resources=[],energy=100,chains={})=>({format:2,recipe_version:'4.0.2',targets,resources,energy,energy_reserve:0,energy_origin:'manual',reference_version:null,chains});
-function deferred(){let resolve;return {promise:new Promise(done=>resolve=done),resolve};}
+function deferred(){let resolve,reject;return {promise:new Promise((done,fail)=>{resolve=done;reject=fail;}),resolve,reject};}
 function harness(initialize=true){
   const elements=new Map();let body;
   class Node{
@@ -41,7 +41,7 @@ function harness(initialize=true){
   body=new Node('body');const document={activeElement:null,body,createElement:tag=>new Node(tag),createTextNode:value=>{const row=new Node('#text');row.textContent=value;return row;}};
   const get=selector=>selector.startsWith('#')?(elements.get(selector.slice(1))?.isConnected?elements.get(selector.slice(1)):null):walk(body).find(row=>matches(row,selector))||null;
   const section=new Node('section');body.append(section);const form=new Node('form');form.id='alchemy-form';section.append(form);
-  for(const [id,tag,value] of [['alchemy-recipe','select',''],['alchemy-batches','input','1'],['alchemy-formula','p',''],['alchemy-source-link','a',''],['alchemy-materials','div',''],['alchemy-energy','input','0'],['alchemy-energy-reserve','input','0'],['alchemy-energy-origin','p',''],['alchemy-status','p',''],['alchemy-calculate','button',''],['alchemy-use-resources','button',''],['alchemy-undo','button',''],['alchemy-reload-saved','button','']]){const row=new Node(tag);row.id=id;row.value=value;if(tag==='input'||tag==='select'){const label=new Node('label');if(id==='alchemy-batches')label.append(document.createTextNode('新增目标产出数量（件）'));label.append(row);form.append(label);}else form.append(row);}
+  for(const [id,tag,value] of [['alchemy-recipe','select',''],['alchemy-batches','input','1'],['alchemy-formula','p',''],['alchemy-source-link','a',''],['alchemy-materials','div',''],['alchemy-energy','input','0'],['alchemy-energy-reserve','input','0'],['alchemy-energy-origin','p',''],['alchemy-status','p',''],['alchemy-calculate','button',''],['alchemy-use-resources','button',''],['alchemy-undo','button',''],['alchemy-redo','button',''],['alchemy-reload-saved','button','']]){const row=new Node(tag);row.id=id;row.value=value;if(tag==='input'||tag==='select'){const label=new Node('label');if(id==='alchemy-batches')label.append(document.createTextNode('新增目标产出数量（件）'));label.append(row);form.append(label);}else form.append(row);}
   for(const id of ['alchemy-error','alchemy-result','alchemy-save','alchemy-copy','alchemy-copy-text','alchemy-copy-status','alchemy-pending-meta','plan-name','plan-note']){const row=new Node('div');row.id=id;section.append(row);}
   const messages=[],saved=[];const context=vm.createContext({console,URLSearchParams,Map,Set,Promise,Date,JSON,Number,String,Math,document,$:get,$$:selector=>walk(body).filter(row=>matches(row,selector)),
     navigationSerial:0,webEditingFrozen:false,state:{modified:'snapshot-a',active_slot:1},workspaceState:{alchemy:metadata},loadWorkspace:async()=>{},
@@ -54,7 +54,88 @@ function harness(initialize=true){
   const apply=params=>{context.params=plain(params);run('applyAlchemyRaw(rawAlchemyParams(params))');};
   return {context,run,get,walk,field,button,apply,messages,saved};
 }
+async function verifyAlchemyEditHistory(){
+  const failures=[];let checks=0;
+  const fixture=()=>plan([target('resin',1,{source_key:'original-wand'}),target('potion-healing',2,{},'other-goal')],[stock('items.wands.wandoffireblast',1,'original-wand',{base_level:-1,cursed:false},'known',1)],17,{'items.potions.potionoffrost':{recipe:'seed-potion',choices:{seed_ids:['plants.icecap$seed','plants.icecap$seed','plants.icecap$seed']}}});
+  const editor=()=>{const h=harness();h.apply(fixture());h.context.post=async()=>{throw new Error('Editing must not calculate or discover automatically');};return h;};
+  const raw=h=>plain(h.run('captureAlchemyRaw()'));
+  const undo=h=>h.get('#alchemy-undo').fire('click');
+  const redo=h=>{assert(h.get('#alchemy-redo'),'visible redo control');return h.get('#alchemy-redo').fire('click');};
+  const check=async(name,run)=>{try{await run();checks++;console.log('history case passed: '+name);}catch(error){failures.push(name+': '+error.message);console.error('history case failed: '+name+'\n'+error.stack);}};
+  await check('recipe replacement restores raw invalid amounts and original source_key',async()=>{
+    const h=editor(),quantity=h.field('#alchemy-targets','本次希望制作的产出（件）');quantity.value='  unfinished-quantity  ';await quantity.fire('input');
+    const reserve=h.field('#alchemy-materials','最低保留（件）');reserve.value='reserve?';await reserve.fire('input');
+    const before=raw(h),picker=h.field('#alchemy-targets','目标配方');picker.value='potion-healing';await picker.fire('change');
+    assert.equal(raw(h).targets[0].quantity,before.targets[0].quantity);assert.deepEqual(raw(h).targets[1],before.targets[1]);await undo(h);assert.deepEqual(raw(h),before);
+    await redo(h);assert.equal(raw(h).targets[0].recipe,'potion-healing');assert.deepEqual(raw(h).targets[0].choices,{});assert.equal(raw(h).resources[0].reserve,'reserve?');
+  });
+  await check('recipe refresh captures other widgets before rebuilding them',async()=>{
+    const h=editor(),before=raw(h);h.field('#alchemy-targets','本次希望制作的产出（件）').value='uncommitted raw quantity';h.field('#alchemy-materials','最低保留（件）').value='uncommitted raw reserve';const picker=h.field('#alchemy-targets','目标配方');picker.value='potion-healing';await picker.fire('change');assert.equal(raw(h).targets[0].quantity,'uncommitted raw quantity');assert.equal(raw(h).resources[0].reserve,'uncommitted raw reserve');await undo(h);before.targets[0].quantity='uncommitted raw quantity';before.resources[0].reserve='uncommitted raw reserve';assert.deepEqual(raw(h),before);
+  });
+  await check('target removal restores the complete target at its priority',async()=>{
+    const h=editor(),before=raw(h);await h.button('#alchemy-targets','移除此目标').fire('click');assert.deepEqual(raw(h).targets,[before.targets[1]]);await undo(h);assert.deepEqual(raw(h),before);await redo(h);assert.deepEqual(raw(h).targets,[before.targets[1]]);
+  });
+  await check('target reorder and target addition each undo without recalculation',async()=>{
+    const h=editor(),before=raw(h);await h.button('#alchemy-targets','下移').fire('click');assert.equal(raw(h).targets[0].key,'other-goal');await undo(h);assert.deepEqual(raw(h),before);
+    h.get('#alchemy-recipe').value='potion-healing';h.get('#alchemy-batches').value='invalid new amount';await h.button('#alchemy-target-actions','添加这个产出目标').fire('click');const added=raw(h);assert.equal(added.targets[2].quantity,'invalid new amount');await undo(h);assert.equal(raw(h).targets.length,2);await redo(h);assert.deepEqual(raw(h),added);
+  });
+  await check('chain recipe replacement restores its concrete material choices',async()=>{
+    const h=editor();h.apply({...fixture(),chains:{'items.trinkets.ratskull':{recipe:'trinket-catalyst',choices:{source_key:'original-catalyst',selection:2}}}});const before=raw(h),picker=h.field('#alchemy-chains','明确使用的生产配方');assert(picker.children.some(row=>row.value==='trinket-upgrade'));picker.value='trinket-upgrade';await picker.fire('change');assert.deepEqual(raw(h).chains['items.trinkets.ratskull'].choices,{});await undo(h);assert.deepEqual(raw(h),before);
+  });
+  await check('chain removal and addition are reversible',async()=>{
+    const h=editor(),before=raw(h);await h.button('#alchemy-chains','恢复自动路径 / 删除此选择').fire('click');assert.deepEqual(raw(h).chains,{});await undo(h);assert.deepEqual(raw(h),before);await redo(h);assert.deepEqual(raw(h).chains,{});
+    h.get('#alchemy-chain-output').value='items.food.stewedmeat';await h.button('#alchemy-chains','添加前置路径选择').fire('click');assert(raw(h).chains['items.food.stewedmeat']);await undo(h);assert.deepEqual(raw(h).chains,{});
+  });
+  await check('inventory identity replacement and removal restore state and reserves',async()=>{
+    const h=editor(),amount=h.field('#alchemy-materials','原始实例数量（件）');amount.value='bad stock';await amount.fire('input');const before=raw(h),picker=h.field('#alchemy-materials','标准身份');picker.value='items.potions.potionofhealing';await picker.fire('change');await undo(h);assert.deepEqual(raw(h),before);
+    await h.button('#alchemy-materials','移除此库存实例').fire('click');assert.equal(raw(h).resources.length,0);await undo(h);assert.deepEqual(raw(h),before);
+    h.get('#alchemy-resource-type').value='items.potions.potionofhealing';await h.button('#alchemy-materials','添加一个独立实例').fire('click');assert.equal(raw(h).resources.length,2);await undo(h);assert.deepEqual(raw(h),before);
+  });
+  await check('unfinished empty selectors remain reversible without relaxing external draft validation',async()=>{
+    const h=editor(),before=raw(h),recipe=h.field('#alchemy-targets','目标配方');recipe.value='';await recipe.fire('change');const unfinishedTarget=raw(h);assert.throws(()=>h.run('validateAlchemyRaw(captureAlchemyRaw())'),/目标字段/);await undo(h);assert.deepEqual(raw(h),before);await redo(h);assert.deepEqual(raw(h),unfinishedTarget);await h.button('#alchemy-targets','移除此目标').fire('click');await undo(h);assert.deepEqual(raw(h),unfinishedTarget);
+    const identity=h.field('#alchemy-materials','标准身份');identity.value='';await identity.fire('change');const unfinishedResource=raw(h);assert.throws(()=>h.run('validateAlchemyRaw(captureAlchemyRaw())'),/材料字段/);await undo(h);assert.deepEqual(raw(h),unfinishedTarget);await redo(h);assert.deepEqual(raw(h),unfinishedResource);await h.button('#alchemy-materials','移除此库存实例').fire('click');await undo(h);assert.deepEqual(raw(h),unfinishedResource);
+  });
+  await check('import then edit undo in chronological order and import can redo',async()=>{
+    const h=editor(),before=raw(h);h.context.post=async()=>({compatible:true,instances:[stock('items.wands.wandoffireblast',2,'original-wand',{base_level:2,cursed:false},'known')],resources:[],energy:23,reference_version:922,source:{mode:'save',snapshot_at:'imported',slot:2}});
+    await h.get('#alchemy-use-resources').fire('click');const imported=raw(h);assert.equal(imported.resources[0].reserve,'');h.run("addAlchemyTarget('potion-healing')");await undo(h);assert.deepEqual(raw(h),imported);await undo(h);assert.deepEqual(raw(h),before);assert.equal(h.run('alchemySource.mode'),'example');await redo(h);assert.deepEqual(raw(h),imported);assert.equal(h.run('alchemySource.snapshot_at'),'imported');
+  });
+  await check('a new numeric or structural edit clears redo',async()=>{
+    const h=editor();await h.button('#alchemy-targets','移除此目标').fire('click');await undo(h);assert(!h.get('#alchemy-redo').disabled);const amount=h.field('#alchemy-targets','本次希望制作的产出（件）');amount.value='new invalid value';await amount.fire('input');assert(h.get('#alchemy-redo').disabled);await redo(h);assert.equal(raw(h).targets[0].quantity,'new invalid value');
+    await undo(h);assert(!h.get('#alchemy-redo').disabled);h.run("addAlchemyTarget('potion-healing')");assert(h.get('#alchemy-redo').disabled);
+  });
+  await check('checkbox changes preserve the original source_key representation on undo',async()=>{
+    const h=editor(),before=raw(h),checkbox=h.walk(h.get('#alchemy-targets')).find(row=>row.type==='checkbox');assert(checkbox.checked);checkbox.checked=false;await checkbox.fire('change');const changed=raw(h);assert.deepEqual(changed.targets[0].choices,{source_keys:[]});await undo(h);assert.deepEqual(raw(h),before);await redo(h);assert.deepEqual(raw(h),changed);
+  });
+  await check('raw energy, reserve and picker edits round trip without numeric coercion',async()=>{
+    const h=editor(),before=raw(h);for(const [id,value,event] of [['alchemy-energy','  unknown energy  ','input'],['alchemy-energy-reserve','retain?','input'],['alchemy-batches','pending quantity','input'],['alchemy-recipe','potion-frost','change']]){h.get('#'+id).value=value;await h.get('#'+id).fire(event);}const changed=raw(h);for(let i=0;i<4;i++)await undo(h);assert.deepEqual(raw(h),before);for(let i=0;i<4;i++)await redo(h);assert.deepEqual(raw(h),changed);
+  });
+  await check('legacy copy conversion can recover its original plan and raw reserves',async()=>{
+    const h=editor(),recipe=metadata.recipes.find(row=>row.id==='potion-healing');h.context.saved={id:'legacy-history',kind:'alchemy',name:'Legacy',origin:{mode:'save',snapshot_at:'original',slot:1},record_revision:'d'.repeat(64),note:'Keep metadata',params:{recipe:recipe.id,recipe_version:'4.0.2',batches:2,energy:12,energy_reserve:0,energy_origin:'known',reference_version:922,resources:recipe.inputs.map(row=>({id:row.id,quantity:row.quantity*2,reserve:0,origin:'known'}))}};await h.run('openAlchemyPlan(saved,null,false)');const reserve=h.field('#alchemy-materials','最低保留（件）');reserve.value='invalid reserve';await reserve.fire('input');const before=raw(h),saved=plain(h.run('alchemySavedPlan'));await h.button('#alchemy-target-actions','以产出目标编辑副本').fire('click');const converted=raw(h);assert.equal(converted.format,2);assert.equal(h.run('alchemySavedPlan'),null);await undo(h);assert.deepEqual(raw(h),before);assert.deepEqual(plain(h.run('alchemySavedPlan')),saved);await redo(h);assert.deepEqual(raw(h),converted);assert.equal(h.run('alchemySavedPlan'),null);
+  });
+  await check('the stated 50-edit history boundary discards only the oldest edits',async()=>{
+    const h=editor();for(let i=1;i<=55;i++){const amount=h.field('#alchemy-targets','本次希望制作的产出（件）');amount.value='value-'+i;await amount.fire('input');}for(let i=0;i<50;i++)await undo(h);assert.equal(raw(h).targets[0].quantity,'value-5');assert(h.get('#alchemy-undo').disabled);await undo(h);assert.equal(raw(h).targets[0].quantity,'value-5');for(let i=0;i<50;i++)await redo(h);assert.equal(raw(h).targets[0].quantity,'value-55');assert(h.get('#alchemy-redo').disabled);
+  });
+  await check('late calculation and discovery cannot replace an undone state',async()=>{
+    const h=editor();h.apply(plan([target('potion-healing')],[],11));h.context.post=async(url,payload)=>payload.action==='alchemy-discover'?discover(payload.params):{result:calculate(payload.params)};await h.run('calculateAlchemy()');await h.run('discoverAlchemy()');const before=raw(h),oldResult=plain(h.run('alchemyResult')),oldDiscovery=plain(h.run('alchemyDiscovery'));
+    h.run("addAlchemyTarget('potion-frost')");const calculation=deferred(),discovery=deferred();h.context.post=async(url,payload)=>payload.action==='alchemy-discover'?discovery.promise:calculation.promise;const calculating=h.run('calculateAlchemy()'),finding=h.run('discoverAlchemy()');await undo(h);assert.deepEqual(raw(h),before);assert(!h.get('#alchemy-calculate').disabled);assert(!h.get('#alchemy-discover').disabled);
+    calculation.resolve({result:{stale:'calculation'}});discovery.resolve({recipes:[],message:'stale discovery'});await calculating;await finding;assert.deepEqual(plain(h.run('alchemyResult')),oldResult);assert.deepEqual(plain(h.run('alchemyDiscovery')),oldDiscovery);assert(!h.run('alchemyDirty'));assert(!h.get('#alchemy-save').disabled);
+  });
+  await check('redo invalidates pending calculation and discovery failures',async()=>{
+    const h=editor();h.run("addAlchemyTarget('potion-healing')");const edited=raw(h);await undo(h);const calculation=deferred(),discovery=deferred();h.context.post=async(url,payload)=>payload.action==='alchemy-discover'?discovery.promise:calculation.promise;const calculating=h.run('calculateAlchemy()'),finding=h.run('discoverAlchemy()');await redo(h);calculation.reject(new Error('obsolete calculation failure'));discovery.reject(new Error('obsolete discovery failure'));await calculating;await finding;assert.deepEqual(raw(h),edited);assert.equal(h.get('#alchemy-error').textContent,'');assert(!h.get('#alchemy-calculate').disabled);assert(!h.get('#alchemy-discover').disabled);assert(h.run('alchemyDirty'));
+  });
+  await check('an explicit producer path and its calculation can be undone and redone',async()=>{
+    const h=editor(),state={cursed:false,is_upgradable:true,level:0,tier:1,default_quantity:3,durability:100};h.apply(plan([target('recipe-telekineticgrab',8)],[stock('items.weapon.missiles.throwingstone',3,'s1',state),stock('items.weapon.missiles.throwingstone',3,'s2',state)],13));let requests=0;h.context.post=async(url,payload)=>{requests++;return {result:calculate(payload.params)};};await h.run('calculateAlchemy()');const before=raw(h),beforeResult=plain(h.run('alchemyResult')),picker=h.walk(h.get('#alchemy-result')).find(row=>row.tagName==='SELECT');assert(picker);picker.value='1';await h.button('#alchemy-result','明确采用此路径并重算').fire('click');const edited=raw(h),editedResult=plain(h.run('alchemyResult'));assert.equal(editedResult.complete,true);assert.equal(requests,2);await undo(h);assert.deepEqual(raw(h),before);assert.deepEqual(plain(h.run('alchemyResult')),beforeResult);await redo(h);assert.deepEqual(raw(h),edited);assert.deepEqual(plain(h.run('alchemyResult')),editedResult);assert.equal(requests,2);
+  });
+  await check('opening another plan and recovering a draft reset edit history',async()=>{
+    const h=editor();h.run("addAlchemyTarget('potion-healing')");h.context.saved={id:'other',kind:'alchemy',name:'Other',origin:{mode:'example'},params:plan([target('potion-healing')],[],31)};await h.run('openAlchemyPlan(saved,null,false)');assert(h.get('#alchemy-undo').disabled);assert(h.get('#alchemy-redo').disabled);h.run("addAlchemyTarget('potion-healing')");const draft=plain(h.run('captureAlchemyDraft()'));h.context.draft=draft;await h.run('restoreAlchemyDraft(draft)');assert(h.get('#alchemy-undo').disabled);assert(h.get('#alchemy-redo').disabled);assert.deepEqual(raw(h),draft.raw);
+  });
+  await check('undo after a rule update retains the result as stale',async()=>{
+    const h=editor();h.apply(plan([target('potion-healing')],[],11));h.context.post=async(url,payload)=>payload.action==='alchemy-discover'?discover(payload.params):{result:calculate(payload.params)};await h.run('calculateAlchemy()');await h.run('discoverAlchemy()');const before=raw(h),result=plain(h.run('alchemyResult'));h.run("addAlchemyTarget('potion-frost')");h.context.changedMetadata=plain(metadata);h.context.changedMetadata.families[0].name+=' changed';h.run('initializeAlchemy(changedMetadata)');await undo(h);assert.deepEqual(raw(h),before);assert.deepEqual(plain(h.run('alchemyResult')),result);assert(h.run('alchemyDirty&&alchemyRuleChanged'));assert(h.get('#alchemy-save').disabled);assert(h.get('#alchemy-discovery-status').textContent.includes('旧库存'));
+  });
+  assert.equal(failures.length,0,JSON.stringify({history_failures:failures},null,2));return checks;
+}
 (async()=>{
+  const historyChecks=await verifyAlchemyEditHistory();
   const h=harness();let checks=0;
   assert.equal(h.get('#alchemy-targets').children.length>1,true);assert.equal(h.run('alchemyFamilies.length'),73);assert.equal(new Set(metadata.families.map(row=>row.family)).size,39);checks++;
   const sword='items.weapon.melee.sword';h.apply(plan([target('recipe-stewedmeat-onemeat')],[stock(sword)],10));
@@ -128,5 +209,5 @@ function harness(initialize=true){
   const unavailable=openingAlchemy();unavailable.editor.context.workspaceState={alchemy:{available:false,error:'controlled failure'}};const unavailableOpen=unavailable.open();unavailable.reads[0].resolve();assert.equal(await unavailableOpen,false);assert.equal(unavailable.editor.get('#alchemy-energy').value,'0');assert(unavailable.editor.get('#alchemy-error').textContent.includes('暂未就绪'));checks++;
   const interrupted=openingAlchemy();interrupted.editor.run('initializeAlchemy(metadata)');let failObsolete;
   interrupted.editor.context.post=()=>new Promise((resolve,reject)=>{failObsolete=reject;});const obsoleteCalculation=interrupted.editor.run('calculateAlchemy()');assert(interrupted.editor.run('alchemyPending'));assert.equal(await interrupted.open(),true);assert(!interrupted.editor.run('alchemyPending'));assert(!interrupted.editor.get('#alchemy-calculate').disabled);failObsolete(new Error('obsolete failure'));await obsoleteCalculation;assert.equal(interrupted.editor.get('#alchemy-error').textContent,'');checks++;
-  console.log(JSON.stringify({passed:true,focused_component_cases:checks,registered_families:39,selectable_recipes:metadata.families.length,scope:'actual alchemy JS DOM and VM, real pinned backend metadata/calculations, deferred async responses; browser/native acceptance separate'}));
+  console.log(JSON.stringify({passed:true,focused_component_cases:checks,history_cases:historyChecks,registered_families:39,selectable_recipes:metadata.families.length,scope:'actual alchemy JS DOM and VM, real pinned backend metadata/calculations, deferred async responses; browser/native acceptance separate'}));
 })().catch(error=>{console.error(error);process.exitCode=1;});

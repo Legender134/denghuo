@@ -43,3 +43,5 @@ textarea{font:inherit;color:var(--text);background:#121915;border:1px solid #364
 #settings-recovery-fields{display:grid;gap:16px}
 #settings-recovery-fields fieldset{min-width:0;border:1px solid var(--border);border-radius:8px;padding:12px}
 #settings-recovery-fields p{margin:6px 0;overflow-wrap:anywhere;white-space:pre-wrap}
+
+.overview-urgent{margin:0 0 20px}.overview-urgent p{margin:5px 0;font-size:13px}.overview-urgent a{font-size:12px}
