@@ -43,11 +43,14 @@ def workspace_status(session):
         related = [{**row, 'lookup_label': row['name'] + ' · ' + provenance['label'],
                     'lookup_context': {**base['lookup_context'], 'params': dict(params), 'ignore_drafts': True, 'capture_context': True,
                                        'conditions': row['conditions']}} for row in item.get('related', [])]
-        base.update(name=item['name'], description=item['description'], related=related)
+        base.update(name=item['name'], description=item['description'], related=related, user_note=item.get('user_note'))
+        base['lookup_context']['user_note'] = item.get('user_note')
+        if item.get('user_note') and item['user_note']['title']:
+            base['lookup_label'] += ' · 用户记录：' + item['user_note']['title']
         base['lookup_context']['conditions'] += '；' + ' · '.join(item.get('details', []))
         current.extend(related)
     for buff in data.get('buffs', []):
-        identity = 'actors.buffs.' + buff['kind'].lower()
+        identity = buff.get('reference_id') or 'actors.buffs.' + buff['kind'].lower()
         if identity not in entries or any(row['id'] == identity for row in current):
             continue
         current.append({**entries[identity], 'lookup_label': entries[identity]['name'] + ' · ' + provenance['label'],

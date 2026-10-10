@@ -194,6 +194,12 @@ class KnowledgeWorkspace:
                         if type(item) is not int or item not in (0,1):raise ValueError()
                     elif key == 'investment_mode':
                         if item not in ('all','min_strength'):raise ValueError()
+                    elif key.startswith('resin_'):
+                        if type(item) is not int or not 0<=item<=3:raise ValueError()
+                    elif key.startswith('infusion_'):
+                        if item not in ('0','1','unknown'):raise ValueError()
+                    elif key.startswith('hardened_'):
+                        if item not in ('0','1'):raise ValueError()
                     elif key.startswith(('level_known_','ring_pair_')) and not key.startswith(('ring_pair_level_','ring_pair_curse_')):
                         if item not in ('0','1'):raise ValueError()
                     elif key.startswith(('curse_','ring_pair_curse_')):

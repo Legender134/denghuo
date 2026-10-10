@@ -87,8 +87,9 @@ class BackupLibrary:
 
 
 class BackupManager:
-    def __init__(self, directory, clock=time.time, closed_check=game_closed):
+    def __init__(self, directory, clock=time.time, closed_check=game_closed, storage_check=None):
         self.directory = Path(directory)
+        self.storage_check = storage_check
         self.clock, self.closed_check = clock, closed_check
         self.lock = threading.RLock()
         self.last_tick = 0
@@ -105,6 +106,15 @@ class BackupManager:
         self.slot_health = {}
         self.tick_failure = ''
         self._storage_cache = None
+        self._preferences_loaded = False
+        self._storage_error = ''
+        try:
+            self.ensure_storage()
+        except (OSError, ValueError) as exc:
+            self.error = self.tick_failure = str(exc)
+            return
+
+    def _load_preferences(self):
         preferences = self.directory / "preferences.json"
         if preferences.exists():
             try:
@@ -118,8 +128,27 @@ class BackupManager:
             except (OSError, ValueError, AttributeError, RecursionError):
                 self.enabled = False
                 self.error = "备份设置无法读取，自动备份已暂停；请在存档时光机中重新开启"
+        self._preferences_loaded = True
+
+    def ensure_storage(self):
+        with self.lock:
+            try:
+                if self.storage_check is not None:
+                    self.storage_check()
+            except (OSError, ValueError) as exc:
+                self._storage_error = str(exc)
+                raise
+            if self._storage_error:
+                if self.error == self._storage_error:
+                    self.error = ''
+                if self.tick_failure == self._storage_error:
+                    self.tick_failure = ''
+                self._storage_error = ''
+            if not self._preferences_loaded:
+                self._load_preferences()
 
     def scope(self, root):
+        self.ensure_storage()
         if isinstance(root, BackupLibrary):
             return unlinked(self.directory / root.key)
         key = hashlib.sha256(str(unlinked(Path(root)).resolve()).casefold().encode()).hexdigest()[:24]
@@ -170,14 +199,17 @@ class BackupManager:
         if type(enabled) is not bool:
             raise ValueError("自动备份开关值不正确")
         with self.lock:
+            self.ensure_storage()
             unlinked(self.directory).mkdir(parents=True, exist_ok=True)
             atomic_json(self.directory / "preferences.json", {"enabled": enabled})
             self.enabled, self.error, self.last_tick = enabled, "", 0
 
     def storage(self):
+        self.ensure_storage()
         return sum(unlinked(path).stat().st_size for path in self.directory.rglob('*.zip'))
 
     def storage_breakdown(self, root):
+        self.ensure_storage()
         now = self.clock()
         cached = self._storage_cache
         if cached and cached[0] == str(root) and 0 <= now-cached[1] < 5:
@@ -614,9 +646,12 @@ class BackupManager:
                     'error': '最后一次备份未完成：备份任务仍在处理；已有备份与活动存档原件仍保留。'}
         captured = []
         try:
+            if not self._preferences_loaded:
+                self.ensure_storage()
             if not self.enabled:
                 return {'ok': True, 'state': 'paused', 'captured': [], 'error': '',
                         'notice': '自动备份已由用户暂停，结束时没有重新开启。'}
+            self.ensure_storage()
             if not Path(root).is_dir():
                 if (allow_missing_default is True and not Path(root).exists()
                         and not self.has_protected_progress(root)):
@@ -694,6 +729,13 @@ class BackupManager:
     def tick(self, root, force=False):
         with self.lock:
             now = self.clock()
+            try:
+                self.ensure_storage()
+            except (OSError, ValueError) as exc:
+                self.error = self.tick_failure = str(exc)
+                if force:
+                    raise
+                return
             if not force and (not self.enabled or now - self.last_tick < 10):
                 return
             self.last_tick = now
@@ -743,6 +785,11 @@ class BackupManager:
 
     def health_status(self, root, slot=None):
         with self.lock:
+            storage_error = ''
+            try:
+                self.ensure_storage()
+            except (OSError, ValueError) as exc:
+                storage_error = str(exc)
             current = self.health_root == str(Path(root))
             success, saved = (self.last_success, self.last_saved) if current else (0, 0)
             # Startup/storage failures may precede the first root-bound tick.
@@ -752,6 +799,7 @@ class BackupManager:
                 own = self.slot_health.get(slot, {}) if current else {}
                 success, saved = own.get('last_success', 0), own.get('saved', 0)
                 error = error or own.get('error', '')
+            error = storage_error or error
             state = ('paused' if not self.enabled else 'blocked' if error or not Path(root).is_dir()
                      else 'waiting' if not success or self.clock() - saved > 60 else 'protected')
             return {'state': state, 'error': error, 'last_success': success, 'saved': saved, 'slot': slot,

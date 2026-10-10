@@ -1,10 +1,15 @@
-"""Conditional wand/ring investment metrics, using the reviewed numeric backend."""
+"""Conditional investment metrics, using the reviewed numeric backend.
+
+Upgrade/level branches derive from SPD 4.0.2 Weapon, Armor, Wand and
+MissileWeapon, GPL-3.0-or-later, commit 57a4e06a4caf162446d1c28caa7983f0493fecf0.
+Oleg Dolya 2012-2015; Evan Debenham 2014-2026.
+"""
 from __future__ import annotations
 from .public_source_data import MISSILE_PUBLIC_TYPES
 
 CONTEXT_KEYS = ('hp','max_hp','hero_level','depth','target_hp','target_max_hp','enemy_exp','minor','major','charges')
 EXTRA_KEYS = {'investment_mode', 'character_scene', 'scene_ring_slot', *(f'{key}_{side}' for side in ('a','b')
-    for key in ('level_known','curse','ring_pair','ring_pair_level','ring_pair_curse', *CONTEXT_KEYS))}
+    for key in ('level_known','curse','ring_pair','ring_pair_level','ring_pair_curse','resin','infusion','hardened', *CONTEXT_KEYS))}
 FAMILIES = {'weapon':'items.weapon.melee.', 'armor':'items.armor.', 'wand':'items.wands.', 'ring':'items.rings.'}
 
 
@@ -32,6 +37,18 @@ def canonical_comparison(values, raw):
         result['id_'+side]=identity
         result['level_'+side]=bounded_integer(raw.get('level_'+side,0),'A等级' if side=='a' else 'B等级',-100 if kind in ('weapon','missile','armor') else 0,99)
         result['tier_'+side]=bounded_integer(raw.get('tier_'+side,3),'原护甲阶数',1,5)
+        for key,allowed_kinds in (('resin',('wand',)),('infusion',('weapon','missile','armor','wand')),
+                                  ('hardened',('weapon','missile','armor'))):
+            name=key+'_'+side
+            if name not in raw:continue  # Old fixed plans retain their explicit ordinary assumptions.
+            if kind not in allowed_kinds:raise ValueError(side.upper()+'侧装备不使用'+{'resin':'树脂','infusion':'注魔','hardened':'硬化'}[key]+'条件')
+            if key=='resin':result[name]=bounded_integer(raw[name],side.upper()+'侧树脂层数',0,3)
+            else:
+                if key=='hardened' and raw[name]=='unknown':
+                    raise ValueError(side.upper()+'侧硬化状态未确认，请明确选择')
+                if raw[name] not in (('0','1','unknown') if key=='infusion' else ('0','1')):
+                    raise ValueError('请核对'+side.upper()+'侧'+('注魔假设' if key=='infusion' else '硬化状态'))
+                result[name]=raw[name]
         for key,default,allowed in [('mastery','0',('0','1')),('augment','NONE',('NONE','EVASION','DEFENSE') if kind=='armor' else ('NONE','SPEED','DAMAGE') if kind in ('weapon','missile') else ('NONE',))]:
             item=raw.get(key+'_'+side,default)
             if item not in allowed:raise ValueError('请核对'+('精通' if key=='mastery' else '强化')+'选项')
@@ -66,6 +83,7 @@ def canonical_comparison(values, raw):
             if set(supplied)-requested:raise ValueError('方案包含此条目不使用的上下文参数')
             for item in detail['inputs']:
                 if item['key'] in CONTEXT_KEYS:result[item['key']+'_'+side]=item['value']
+        if kind!='ring':upgrade_path(result,side,0)
     if kinds[0]!=kinds[1]:raise ValueError('请分别在近战武器、投掷武器、护甲、法杖或戒指的同一类别内比较')
     planning=raw.get('planning','0')
     if planning not in ('0','1'):raise ValueError('请明确选择是否启用预算规划')
@@ -82,6 +100,116 @@ def canonical_comparison(values, raw):
     from .character_comparison import canonical_scene
     canonical_scene(raw, result, kinds[0])
     return result
+
+
+def displayed_upgrade_level(base, infusion, resin=0):
+    # Java integer division truncates toward zero, including negative equipment.
+    quotient=(abs(base)//6)*(-1 if base<0 else 1)
+    return base+(1+quotient if infusion=='1' else 0)+resin
+
+
+def upgrade_path(raw, side, maximum):
+    """Reachable ordinary-scroll states, derived only from entered/public conditions.
+
+    Internal base grades are inferred, never taken from stored item metadata or
+    returned in the public comparison. Random branches are possible outcomes,
+    not expected values. Hardening is checked before that scroll's effect loss.
+    """
+    kind=family(raw['id_'+side]);level=raw['level_'+side]
+    infusion=raw.get('infusion_'+side,'0');resin=raw.get('resin_'+side,0)
+    if infusion=='unknown':return None
+    curse=raw.get('curse_'+side,'unknown' if kind in ('weapon','missile','armor') else '0')
+    if kind=='wand' and infusion=='1' and curse!='1':
+        raise ValueError(side.upper()+'侧法杖有注魔假设需要明确仍被诅咒')
+    bases=[base for base in range(0 if kind in ('wand','ring') else -100,101)
+           if displayed_upgrade_level(base,infusion,resin)==level]
+    if len(bases)!=1:raise ValueError(side.upper()+'侧显示等级与树脂 / 注魔假设不相容')
+    initial=(bases[0],infusion,raw.get('hardened_'+side,'0'),resin,curse)
+    path=[[initial]]
+    for _ in range(maximum):
+        states=[]
+        for base,active,hardened,resin,curse in path[-1]:
+            before=displayed_upgrade_level(base,active,resin)
+            if kind in ('wand','ring'):
+                remaining=max(0,resin-1)
+                states.append((base+1,active,'0',remaining,curse))
+                if curse!='0':states.append((base+1,'0' if kind=='wand' else active,'0',remaining,'0'))
+            elif active=='1':
+                binding=curse if kind=='missile' else '0'
+                if hardened=='1':
+                    if before<10:states.append((base+1,active,'1',0,binding))
+                    if before>=6:states.append((base+1,active,'0',0,binding))
+                else:
+                    states.extend(((base+1,'1','0',0,binding),(base+1,'0','0',0,'0')))
+            else:
+                # With no infusion, effect/hardening changes do not change grade.
+                # The effect itself is outside the base-stat comparison.
+                states.append((base+1,'0',hardened,0,'unknown' if kind=='missile' else '0'))
+        states=list(dict.fromkeys(states))
+        if any(displayed_upgrade_level(*state[:2],state[3])>100 for state in states):break
+        path.append(states)
+    return path
+
+
+def upgrade_condition(raw, side, state, spent):
+    kind=family(raw['id_'+side]);_,active,hardened,resin,curse=state
+    parts=[f'从所填状态累计升级{spent}次后的可达条件' if spent else '所填当前条件']
+    if kind=='wand':
+        parts.extend(('仍被诅咒' if curse=='1' else '诅咒状态未确认' if curse=='unknown' else '无绑定诅咒',f'剩余树脂{resin}层'))
+    if raw.get('infusion_'+side,'0')=='1':
+        parts.append('注魔保留' if active=='1' else '诅咒效果已移除，注魔随之消失' if kind!='wand' else '法杖已解咒，注魔随之消失')
+        if kind in ('weapon','missile','armor'):
+            parts.append('硬化仍在，本次不能移除诅咒效果' if hardened=='1' else '当前无硬化；移除效果分支仅在该卷升级前已无硬化时可达')
+    elif kind!='ring':
+        parts.append('明确无注魔假设；旧方案沿用普通等级假设')
+        if spent and hardened=='1':parts.append('无注魔时本比较未推断附魔及硬化损失；不保证硬化仍在')
+    if kind=='missile' and spent:
+        parts.append('诅咒附魔仍在则原绑定诅咒保留；附魔移除分支才解除绑定诅咒')
+    elif kind in ('weapon','armor') and spent:parts.append('普通升级解除绑定诅咒，不保证移除诅咒效果')
+    return '；'.join(parts)
+
+
+def upgrade_pending_rows():
+    return [{'label':'升级条件','value':'注魔假设未确认','unit':'','condition':'当前数值按所填显示等级；请明确无注魔或有注魔假设后计算升级与预算'}]
+
+
+def upgrade_branches(values, raw, side, states, spent, *, strength_budget=0):
+    from .character_comparison import comparison_strength
+    from .values_decisions import physical_metric_rows
+    if states is None:return []
+    kind=family(raw['id_'+side]);branches=[]
+    for state in states:
+        _,active,hardened,resin,curse=state
+        level=displayed_upgrade_level(*state[:2],resin)
+        cleared=curse=='0' and raw.get('curse_'+side,'0')!='0'
+        strength=comparison_strength(raw,side,level,strength_budget,cleared)
+        if kind in ('wand','ring'):
+            branch_raw={**raw,'curse_'+side:curse}
+            cells=conditional_metrics(values,branch_raw,side,level,strength=strength,clear_curse=cleared)
+        else:cells=physical_metric_rows(values,raw,side,level,strength)
+        condition=upgrade_condition(raw,side,state,spent)
+        cells=[{**cell,'condition':'；'.join(filter(None,[cell.get('condition'),condition]))} for cell in cells]
+        shown_hardening='unknown' if spent and hardened=='1' and raw.get('infusion_'+side,'0')=='0' else hardened
+        branches.append({'level':level,'infusion':active,'hardened':shown_hardening,'resin':resin,'curse':curse,
+                         'condition':condition,'metric_rows':cells,'metrics':{cell['label']:cell['value'] for cell in cells}})
+    return branches
+
+
+def attach_upgrade_fields(target, branches, *, original_infusion='0', original_curse='0'):
+    target['upgrade_branches']=branches
+    if not branches:
+        target['upgrade_pending']=True
+        return
+    # The path preserves the original effect where reachable, then lists loss.
+    target['upgrade_pending']=False
+    removed=next((branch for branch in branches if original_infusion=='1' and branch['infusion']=='0'),None)
+    if removed:
+        target['after_infusion_removed']=removed['metric_rows']
+        target['after_infusion_removed_level']=removed['level']
+    uncursed=next((branch for branch in branches if original_curse=='1' and branch['curse']=='0'),None)
+    if uncursed:
+        target['after_curse_removed']=uncursed['metric_rows']
+        target['after_curse_removed_level']=uncursed['level']
 
 
 def context_for(raw, side, level, strength=None):
@@ -188,14 +316,19 @@ def compare_conditional(values, raw):
     choices=[]
     for side in ('a','b'):
         identity=raw['id_'+side];level=raw['level_'+side]
-        current=conditional_metrics(values,raw,side,level);upgraded=conditional_metrics(values,raw,side,level+1)
+        path=upgrade_path(raw,side,1)
+        current=(upgrade_branches(values,raw,side,path[0],0)[0]['metric_rows'] if path is not None else
+                 conditional_metrics(values,raw,side,level))
+        branches=upgrade_branches(values,raw,side,path[1] if path is not None and len(path)>1 else None,1)
+        upgraded=branches[0]['metric_rows'] if branches else upgrade_pending_rows()
         choice={'id':identity,'name':next(e['name'] for e in values.catalog.entries if e['id']==identity),'level':level,
+                'upgraded_level':branches[0]['level'] if branches else None,
                 'current':{cell['label']:cell['value'] for cell in current},'upgraded':{cell['label']:cell['value'] for cell in upgraded},
                 'current_metrics':current,'upgraded_metrics':upgraded,'conditions':context_for(raw,side,level)}
-        if raw['curse_'+side]=='1':choice['after_curse_removed']=conditional_metrics(values,raw,side,level+1,clear_curse=True)
+        attach_upgrade_fields(choice,branches,original_infusion=raw.get('infusion_'+side,'0'),original_curse=raw['curse_'+side])
         choices.append(choice)
     result={'family':family(raw['id_a']),'choices':choices,'rows':comparison_rows(choices),'version':values.catalog.data['version'],'params':raw,
-            'notice':'法杖与戒指按所填等级、诅咒和上下文独立比较。升级一次不保证解咒；有诅咒时保留分支并列解咒后的条件参考。两枚组合只限同类型戒指；未计其他戒指、天赋、魔法免疫或临时等级。法杖连锁、水地、目标防御/抗性和未填状态不会据此确认；没有全局最强结论。'}
+            'notice':'法杖与戒指按所填显示等级、诅咒和上下文独立比较；法杖另计公开树脂及明确手填注魔假设。每卷树脂减一，有树脂时显示等级未必增加；法杖解咒会清除注魔。升级一次不保证解咒，可达条件分支分别列出；注魔未确认时不推算升级。两枚组合只限同类型戒指；未计其他戒指、天赋、魔法免疫或临时等级。法杖连锁、水地、目标防御/抗性和未填状态不会据此确认；没有全局最强结论。'}
     result['explanation']={'tradeoff':'先核对每列的生效条件；不同法杖、不同类型戒指的用途不可用单一数值排序。',
         'boundary':result['notice'],'choices':[{'choice':side.upper(),'name':choice['name'],'summary':'按已知条件或明确手填假设比较；未确认的诅咒不会冒充正常效果。',
          'timing_and_accuracy':'','upgrade_changes':phase_changes(choice['current_metrics'],choice['upgraded_metrics'])} for side,choice in zip(('a','b'),choices)]}
@@ -207,22 +340,27 @@ def compare_conditional(values, raw):
 def plan_conditional(values, raw, choices):
     budget=raw['upgrade_budget'];strength=raw['strength']+raw['strength_budget'];planned=[]
     for side,choice in zip(('a','b'),choices):
+        path=upgrade_path(raw,side,budget)
         alternatives=[]
-        for spent in range(min(budget,100-choice['level'])+1):
+        for spent,states in enumerate(path or [None]):
             from .character_comparison import comparison_strength, comparison_scene
-            level=choice['level']+spent
+            branches=upgrade_branches(values,raw,side,states,spent,strength_budget=raw['strength_budget'])
+            level=branches[0]['level'] if branches else choice['level']
             side_strength=comparison_strength(raw,side,level,raw['strength_budget'])
-            cells=conditional_metrics(values,raw,side,level,strength=side_strength)
+            cells=branches[0]['metric_rows'] if branches else conditional_metrics(values,raw,side,level,strength=side_strength)
             row={'upgrades':spent,'spent_upgrades':spent,'level':level,'remaining_upgrades':budget-spent,
                  'spent_strength':raw['strength_budget'],'remaining_strength':0,'metrics':{c['label']:c['value'] for c in cells},
                  'metric_rows':cells,'changes':phase_changes(choice['current_metrics'],cells)}
             if 'character_scene' in raw:row['character_scene']=comparison_scene(raw,side,level,raw['strength_budget'])
-            if spent and raw['curse_'+side]=='1':row['after_curse_removed']=conditional_metrics(values,raw,side,level,strength=comparison_strength(raw,side,level,raw['strength_budget'],True),clear_curse=True)
+            attach_upgrade_fields(row,branches if spent else [],original_infusion=raw.get('infusion_'+side,'0'),original_curse=raw['curse_'+side])
+            row['upgrade_pending']=path is None
             alternatives.append(row)
         final=alternatives[-1]
-        planned.append({'id':choice['id'],'name':choice['name'],'planned_level':final['level'],'spent_upgrades':final['upgrades'],
+        planned.append({'id':choice['id'],'name':choice['name'],'planned_level':final['level'] if path is not None else None,'spent_upgrades':final['upgrades'],
             'remaining_upgrades':final['remaining_upgrades'],'metrics':final['metrics'],'metric_rows':final['metric_rows'],'alternatives':alternatives,
-            'explanation':'逐一列出0至预算内每个投入，等级最高100。诅咒仍存/已解咒是条件分支，不把随机解咒当作保证；另一枚戒指不升级。力量药剂每瓶按基础力量+1，未实际消耗。'})
+            'upgrade_pending':path is None,'upgrade_branches':final['upgrade_branches'],
+            'explanation':('注魔假设未确认，升级预算待计算；当前仅列零卷投入。' if path is None else
+                           '逐一列出0至预算内每个投入，按实际显示等级检查最高100。树脂逐卷消耗，注魔与解咒按各步可达状态分列，不把随机解咒当作保证；另一枚戒指不升级。')+'力量药剂每瓶按基础力量+1，未实际消耗。'})
     if 'character_scene' in raw:strength='见A/B各投入的角色条件'
     return {'mode':'all','upgrade_budget':budget,'strength_budget':raw['strength_budget'],'effective_strength':strength,'choices':planned,
         'notice':'A、B是各自独立使用同一预算的备选，不能同时花费。列出的另一枚同类型戒指固定不变；其天赋、临时状态和等级来源需核对。'}

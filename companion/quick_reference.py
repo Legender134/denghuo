@@ -60,6 +60,8 @@ def peek_reference(session, snap, pinned=None):
     strength_note = ''
     if item:
         lines.append(item['name'])
+        if item.get('user_note'):
+            lines.append('用户记录：' + (item['user_note']['title'] or item['user_note']['body']))
         if item.get('available') is False:
             lines.append('遗落行囊：未确认可用，以下仅作基础参考。')
         if not item['known']:

@@ -106,6 +106,94 @@ function setup(options={}){
   });
   console.log(JSON.stringify({comparison_saved_plan_race_cases:checks.length}));
 }
+async function verifyInventoryEntrySnapshots(){
+  const h=harness(),sword='items.weapon.melee.sword',buttons={inventory:[],equipped:[]};
+  const rows=[{key:sword,name:'单手剑 +2',level:2,location:'主武器',quantity:1,details:[],known:true,available:true,
+    user_note:{title:'保留_<剑>',body:'第一行\n<不是标签>',scope:'specific_item'}},
+    {key:sword,name:'单手剑 +7',level:7,location:'背包',quantity:1,details:[],known:true,available:true,
+      user_note:{title:'备用剑',body:'另一个实例',scope:'specific_item'}}];
+  for(const [selector,kind] of [['#inventory-list','inventory'],['#equipped','equipped']]){
+    let markup='';Object.defineProperty(h.get(selector),'innerHTML',{get:()=>markup,set:value=>{markup=value;buttons[kind]=[...value.matchAll(/<button /g)].map(()=>element());}});
+  }
+  Object.assign(h.context,{navigationSerial:0,webEditingFrozen:false,displayNumber:String,exampleHTML:()=>'',inlineError:(el,text)=>el.textContent=text,
+    calculationStamp:()=>({revision:h.context.state.revision}),cancelNumericalDetail(){},loadNumericalDetail(){},navigate(){},
+    fetch:async()=>({ok:true,json:async()=>({entries:[{id:sword,name:'单手剑'}]})})});
+  h.context.$$=selector=>selector==='#inventory-list button'?buttons.inventory:selector==='#equipped button'?buttons.equipped:[];
+  h.context.state={revision:1,settings:{mode:'save'},history:[],data:{hero:{class_id:'WARRIOR',class:'战士',level:5,hp:35,ht:40,strength:14,hunger_label:'未知'},
+    items:rows,buffs:[],challenges:[],tips:[],region:'下水道',depth:4}};
+  h.context.icons={WARRIOR:'剑'};h.context.renderStatus=()=>{};h.get('#health-bar').style={};
+  h.get('#compare-kind').value='weapon';h.get('#compare-strength').value='14';h.get('.comparison-panel').scrollIntoView=()=>{};
+  h.load('compare.js');await h.run('comparisonReady');
+  const app=fs.readFileSync(path.join(root,'web/app.js'),'utf8');
+  h.run(app.slice(app.indexOf('const escapeHTML ='),app.indexOf('const fmtTime =')));
+  h.run("let lastRender='';"+app.slice(app.indexOf('function render(){'),app.indexOf('function renderMapText(')));
+  h.run(app.slice(app.indexOf('function itemSnapshotReference('),app.indexOf('function showReference(')));
+  h.context.renderMap=()=>{};h.run('render()');
+  const inventoryButton=buttons.inventory[1],equippedButton=buttons.equipped[0];
+  h.context.state.data.items=structuredClone(rows);h.run('render()');
+  inventoryButton.listeners.click();assert.equal(h.get('#detail-user-note').children[2].textContent,'备用剑');
+  assert.equal(await h.get('#detail-related').children.at(-1).listeners.click(),true);
+  assert.equal(Number(h.run('readComparisonArgs().level_a')),7,'poll before inventory click keeps the exact second instance');
+  equippedButton.listeners.click();assert.equal(h.get('#detail-user-note').children[2].textContent,'保留_<剑>');
+  assert.equal(h.get('#detail-user-note').children[3].textContent,'第一行\n<不是标签>');
+  assert.equal(await h.get('#detail-related').children.at(-1).listeners.click(),true);
+  assert.equal(Number(h.run('readComparisonArgs().level_a')),2,'equipped entry captures the same original full item list');
+  h.context.state.revision=2;h.context.state.data.items=structuredClone(rows);inventoryButton.listeners.click();
+  assert.equal(await h.get('#detail-related').children.at(-1).listeners.click(),false,'genuine save changes cannot rematch the old instance');
+  assert.match(h.get('#detail-workspace-error').textContent,/背包快照已变化/);
+  h.run("showDetail('Other','','','')");assert(h.get('#detail-user-note').hidden);
+  console.log(JSON.stringify({inventory_and_equipped_poll_before_open:true,existing_user_notes_text_only:true}));
+}
+async function verifyBackupDestinationDrafts(){
+  const h=harness(),reads=[],writes=[];let saved={backup_root:'',directory:'default/backups',available:true,settings_revision:'r1',context:'c1'};
+  Object.assign(h.context,{settingsWriteGeneration:0,inlineError:(target,text)=>target.textContent=text,poll:async()=>{},
+    getJSON:async()=>structuredClone(saved),post:(url,payload)=>new Promise((resolve,reject)=>writes.push({url,payload,resolve,reject}))});
+  h.load('backup-destination.js');await h.run('loadBackupDestination()');
+  assert.equal(h.get('#backup-destination-root').value,'');assert(!h.run('backupDestinationDirty()'));
+  const edit=value=>{h.get('#backup-destination-root').value=value;h.get('#backup-destination-root').listeners.input();};
+  edit('/synthetic/target1');assert.equal(h.run('captureBackupDestinationDraft().backup_root'),'/synthetic/target1');
+  const old=h.get('#backup-destination-form').listeners.submit({preventDefault(){}});edit('/synthetic/target2');
+  writes[0].resolve({expected:'old',source_directory:'default/backups',target_directory:'target1/backups',settings_revision:'r1',context:'c1'});await old;
+  assert.equal(h.run('backupDestinationPreview'),null);assert(h.get('#backup-destination-preview').hidden);
+  const preview=h.get('#backup-destination-form').listeners.submit({preventDefault(){}});
+  writes[1].resolve({expected:'new',backup_root:'/synthetic/target2',source_directory:'default/backups',target_directory:'target2/backups',file_count:3,bytes:42,library_count:1,verified_archives:1,settings_revision:'r1',context:'c1'});await preview;
+  h.get('#backup-destination-confirm').checked=true;h.get('#backup-destination-confirm').listeners.change();
+  assert(!h.get('#backup-destination-apply').disabled);
+  h.context.getJSON=()=>new Promise(resolve=>reads.push(resolve));const staleRead=h.run('loadBackupDestination()');
+  const applying=h.get('#backup-destination-apply').listeners.click();assert.equal(writes[2].payload.expected,'new');assert.equal(writes[2].payload.confirmed,true);
+  edit('/synthetic/newer-draft');saved={backup_root:'/synthetic/target2',directory:'target2/backups',available:true,settings_revision:'r2',context:'c2'};
+  writes[2].resolve({settings:{backup_root:saved.backup_root},settings_revision:'r2',context:'c2',directory:saved.directory,message:'copied'});await applying;
+  reads[0]({backup_root:'',directory:'default/backups',settings_revision:'r1',context:'c1'});await staleRead;
+  assert.equal(h.get('#backup-destination-root').value,'/synthetic/newer-draft');assert(h.run('backupDestinationDirty()'));
+  assert.equal(h.run('backupDestinationState.settings_revision'),'r2');assert(!h.run('backupDestinationLoading'));
+  const reload=h.run('loadBackupDestination(true)');edit('/synthetic/during-reload');reads[1](saved);await reload;
+  assert.equal(h.get('#backup-destination-root').value,'/synthetic/during-reload');assert.match(h.get('#backup-destination-error').textContent,/新编辑/);
+  const count=writes.length;h.context.rawDraft={backup_root:''};h.run('restoreBackupDestinationDraft(rawDraft)');
+  assert.equal(h.get('#backup-destination-root').value,'');assert(h.run('backupDestinationDirty()'));assert.equal(writes.length,count,'recovering raw folder choice never copies or switches');
+  h.context.badDraft={backup_root:'x',expected:'old'};assert.throws(()=>h.run('checkedBackupDestinationDraft(badDraft)'),/格式不正确/);
+  h.context.rawDraft={backup_root:'/synthetic/new-disk',start_new:true};h.run('restoreBackupDestinationDraft(rawDraft)');
+  assert(h.get('#backup-destination-start-new').checked);assert(h.run('captureBackupDestinationDraft().start_new'));assert.equal(writes.length,count);
+  const offlinePreview=h.get('#backup-destination-form').listeners.submit({preventDefault(){}});
+  assert.equal(writes[count].payload.start_new,true);
+  writes[count].resolve({expected:'offline',backup_root:'/synthetic/new-disk',start_new:true,source_unavailable:true,history_not_copied:true,source_directory:'offline/backups',target_directory:'new-disk/backups',settings_revision:'r2',context:'c2',message:'旧历史未复制'});await offlinePreview;
+  assert.match(h.get('#backup-destination-summary').textContent,/未读取、未复制/);
+  assert.match(h.get('#backup-destination-confirm-text').textContent,/旧历史本次无法复制/);
+  h.get('#backup-destination-confirm').checked=true;const offlineApply=h.get('#backup-destination-apply').listeners.click();
+  assert.equal(writes[count+1].payload.start_new,true);assert.equal(writes[count+1].payload.expected,'offline');
+  writes[count+1].resolve({settings:{backup_root:'/synthetic/new-disk'},directory:'new-disk/backups',settings_revision:'r3',context:'c3',message:'旧历史未复制，已在新位置继续'});await offlineApply;
+  assert(!h.get('#backup-destination-start-new').checked);assert(!h.run('backupDestinationDirty()'));
+  h.context.badDraft={backup_root:'x',start_new:'true'};assert.throws(()=>h.run('checkedBackupDestinationDraft(badDraft)'),/格式不正确/);
+  console.log(JSON.stringify({backup_destination_default_and_delayed_preview:true,apply_receipt_keeps_new_raw_draft:true,stale_read_and_recovery:true}));
+}
+async function verifyNestedBuffReference(){
+  const h=harness(),requests=[];Object.assign(h.context,{navigationSerial:0,numericalRequest:0,inlineError:(target,text)=>target.textContent=text,
+    getJSON:async url=>{requests.push(url);const identity=new URLSearchParams(url.split('?')[1]).get('q');return {entries:[{id:identity,name:'公开状态'}],version:'4.0.2'};},showReference:row=>h.context.opened=row});
+  const code=fs.readFileSync(path.join(root,'web/workspace.js'),'utf8');h.run(code.slice(code.indexOf('async function openBuffReference('),code.indexOf('function openDecisionReference(')));
+  for(const identity of ['items.armor.glyphs.viscosity$defereddamage','actors.hero.spells.bodyform$bodyformbuff','actors.buffs.poison']){
+    h.context.buff={kind:identity.split('$').at(-1),reference_id:identity,name:'公开状态'};await h.run('openBuffReference(buff)');assert.equal(h.context.opened.id,identity);assert.equal(new URLSearchParams(requests.at(-1).split('?')[1]).get('category'),'全部');
+  }
+  console.log(JSON.stringify({canonical_nested_public_buff_reference:true}));
+}
 function verifyNavigationHistory(){
   function setup(initial='#overview'){
     const h=harness(),events=new Map(),stack=[initial],loads=[];let index=0;
@@ -113,7 +201,7 @@ function verifyNavigationHistory(){
     h.context.history={scrollRestoration:'auto',replaceState(_state,_title,url){stack[index]=url;h.context.location.hash=url;},pushState(_state,_title,url){stack.splice(index+1);stack.push(url);index++;h.context.location.hash=url;}};
     h.context.document={querySelector:h.get,querySelectorAll:()=>[],addEventListener(){}};
     h.context.window={scrollY:0,scrollTo({top}){this.scrollY=top;},addEventListener(name,fn){if(!events.has(name))events.set(name,[]);events.get(name).push(fn);}};
-    for(const name of ['loadWorkspace','searchLibrary','renderInventory','loadSettings','loadBackups','loadMigration','loadAlchemy','loadHelp','loadPlaySettings'])h.context[name]=()=>loads.push(name);
+    for(const name of ['loadWorkspace','searchLibrary','renderInventory','loadSettings','loadBackups','loadMigration','loadAlchemy','loadHelp','loadPlaySettings','loadBackupDestination'])h.context[name]=()=>loads.push(name);
     const source=fs.readFileSync(path.join(root,'web/app.js'),'utf8');h.run(source.slice(0,source.indexOf('function handlePageShortcut(')));
     h.run("navigate(location.hash.slice(1),'replace')");
     return {h,stack,loads,move(delta){index+=delta;h.context.location.hash=stack[index];for(const name of ['popstate','hashchange'])for(const fn of events.get(name)||[])fn();},hash(value){h.context.history.pushState(null,'',value);for(const fn of events.get('hashchange')||[])fn();}};
@@ -125,6 +213,7 @@ function verifyNavigationHistory(){
   t.move(-1);assert.equal(h.run('view'),'library');assert.equal(h.context.window.scrollY,240);t.move(1);t.move(1);assert.equal(h.run('view'),'alchemy');assert.equal(h.get('#manual-hp').value,'17');
   t.hash('#invalid-tool');assert.equal(h.run('view'),'overview');assert.equal(t.stack.at(-1),'#overview');assert.equal(t.stack.length,5,'normalize an existing unknown hash rather than push a second entry');
   const deep=setup('#alchemy');assert.equal(deep.h.run('view'),'alchemy');assert.equal(deep.stack.length,1,'opening a deep link does not add a phantom overview visit');
+  const backupEntry=setup('#play-settings');assert.deepEqual(backupEntry.loads,['loadPlaySettings','loadBackupDestination'],'direct settings entry initializes the visible backup form');
   console.log(JSON.stringify({internal_navigation_history:true}));
 }
 async function verifyComparisonRecovery(){
@@ -182,10 +271,72 @@ async function verifyComparisonRecovery(){
   await draft.h.run('loadUnfinishedDraft("original")');assert.equal(draft.catalogCalls(),10,'comparison draft recovery retries startup catalog failure');assert.equal(draft.h.get('#draft-error').textContent,'');assert(messages.some(text=>text.startsWith('已找回原始草稿')));assert.equal(draft.h.get('#compare-level-a').value,'7');assert.equal(draft.h.run('readComparisonArgs().level_known_a'),'1');assert(draft.h.run('compareDirty&&compareSessionUnsaved'));assert.equal(draft.h.run('compareResultArgs'),null);
   console.log(JSON.stringify({comparison_recovery_and_applicability:true}));
 }
+async function verifyUpgradeContextBackendFlow(){
+  const python=process.env.FRONTEND_TEST_PYTHON||process.env.ALCHEMY_TEST_PYTHON||(process.platform==='win32'?'python':'python3');
+  const source=`import json
+from companion.engine import Catalog, PREFIX
+from companion.rules import NumericRules
+from companion.values import PlayerValues
+from companion.values_decisions import compare_equipment
+c=Catalog();v=PlayerValues(NumericRules(c));wand='items.wands.wandofmagicmissile';sword='items.weapon.melee.sword'
+def params(identity,level,**extra):
+    return dict(strength=20,id_a=identity,id_b=identity,level_a=level,level_b=level,planning='1',upgrade_budget=2,strength_budget=0,investment_mode='all',**extra)
+cases={'resin':params(wand,3,resin_a=1,resin_b=1,infusion_a='0',infusion_b='0',curse_a='0',curse_b='0',level_known_a='1',level_known_b='1'),
+       'hardened':params(sword,6,infusion_a='1',infusion_b='1',hardened_a='1',hardened_b='1')}
+cases['unknown']={**cases['hardened'],'infusion_a':'unknown','infusion_b':'unknown','investment_mode':'min_strength'}
+items={'resin':c.item({'__className':PREFIX+'items.wands.WandOfMagicMissile','level':2,'levelKnown':True,'cursedKnown':True,'cursed':False,'resin_bonus':1},{}),
+       'hardened':c.item({'__className':PREFIX+'items.weapon.melee.Sword','level':5,'levelKnown':True,'cursedKnown':True,'cursed':True,'curse_infusion_bonus':True,'enchant_hardened':True,'enchantment':{'__className':PREFIX+'items.weapon.curses.Wayward'}},{})}
+for item in items.values():item['available']=True
+print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'schemas':{i:v.detail(i) for i in (wand,sword)},'items':items,'results':{key:compare_equipment(v,args) for key,args in cases.items()}}))`;
+  const child=require('node:child_process').spawnSync(python,['-B','-c',source],{cwd:root,encoding:'utf8',timeout:30000,maxBuffer:4*1024*1024,env:{...process.env,PYTHONIOENCODING:'utf-8'}});
+  if(child.error)throw child.error;assert.equal(child.status,0,child.stderr);const fixture=JSON.parse(child.stdout),plain=value=>JSON.parse(JSON.stringify(value));
+  const markup=fs.readFileSync(path.join(root,'web/index.html'),'utf8').split('<form id="equipment-comparison">')[1].split('</form>')[0];
+  async function setup(kind,item){
+    const h=harness(),dynamic={a:[],b:[]},requests=[];
+    const controls=[...markup.matchAll(/<(input|select)\b[^>]*\bid="([^"]+)"[^>]*>/g)].map(match=>{const input=h.get('#'+match[2]);input.value=match[0].match(/\bvalue="([^"]*)"/)?.[1]||'';return input;});
+    for(const side of ['a','b'])Object.defineProperty(h.get('#compare-context-'+side),'innerHTML',{get(){return this.html||'';},set(html){this.html=html;dynamic[side]=[...html.matchAll(/<input[^>]*data-compare-key="([^"]+)"[^>]*value="([^"]*)"/g)].map(match=>{const input=element();input.dataset.compareKey=match[1];input.value=match[2];return input;});}});
+    h.context.$$=selector=>selector.startsWith('#compare-context-a')?dynamic.a:selector.startsWith('#compare-context-b')?dynamic.b:[...controls,...dynamic.a,...dynamic.b];
+    h.get('#equipment-comparison').querySelectorAll=()=>[...controls,...dynamic.a,...dynamic.b];
+    Object.assign(h.context,{navigationSerial:0,webEditingFrozen:false,displayNumber:String,calculationStamp:()=>null,navigate(){},originLabel:()=> '固定参考',planSource:()=>({mode:'manual'}),cleanStoredOrigin:plain,
+      inlineError:(target,text)=>target.textContent=text,exampleHTML:result=>JSON.stringify(result),
+      getJSON:async url=>structuredClone(fixture.schemas[new URLSearchParams(url.split('?')[1]).get('id')]),
+      fetch:async url=>{const query=new URLSearchParams(url.split('?')[1]);if(url.startsWith('/api/library?'))return {ok:true,json:async()=>({entries:fixture.entries.filter(row=>row.id.startsWith(query.get('q')))})};
+        const args=Object.fromEntries(query),name=args.infusion_a==='unknown'?'unknown':args.id_a.startsWith('items.wands.')?'resin':'hardened',result=fixture.results[name];
+        h.context.requestArgs=args;assert.deepEqual(plain(h.run('canonicalComparisonParams(requestArgs)')),result.params,'submitted conditions match the actual backend fixture');requests.push(name);return {ok:true,json:async()=>structuredClone(result)};}});
+    h.context.state={data:{hero:{strength:20},items:[structuredClone(item)]}};h.context.selectedItem=h.context.state.data.items[0];
+    h.get('#compare-kind').value=kind;h.get('#compare-strength').value='20';h.get('.comparison-panel').scrollIntoView=()=>{};
+    h.load('compare.js');await h.run('comparisonReady');assert.equal(await h.run('compareInventoryItem(selectedItem)'),true);
+    await h.run("Promise.all(['a','b'].map(side=>compareContextState[side].promise))");
+    h.get('#compare-planning-enabled').checked=true;h.get('#compare-upgrade-budget').value='2';h.get('#compare-strength-budget').value='0';h.get('#compare-investment-mode').value='all';
+    return {h,requests,submit:()=>h.get('#equipment-comparison').listeners.submit({preventDefault(){}})};
+  }
+  const resin=await setup('wand',fixture.items.resin);assert.equal(String(resin.h.get('#compare-level-a').value),'3');assert.equal(resin.h.get('#compare-resin-a').value,'1');
+  assert.equal(resin.h.get('#compare-infusion-a').value,'0');await resin.submit();assert.deepEqual(resin.requests,['resin']);
+  assert.match(resin.h.get('#compare-result').innerHTML,/升级后 \+3/);assert.match(resin.h.get('#compare-copy-text').textContent,/升级一次 \+3/);
+  assert.match(resin.h.get('#compare-copy-text').textContent,/投入2张卷轴，最终等级4/);assert.doesNotMatch(resin.h.get('#compare-copy-text').textContent,/升级一次 \+4/);
+  const hardened=await setup('weapon',fixture.items.hardened);assert.equal(hardened.h.get('#compare-infusion-a').value,'unknown','stored infusion flag is never seeded as a known assumption');assert.equal(hardened.h.get('#compare-hardened-a').value,'1');
+  for(const side of ['a','b'])hardened.h.get('#compare-infusion-'+side).value='1';await hardened.submit();assert.deepEqual(hardened.requests,['hardened']);
+  assert.match(hardened.h.get('#compare-result').innerHTML,/升级后 \+8/);assert.match(hardened.h.get('#compare-result').innerHTML,/等级 \+7/);
+  assert.match(hardened.h.get('#compare-copy-text').textContent,/升级一次 \+8/);assert.match(hardened.h.get('#compare-copy-text').textContent,/投入2张卷轴，最终等级9/);
+  for(const side of ['a','b'])hardened.h.get('#compare-infusion-'+side).value='unknown';hardened.h.get('#compare-investment-mode').value='min_strength';await hardened.submit();
+  const pending=hardened.h.get('#compare-result').innerHTML;assert.match(pending,/升级后 待确认/);assert.match(pending,/最小力量门槛尚未计算/);assert.doesNotMatch(pending,/超出等级范围|预算内仍有力量缺口/);
+  for(const [name,result] of Object.entries(fixture.results)){
+    const h=name==='resin'?resin.h:hardened.h;h.context.saved={id:'upgrade-'+name,name:'升级条件',kind:'equipment',params:result.params,origin:{mode:'manual'},note:''};h.context.savedResult=result;
+    assert.equal(await h.run('openEquipmentPlan(saved,savedResult,false)'),true);assert.equal(h.run('compareError'),'');
+    assert.deepEqual(plain(h.run('canonicalComparisonParams(readComparisonArgs())')),result.params,'plan opening restores all new conditions and budgets');
+    for(const field of ['resin','infusion','hardened'])if(field+'_a' in result.params)assert.equal(String(h.get('#compare-'+field+'-a').value),String(result.params[field+'_a']));
+    let captured;h.context.openPlanSave=value=>captured=value;h.get('#compare-save').listeners.click();assert.deepEqual(plain(captured.params),result.params,'saving retains actual canonical conditions');
+  }
+  console.log(JSON.stringify({actual_backend_upgrade_context_cases:3,public_resin_seed:true,hardened_infusion_branches:true,pending_threshold:true,plan_roundtrips:3}));
+}
 (async()=>{
   verifyNavigationHistory();
+  await verifyInventoryEntrySnapshots();
+  await verifyBackupDestinationDrafts();
+  await verifyNestedBuffReference();
   await verifyComparisonPlanOpenings();
   await verifyComparisonRecovery();
+  await verifyUpgradeContextBackendFlow();
   const markup=fs.readFileSync(path.join(root,'web','index.html'),'utf8'),ids=[...markup.matchAll(/\bid="([^"]+)"/g)].map(match=>match[1]);
   assert.equal(new Set(ids).size,ids.length,'form and error targets require unique document IDs');
   for(const page of ['workspace','help','play-settings'])assert(markup.includes(`id="view-${page}"`)&&markup.includes(`data-view="${page}"`));

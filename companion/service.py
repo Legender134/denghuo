@@ -15,13 +15,12 @@ import uuid
 
 from .engine import Catalog, CLASSES, analyze, number
 from .saves import SaveError, default_root, list_slots, read_slot
-from .backups import BackupManager
 from .rules import NumericRules
 from .paths import ROOT, data_directory
 
 CST = timezone(timedelta(hours=8))
 DEFAULTS = {"save_root": str(default_root()), "slot": "auto", "mode": "save", "reveal": False,
-            "always_on_top": False, "stop_at": "", "startup_surface": "panel"}
+            "always_on_top": False, "stop_at": "", "startup_surface": "panel", "backup_root": ""}
 
 
 class SettingsConflict(ValueError):
@@ -33,7 +32,10 @@ def validate_settings(patch, *, require_existing_root=True):
         raise ValueError("包含不支持的设置")
     clean = {}
     for key, value in patch.items():
-        if key == "save_root":
+        if key == "backup_root":
+            from .backup_destination import normalize_root
+            clean[key] = normalize_root(value)
+        elif key == "save_root":
             if not isinstance(value, str) or not value.strip() or len(value) > 1000:
                 raise ValueError("请输入存档目录")
             path = Path(value.strip()).expanduser()
@@ -136,6 +138,7 @@ class Session:
         self._shutdown_deadline = None
         self._shutdown_result = None
         self._shutdown_captured = []
+        self._backup_shutdown_started = False
         self._consumed_stop_at = None
         from .session_exit import ExitCoordinator, ExitDraftStore, ExitRecoveryJournal
         self.exit_drafts = ExitDraftStore(self.config_path.parent / 'exit-drafts')
@@ -231,7 +234,8 @@ class Session:
         self._history_state = None
         self.history = []
         self.start_time = time.time()
-        self.backups = BackupManager(self.config_path.parent / "backups")
+        from .backup_destination import manager_for
+        self.backups = manager_for(self.config_path, self.settings['backup_root'])
         self.backup_context = uuid.uuid4().hex
         from .panel import PanelBridge
         self.panel = PanelBridge()
@@ -341,13 +345,13 @@ class Session:
             if self._shutdown_result is None:
                 self._shutdown_captured.append(copy.deepcopy(row))
 
-    def _capture_for_shutdown(self, root, deadline, config_error):
+    def _capture_for_shutdown(self, root, deadline, config_error, manager):
         try:
             with self.lock:
                 allow_missing_default = self._default_save_wait_is_new(root)
             result = ({'ok': False, 'state': 'configuration-error', 'captured': [],
                        'error': '最后一次备份未完成：连接设置尚未修复；已有原件仍保留。'}
-                      if config_error else self.backups.final_capture(root, deadline,
+                      if config_error else manager.final_capture(root, deadline,
                           allow_missing_default=allow_missing_default,
                           on_capture=self._record_shutdown_capture))
         except Exception:
@@ -368,9 +372,11 @@ class Session:
             if self._shutdown_thread is None:
                 with self.lock:
                     root, config_error = self.settings['save_root'], self.config_error
+                    self._backup_shutdown_started = True
+                    manager = self.backups
                 self._shutdown_deadline = time.monotonic() + min(3, max(0, timeout))
                 self._shutdown_thread = threading.Thread(target=self._capture_for_shutdown,
-                    args=(root, self._shutdown_deadline, config_error), name='last-save-capture', daemon=True)
+                    args=(root, self._shutdown_deadline, config_error, manager), name='last-save-capture', daemon=True)
                 self._shutdown_thread.start()
             deadline = self._shutdown_deadline
         self._shutdown_done.wait(max(0, deadline - time.monotonic()))
@@ -481,6 +487,49 @@ class Session:
         if not isinstance(context, str) or context != self.backup_context:
             raise ValueError('存档连接已变化或确认已过期，请重新打开存档历史并预览')
 
+    def backup_destination_status(self):
+        from .backup_destination import status
+        with self.lock:
+            return status(self)
+
+    def backup_destination_action(self, payload):
+        from . import backup_destination
+        if not isinstance(payload, dict) or not isinstance(payload.get('action'), str) or payload['action'] not in ('preview', 'apply'):
+            raise ValueError('备份目的地请求格式不正确')
+        allowed = {'action', 'backup_root', 'expected_settings_revision', 'context'}
+        if payload['action'] == 'apply':
+            allowed |= {'expected', 'confirmed'}
+        if (set(payload) - (allowed | {'start_new'}) or not allowed.issubset(payload)
+                or type(payload.get('start_new', False)) is not bool):
+            raise ValueError('备份目的地请求格式不正确')
+        with self.lock:
+            self.check_backup_context(payload['context'])
+            if payload['expected_settings_revision'] != self.settings_revision:
+                raise SettingsConflict('连接设置已变化，请重新载入已保存设置并预览备份目录')
+            if self.config_error:
+                raise ValueError('请先修复连接设置，再更换自动备份目的地')
+            if self._backup_shutdown_started or self.stop.is_set():
+                raise ValueError('助手正在结束，不能再切换备份目的地')
+            with self.backups.lock:
+                if payload['action'] == 'preview':
+                    return backup_destination.plan(self, payload['backup_root'], start_new=payload.get('start_new', False))[0]
+                if payload['confirmed'] is not True:
+                    raise ValueError('请明确确认复制历史并切换自动备份目的地')
+                def persist(root, manager):
+                    updated = {**self.settings, 'backup_root': root}
+                    self.config_path.parent.mkdir(parents=True, exist_ok=True)
+                    temporary = self.config_path.with_suffix('.tmp')
+                    temporary.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding='utf-8')
+                    temporary.replace(self.config_path)
+                    self.settings = updated
+                    self.backups = manager
+                    self.settings_revision = uuid.uuid4().hex
+                    self.backup_context = uuid.uuid4().hex
+                result = backup_destination.apply(self, payload['backup_root'], payload['expected'], persist,
+                                                   start_new=payload.get('start_new', False))
+                return {**result, 'settings': dict(self.settings), 'settings_revision': self.settings_revision,
+                        'context': self.backup_context, 'directory': str(self.backups.directory)}
+
     def backup_status(self, expected_context=None):
         with self.lock:
             if expected_context is not None:
@@ -572,6 +621,7 @@ class Session:
         from . import backup_libraries
         with self.lock:
             self.check_backup_context(expected_context)
+            self.backups.ensure_storage()
             result = (backup_libraries.details(self.backups, identity, self.settings['save_root']) if identity
                       else backup_libraries.catalog(self.backups, self.settings['save_root']))
             return {**result, 'context': self.backup_context}
@@ -582,6 +632,7 @@ class Session:
             raise ValueError('备份库请求格式不正确')
         with self.lock:
             self.check_backup_context(payload.get('context'))
+            self.backups.ensure_storage()
             action = payload['action']
             result = backup_libraries.operate(self.backups, payload.get('library_id'), self.settings['save_root'], action, payload)
             if action == 'batch-export':
@@ -642,6 +693,8 @@ class Session:
         with self.lock:
             if expected_revision is not None and expected_revision != self.settings_revision:
                 raise SettingsConflict('连接设置已在其他位置更新。草稿仍保留，请点击「重新载入已保存设置」后重新应用需要的修改。')
+            if 'backup_root' in clean and clean['backup_root'] != self.settings.get('backup_root', ''):
+                raise ValueError('请先预览备份目的地，再明确确认复制历史并切换')
             if self.config_error and not {"save_root", "slot"}.issubset(clean):
                 raise ValueError("请先在「连接设置」中确认存档目录和槽位，再保存设置。")
             updated = {**self.settings, **clean}
@@ -861,8 +914,9 @@ class Session:
                 logging.exception("Panel opening failed; save monitoring continues")
             try:
                 self.refresh()
-                if not self.config_error:
-                    self.backups.tick(self.settings["save_root"])
+                with self.lock:
+                    if not self.config_error:
+                        self.backups.tick(self.settings["save_root"])
             except Exception:
                 logging.exception("Save polling failed")
                 with self.lock:

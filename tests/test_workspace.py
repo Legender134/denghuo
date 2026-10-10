@@ -457,6 +457,28 @@ class WorkspaceTests(unittest.TestCase):
                 return response.status, json.loads(response.read())
         try:
             self.assertTrue(request('/api/workspace')[1]['available'])
+            destination = request('/api/backup-destination')[1]
+            self.assertEqual(destination['backup_root'], '')
+            target = self.directory / '独立备份位置'
+            target.mkdir()
+            payload = {'action': 'preview', 'backup_root': str(target),
+                       'expected_settings_revision': destination['settings_revision'], 'context': destination['context']}
+            with self.assertRaises(HTTPError) as unauthorized:
+                request('/api/backup-destination', payload, token=False)
+            self.assertEqual(unauthorized.exception.code, 403)
+            preview = request('/api/backup-destination', payload)[1]
+            self.assertEqual(self.session.settings['backup_root'], '')
+            with self.assertRaises(HTTPError) as stale:
+                request('/api/backup-destination', {**payload, 'expected_settings_revision': 'stale'})
+            self.assertEqual(stale.exception.code, 409)
+            switched = request('/api/backup-destination', {**payload, 'action': 'apply',
+                                'expected': preview['expected'], 'confirmed': True})[1]
+            self.assertEqual(switched['directory'], str(target / 'backups'))
+            self.assertEqual(request('/api/backup-destination')[1]['backup_root'], str(target))
+            self.assertNotEqual(switched['context'], destination['context'])
+            damage = request('/api/values?id=items.scrolls.scrollofretribution&hp=1&max_hp=20&target_hp=3&target_max_hp=8')[1]
+            self.assertEqual(next(value['value'] for block in damage['blocks'] for value in block.get('values', [])
+                                  if value['label'] == '单个目标伤害'), '3')
             with self.assertRaises(HTTPError) as missing_token:
                 request('/api/workspace', {'action':'favorite','entry':'items.waterskin','enabled':True}, token=False)
             self.assertEqual(missing_token.exception.code, 403)

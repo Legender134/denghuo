@@ -18,6 +18,15 @@ class PlayerValuesTests(unittest.TestCase):
     def metrics(self, identity, **parameters):
         return {v['label']:v['value'] for b in self.detail(identity,**parameters)['blocks'] for v in b.get('values',[])}
 
+    def test_retribution_rounds_each_java_float_operation_at_half_integer_boundaries(self):
+        # Fixed 4.0.2 ScrollOfRetribution.doRead f32 vectors, independently
+        # checked with struct and Math.fround; neither invokes this implementation.
+        for hp, maximum, target, target_maximum, expected in ((1, 20, 3, 8, '3'), (9, 25, 125, 444, '124')):
+            with self.subTest(hp=hp, target=target):
+                result = self.metrics('items.scrolls.scrollofretribution', hp=hp, max_hp=maximum,
+                                      target_hp=target, target_max_hp=target_maximum)
+                self.assertEqual(result['单个目标伤害'], expected)
+
     def test_all_canonical_seeds_show_conditioned_parent_effects_and_correct_type(self):
         seeds = [row for row in self.catalog.entries if row['id'].startswith('plants.') and row['id'].endswith('$seed')]
         self.assertEqual(len(seeds), 12)

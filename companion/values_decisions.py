@@ -152,7 +152,8 @@ def physical_metric_rows(values, raw, side, level, strength):
 
 
 def compare_equipment(values, raw):
-    from .values_investment import canonical_comparison, family, compare_conditional, comparison_rows
+    from .values_investment import (canonical_comparison, family, compare_conditional, comparison_rows,
+        upgrade_path, upgrade_branches, upgrade_pending_rows, attach_upgrade_fields)
     raw = canonical_comparison(values, raw)
     if family(raw['id_a']) in ('wand','ring'):
         return compare_conditional(values, raw)
@@ -172,27 +173,40 @@ def compare_equipment(values, raw):
             raise ValueError('请核对精通和强化选项')
         from .character_comparison import comparison_strength
         strength = comparison_strength(raw, suffix, level)
-        current_rows = physical_metric_rows(values,raw,suffix,level,strength)
-        upgraded_rows = physical_metric_rows(values,raw,suffix,level+1,strength)
+        path=upgrade_path(raw,suffix,1)
+        current_rows=(upgrade_branches(values,raw,suffix,path[0],0)[0]['metric_rows'] if path is not None else
+                      physical_metric_rows(values,raw,suffix,level,strength))
+        branches=upgrade_branches(values,raw,suffix,path[1] if path is not None and len(path)>1 else None,1)
+        upgraded_rows=branches[0]['metric_rows'] if branches else upgrade_pending_rows()
         current = {row['label']:row['value'] for row in current_rows}
         upgraded = {row['label']:row['value'] for row in upgraded_rows}
         if not current or not upgraded:
             raise ValueError('这件特殊装备尚不能比较；请查看它的独立数值页')
-        choices.append({'id': identity, 'name': entry['name'], 'level': level, 'current': current, 'upgraded': upgraded,
-                        'upgrade_risk': upgrade_risk(level),'current_metrics':current_rows,'upgraded_metrics':upgraded_rows})
+        choice={'id':identity,'name':entry['name'],'level':level,'upgraded_level':branches[0]['level'] if branches else None,
+                'current':current,'upgraded':upgraded,'upgrade_risk':upgrade_risk(level),
+                'current_metrics':current_rows,'upgraded_metrics':upgraded_rows}
+        attach_upgrade_fields(choice,branches,original_infusion=raw.get('infusion_'+suffix,'0'))
+        choices.append(choice)
     if choices[0]['id'].startswith('items.armor.') != choices[1]['id'].startswith('items.armor.'):
         raise ValueError('武器与武器、护甲与护甲分别比较')
     rows = comparison_rows(choices)
     from .decisions import explain_comparison
     result = {'family':family(raw['id_a']), 'params':raw, 'choices': choices, 'rows': rows, 'version': values.catalog.data['version'],
             'notice': '普通攻击与持装备的基础数值，已计所填有效力量、强化和精通；伤害与力量追加分列。减伤已扣力量不足惩罚，护甲闪避加值在惩罚后计入。未合并戒指、天赋、诅咒、偷袭伤害和临时状态；信念护体一行仅在该挑战生效，不能当作最终总效果。未知等级手填试算不代表已鉴定。'}
-    result['explanation'] = explain_comparison(result)
+    if any(choice['upgrade_pending'] for choice in choices):
+        result['explanation']={'tradeoff':'当前基础数值按所填显示等级比较；先确认注魔假设，再比较升级收益。',
+            'boundary':result['notice'],'choices':[{'choice':side.upper(),'name':choice['name'],
+            'summary':'注魔假设未确认，升级条件待计算。' if choice['upgrade_pending'] else '升级结果按所列可达条件参考。',
+            'timing_and_accuracy':'','upgrade_changes':[]} for side,choice in zip(('a','b'),choices)]}
+    else:result['explanation'] = explain_comparison(result)
     if result['family']=='missile':
         result['notice']='普通投掷武器的单次基础直接伤害，已计所填力量、精通和强化；额外力量伤害单列。相邻、非相邻、空格与特殊耗时均为条件参考，未确认实际位置或快速投掷冷却。未合并除力量来源外的戒指、天赋、附魔、诅咒、偷袭与其他特殊触发；没有推断精确耐久或安全投掷次数。未知等级的手填试算不代表鉴定。'
         result['explanation']['tradeoff']='先核对相邻性、力量缺口与投掷耗时，再比较单次基础伤害和各物品特殊效果；回旋与群体效果不保证额外命中。'
         result['explanation']['boundary']=result['notice']
         for explanation,choice in zip(result['explanation']['choices'],choices):
             explanation['timing_and_accuracy']='；'.join(row['label']+' '+row['value']+row['unit']+'（'+row['condition']+'）' for row in choice['current_metrics'] if '命中倍率' in row['label'] or '耗时' in row['label'])
+    result['notice']+=' 注魔仅按明确手填假设；旧方案沿用无注魔的普通等级假设。硬化的当次升级保留诅咒效果，即便本次失去硬化；之后无硬化的卷轴才可能移除效果与注魔。随机分支分别列出，未确认注魔不推算升级。'
+    result['explanation']['boundary']=result['notice']
     if raw.get('planning', '0') == '1':
         result['planning'] = plan_equipment(values, raw, choices)
     elif raw.get('planning', '0') != '0':
@@ -250,7 +264,7 @@ def bounded_integer(value, label, low, high):
 
 def plan_equipment(values, raw, choices):
     from .engine import strength_requirement
-    from .values_investment import phase_changes
+    from .values_investment import phase_changes, upgrade_path, upgrade_branches, attach_upgrade_fields, displayed_upgrade_level
     mode = raw.get('investment_mode', 'min_strength')
     upgrade_budget = bounded_integer(raw.get('upgrade_budget', 0), '升级卷轴预算', 0, 100)
     strength_budget = bounded_integer(raw.get('strength_budget', 0), '拟投入力量药剂', 0, 99)
@@ -267,33 +281,44 @@ def plan_equipment(values, raw, choices):
             raise ValueError('该装备的阶数尚未确认，无法规划力量门槛')
         req_tier = tier + 1 if tail == 'greataxe' else tier
         mastery = raw.get('mastery_'+suffix,'0')
-        augment = raw.get('augment_'+suffix,'NONE')
+        path=upgrade_path(raw,suffix,201)
         needed, thresholds, previous = None, [], None
-        for spent in range(101-level):
-            required = strength_requirement(req_tier, level+spent, mastery=='1') - (1 if missile else 0)
+        for spent,states in enumerate(path or []):
+            levels=[displayed_upgrade_level(*state[:2],state[3]) for state in states]
+            required=max(strength_requirement(req_tier,grade,mastery=='1')-(1 if missile else 0) for grade in levels)
             if spent == 0 or required != previous:
-                thresholds.append({'upgrades':spent,'level':level+spent,'strength_requirement':required,
-                                   'strength_deficit':max(0,required-strength),'within_budget':spent<=upgrade_budget})
+                thresholds.append({'upgrades':spent,'level':levels[0],'branch_levels':list(dict.fromkeys(levels)),
+                                   'strength_requirement':required,'strength_deficit':max(0,required-strength),
+                                   'within_budget':spent<=upgrade_budget,'condition':'按所有可达效果移除分支中最高力量需求核对；注魔保留不作为保证'})
             previous = required
             if needed is None and required <= strength:
                 needed = spent
-        spent = min(upgrade_budget, 100-level, (needed if needed is not None else 100-level) if mode == 'min_strength' else upgrade_budget)
-        planned_level = level+spent
-        metric_rows = physical_metric_rows(values,raw,suffix,planned_level,strength)
-        metrics = {row['label']:row['value'] for row in metric_rows}
         alternatives = []
-        for investment in range(min(upgrade_budget,100-level)+1):
-            cells = physical_metric_rows(values,raw,suffix,level+investment,strength)
-            alternatives.append({'upgrades':investment,'spent_upgrades':investment,'level':level+investment,
+        for investment,states in enumerate((path[:upgrade_budget+1] if path is not None else [None])):
+            branches=upgrade_branches(values,raw,suffix,states,investment,strength_budget=strength_budget)
+            actual_level=branches[0]['level'] if branches else level
+            cells=branches[0]['metric_rows'] if branches else physical_metric_rows(values,raw,suffix,level,strength)
+            option={'upgrades':investment,'spent_upgrades':investment,'level':actual_level,
                 'remaining_upgrades':upgrade_budget-investment,'spent_strength':strength_budget,'remaining_strength':0,
                 'metric_rows':cells,'metrics':{cell['label']:cell['value'] for cell in cells},
-                'changes':phase_changes(choice['current_metrics'],cells)})
+                'changes':phase_changes(choice['current_metrics'],cells)}
+            attach_upgrade_fields(option,branches if investment else [],original_infusion=raw.get('infusion_'+suffix,'0'))
+            option['upgrade_pending']=path is None
+            option['remaining_strength_deficit']=max((int(branch['metrics'].get('力量缺口','0')) for branch in branches),default=int(option['metrics'].get('力量缺口','0')))
+            alternatives.append(option)
+        spent=min(len(alternatives)-1,needed if mode=='min_strength' and needed is not None else upgrade_budget)
+        final=alternatives[spent]
+        planned_level=final['level'] if path is not None else None
+        metric_rows=final['metric_rows'];metrics=final['metrics']
         planned.append({'id':identity,'name':choice['name'],'needed_upgrades':needed,
-                        'within_budget':needed is not None and needed <= upgrade_budget,
+                        'within_budget':needed is not None and needed <= upgrade_budget if path is not None else None,
                         'planned_level':planned_level,'spent_upgrades':spent,
-                        'remaining_strength_deficit':int(metrics.get('力量缺口','0')),
+                        'remaining_strength_deficit':final['remaining_strength_deficit'],
                         'metrics':metrics,'metric_rows':metric_rows,'thresholds':thresholds,
                         'remaining_upgrades':upgrade_budget-spent,'alternatives':alternatives,
-                        'explanation':'力量药剂每瓶按增加1点基础力量试算；负等级装备先补回等级，再按非负等级核对力量门槛。仅列装备基础条件，不代表最终伤害或实际消耗。'})
+                        'upgrade_pending':path is None,'upgrade_branches':final['upgrade_branches'],
+                        'explanation':('注魔假设未确认，升级预算待计算；当前仅列零卷投入。' if path is None else
+                         '力量门槛按每步全部可达分支中最高需求核对，不保证保留注魔；硬化损失与之后的效果移除分步判断。')+
+                         '力量药剂每瓶按增加1点基础力量试算；负等级装备按非负等级核对力量门槛。仅列装备基础条件，不代表最终伤害或实际消耗。'})
     return {'mode':mode,'upgrade_budget':upgrade_budget,'strength_budget':strength_budget,'effective_strength':strength,
             'choices':planned,'notice':'A、B 是分别使用同一预算的备选方案，不能同时花费这份资源。已计入所填有效力量的药剂不要再次作为拟投入药剂。已有附魔、硬化、诅咒和职业特殊规则仍须逐项核对；本次没有操作游戏。'}
