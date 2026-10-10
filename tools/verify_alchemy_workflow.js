@@ -134,8 +134,43 @@ async function verifyAlchemyEditHistory(){
   });
   assert.equal(failures.length,0,JSON.stringify({history_failures:failures},null,2));return checks;
 }
+async function verifyAlchemyResinBoundary(){
+  let checks=0;
+  const fixture=points=>plan([target('resin',5,{source_keys:['wand']})],[stock('items.wands.wandofmagicmissile',1,'wand',{cursed:false,base_level:0,public_level:0,resin_bonus:0,hero_class:'WARRIOR',wand_preservation:points})],5);
+  for(const points of [0,1,2]){
+    const h=harness();h.apply(fixture(points));await h.run('calculateAlchemy()');
+    assert.equal(h.run('alchemyResult.targets[0].planned_quantity'),2+points);assert.equal(h.run('alchemyResult.targets[0].shortfall'),3-points);assert.equal(h.run('alchemyResult.complete'),false);assert(!h.get('#alchemy-result').textContent.includes('确定完成'));
+    await h.run('discoverAlchemy()');assert.equal(h.run("alchemyDiscovery.recipes.find(row=>row.id==='resin').steps[0].output.quantity"),2+points);checks++;
+  }
+  for(const points of [3,4]){
+    const h=harness();h.apply(fixture(points));let requests=0;h.context.post=async()=>{requests++;throw new Error('Invalid points must be rejected before posting');};
+    await h.run('calculateAlchemy()');assert(h.get('#alchemy-error').textContent.includes('法杖保存天赋点数必须为0–2'));await h.run('discoverAlchemy()');assert.equal(requests,0);assert.equal(h.run('alchemyResult'),null);assert(h.get('#alchemy-save').disabled);
+    assert.equal(h.run('validateAlchemyRaw(captureAlchemyRaw()).resources[0].state.wand_preservation'),String(points));
+    const field=h.field('#alchemy-materials','法杖保存天赋点数');field.value='  '+points+'  ';await field.fire('input');const raw=plain(h.run('captureAlchemyDraft()'));h.context.draft=raw;await h.run('restoreAlchemyDraft(draft)');assert.equal(h.run('captureAlchemyDraft().raw.resources[0].state.wand_preservation'),'  '+points+'  ');assert.equal(h.run('alchemyResult'),null);checks++;
+  }
+  const types=harness();for(const value of [true,false,'true','false']){types.context.value=value;assert.throws(()=>types.run("alchemyStateValue('wand_preservation',value)"),/整数/);}checks++;
+  const unknown=harness();unknown.apply(fixture(null));await unknown.run('calculateAlchemy()');assert.equal(unknown.run('alchemyResult.outputs[0].quantity'),null);assert.equal(unknown.run('alchemyResult.complete'),false);checks++;
+  // Exercise the actual workspace handoff, then correct the historical fixed
+  // inputs without losing their original record revision or saved metadata.
+  const h=harness(),historical={id:'historical-resin',kind:'alchemy',name:'旧三点树脂',params:fixture(3),origin:{mode:'manual'},note:'原备注',record_revision:'e'.repeat(64)},original=plain(historical);
+  h.context.opened={plan:historical,result:null,rules_changed:false,calculation_error:'法杖保存天赋点数必须为0–2的整数；未确认请留空'};
+  h.context.view='workspace';h.context.planRequest=0;h.context.compareSessionUnsaved=false;h.context.manualUnsaved=false;h.context.rememberWorkspaceDetailFocus=()=>{};h.context.getJSON=async()=>h.context.opened;
+  h.context.navigate=view=>{h.context.view=view;h.context.navigationSerial++;};h.context.$=selector=>['#detail-dialog','#plan-dialog'].includes(selector)?{open:false}:h.get(selector);
+  const workspace=fs.readFileSync(path.join(root,'web/workspace.js'),'utf8');h.run(workspace.slice(workspace.indexOf('async function openPlan('),workspace.indexOf('\nfunction manualPayload(')));
+  await h.run("openPlan('historical-resin')");assert.equal(h.run('alchemySavedPlan.record_revision'),'e'.repeat(64));assert.equal(h.run('alchemyRaw.resources[0].state.wand_preservation'),'3');assert.equal(h.run('alchemyResult'),null);assert(h.get('#alchemy-error').textContent.includes('原始输入已保留'));assert(h.get('#alchemy-save').disabled);assert(!h.get('#alchemy-result').textContent.includes('确定完成'));checks++;
+  const field=h.field('#alchemy-materials','法杖保存天赋点数');field.value='2';await field.fire('input');await h.run('calculateAlchemy()');assert.equal(h.run('alchemyResult.targets[0].planned_quantity'),4);assert.equal(h.run('alchemyResult.targets[0].shortfall'),1);assert.equal(h.get('#alchemy-error').textContent,'');h.run('saveAlchemyPlan()');
+  const [payload,existing]=h.saved.at(-1);assert.equal(payload.params.resources[0].state.wand_preservation,2);assert.equal(existing.record_revision,'e'.repeat(64));assert.equal(existing.note,'原备注');assert.deepEqual(historical,original);checks++;
+  // Error-bearing opens use the same existing newer-edit/navigation guards.
+  for(const action of ['input','navigation']){
+    const editor=harness(false),pending=deferred();editor.context.loadWorkspace=()=>pending.promise;editor.context.opened={plan:historical,result:null,rules_changed:false,calculation_error:'法杖保存天赋点数必须为0–2的整数'};
+    const opening=editor.run('openAlchemyPlan(opened.plan,opened.result,opened.rules_changed,opened.calculation_error)');
+    if(action==='input'){editor.get('#alchemy-energy').value='17';await editor.get('#alchemy-energy').fire('input');}else editor.context.navigationSerial++;
+    pending.resolve();assert.equal(await opening,false);assert.equal(editor.run('alchemySavedPlan'),null);if(action==='input')assert.equal(editor.get('#alchemy-energy').value,'17');checks++;
+  }
+  return checks;
+}
 (async()=>{
-  const historyChecks=await verifyAlchemyEditHistory();
+  const historyChecks=await verifyAlchemyEditHistory(),resinChecks=await verifyAlchemyResinBoundary();
   const h=harness();let checks=0;
   assert.equal(h.get('#alchemy-targets').children.length>1,true);assert.equal(h.run('alchemyFamilies.length'),73);assert.equal(new Set(metadata.families.map(row=>row.family)).size,39);checks++;
   const sword='items.weapon.melee.sword';h.apply(plan([target('recipe-stewedmeat-onemeat')],[stock(sword)],10));
@@ -209,5 +244,5 @@ async function verifyAlchemyEditHistory(){
   const unavailable=openingAlchemy();unavailable.editor.context.workspaceState={alchemy:{available:false,error:'controlled failure'}};const unavailableOpen=unavailable.open();unavailable.reads[0].resolve();assert.equal(await unavailableOpen,false);assert.equal(unavailable.editor.get('#alchemy-energy').value,'0');assert(unavailable.editor.get('#alchemy-error').textContent.includes('暂未就绪'));checks++;
   const interrupted=openingAlchemy();interrupted.editor.run('initializeAlchemy(metadata)');let failObsolete;
   interrupted.editor.context.post=()=>new Promise((resolve,reject)=>{failObsolete=reject;});const obsoleteCalculation=interrupted.editor.run('calculateAlchemy()');assert(interrupted.editor.run('alchemyPending'));assert.equal(await interrupted.open(),true);assert(!interrupted.editor.run('alchemyPending'));assert(!interrupted.editor.get('#alchemy-calculate').disabled);failObsolete(new Error('obsolete failure'));await obsoleteCalculation;assert.equal(interrupted.editor.get('#alchemy-error').textContent,'');checks++;
-  console.log(JSON.stringify({passed:true,focused_component_cases:checks,history_cases:historyChecks,registered_families:39,selectable_recipes:metadata.families.length,scope:'actual alchemy JS DOM and VM, real pinned backend metadata/calculations, deferred async responses; browser/native acceptance separate'}));
+  console.log(JSON.stringify({passed:true,focused_component_cases:checks,history_cases:historyChecks,resin_cases:resinChecks,registered_families:39,selectable_recipes:metadata.families.length,scope:'actual alchemy JS DOM and VM, real pinned backend metadata/calculations, deferred async responses; browser/native acceptance separate'}));
 })().catch(error=>{console.error(error);process.exitCode=1;});

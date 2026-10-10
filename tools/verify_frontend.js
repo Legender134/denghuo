@@ -106,8 +106,86 @@ function setup(options={}){
   });
   console.log(JSON.stringify({comparison_saved_plan_race_cases:checks.length}));
 }
+function verifyNavigationHistory(){
+  function setup(initial='#overview'){
+    const h=harness(),events=new Map(),stack=[initial],loads=[];let index=0;
+    h.context.location={hash:initial,search:''};
+    h.context.history={scrollRestoration:'auto',replaceState(_state,_title,url){stack[index]=url;h.context.location.hash=url;},pushState(_state,_title,url){stack.splice(index+1);stack.push(url);index++;h.context.location.hash=url;}};
+    h.context.document={querySelector:h.get,querySelectorAll:()=>[],addEventListener(){}};
+    h.context.window={scrollY:0,scrollTo({top}){this.scrollY=top;},addEventListener(name,fn){if(!events.has(name))events.set(name,[]);events.get(name).push(fn);}};
+    for(const name of ['loadWorkspace','searchLibrary','renderInventory','loadSettings','loadBackups','loadMigration','loadAlchemy','loadHelp','loadPlaySettings'])h.context[name]=()=>loads.push(name);
+    const source=fs.readFileSync(path.join(root,'web/app.js'),'utf8');h.run(source.slice(0,source.indexOf('function handlePageShortcut(')));
+    h.run("navigate(location.hash.slice(1),'replace')");
+    return {h,stack,loads,move(delta){index+=delta;h.context.location.hash=stack[index];for(const name of ['popstate','hashchange'])for(const fn of events.get(name)||[])fn();},hash(value){h.context.history.pushState(null,'',value);for(const fn of events.get('hashchange')||[])fn();}};
+  }
+  const t=setup(),h=t.h;h.get('#manual-hp').value='17';assert.equal(h.context.history.scrollRestoration,'manual');
+  h.context.window.scrollY=120;h.run("navigate('library')");h.context.window.scrollY=240;h.run("navigate('workspace')");h.context.window.scrollY=360;h.run("navigate('alchemy');navigate('alchemy')");
+  assert.deepEqual(t.stack,['#overview','#library','#workspace','#alchemy']);
+  const serial=h.run('navigationSerial'),loads=t.loads.length;t.move(-1);assert.equal(h.run('view'),'workspace');assert.equal(h.context.window.scrollY,360);assert.equal(h.run('navigationSerial'),serial+1);assert.equal(t.loads.length,loads+1,'popstate plus hashchange renders once');
+  t.move(-1);assert.equal(h.run('view'),'library');assert.equal(h.context.window.scrollY,240);t.move(1);t.move(1);assert.equal(h.run('view'),'alchemy');assert.equal(h.get('#manual-hp').value,'17');
+  t.hash('#invalid-tool');assert.equal(h.run('view'),'overview');assert.equal(t.stack.at(-1),'#overview');assert.equal(t.stack.length,5,'normalize an existing unknown hash rather than push a second entry');
+  const deep=setup('#alchemy');assert.equal(deep.h.run('view'),'alchemy');assert.equal(deep.stack.length,1,'opening a deep link does not add a phantom overview visit');
+  console.log(JSON.stringify({internal_navigation_history:true}));
+}
+async function verifyComparisonRecovery(){
+  const markup=fs.readFileSync(path.join(root,'web/index.html'),'utf8').split('<form id="equipment-comparison">')[1].split('</form>')[0];
+  const entries=['items.weapon.melee.shortsword','items.weapon.melee.battleaxe','items.wands.wandoffireblast','items.wands.wandofprismaticlight','items.weapon.missiles.shuriken','items.weapon.missiles.trident','items.weapon.missiles.boomerang','items.weapon.missiles.darts.dart','items.weapon.missiles.shuriken$shurikeninstanttracker'].map(id=>({id,name:id}));
+  function setup(){
+    const h=harness(),dynamic={a:[],b:[]};let catalogCalls=0,schemaCalls=0,failCatalog=true,failSchema=true;
+    const controls=[...markup.matchAll(/<(input|select)\b[^>]*\bid="([^"]+)"[^>]*>/g)].map(match=>{const input=h.get('#'+match[2]);input.value=match[0].match(/\bvalue="([^"]*)"/)?.[1]||'';return input;});
+    for(const side of ['a','b'])Object.defineProperty(h.get('#compare-context-'+side),'innerHTML',{get(){return this.html||'';},set(html){this.html=html;dynamic[side]=[...html.matchAll(/<input[^>]*data-compare-key="([^"]+)"[^>]*value="([^"]*)"/g)].map(match=>{const input=element();input.dataset.compareKey=match[1];input.value=match[2];return input;});}});
+    h.context.$$=selector=>selector.startsWith('#compare-context-a')?dynamic.a:selector.startsWith('#compare-context-b')?dynamic.b:[...controls,...dynamic.a,...dynamic.b];
+    h.get('#equipment-comparison').querySelectorAll=()=>[...controls,...dynamic.a,...dynamic.b];
+    Object.assign(h.context,{navigationSerial:0,calculationStamp:()=>null,displayNumber:String,exampleHTML:()=>'',inlineError:(target,text)=>target.textContent=text,
+      fetch:async url=>{if(url.startsWith('/api/compare?'))return {ok:false,json:async()=>({error:'controlled calculation failure'})};catalogCalls++;const q=new URLSearchParams(url.split('?')[1]).get('q');if(q==='items.wands.'&&failCatalog){failCatalog=false;return {ok:false};}return {ok:true,json:async()=>({entries:entries.filter(row=>row.id.startsWith(q))})};},
+      getJSON:async url=>{schemaCalls++;if(url.includes('wandoffireblast')&&failSchema){failSchema=false;throw Error('controlled schema failure');}return {inputs:[{key:'hp',label:'生命',value:10,min:0,max:100}]};}});
+    h.context.navigate=()=>{h.context.navigationSerial++;};h.get('.comparison-panel').scrollIntoView=()=>{};
+    h.get('#compare-kind').value='weapon';h.get('#compare-strength').value='10';h.load('compare.js');
+    return {h,dynamic,catalogCalls:()=>catalogCalls,schemaCalls:()=>schemaCalls};
+  }
+  const tick=()=>new Promise(resolve=>setImmediate(resolve)),t=setup(),h=t.h;
+  assert.equal(await h.run('comparisonReady'),false);assert(!h.get('#compare-retry').hidden);
+  for(const [id,value] of [['compare-level-a','23'],['compare-strength','17'],['compare-augment-a','SPEED']]){h.get('#'+id).value=value;h.get('#equipment-comparison').listeners.input({target:h.get('#'+id)});}
+  await Promise.all([h.get('#compare-retry').listeners.click(),h.get('#compare-retry').listeners.click()]);
+  assert.equal(t.catalogCalls(),10,'concurrent retries share one five-category load');
+  assert.equal(h.get('#compare-level-a').value,'23');assert.equal(h.get('#compare-strength').value,'17');assert.equal(h.get('#compare-augment-a').value,'SPEED');
+  h.run('renderEquipmentComparison();renderEquipmentComparison();renderEquipmentComparison()');assert.equal(t.catalogCalls(),10,'rendering must not retry settled catalog requests');
+  h.get('#compare-kind').value='missile';h.get('#compare-kind').listeners.change();assert.equal(h.run('compareItems.length'),2,'exclude darts, obsolete and nested types');assert(!h.get('#compare-mastery-a').disabled);
+  h.context.state={data:{items:[{key:'items.wands.wandoffireblast',name:'A',known:true,available:true,location:'背包',level:0},{key:'items.wands.wandofprismaticlight',name:'B',known:true,available:true,location:'背包',level:0}]}};
+  h.get('#compare-kind').value='wand';h.get('#compare-kind').listeners.change();await tick();
+  assert.equal(t.schemaCalls(),2);assert.match(h.get('#compare-status').textContent,/A 的条件资料读取失败/);assert.throws(()=>h.run('readComparisonArgs()'),/读取失败/);
+  const kept=t.dynamic.b[0];kept.value='27';await h.get('#compare-retry').listeners.click();assert.equal(t.schemaCalls(),3,'retry only failed A');assert.equal(t.dynamic.b[0],kept);assert.equal(kept.value,'27');assert(h.get('#compare-retry').hidden);
+  const charge=t.dynamic.a.find(input=>input.dataset.compareKey==='charges_a');charge.value='';
+  h.get('#compare-kind').value='weapon';h.get('#compare-kind').listeners.change();assert(charge.disabled,'hidden wand fields do not validate a melee comparison');assert(h.get('#compare-tier-a').disabled);
+  await h.get('#equipment-comparison').listeners.submit({preventDefault(){}});assert(charge.disabled,'request finally reapplies applicability');
+  h.get('#compare-kind').value='wand';h.get('#compare-kind').listeners.change();assert.equal(charge.value,'');assert(!charge.disabled,'switching back retains and validates raw wand input');
+  const saved=setup();await saved.h.run('comparisonReady');saved.h.context.params={id_a:entries[0].id,id_b:entries[1].id,strength:19,level_a:2,level_b:3,tier_a:3,tier_b:3,mastery_a:'0',mastery_b:'0',augment_a:'NONE',augment_b:'NONE'};
+  assert.equal(await saved.h.run('fillComparisonParams(params)'),true,'explicit plan opening retries a failed startup catalog');assert.equal(saved.h.get('#compare-strength').value,'19');assert.equal(saved.catalogCalls(),10);
+  const firstMissile={key:entries[4].id,name:'手里剑 +2',known:true,available:true,location:'背包',level:2,mastery:false,augmentation:'NONE'};
+  h.context.state={data:{items:[firstMissile,{...firstMissile,name:'手里剑 +7',level:7,mastery:true,augmentation:'SPEED'},{...firstMissile,key:entries[5].id,name:'三叉戟 · 等级未知',level:null}]}};
+  h.context.selectedItem=h.context.state.data.items[1];assert.equal(await h.run('compareInventoryItem(selectedItem)'),true);
+  assert.equal(h.get('#compare-kind').value,'missile');assert.equal(Number(h.run('readComparisonArgs().level_a')),7);assert.equal(h.run('readComparisonArgs().level_known_a'),'1');assert(h.get('#compare-mastery-a').checked);assert.equal(h.get('#compare-augment-a').value,'SPEED');assert(h.run('compareImportUndo!==null&&compareSessionUnsaved'));
+  h.get('#compare-level-a').value='9';h.get('#equipment-comparison').listeners.input({target:h.get('#compare-level-a')});assert.equal(h.run('readComparisonArgs().level_known_a'),'0','manual missile grade remains an assumption');
+  h.context.params={id_a:entries[4].id,id_b:entries[5].id,strength:19,level_a:7,level_b:0,tier_a:3,tier_b:3,mastery_a:'1',mastery_b:'0',augment_a:'SPEED',augment_b:'NONE',level_known_a:'1',level_known_b:'0',planning:'1',upgrade_budget:3,strength_budget:1,investment_mode:'all'};
+  assert.equal(await h.run('fillComparisonParams(params)'),true);assert.equal(h.run('readComparisonArgs().level_known_a'),'1');assert.equal(h.run('readComparisonArgs().level_known_b'),'0');assert.equal(h.run('canonicalComparisonParams(readComparisonArgs()).level_known_a'),'1');assert.equal(h.get('#compare-investment-mode').value,'all');
+  h.context.calculationStamp=()=>({revision:h.context.state.revision||1});h.context.snapshot={items:h.context.state.data.items,stamp:{revision:1}};h.context.selectedItem=h.context.snapshot.items[1];h.context.state.data.items=structuredClone(h.context.state.data.items);
+  assert.equal(await h.run('compareInventoryItem(selectedItem,snapshot)'),true,'unchanged polling must preserve the explicit same-instance entry');assert.equal(Number(h.run('readComparisonArgs().level_a')),7);
+  h.context.state.revision=2;assert.equal(await h.run('compareInventoryItem(selectedItem,snapshot)'),false,'a newer save cannot rematch an indistinguishable item');assert.match(h.get('#detail-workspace-error').textContent,/背包快照已变化/);
+  const changing=setup();await changing.h.run('comparisonReady');changing.h.context.state={data:{items:[firstMissile,{...firstMissile,level:7}]}};changing.h.context.selectedItem=changing.h.context.state.data.items[1];
+  const pending=[];changing.h.context.fetch=url=>new Promise(resolve=>pending.push(()=>resolve({ok:true,json:async()=>({entries:entries.filter(row=>row.id.startsWith(new URLSearchParams(url.split('?')[1]).get('q')))})})));
+  const choosing=changing.h.run('compareInventoryItem(selectedItem)');changing.h.context.state.data.items=[{...firstMissile,level:3}];pending.forEach(done=>done());assert.equal(await choosing,false);assert.match(changing.h.run('compareError'),/背包快照已变化/);
+  const draft=setup(),messages=[];await draft.h.run('comparisonReady');
+  Object.assign(draft.h.context,{unfinishedDraftRequest:0,draftRecoveryEditGeneration:0,webEditingFrozen:false,webDirtySummary:()=>[],
+    post:async()=>({draft:{draft:{schema:'denghuo-web-session',format:2,comparison:{form:{'compare-kind':{value:'missile'},'compare-level-a':{value:'7',checked:false},'compare-level-known-a':{value:'',checked:true}},choices:{a:entries[4].id,b:entries[5].id}}}}}),
+    verifySettingsRecovery:async()=>{},applySettingsRecovery(){},toast:text=>messages.push(text)});
+  const workspace=fs.readFileSync(path.join(root,'web/workspace.js'),'utf8');draft.h.run(workspace.slice(workspace.indexOf('async function loadUnfinishedDraft('),workspace.indexOf("$('#draft-refresh').addEventListener")));
+  await draft.h.run('loadUnfinishedDraft("original")');assert.equal(draft.catalogCalls(),10,'comparison draft recovery retries startup catalog failure');assert.equal(draft.h.get('#draft-error').textContent,'');assert(messages.some(text=>text.startsWith('已找回原始草稿')));assert.equal(draft.h.get('#compare-level-a').value,'7');assert.equal(draft.h.run('readComparisonArgs().level_known_a'),'1');assert(draft.h.run('compareDirty&&compareSessionUnsaved'));assert.equal(draft.h.run('compareResultArgs'),null);
+  console.log(JSON.stringify({comparison_recovery_and_applicability:true}));
+}
 (async()=>{
+  verifyNavigationHistory();
   await verifyComparisonPlanOpenings();
+  await verifyComparisonRecovery();
   const markup=fs.readFileSync(path.join(root,'web','index.html'),'utf8'),ids=[...markup.matchAll(/\bid="([^"]+)"/g)].map(match=>match[1]);
   assert.equal(new Set(ids).size,ids.length,'form and error targets require unique document IDs');
   for(const page of ['workspace','help','play-settings'])assert(markup.includes(`id="view-${page}"`)&&markup.includes(`data-view="${page}"`));
@@ -118,7 +196,7 @@ function setup(options={}){
     settings:{mode:'save',slot:'auto',stop_at:'',reveal:false,save_root:'/synthetic/default',always_on_top:false},backup_health:{state:'waiting'}};
   dashboard.context.document={querySelector:dashboard.get,querySelectorAll:()=>[],addEventListener(){}};
   dashboard.context.window={addEventListener(){},scrollTo(){},focus(){},scrollY:0};
-  dashboard.context.location={hash:''};dashboard.context.history={replaceState(){}};
+  dashboard.context.location={hash:''};dashboard.context.history={replaceState(_state,_title,url){dashboard.context.location.hash=url;},pushState(_state,_title,url){dashboard.context.location.hash=url;}};
   dashboard.context.crypto={randomUUID:()=> '0123456789abcdef'};
   dashboard.context.setInterval=()=>0;dashboard.context.setTimeout=()=>0;dashboard.context.clearTimeout=()=>{};
   dashboard.context.fetch=async url=>({ok:true,json:async()=>url==='/api/status'?structuredClone(waiting):{}});

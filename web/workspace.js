@@ -140,7 +140,7 @@ async function openPlan(id,preloaded=null,allowReplace=false){
     }else if(plan.kind==='character'){
       if(await openCharacterPlan(plan,opened.result,opened.rules_changed)===false)return false;
     }else if(plan.kind==='alchemy'){
-      navigate('alchemy');if(await openAlchemyPlan(plan,opened.result,opened.rules_changed)===false)return false;
+      navigate('alchemy');if(await openAlchemyPlan(plan,opened.result,opened.rules_changed,opened.calculation_error)===false)return false;
     }else if(plan.kind==='manual'){
       fillManualDraft(plan.params);manualSavedPlan=plan;manualUnsaved=true;navigate('manual');$('#manual-draft-status').textContent=`已打开「${plan.name}」草稿。${originLabel(plan.origin)}。还没有提交，不改变当前局势。${plan.note?' 用户用途 / 假设：'+plan.note:''}`;$('#manual-form').querySelector('input,select')?.focus();
     }
@@ -514,7 +514,7 @@ async function loadUnfinishedDraft(id){
     if(draft.alchemy_plan_meta&&typeof restoreAlchemyPlanMetadata==='function')restoreAlchemyPlanMetadata(draft.alchemy_plan_meta);
     if(draft.migration&&typeof restoreMigrationDraft==='function')await restoreMigrationDraft(draft.migration,checkRecovery,()=>{navForRecovery=navigationSerial;});
     checkRecovery();
-    if(draft.comparison){compareOpenRequest++;const c=draft.comparison,kind=c.form['compare-kind']?.value;if(!comparisonPrefixes[kind])throw new Error('比较草稿类型不正确');await comparisonReady;checkRecovery();$('#compare-kind').value=kind;compareSignature='';renderEquipmentComparison();
+    if(draft.comparison){compareOpenRequest++;const c=draft.comparison,kind=c.form['compare-kind']?.value;if(!comparisonPrefixes[kind])throw new Error('比较草稿类型不正确');await initializeEquipmentComparison(true);checkRecovery();$('#compare-kind').value=kind;compareSignature='';renderEquipmentComparison();
       for(const side of ['a','b']){const index=compareItems.findIndex(item=>item.key===c.choices?.[side]&&!item.owned);if(index<0)throw new Error('草稿装备在当前资料中不存在');$('#compare-'+side).value=String(index);fillCompareChoice(side);await loadComparisonContext(side,compareItems[index],checkRecovery);checkRecovery();}
       for(const input of $$('#equipment-comparison input,#equipment-comparison select')){if(['compare-a','compare-b'].includes(input.id))continue;const cell=c.form[input.id||input.dataset.compareKey];if(!cell)continue;if(typeof cell.value!=='string'||cell.value.length>200)throw new Error('比较草稿字段格式不正确');input.value=cell.value;input.checked=!!cell.checked;input.dataset.manual='true';input.dataset.edited='true';}
       if(c.note!==undefined&&(typeof c.note!=='string'||c.note.length>1200))throw new Error('比较草稿用户备注格式不正确');

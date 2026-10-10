@@ -1,5 +1,6 @@
 """Conditional wand/ring investment metrics, using the reviewed numeric backend."""
 from __future__ import annotations
+from .public_source_data import MISSILE_PUBLIC_TYPES
 
 CONTEXT_KEYS = ('hp','max_hp','hero_level','depth','target_hp','target_max_hp','enemy_exp','minor','major','charges')
 EXTRA_KEYS = {'investment_mode', 'character_scene', 'scene_ring_slot', *(f'{key}_{side}' for side in ('a','b')
@@ -8,6 +9,8 @@ FAMILIES = {'weapon':'items.weapon.melee.', 'armor':'items.armor.', 'wand':'item
 
 
 def family(identity):
+    if isinstance(identity,str) and identity in MISSILE_PUBLIC_TYPES:
+        return 'missile'
     return next((kind for kind,prefix in FAMILIES.items() if isinstance(identity,str) and identity.startswith(prefix)),None)
 
 
@@ -24,16 +27,20 @@ def canonical_comparison(values, raw):
         identity=raw.get('id_'+side)
         kind=family(identity)
         if not kind or '$' in identity or identity.endswith('.ability') or not any(e['id']==identity for e in values.catalog.entries):
-            raise ValueError('请选择普通近战武器、护甲、法杖或戒指')
+            raise ValueError('请选择已核对的普通近战武器、投掷武器、护甲、法杖或戒指')
         kinds.append(kind)
         result['id_'+side]=identity
-        result['level_'+side]=bounded_integer(raw.get('level_'+side,0),'A等级' if side=='a' else 'B等级',-100 if kind in ('weapon','armor') else 0,99)
+        result['level_'+side]=bounded_integer(raw.get('level_'+side,0),'A等级' if side=='a' else 'B等级',-100 if kind in ('weapon','missile','armor') else 0,99)
         result['tier_'+side]=bounded_integer(raw.get('tier_'+side,3),'原护甲阶数',1,5)
-        for key,default,allowed in [('mastery','0',('0','1')),('augment','NONE',('NONE','EVASION','DEFENSE') if kind=='armor' else ('NONE','SPEED','DAMAGE') if kind=='weapon' else ('NONE',))]:
+        for key,default,allowed in [('mastery','0',('0','1')),('augment','NONE',('NONE','EVASION','DEFENSE') if kind=='armor' else ('NONE','SPEED','DAMAGE') if kind in ('weapon','missile') else ('NONE',))]:
             item=raw.get(key+'_'+side,default)
             if item not in allowed:raise ValueError('请核对'+('精通' if key=='mastery' else '强化')+'选项')
             if kind in ('wand','ring') and key=='mastery' and item!='0':raise ValueError('法杖和戒指不使用装备精通条件')
             result[key+'_'+side]=item
+        if kind=='missile':
+            known=raw.get('level_known_'+side,'0')
+            if known not in ('0','1'):raise ValueError('请核对投掷武器的已知等级状态')
+            result['level_known_'+side]=known
         if kind in ('wand','ring'):
             for key,default,allowed in [('level_known','0',('0','1')),('curse','0',('0','1','unknown'))]:
                 item=raw.get(key+'_'+side,default)
@@ -59,7 +66,7 @@ def canonical_comparison(values, raw):
             if set(supplied)-requested:raise ValueError('方案包含此条目不使用的上下文参数')
             for item in detail['inputs']:
                 if item['key'] in CONTEXT_KEYS:result[item['key']+'_'+side]=item['value']
-    if kinds[0]!=kinds[1]:raise ValueError('请分别在近战武器、护甲、法杖或戒指的同一类别内比较')
+    if kinds[0]!=kinds[1]:raise ValueError('请分别在近战武器、投掷武器、护甲、法杖或戒指的同一类别内比较')
     planning=raw.get('planning','0')
     if planning not in ('0','1'):raise ValueError('请明确选择是否启用预算规划')
     if planning=='1':
@@ -67,9 +74,9 @@ def canonical_comparison(values, raw):
         for key,label,high in [('upgrade_budget','升级卷轴预算',100),('strength_budget','拟投入力量药剂',99)]:
             result[key]=bounded_integer(raw.get(key,0),label,0,high)
         if 'character_scene' not in raw and result['strength']+result['strength_budget']>1000:raise ValueError('规划有效力量（所填力量加拟投入药剂）需要是 1–1000 的整数')
-        mode=raw.get('investment_mode','min_strength' if kinds[0] in ('weapon','armor') else 'all')
+        mode=raw.get('investment_mode','min_strength' if kinds[0] in ('weapon','missile','armor') else 'all')
         if mode not in ('all','min_strength') or kinds[0] in ('wand','ring') and mode!='all':
-            raise ValueError('最小力量门槛规划仅用于普通近战武器与护甲；法杖和戒指请选择完整投入')
+            raise ValueError('最小力量门槛规划仅用于普通近战武器、投掷武器与护甲；法杖和戒指请选择完整投入')
         if 'investment_mode' in raw or kinds[0] in ('wand','ring'):result['investment_mode']=mode
     elif set(raw)&(budget-{'planning'}|{'investment_mode'}):raise ValueError('预算参数需要明确启用升级规划')
     from .character_comparison import canonical_scene

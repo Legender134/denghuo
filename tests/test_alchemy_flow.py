@@ -209,6 +209,129 @@ class TargetAlchemyTests(unittest.TestCase):
         self.assertIsNone(result['outputs'][0]['quantity'])
         self.assertTrue(result['pending_conditions'])
 
+    def test_resin_legal_preservation_points_and_shared_input_boundary(self):
+        state = {'cursed': False, 'base_level': 0, 'public_level': 0,
+                 'resin_bonus': 0, 'hero_class': 'WARRIOR'}
+        original = params([goal('resin', 5, {'source_keys': ['s1']})],
+                          [stock('items.wands.wandofmagicmissile', state=state)], 5)
+        for points in (0, 1, 2):
+            with self.subTest(points=points):
+                args = copy.deepcopy(original)
+                args['resources'][0]['state']['wand_preservation'] = points
+                result = calculate(self.catalog, args)[1]
+                self.assertEqual(result['outputs'][0]['produced_quantity'], 2 + points)
+                self.assertEqual(result['targets'][0]['planned_quantity'], 2 + points)
+                self.assertEqual(result['targets'][0]['shortfall'], 3 - points)
+                self.assertFalse(result['complete'])
+                self.assertEqual((result['materials'][0]['spent'], result['energy']['spent']), (1, 5))
+                candidates = discover(self.catalog, args)
+                resin = next(row for row in candidates['recipes'] if row['id'] == 'resin')
+                self.assertTrue(resin['complete'])
+                self.assertEqual(resin['steps'][0]['output']['quantity'], 2 + points)
+        for points in (3, 4, True, False):
+            for hero in ('WARRIOR', 'MAGE'):
+                with self.subTest(points=points, hero=hero):
+                    args = copy.deepcopy(original)
+                    args['resources'][0]['state'].update(hero_class=hero, wand_preservation=points)
+                    before = copy.deepcopy(args)
+                    with self.assertRaises(ValueError):
+                        calculate(self.catalog, args)
+                    with self.assertRaises(ValueError):
+                        discover(self.catalog, args)
+                    # Even a currently unused resource cannot certify impossible
+                    # fixed shared inputs as a successful calculation.
+                    args['targets'] = [goal('potion-healing', 0)]
+                    with self.assertRaises(ValueError):
+                        calculate(self.catalog, args)
+                    self.assertEqual(args['resources'], before['resources'])
+        unknown = calculate(self.catalog, original)[1]
+        self.assertIsNone(unknown['outputs'][0]['quantity'])
+        self.assertFalse(unknown['complete'])
+        self.assertTrue(unknown['pending_conditions'])
+        mage = copy.deepcopy(original)
+        mage['targets'][0]['quantity'] = 2
+        mage['resources'][0]['state'].update(hero_class='MAGE', wand_preservation=2)
+        self.assertEqual(calculate(self.catalog, mage)[1]['outputs'][0]['quantity'], 2)
+
+    def test_historical_invalid_resin_remains_readable_until_explicit_correction(self):
+        with tempfile.TemporaryDirectory(prefix='denghuo-old-resin-') as directory:
+            root = Path(directory)
+            session = Session(root / 'source' / 'settings.json', self.catalog)
+            args = params([goal('resin', 5, {'source_keys': ['s1']})],
+                          [stock('items.wands.wandofmagicmissile', state={
+                              'cursed': False, 'base_level': 0, 'public_level': 0,
+                              'resin_bonus': 0, 'hero_class': 'WARRIOR', 'wand_preservation': 2})], 5)
+            first = session.knowledge.save('旧树脂方案', 'alchemy', None, args, note='保留原条件与备注')
+            normal = session.knowledge.save('正常方案', 'alchemy', None, params([goal('potion-healing', 0)]))
+            historical = json.loads(session.knowledge.export())
+            old = next(row for row in historical['plans'] if row['id'] == first['id'])
+            old['params']['resources'][0]['state']['wand_preservation'] = 3
+            raw = (json.dumps(historical, ensure_ascii=False, indent=1) + '\n').encode('utf-8')
+            session.knowledge.path.write_bytes(raw)
+            store = Session(session.config_path, self.catalog).knowledge
+            status = store.status()
+            self.assertTrue(status['available'])
+            self.assertEqual(len(status['plans']), 2)
+            opened = store.reopen(first['id'])
+            self.assertEqual(opened['plan']['params'], old['params'])
+            self.assertIsNone(opened['result'])
+            self.assertIn('法杖保存天赋点数必须为0–2', opened['calculation_error'])
+            self.assertTrue(store.reopen(normal['id'])['result']['complete'])
+            self.assertNotIn('calculation_error', store.reopen(normal['id']))
+            self.assertEqual(json.loads(store.export()), historical)
+            self.assertEqual(store.path.read_bytes(), raw)
+            draft_raw = copy.deepcopy(old['params'])
+            for name in ('energy', 'energy_reserve'):
+                draft_raw[name] = str(draft_raw[name])
+            for target_row in draft_raw['targets']:
+                target_row['quantity'] = str(target_row['quantity'])
+            for resource in draft_raw['resources']:
+                for name in ('quantity', 'reserve'):
+                    resource[name] = str(resource[name])
+                resource['state'] = {name: str(value).lower() if type(value) is bool else str(value)
+                                     for name, value in resource['state'].items()}
+            draft_raw['resources'][0]['state']['wand_preservation'] = ' 3 '
+            draft = {'format': 2, 'schema': 'denghuo-web-session',
+                     'alchemy': {'raw': draft_raw, 'note': '非法点数仍是未计算原始草稿'}}
+            saved_draft = session.exit_drafts.save('web-12345678', 'web-session', '未完成树脂', draft)
+            resumed = Session(session.config_path, self.catalog)
+            self.assertEqual(resumed.exit_drafts.load(saved_draft['id'])['draft'], draft)
+            self.assertNotIn('result', draft['alchemy'])
+            self.assertEqual(store.path.read_bytes(), raw)
+            with self.assertRaisesRegex(ValueError, '法杖保存天赋'):
+                store.save('不得保存成功', 'alchemy', None, old['params'])
+            with self.assertRaisesRegex(ValueError, '法杖保存天赋'):
+                store.save('不得更新成功', 'alchemy', None, old['params'], record_id=first['id'],
+                           expected_record_revision=opened['plan']['record_revision'])
+            self.assertEqual(store.path.read_bytes(), raw)
+            target = Session(root / 'imported' / 'settings.json', self.catalog).knowledge
+            self.assertEqual(target.import_records(raw)['plans_added'], 2)
+            imported_bytes = target.path.read_bytes()
+            self.assertEqual(target.reopen(first['id'])['plan'], opened['plan'])
+            self.assertIsNone(target.reopen(first['id'])['result'])
+            self.assertEqual(json.loads(target.export()), historical)
+            self.assertEqual(target.path.read_bytes(), imported_bytes)
+            self.assertEqual(store.path.read_bytes(), raw)
+            corrected = copy.deepcopy(opened['plan']['params'])
+            corrected['resources'][0]['state']['wand_preservation'] = 2
+            result = calculate(self.catalog, corrected)[1]
+            self.assertEqual((result['targets'][0]['planned_quantity'], result['targets'][0]['shortfall']), (4, 1))
+            with self.assertRaisesRegex(ValueError, '另一窗口'):
+                store.save('修正', 'alchemy', None, corrected, record_id=first['id'],
+                           expected_record_revision='0' * 64)
+            self.assertEqual(store.path.read_bytes(), raw)
+            updated = store.save('修正', 'alchemy', None, corrected, record_id=first['id'],
+                                 expected_record_revision=opened['plan']['record_revision'])
+            self.assertEqual(updated['id'], first['id'])
+            self.assertEqual(updated['created'], first['created'])
+            self.assertEqual(updated['note'], first['note'])
+            self.assertNotEqual(updated['record_revision'], opened['plan']['record_revision'])
+            self.assertEqual(store.reopen(first['id'])['result']['targets'][0]['shortfall'], 1)
+            self.assertEqual(old['params']['resources'][0]['state']['wand_preservation'], 3)
+            with self.assertRaisesRegex(ValueError, '另一窗口'):
+                store.save('旧版本覆盖', 'alchemy', None, corrected, record_id=first['id'],
+                           expected_record_revision=opened['plan']['record_revision'])
+
     def test_missile_whole_stack_states_reserve_and_exact_durability_is_manual(self):
         state = {'cursed': False, 'is_upgradable': True, 'level': 0, 'tier': 1, 'default_quantity': 3, 'durability': 100}
         rows = [stock('items.weapon.missiles.throwingstone', 3, state=state),
@@ -426,8 +549,10 @@ class TargetAlchemyTests(unittest.TestCase):
             with patch('companion.alchemy.calculate', side_effect=AssertionError('Import must not calculate')):
                 self.assertEqual(future.knowledge.import_records(json.dumps(archive).encode())['plans_added'], 1)
             self.assertEqual(future.knowledge.status()['plans'][0]['params']['targets'][0]['recipe'], 'future-family')
-            with self.assertRaisesRegex(ValueError, '尚未收录'):
-                future.knowledge.reopen(first['id'])
+            unsupported = future.knowledge.reopen(first['id'])
+            self.assertIsNone(unsupported['result'])
+            self.assertIn('尚未收录', unsupported['calculation_error'])
+            self.assertEqual(unsupported['plan']['params'], archive['plans'][0]['params'])
 
 
 if __name__ == '__main__':

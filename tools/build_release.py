@@ -60,6 +60,7 @@ FILES = (
     "tests/test_character_comparison.py",
     "tests/test_character_scene.py",
     "tests/test_food_equipment_context.py",
+    "tests/test_missile_decisions.py",
     "tests/test_public_alchemy_state.py",
     "tests/test_public_item_levels.py",
     "tests/test_service_r8_workflows.py",

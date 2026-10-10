@@ -314,10 +314,19 @@ class KnowledgeWorkspace:
             plan = self.record_view(row)
         # Numeric calculation can acquire Session.lock; migration takes that
         # lock before this store's lock. Keep calculation outside the store.
-        _,result = canonical_plan(self.session,row['kind'],row['entry'],row['params'])
+        calculation_error = None
+        try:
+            _,result = canonical_plan(self.session,row['kind'],row['entry'],row['params'])
+        except ValueError as exc:
+            if row['kind'] != 'alchemy':
+                raise
+            # Structural validation already succeeded. Keep unsupported old
+            # alchemy inputs available for explicit correction in the editor.
+            result,calculation_error = None,str(exc)
         return {'plan':plan,'result':result,
                 'source_label':'保存的参考方案 · 固定参数，未跟随当前角色',
-                'rules_changed':row['rules_version']!=self.session.catalog.data['version']}
+                'rules_changed':row['rules_version']!=self.session.catalog.data['version'],
+                **({'calculation_error':calculation_error} if calculation_error else {})}
 
     def remove(self,record_id,expected_record_revision=None):
         with self.lock:

@@ -70,7 +70,8 @@ function alchemyStateValue(name,value){
   if(name==='cursed'||name==='is_upgradable'){if(value==='true'||value===true)return true;if(value==='false'||value===false)return false;throw new Error(alchemyStateLabels[name]+'未明确');}
   if(alchemyEnums[name]||name==='potion_id')return value;
   if(name==='durability'){if(typeof value!=='string'||!/^\d+(?:\.\d+)?$/.test(value.trim())||!Number.isFinite(Number(value))||Number(value)>100)throw new Error('精确耐久需为0–100的明确手填有限数值');return Number(value);}
-  return alchemyNumber(value,alchemyStateLabels[name]||name,['level','base_level','public_level'].includes(name));
+  const number=alchemyNumber(value,alchemyStateLabels[name]||name,['level','base_level','public_level'].includes(name));
+  if(name==='wand_preservation'&&number>2)throw new Error('法杖保存天赋点数必须为0–2的整数；未确认请留空');return number;
 }
 function alchemyTypedChoices(raw){const output={};for(const [name,value] of Object.entries(raw)){if(value==null||value===''||Array.isArray(value)&&!value.length)continue;if(name==='selection'||name==='target_level')output[name]=alchemyNumber(value,alchemyChoiceLabels[name]);else if(Array.isArray(value)){if(value.every(item=>item===''))continue;if(value.some(item=>!item))throw new Error(alchemyChoiceLabels[name]+'请选齐，或全部留空保留为待选择');output[name]=[...value];}else output[name]=value;}return output;}
 function alchemyParams(includeTargets=true){
@@ -104,7 +105,7 @@ function renderAlchemyTargets(){
 function alchemyResourceState(parent,row){
   const meta=alchemyCatalog.items.find(item=>item.id===row.id),fields=Array.from(new Set([...(meta?.state_fields||[]),...Object.keys(row.state)]));if(!fields.length)return;const details=alchemyNode('details');details.append(alchemyNode('summary','物品状态与未确认条件'));const grid=alchemyNode('div','','form-grid');details.append(grid);const set=(name,value)=>{if(JSON.stringify(row.state[name]??'')!==JSON.stringify(value)){row.state[name]=value;row.origin='manual';}};
   for(const name of fields){if(name==='rolled_choices'){for(let index=0;index<4;index++)alchemyField(grid,'已经显示的触媒选项 '+(index+1),row.state[name]?.[index]||'',value=>{if((row.state[name]?.[index]??'')!==value)set(name,(row.state[name]||['','','','']).map((v,i)=>i===index?value:v));},[...(alchemyCatalog.trinkets||[]),'items.trinkets.trinketcatalyst$randomtrinket'].map(id=>[id,id.endsWith('$randomtrinket')?'随机饰物（身份不确定）':alchemyName(id)]));}else alchemyField(grid,alchemyStateLabels[name]||name,row.state[name]??'',value=>set(name,value),alchemyEnums[name]||(name==='potion_id'?(alchemyCatalog.potions||[]).filter(id=>!id.includes('.exotic.')).map(id=>[id,alchemyName(id)]):null));}
-  details.append(alchemyNode('p','留空表示未知，不能当成0或无诅咒。修改状态后这个实例成为明确手填假设；精确投武耐久必须手填。法杖基础等级与公开等级/树脂须一致。','muted'));parent.append(details);
+  details.append(alchemyNode('p','留空表示未知，不能当成0或无诅咒。修改状态后这个实例成为明确手填假设；精确投武耐久必须手填。法杖基础等级与公开等级/树脂须一致，法杖保存天赋为0–2点。','muted'));parent.append(details);
 }
 function addAlchemyResource(id){captureAlchemyFields();if(alchemyRaw.format!==2)throw new Error('逐实例资源请在目标模式中编辑');if(!id)throw new Error('请选择材料身份');if(alchemyRaw.resources.length>=256)throw new Error('库存实例最多256项');let key;do{key='manual-'+(++alchemySerial);}while(alchemyRaw.resources.some(row=>row.key===key));alchemyEdit(()=>alchemyRaw.resources.push({key,id,quantity:'1',reserve:'0',origin:'manual',state:{}}));renderAlchemyEditor();}
 function renderAlchemyMaterials(){
@@ -188,7 +189,7 @@ function renderAlchemyDiscovery(){
   const root=$('#alchemy-discovery-list'),status=$('#alchemy-discovery-status');if(!root)return;root.replaceChildren();if(!alchemyDiscovery){status.textContent='明确预览后显示候选。这里不穷尽所有材料组合；可在目标中手动选择其他合格材料。';return;}const stale=alchemyDiscoveryGeneration!==alchemyGeneration,labels={immediate:'当前预算可制作', 'with-prerequisites':'需要先制作前置材料','needs-condition':'状态 / 选择待确认','needs-energy':'能量不足','needs-material':'材料不足','random-outcome':'预算内有随机结果'};status.textContent=(stale?'条件已变化，以下是旧库存的候选，重新预览后才能加入。':'')+(alchemyDiscovery.message||'每项独立预览；加入多个目标后必须重算共享账本。');
   for(const row of alchemyDiscovery.recipes||[]){const card=alchemyNode('details');card.append(alchemyNode('summary',row.name+' · '+(labels[row.availability]||row.availability)),alchemyNode('p','请求产出 '+row.target.quantity+' 件；'+alchemyChoiceText(row.target.choices)));for(const step of row.steps||[])card.append(alchemyNode('p',alchemyStepText(step),'muted'));for(const shortage of row.shortages||[])card.append(alchemyNode('p',alchemyShortageText(shortage),'rule-warning'));for(const pending of row.pending_conditions||[])card.append(alchemyNode('p','待确认：'+pending.condition,'rule-warning'));for(const boundary of row.outcome_boundaries||[])card.append(alchemyNode('p','结果边界：'+boundary.message,'rule-warning'));const button=alchemyButton('以这些明确选择加入目标',()=>{if(alchemyDiscoveryGeneration!==alchemyGeneration)throw new Error('候选条件已过时，请重新预览');addAlchemyTarget(row.target.recipe,String(row.target.quantity),row.target.choices);toast('已加入目标；请重算共同库存与能量。');});button.disabled=stale;card.append(button);root.append(card);}
 }
-async function openAlchemyPlan(plan,result,rulesChanged){
+async function openAlchemyPlan(plan,result,rulesChanged,calculationError=''){
   const request=++alchemyOpenRequest,generation=alchemyGeneration,nav=navigationSerial;
   await loadAlchemy();
   if(request!==alchemyOpenRequest||generation!==alchemyGeneration||nav!==navigationSerial||webEditingFrozen){
@@ -197,11 +198,11 @@ async function openAlchemyPlan(plan,result,rulesChanged){
   }
   if(!alchemyInitialized){inlineError($('#alchemy-error'),'炼金资料暂未就绪；当前输入仍保留，请重试读取后再打开方案。');return false;}
   const raw=rawAlchemyParams(plan.params);validateAlchemyRaw(raw);applyAlchemyRaw(raw);
-  alchemySavedPlan=alchemyClone(plan);alchemySource=cleanStoredOrigin(plan.origin);alchemyResult=alchemyClone(result);
+  alchemySavedPlan=alchemyClone(plan);alchemySource=cleanStoredOrigin(plan.origin);alchemyResult=calculationError?null:alchemyClone(result);
   alchemyDirty=false;alchemyUnsaved=false;resetAlchemyHistory();alchemyRuleChanged=!!rulesChanged||plan.params.recipe_version!=='4.0.2';alchemyDiscovery=null;
   alchemyGeneration++;alchemyRequest++;alchemyDiscoveryRequest++;alchemyPending=false;alchemyPendingRequest=0;alchemyDiscoveryPendingRequest=0;
   $('#alchemy-calculate').disabled=false;$('#alchemy-discover').disabled=false;
-  renderAlchemyResult();renderAlchemyDiscovery();renderAlchemyOrigin();$('#alchemy-targets').focus();return true;
+  renderAlchemyResult();renderAlchemyDiscovery();renderAlchemyOrigin();inlineError($('#alchemy-error'),calculationError?'固定条件暂不能计算：'+calculationError+'。原始输入已保留，请修正后重新计算。':'');$('#alchemy-targets').focus();return true;
 }
 function alchemyPlanSaved(plan,payload){const matches=alchemyResult&&JSON.stringify(alchemyResult.params)===JSON.stringify(payload.params)&&JSON.stringify(cleanStoredOrigin(alchemySource))===JSON.stringify(cleanStoredOrigin(payload.source));if(matches){alchemySavedPlan=alchemyClone(plan);alchemyUnsaved=alchemyDirty;renderAlchemyOrigin();}}
 function saveAlchemyPlan(){if(!alchemyResult||alchemyDirty||alchemyPending){inlineError($('#alchemy-error'),'请先重新计算当前原始输入，再命名保存');return;}const name=alchemyResult.format===2?(alchemyFamily(alchemyResult.targets[0]?.recipe)?.name||'多目标炼金')+'规划':alchemyResult.recipe.name+'规划';openPlanSave({kind:'alchemy',entry:null,params:alchemyClone(alchemyResult.params),source:alchemyClone(alchemySource),note:alchemySavedPlan?.note||''},alchemySavedPlan?alchemyClone(alchemySavedPlan):null,name);}

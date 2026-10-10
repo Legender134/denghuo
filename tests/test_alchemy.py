@@ -164,7 +164,10 @@ class AlchemyTests(unittest.TestCase):
         target.import_records(json.dumps(raw).encode())
         self.assertTrue(target.status()['available'])
         self.assertTrue(all(row['note'] == '' for row in target.status()['plans']))
-        with self.assertRaisesRegex(ValueError, '尚未收录'): target.reopen(raw['plans'][0]['id'])
+        opened = target.reopen(raw['plans'][0]['id'])
+        self.assertIsNone(opened['result'])
+        self.assertIn('尚未收录', opened['calculation_error'])
+        self.assertEqual(opened['plan']['params'], raw['plans'][0]['params'])
 
     def test_workspace_actions_and_handbook_basic_conversion_discoverability(self):
         response = self.session.workspace_action({'action': 'alchemy-calculate', 'params': params()})
