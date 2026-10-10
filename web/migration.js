@@ -10,10 +10,10 @@ function captureMigrationDraft(){
   if(!migrationDirty)return null;
   return {format:1,export_selected:[...migrationExportSelection],import_selected:[...migrationImportSelection],file_name:migrationFile?.name||migrationRestoredFile,needs_reselect:true,export_dirty:migrationExportDirty,import_dirty:migrationImportDirty};
 }
-async function restoreMigrationDraft(raw){
+async function restoreMigrationDraft(raw,checkRecovery=()=>{},onNavigation=()=>{}){
   if(raw?.format!==1||!Array.isArray(raw.export_selected)||!Array.isArray(raw.import_selected)||typeof raw.file_name!=='string'||raw.file_name.length>300||[...raw.export_selected,...raw.import_selected].some(v=>typeof v!=='string'||v.length>400)||raw.export_selected.length+raw.import_selected.length>600)throw new Error('搬机迁移草稿格式不正确');
-  migrationExportSelection=new Set(raw.export_selected);migrationImportSelection=new Set(raw.import_selected);migrationImportTouched=true;migrationRestoredFile=raw.file_name;migrationFile=null;migrationExportPreview=migrationImportPreview=null;migrationExportDirty=raw.export_dirty!==false;migrationImportDirty=raw.import_dirty!==false;migrationDirty=migrationExportDirty||migrationImportDirty;migrationGeneration++;
-  navigate('migration');await loadMigration();$('#migration-import-info').textContent=`已找回选择草稿。${raw.file_name?'请重新选择原迁移包「'+raw.file_name+'」':'请重新选择迁移包'}，再预览本机目标。草稿不包含大文件字节，也不能沿用旧确认。`;
+  checkRecovery();migrationExportSelection=new Set(raw.export_selected);migrationImportSelection=new Set(raw.import_selected);migrationImportTouched=true;migrationRestoredFile=raw.file_name;migrationFile=null;migrationExportPreview=migrationImportPreview=null;migrationExportDirty=raw.export_dirty!==false;migrationImportDirty=raw.import_dirty!==false;migrationDirty=migrationExportDirty||migrationImportDirty;migrationGeneration++;
+  navigate('migration');onNavigation();await loadMigration();checkRecovery();$('#migration-import-info').textContent=`已找回选择草稿。${raw.file_name?'请重新选择原迁移包「'+raw.file_name+'」':'请重新选择迁移包'}，再预览本机目标。草稿不包含大文件字节，也不能沿用旧确认。`;
 }
 function migrationEdited(type){if(type==='export')migrationExportDirty=true;else migrationImportDirty=true;migrationDirty=migrationExportDirty||migrationImportDirty;migrationGeneration++;if(type==='export'){migrationExportPreview=null;$('#migration-export-download').disabled=true;}$('#migration-confirm').checked=false;migrationDraftNotice();}
 function migrationError(error){inlineError($('#migration-error'),error?.message||String(error));$('#migration-error').tabIndex=-1;$('#migration-error').focus();}

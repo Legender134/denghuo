@@ -14,7 +14,7 @@ import stat
 import uuid
 from zipfile import ZipFile, ZipInfo, ZIP_STORED, ZIP_DEFLATED, BadZipFile
 
-from .backups import MAX_TOTAL, STAGE_NAME, unlinked
+from .backups import MAX_TOTAL, STAGE_NAME, BackupLibrary, unlinked
 from .backup_archive import IDENTITY, read_archive, player_summary, valid_time
 
 MAX_BATCH = 32
@@ -153,6 +153,15 @@ def _storage_inventory(manager, root):
         quarantine = [{'file':path.name, 'bytes':path.stat().st_size, 'time':path.stat().st_mtime,
                        'reason':'自动校验发现损坏后隔离，保留排查原件'} for path in quarantine_dir.glob('*.zip') if unlinked(path).is_file()]
         journals = manager.journals(root)
+        if isinstance(root, BackupLibrary):
+            manager._storage_cache = None
+            return {'default_policy': 'preserve-all', 'groups': [
+                        {'kind': 'active', 'title': '活动历史', 'rows': active, 'directory': str(scope)},
+                        {'kind': 'retained', 'title': '移出后保留', 'rows': retained,
+                         'directory': str(manager.directory.parent/'backup-recycle'/scope.name)},
+                        {'kind': 'quarantine', 'title': '损坏隔离', 'rows': quarantine, 'directory': str(quarantine_dir)}],
+                    'totals': manager.storage_breakdown(root),
+                    'scope_note': '这里只核对所选助手备份库；没有读取或更改任何游戏存档目录。'}
         before = []
         for path in unlinked(Path(root)).glob('.denghuo-before-*'):
             unlinked(path)
@@ -839,4 +848,6 @@ def reclaim_execute(manager, root, payload):
 
 def storage_inventory(manager, root):
     with manager.lock:
+        if isinstance(root, BackupLibrary):
+            return _storage_inventory(manager, root)
         return _reclaim_inventory(manager,root)

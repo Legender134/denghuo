@@ -508,6 +508,26 @@ class Session:
                 return {**self.backups.undo_preview(root, payload), 'context': self.backup_context, 'save_root': root}
             raise ValueError('不支持的备份操作')
 
+    def backup_library_status(self, identity=None, expected_context=None):
+        from . import backup_libraries
+        with self.lock:
+            self.check_backup_context(expected_context)
+            result = (backup_libraries.details(self.backups, identity, self.settings['save_root']) if identity
+                      else backup_libraries.catalog(self.backups, self.settings['save_root']))
+            return {**result, 'context': self.backup_context}
+
+    def backup_library_action(self, payload):
+        from . import backup_libraries
+        if not isinstance(payload, dict) or not isinstance(payload.get('action'), str):
+            raise ValueError('备份库请求格式不正确')
+        with self.lock:
+            self.check_backup_context(payload.get('context'))
+            action = payload['action']
+            result = backup_libraries.operate(self.backups, payload.get('library_id'), self.settings['save_root'], action, payload)
+            if action == 'batch-export':
+                return result
+            return {**result, 'context': self.backup_context}
+
     def backup_workflow(self, action, payload=None, *, raw=None, context=None):
         from . import backup_workflows as flows
         payload = {} if payload is None else payload
