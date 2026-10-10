@@ -84,20 +84,25 @@ function captureCharacterDraft(){
   if(!characterUnsaved)return null;
   return {format:1,form:captureNamedForm('#character-form'),source:characterClone(characterSource),stamp:characterClone(characterStamp),undo:characterImportUndo?{...characterClone(characterImportUndo),result:null,dirty:true,unsaved:true}:null,saved:characterSavedPlan?{id:characterSavedPlan.id,record_revision:characterSavedPlan.record_revision,name:characterSavedPlan.name,note:characterSavedPlan.note||'',origin:characterSavedPlan.origin}:null};
 }
-async function restoreCharacterDraft(raw){
+async function restoreCharacterDraft(raw,checkRecovery=()=>{}){
   if(!raw||raw.format!==1)throw new Error('角色条件草稿格式不正确');
-  await loadCharacterCatalog();restoreNamedForm('#character-form',raw.form);characterRequest++;
-  characterSource=raw.source||{mode:'manual',snapshot_at:null,slot:null};characterStamp=raw.stamp||null;characterSavedPlan=null;
+  const serial=characterRequest;await loadCharacterCatalog();checkRecovery();
+  if(serial!==characterRequest)throw new Error('载入期间角色条件已修改；当前输入和原副本都保留。');
+  let saved=null;
   if(raw.saved){if(!/^[a-f0-9]{32}$/.test(raw.saved.id)||raw.saved.record_revision&&!/^[a-f0-9]{64}$/.test(raw.saved.record_revision))throw new Error('角色条件关联版本不正确');
-    try{const latest=(await getJSON('/api/workspace/plan?'+new URLSearchParams({id:raw.saved.id}))).plan;if(latest.kind==='character')characterSavedPlan={...latest,...raw.saved,record_revision:raw.saved.record_revision||''};}catch(error){toast('原角色条件方案不可用，原始输入按独立草稿保留。',true);}
+    try{const latest=(await getJSON('/api/workspace/plan?'+new URLSearchParams({id:raw.saved.id}))).plan;if(latest.kind==='character')saved={...latest,...raw.saved,record_revision:raw.saved.record_revision||''};}catch(error){toast('原角色条件方案不可用，原始输入按独立草稿保留。',true);}
   }
+  checkRecovery();if(serial!==characterRequest)throw new Error('载入期间角色条件已修改；当前输入和原副本都保留。');
+  restoreNamedForm('#character-form',raw.form);characterRequest++;characterSource=raw.source||{mode:'manual',snapshot_at:null,slot:null};characterStamp=raw.stamp||null;characterSavedPlan=saved;
   characterImportUndo=raw.undo||null;characterResult=null;characterDirty=true;characterUnsaved=true;renderCharacterResult();
 }
 async function openCharacterPlan(plan,result,rulesChanged){
-  characterRequest++;await loadCharacterCatalog();fillCharacterScene(plan.params);characterSavedPlan=plan;characterSource=cleanStoredOrigin(plan.origin);characterStamp=null;
+  const serial=++characterRequest,nav=navigationSerial;await loadCharacterCatalog();
+  if(serial!==characterRequest||nav!==navigationSerial){if(nav===navigationSerial)inlineError($('#character-error'),'读取期间角色条件已有新编辑；当前输入仍保留，请核对后重新打开方案。');return false;}
+  fillCharacterScene(plan.params);characterSavedPlan=plan;characterSource=cleanStoredOrigin(plan.origin);characterStamp=null;
   characterResult=result;characterDirty=false;characterUnsaved=false;characterImportUndo=null;renderCharacterResult();
   inlineError($('#character-error'),rulesChanged?'规则版本已有变化；当前资料按保存条件重新计算，请核对。':'');
-  navigate('workspace');$('#character-editor').scrollIntoView({block:'start'});$('#character-base').focus();
+  navigate('workspace');$('#character-editor').scrollIntoView({block:'start'});$('#character-base').focus();return true;
 }
 function characterPlanSaved(plan,payload){
   if(characterSavedPlan&&characterSavedPlan.id!==plan.id&&characterSavedPlan.id!==planDraft?.existing?.id)return;

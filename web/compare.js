@@ -189,11 +189,11 @@ function readComparisonArgs(){
   }
   if($('#compare-planning-enabled').checked)Object.assign(args,{planning:'1',upgrade_budget:$('#compare-upgrade-budget').value,strength_budget:$('#compare-strength-budget').value,investment_mode:$('#compare-investment-mode').value});return args;
 }
-async function loadComparisonContext(side,item){
+async function loadComparisonContext(side,item,checkRecovery=()=>{}){
   const target=$('#compare-context-'+side),identity=item?.key||'';
   if(!/^(items.wands.|items.rings.)/.test(identity)){target.replaceChildren();target.dataset.identity='';return;}
   if(target.dataset.identity===identity)return;const serial=++compareContextSerial[side];target.dataset.identity='';
-  try{const result=await getJSON('/api/values?'+new URLSearchParams({id:identity}));if(serial!==compareContextSerial[side])return;
+  try{const result=await getJSON('/api/values?'+new URLSearchParams({id:identity}));if(serial!==compareContextSerial[side])return;checkRecovery();
     const fields=result.inputs.filter(f=>!['level','strength'].includes(f.key));if(identity.endsWith('wandoffireblast'))fields.push({key:'charges',label:'本次消耗充能',value:1,min:1,max:3,step:1});
     target.dataset.identity=identity;target.innerHTML=fields.map(f=>`<label>${escapeHTML(f.label)} · 示例，需手填核对<input type="number" data-compare-key="${f.key}_${side}" value="${f.value}" min="${f.min}" max="${f.max}" step="${f.step||1}" required></label>`).join('');
   }catch(error){if(serial===compareContextSerial[side]){target.dataset.identity='';compareError=error.message;refreshComparisonOrigin();}}

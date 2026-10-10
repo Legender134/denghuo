@@ -38,6 +38,44 @@ function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revis
   dashboard.get('#calc-level').value='0';dashboard.get('#calc-tier').value='3';
   dashboard.load('backups.js');dashboard.load('app.js');
   await new Promise(resolve=>setImmediate(resolve));
+  // Global navigation must keep an unfinished modal choice visible and usable.
+  let openDialogs=[];dashboard.context.document.activeElement={tagName:'DIV'};
+  dashboard.context.document.querySelectorAll=selector=>selector==='dialog[open]'?openDialogs.filter(dialog=>dialog.open):[];
+  dashboard.get('#library-search').select=()=>{dashboard.get('#library-search').selected=true;};
+  for(const id of ['settings-recovery-dialog','session-exit-dialog','restore-dialog','manage-dialog','repair-dialog','plan-dialog','workspace-confirm']){
+    for(const key of ['F1','f','/']){
+      const modal=element(id);openDialogs=[modal];dashboard.run("view='settings'");
+      dashboard.context.shortcutEvent={key,ctrlKey:key==='f',altKey:false,preventDefault(){this.prevented=true;}};
+      dashboard.run('handlePageShortcut(shortcutEvent)');
+      assert(dashboard.context.shortcutEvent.prevented);assert(modal.open,`${id} remains visible for ${key}`);
+      assert.equal(dashboard.run('view'),'settings','a pending modal choice must not navigate away');
+    }
+  }
+  const ordinaryDetail=element('detail-dialog');openDialogs=[ordinaryDetail];
+  dashboard.context.shortcutEvent={key:'F1',preventDefault(){}};dashboard.run('handlePageShortcut(shortcutEvent)');
+  assert(!ordinaryDetail.open);assert.equal(dashboard.run('view'),'help');
+  ordinaryDetail.open=true;openDialogs=[ordinaryDetail];
+  dashboard.context.shortcutEvent={key:'f',ctrlKey:true,altKey:false,preventDefault(){}};dashboard.run('handlePageShortcut(shortcutEvent)');
+  assert(!ordinaryDetail.open);assert.equal(dashboard.run('view'),'library');assert(dashboard.get('#library-search').focused);assert(dashboard.get('#library-search').selected);
+  openDialogs=[];dashboard.run("view='overview'");dashboard.context.document.activeElement={tagName:'INPUT'};
+  dashboard.context.shortcutEvent={key:'/',preventDefault(){this.prevented=true;}};dashboard.run('handlePageShortcut(shortcutEvent)');
+  assert.equal(dashboard.run('view'),'overview');assert(!dashboard.context.shortcutEvent.prevented);
+  // Verify the inventory entry and shared lookup projection use the same field origins.
+  const workspaceText=fs.readFileSync(path.join(root,'web','workspace.js'),'utf8');
+  dashboard.run(workspaceText.slice(workspaceText.indexOf('function lookupCalculationOptions('),workspaceText.indexOf('function referenceList(')));
+  dashboard.context.visibleCalculationContext=()=>({hp:10,max_hp:100});
+  dashboard.context.calculationStamp=()=>({started:90,mode:'save',slot:2,revision:3,modified:100});
+  dashboard.context.cancelNumericalDetail=()=>{};
+  dashboard.context.loadNumericalDetail=(id,params,origin,options)=>{dashboard.context.itemLookup={id,params,origin,options};};
+  for(const volume of [0,2,20]){
+    dashboard.context.waterItem={key:'items.waterskin',name:'Water',description:'',location:'Bag',details:[],known:true,level_applicable:false,volume};
+    dashboard.run('showItem(waterItem)');const call=dashboard.context.itemLookup;
+    assert.equal(call.params.dew_volume,volume);assert.equal(call.options.fieldOrigins.dew_volume,'快照记录 · 水袋露珠量');
+    assert.equal(call.options.sourceStamp.slot,2);assert.equal(call.options.sourceStamp.modified,100);
+  }
+  delete dashboard.context.waterItem.volume;dashboard.run('showItem(waterItem)');
+  assert(!('dew_volume' in dashboard.context.itemLookup.params));assert(!('dew_volume' in dashboard.context.itemLookup.options.fieldOrigins));
+  dashboard.context.document.activeElement=null;
   assert(dashboard.get('#connection-banner').textContent.includes('无需先配置'));
   assert(!dashboard.get('#connection-banner').className.includes('error'));
   assert(!dashboard.get('#connection-banner').textContent.includes('旧快照'));

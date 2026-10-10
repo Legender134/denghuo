@@ -47,7 +47,17 @@ $$('[data-goto]').forEach(el=>el.addEventListener('click',()=>navigate(el.datase
 $('.brand').addEventListener('click',event=>{event.preventDefault();navigate('overview');});
 window.addEventListener('hashchange',()=>navigate(location.hash.slice(1)));
 window.addEventListener('DOMContentLoaded',()=>{if(view==='alchemy'&&typeof loadAlchemy==='function')loadAlchemy();if(view==='migration'&&typeof loadMigration==='function')loadMigration();});
-document.addEventListener('keydown',event=>{if(event.key==='F1'){event.preventDefault();$$('dialog[open]').forEach(dialog=>dialog.close());navigate('help');}else if((event.ctrlKey&&!event.altKey&&event.key.toLowerCase()==='f')||(event.key==='/'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName))){event.preventDefault();$$('dialog[open]').forEach(dialog=>dialog.close());navigate('library');$('#library-search').focus();$('#library-search').select();}});
+function handlePageShortcut(event){
+  const search=(event.ctrlKey&&!event.altKey&&event.key.toLowerCase()==='f')||(event.key==='/'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName));
+  if(event.key!=='F1'&&!search)return;
+  event.preventDefault();
+  const dialogs=$$('dialog[open]');
+  if(dialogs.some(dialog=>dialog.id!=='detail-dialog'))return;
+  dialogs.forEach(dialog=>dialog.close());
+  if(event.key==='F1')navigate('help');
+  else{navigate('library');$('#library-search').focus();$('#library-search').select();}
+}
+document.addEventListener('keydown',handlePageShortcut);
 function renderStatus(){
   const banner=$('#connection-banner');const isManual=state.settings.mode==='manual';
   const waiting=state.waiting_for_save;
@@ -113,7 +123,7 @@ let detailEntry=null;
 function showDetailContext(text){const target=$('#detail-context');if(target){target.textContent=text||'';target.hidden=!text;}}
 function showDetail(title,text,category,meta){showDetailContext('');cancelNumericalDetail();detailEntry=null;$('#detail-rules').replaceChildren();$('#detail-tools')?.replaceChildren();$('#detail-related')?.replaceChildren();$('#detail-title').textContent=title;$('#detail-text').textContent=text || '此条目没有独立说明，请参考游戏中的检查界面。';$('#detail-category').textContent=category;$('#detail-meta').textContent=meta;if(!$('#detail-dialog').open)$('#detail-dialog').showModal();$('#detail-dialog').scrollTop=0;}
 function showRelatedReferences(rows,context={}){const target=$('#detail-related');if(!target)return;target.replaceChildren();for(const row of rows||[]){const button=document.createElement('button');button.className='secondary';button.textContent='查看 '+row.name;button.addEventListener('click',()=>showReference({...row,lookup_context:row.lookup_context||{...context,ignore_drafts:true,capture_context:true,conditions:row.conditions}}));target.append(button);}}
-function showItem(item){showDetail(item.name,item.description,item.location,item.details.join(' · ')+(item.known?'':' · 未鉴定物品保留未知身份')+(item.available===false?' · 当前记录中不可用；仅供阅读参考':''));if(item.known){const params={...(typeof visibleCalculationContext==='function'?visibleCalculationContext():{}),...(item.level==null?{}:{level:item.level}),...(item.tier?{tier:item.tier}:{})},origin=item.level_applicable===false?'not_applicable':item.level==null?'unknown':'known',stamp=typeof calculationStamp==='function'?calculationStamp():null;if(typeof setDetailEntry==='function')setDetailEntry(item.key);loadNumericalDetail(item.key,params,origin);showRelatedReferences(item.related,{params,level_origin:origin,stamp:stamp?[stamp.started,null,stamp.mode,stamp.slot,stamp.revision,stamp.modified]:undefined});}}
+function showItem(item){showDetail(item.name,item.description,item.location,item.details.join(' · ')+(item.known?'':' · 未鉴定物品保留未知身份')+(item.available===false?' · 当前记录中不可用；仅供阅读参考':''));if(item.known){const params={...(typeof visibleCalculationContext==='function'?visibleCalculationContext():{}),...(item.level==null?{}:{level:item.level}),...(item.tier?{tier:item.tier}:{}),...(Number.isInteger(item.volume)&&item.volume>=0&&item.volume<=20?{dew_volume:item.volume}:{})},origin=item.level_applicable===false?'not_applicable':item.level==null?'unknown':'known',stamp=typeof calculationStamp==='function'?calculationStamp():null;if(typeof setDetailEntry==='function')setDetailEntry(item.key);const context={params,level_origin:origin,stamp:stamp?[stamp.started,null,stamp.mode,stamp.slot,stamp.revision,stamp.modified]:undefined};loadNumericalDetail(item.key,params,origin,typeof lookupCalculationOptions==='function'?lookupCalculationOptions(context):{});showRelatedReferences(item.related,context);}}
 function showReference(row,version){showDetail(row.name,row.description+(row.hint?'\n\n'+row.hint:''),row.category,`游戏版本 ${version||state?.catalog_version||'以条目为准'}`);if(typeof setDetailEntry==='function')setDetailEntry(row.id);const context=row.lookup_context||{};showDetailContext(Array.isArray(context.conditions)?context.conditions.join('；'):context.conditions);showRelatedReferences(row.related,context);loadNumericalDetail(row.id,context.params||{},context.level_origin||'manual',{...(typeof lookupCalculationOptions==='function'?lookupCalculationOptions(context):{}),ignoreDrafts:context.ignore_drafts===true,capturedContext:context.capture_context===true});}
 // Async backup previews may replace their original trigger during a status poll.
 const backupDialogTriggers=new Map();

@@ -126,7 +126,7 @@ async function openPlan(id,preloaded=null,allowReplace=false){
   else if(view==='workspace')rememberWorkspaceDetailFocus(id);
   const seq=++planRequest,nav=navigationSerial;
   try{
-    const opened=preloaded||await getJSON('/api/workspace/plan?'+new URLSearchParams({id}));if(seq!==planRequest||nav!==navigationSerial)return;
+    const opened=preloaded||await getJSON('/api/workspace/plan?'+new URLSearchParams({id}));if(seq!==planRequest||nav!==navigationSerial)return false;
     const plan=opened.plan;
     if(!allowReplace&&((plan.kind==='equipment'&&compareSessionUnsaved)||(plan.kind==='manual'&&manualUnsaved)||(plan.kind==='character'&&typeof characterDraftLabel==='function'&&characterDraftLabel())||(plan.kind==='alchemy'&&typeof alchemyDraftLabel==='function'&&alchemyDraftLabel()))){openWorkspaceConfirmation({localOpenPlan:{id,opened}},'保留当前草稿，再打开所选方案','当前对应表单有尚未保存的编辑。勾选并确认后，先保存全部未完成原始表单副本，再打开所选方案。取消则继续保留当前表单。副本可在「未完成的会话草稿」中找回，不会应用到游戏或设置。');return;}
     if(plan.kind!=='numeric'&&$('#detail-dialog').open)$('#detail-dialog').close();
@@ -138,7 +138,7 @@ async function openPlan(id,preloaded=null,allowReplace=false){
     }else if(plan.kind==='equipment'){
       navigate('inventory');await openEquipmentPlan(plan,opened.result,opened.rules_changed);
     }else if(plan.kind==='character'){
-      await openCharacterPlan(plan,opened.result,opened.rules_changed);
+      if(await openCharacterPlan(plan,opened.result,opened.rules_changed)===false)return false;
     }else if(plan.kind==='alchemy'){
       navigate('alchemy');await openAlchemyPlan(plan,opened.result,opened.rules_changed);
     }else if(plan.kind==='manual'){
@@ -159,7 +159,7 @@ function fillManualDraft(params){
 function openWorkspaceConfirmation(payload,title,description){
   workspaceConfirmSerial++;workspaceConfirmation=payload;$('#workspace-confirm-title').textContent=title;$('#workspace-confirm-description').textContent=description;$('#workspace-confirm-check').checked=false;inlineError($('#workspace-confirm-error'),'');$('#workspace-confirm-submit').disabled=false;$('#workspace-confirm').showModal();
 }
-$('#workspace-confirm-form').addEventListener('submit',async event=>{event.preventDefault();if(!$('#workspace-confirm-check').checked||!workspaceConfirmation)return;const serial=workspaceConfirmSerial,payload=workspaceConfirmation;$('#workspace-confirm-submit').disabled=true;try{if(payload.localOpenPlan){const captured=currentWebDraft();await post('/api/session-exit',{action:'save-draft',surface_id:webSurfaceId,kind:'web-session',label:'打开其他方案前的未完成草稿',draft:captured.draft});if(serial!==workspaceConfirmSerial)return;const pending=payload.localOpenPlan;$('#workspace-confirm').close();await openPlan(pending.id,pending.opened,true);toast('原有草稿副本已保留；所选方案已打开。');return;}if(payload.localReload){const id=payload.localReload;const opened=await getJSON('/api/workspace/plan?'+new URLSearchParams({id}));if(serial!==workspaceConfirmSerial)return;if(numericalDetail?.savedPlan?.id===id)cancelNumericalDetail();fixedNumericalDrafts.delete(id);numericalFormDrafts.delete('plan:'+id);planNameDrafts.delete(id);planNoteDrafts.delete(id);if(typeof clearAlchemyPlanMetadata==='function')clearAlchemyPlanMetadata(id);planDraft=null;$('#plan-dialog').close();$('#workspace-confirm').close();await openPlan(id,opened,true);return;}const result=await post('/api/workspace',payload);if(serial!==workspaceConfirmSerial)return;$('#workspace-confirm').close();toast(result.preserved_file?'已保留原件并重建空资料库':'方案已删除');await loadWorkspace();}catch(error){if(serial===workspaceConfirmSerial)inlineError($('#workspace-confirm-error'),error.message);}finally{if(serial===workspaceConfirmSerial)$('#workspace-confirm-submit').disabled=false;}});
+$('#workspace-confirm-form').addEventListener('submit',async event=>{event.preventDefault();if(!$('#workspace-confirm-check').checked||!workspaceConfirmation)return;const serial=workspaceConfirmSerial,payload=workspaceConfirmation;$('#workspace-confirm-submit').disabled=true;try{if(payload.localOpenPlan){const captured=currentWebDraft();await post('/api/session-exit',{action:'save-draft',surface_id:webSurfaceId,kind:'web-session',label:'打开其他方案前的未完成草稿',draft:captured.draft});if(serial!==workspaceConfirmSerial)return;const pending=payload.localOpenPlan;$('#workspace-confirm').close();const applied=await openPlan(pending.id,pending.opened,true);toast(applied===false?'原有草稿副本已保留；读取期间有新编辑，所选方案尚未载入。':'原有草稿副本已保留；所选方案已打开。');return;}if(payload.localReload){const id=payload.localReload;const opened=await getJSON('/api/workspace/plan?'+new URLSearchParams({id}));if(serial!==workspaceConfirmSerial)return;if(numericalDetail?.savedPlan?.id===id)cancelNumericalDetail();fixedNumericalDrafts.delete(id);numericalFormDrafts.delete('plan:'+id);planNameDrafts.delete(id);planNoteDrafts.delete(id);if(typeof clearAlchemyPlanMetadata==='function')clearAlchemyPlanMetadata(id);planDraft=null;$('#plan-dialog').close();$('#workspace-confirm').close();await openPlan(id,opened,true);return;}const result=await post('/api/workspace',payload);if(serial!==workspaceConfirmSerial)return;$('#workspace-confirm').close();toast(result.preserved_file?'已保留原件并重建空资料库':'方案已删除');await loadWorkspace();}catch(error){if(serial===workspaceConfirmSerial)inlineError($('#workspace-confirm-error'),error.message);}finally{if(serial===workspaceConfirmSerial)$('#workspace-confirm-submit').disabled=false;}});
 $('#workspace-confirm-close').addEventListener('click',()=>$('#workspace-confirm').close());$('#workspace-confirm').addEventListener('close',()=>{workspaceConfirmSerial++;workspaceConfirmation=null;});
 $('#workspace-repair').addEventListener('click',async()=>{const serial=workspaceConfirmSerial;try{const preview=await post('/api/workspace',{action:'repair-preview'});if(serial!==workspaceConfirmSerial||view!=='workspace')return;openWorkspaceConfirmation({action:'repair',expected:preview.expected,confirmed:true},'保留原文件后重建',`${preview.message}。原件 ${preview.bytes} 字节；预览后原文件变化会停止重建。`);}catch(error){inlineError($('#workspace-error'),error.message);}});
 $('#workspace-import').addEventListener('change',async event=>{const file=event.target.files[0];if(!file)return;try{if(file.size>1048576)throw new Error('资料库文件不能超过 1 MiB');if(!token)throw new Error('助手未连接，请恢复后重试');const response=await fetch('/api/workspace/import',{method:'POST',headers:{'Content-Type':'application/json','X-Companion-Token':token},body:await file.text()}),result=await response.json();if(!response.ok)throw new Error(result.error||'导入失败');await loadWorkspace();toast(`已合并 ${result.plans_added||0} 个方案、${result.favorites_added||0} 项收藏；冲突另存 ${result.conflicting_plans_kept_as_copies||0} 个副本。`);}catch(error){inlineError($('#workspace-error'),error.message);}finally{event.target.value='';}});
@@ -421,20 +421,21 @@ async function loadExitDrafts(){
     }inlineError($('#draft-error'),'');
   }catch(error){if(request===exitDraftListRequest)inlineError($('#draft-error'),error.message);}
 }
-async function restoreNumericSession(item){
+async function restoreNumericSession(item,checkRecovery=()=>{}){
   if(!item||typeof item.identity!=='string'||!/^[a-z0-9_.\-$]{1,300}$/.test(item.identity)||!item.raw||typeof item.raw!=='object')throw new Error('数值草稿身份或原始参数不正确');
   if(item.note!==undefined&&(typeof item.note!=='string'||item.note.length>1200||/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(item.note)))throw new Error('草稿用户备注格式不正确，原副本保留。');
   if(item.saved_name!=null&&(typeof item.saved_name!=='string'||item.saved_name.length>80))throw new Error('草稿关联方案名称格式不正确');
-  const reference=await getJSON('/api/values?'+new URLSearchParams({id:item.identity})),keys=new Set(reference.inputs.map(input=>input.key));
+  const reference=await getJSON('/api/values?'+new URLSearchParams({id:item.identity}));checkRecovery();const keys=new Set(reference.inputs.map(input=>input.key));
   if(Object.keys(item.raw).some(key=>!keys.has(key)||typeof item.raw[key]!=='string'||item.raw[key].length>200))throw new Error('数值草稿含当前条目不支持的字段；原副本保留。');
   const key=item.identity;
 
   let saved=null;if(item.saved_id){try{saved=(await getJSON('/api/workspace/plan?'+new URLSearchParams({id:item.saved_id}))).plan;}catch(error){toast('关联方案已变化；原始草稿仍按独立参考恢复',true);}}
+  checkRecovery();
   if(saved){if(item.saved_revision&&!/^[a-f0-9]{64}$/.test(item.saved_revision))throw new Error('关联方案版本格式不正确；原副本保留。');saved={...saved,record_revision:item.saved_revision||'',name:item.saved_name||saved.name,note:item.note||'',origin:item.saved_origin||saved.origin};}
-  showDetail('找回的数值草稿','原始输入已保留；下方先显示当前规则的示例结果，修改后的输入尚未计算。','未完成会话草稿','载入不会更新保存方案或当前游戏。');setDetailEntry(item.identity);
   const params=Object.fromEntries(Object.entries(item.params||{}).filter(([key,value])=>keys.has(key)&&typeof value==='number'&&Number.isFinite(value)));
   let calculated=reference;try{calculated=await getJSON('/api/values?'+new URLSearchParams({id:item.identity,...params}));}catch(error){showDetailContext('上次有效参数无法在当前版本计算；下面是当前规则示例，原始输入仍保留且尚未计算。');}
-  await loadNumericalDetail(item.identity,params,'manual',{ignoreDrafts:true,result:calculated});
+  checkRecovery();showDetail('找回的数值草稿','原始输入已保留；下方先显示当前规则的示例结果，修改后的输入尚未计算。','未完成会话草稿','载入不会更新保存方案或当前游戏。');setDetailEntry(item.identity);
+  await loadNumericalDetail(item.identity,params,'manual',{ignoreDrafts:true,result:calculated});checkRecovery();
   for(const input of $$('[data-value-key]'))if(input.dataset.valueKey in item.raw)input.value=item.raw[input.dataset.valueKey];
   numericalDetail.characterReference=item.character_reference||null;
   numericalDetail.savedPlan=saved;numericalDetail.fixed=!!saved&&!!item.fixed;numericalDetail.source=item.source||null;numericalDetail.levelSource=item.levelSource||null;
@@ -443,34 +444,49 @@ async function restoreNumericSession(item){
   {const metaKey=saved?.id||'numeric:'+item.identity;planNoteDrafts.set(metaKey,item.note||'');}
   if(saved){numericalFormDrafts.set('plan:'+saved.id,{...item.raw});rememberFixedNumericalDraft();}else {numericalFormDrafts.set(item.identity,{...item.raw});numericalCalculated.set(item.identity,{...numericalDetail.calculated,origins:{...numericalDetail.origins},source:numericalDetail.source,levelSource:numericalDetail.levelSource,sessionUnsaved:true});}refreshNumericalOrigin();return numericalDetail;
 }
+let unfinishedDraftRequest=0,draftRecoveryEditGeneration=0;
+for(const name of ['input','change'])document.addEventListener(name,event=>{const form=event.target.closest?.('form');if(form&&form.id!=='settings-recovery-form')draftRecoveryEditGeneration++;},true);
 async function loadUnfinishedDraft(id){
+  const request=++unfinishedDraftRequest,generation=draftRecoveryEditGeneration;let navForRecovery=navigationSerial;
+  const checkRecovery=()=>{if(request!==unfinishedDraftRequest||generation!==draftRecoveryEditGeneration||navForRecovery!==navigationSerial||webEditingFrozen)throw new Error('载入期间有新编辑、页面切换或新的操作；当前输入和原副本都保留，请核对后重新载入。');};
   try{if(webDirtySummary().length)throw new Error('当前有未保存草稿；请先命名保存，或保存会话草稿副本后再载入，避免覆盖本地编辑。');
-    const result=await post('/api/session-exit',{action:'draft-load',id}),record=result.draft,draft=record.draft;
+    const result=await post('/api/session-exit',{action:'draft-load',id});checkRecovery();
+    if(webDirtySummary().length)throw new Error('读取期间有新编辑；当前输入和原副本都保留，请核对后重新载入。');
+    const record=result.draft,draft=record.draft;
     if(draft?.schema!=='denghuo-web-session'||![1,2].includes(draft.format)){
-      if(record.draft_kind==='numeric'&&draft.entry&&draft.raw_params){await restoreNumericSession({identity:draft.entry,raw:draft.raw_params,params:draft.calculated||{},origins:draft.origins||{},saved_id:draft.saved_plan?.id||null,saved_revision:draft.saved_plan?.record_revision||null,saved_name:draft.saved_plan?.name||null,saved_origin:draft.saved_plan?.origin||null,fixed:!!draft.saved_plan,note:draft.note||'',source:lookupCalculationOptions({stamp:draft.context?.stamp,source:draft.context?.source}).sourceStamp||null});return;}
+      if(record.draft_kind==='numeric'&&draft.entry&&draft.raw_params){await restoreNumericSession({identity:draft.entry,raw:draft.raw_params,params:draft.calculated||{},origins:draft.origins||{},saved_id:draft.saved_plan?.id||null,saved_revision:draft.saved_plan?.record_revision||null,saved_name:draft.saved_plan?.name||null,saved_origin:draft.saved_plan?.origin||null,fixed:!!draft.saved_plan,note:draft.note||'',source:lookupCalculationOptions({stamp:draft.context?.stamp,source:draft.context?.source}).sourceStamp||null},checkRecovery);return;}
       throw new Error('此副本使用原生窗口的草稿格式，请在原生管理窗口选择「载入未完成草稿」。原件保留。');
     }
     if(draft.backup_metadata&&typeof checkedBackupMetadataDrafts==='function')checkedBackupMetadataDrafts(draft.backup_metadata);
     const settingsRecovery=draft.settings?await prepareSettingsRecovery('connection',draft.settings):null;
     const playRecovery=draft.play?await prepareSettingsRecovery('play',draft.play):null;
-    if(draft.character&&typeof restoreCharacterDraft==='function')await restoreCharacterDraft(draft.character);
+    checkRecovery();
+    if(draft.character&&typeof restoreCharacterDraft==='function')await restoreCharacterDraft(draft.character,checkRecovery);
+    checkRecovery();
     if(draft.manual&&typeof setManualCharacterReference==='function')setManualCharacterReference(draft.manual_character||null);
     if(draft.manual){restoreNamedForm('#manual-form',draft.manual);manualFormGeneration++;manualUnsaved=true;$('#manual-draft-status').textContent='找回了尚未提交的原始局势草稿；请核对后再提交。';}
-    if(draft.alchemy&&typeof restoreAlchemyDraft==='function')await restoreAlchemyDraft(draft.alchemy);
+    if(draft.alchemy&&typeof restoreAlchemyDraft==='function')await restoreAlchemyDraft(draft.alchemy,checkRecovery);
+    checkRecovery();
     if(draft.alchemy_plan_meta&&typeof restoreAlchemyPlanMetadata==='function')restoreAlchemyPlanMetadata(draft.alchemy_plan_meta);
-    if(draft.migration&&typeof restoreMigrationDraft==='function')await restoreMigrationDraft(draft.migration);
-    if(draft.comparison){const c=draft.comparison,kind=c.form['compare-kind']?.value;if(!comparisonPrefixes[kind])throw new Error('比较草稿类型不正确');await comparisonReady;$('#compare-kind').value=kind;compareSignature='';renderEquipmentComparison();
-      for(const side of ['a','b']){const index=compareItems.findIndex(item=>item.key===c.choices?.[side]&&!item.owned);if(index<0)throw new Error('草稿装备在当前资料中不存在');$('#compare-'+side).value=String(index);fillCompareChoice(side);await loadComparisonContext(side,compareItems[index]);}
+    if(draft.migration&&typeof restoreMigrationDraft==='function')await restoreMigrationDraft(draft.migration,checkRecovery,()=>{navForRecovery=navigationSerial;});
+    checkRecovery();
+    if(draft.comparison){const c=draft.comparison,kind=c.form['compare-kind']?.value;if(!comparisonPrefixes[kind])throw new Error('比较草稿类型不正确');await comparisonReady;checkRecovery();$('#compare-kind').value=kind;compareSignature='';renderEquipmentComparison();
+      for(const side of ['a','b']){const index=compareItems.findIndex(item=>item.key===c.choices?.[side]&&!item.owned);if(index<0)throw new Error('草稿装备在当前资料中不存在');$('#compare-'+side).value=String(index);fillCompareChoice(side);await loadComparisonContext(side,compareItems[index],checkRecovery);checkRecovery();}
       for(const input of $$('#equipment-comparison input,#equipment-comparison select')){if(['compare-a','compare-b'].includes(input.id))continue;const cell=c.form[input.id||input.dataset.compareKey];if(!cell)continue;if(typeof cell.value!=='string'||cell.value.length>200)throw new Error('比较草稿字段格式不正确');input.value=cell.value;input.checked=!!cell.checked;input.dataset.manual='true';input.dataset.edited='true';}
       if(c.note!==undefined&&(typeof c.note!=='string'||c.note.length>1200))throw new Error('比较草稿用户备注格式不正确');
       let saved=null;if(c.saved_id){try{saved=(await getJSON('/api/workspace/plan?'+new URLSearchParams({id:c.saved_id}))).plan;if(saved.kind!=='equipment')saved=null;}catch(error){toast('关联装备方案已变化，原始草稿按独立参考恢复',true);}if(saved){if(c.saved_revision&&!/^[a-f0-9]{64}$/.test(c.saved_revision))throw new Error('关联装备方案版本格式不正确');saved={...saved,record_revision:c.saved_revision||'',name:c.saved_name||saved.name,note:c.note||'',origin:c.saved_origin||saved.origin};}}
-      if(typeof compareCharacterReference!=='undefined')compareCharacterReference=c.character_reference||null;
+      checkRecovery();if(typeof compareCharacterReference!=='undefined')compareCharacterReference=c.character_reference||null;
       compareSessionUnsaved=true;compareDirty=true;compareFixed=!!saved&&!!c.fixed;compareStamp=c.stamp||null;compareBudgetOrigin=c.budget_origin||'找回的手填预算';compareBudgetStamp=c.budget_stamp||null;compareResultArgs=null;compareSavedPlan=saved;updateComparisonSavedNote();$('#compare-result').replaceChildren();$('#compare-copy-text').textContent='';$('.comparison-panel').open=true;refreshComparisonOrigin();}
     for(const meta of draft.plan_meta||[]){if(typeof meta.key!=='string'||typeof meta.name!=='string'||meta.name.length>80||typeof meta.note!=='string'||meta.note.length>1200)throw new Error('方案备注草稿格式不正确');planNameDrafts.set(meta.key,meta.name);planNoteDrafts.set(meta.key,meta.note);if(meta.original)planMetaOriginals.set(meta.key,meta.original);}
-    if(draft.numeric?.length){for(const item of draft.numeric)await restoreNumericSession(item);}
+    if(draft.numeric?.length){for(const item of draft.numeric){await restoreNumericSession(item,checkRecovery);checkRecovery();}}
     else if(draft.character)navigate('workspace');else if(draft.alchemy||draft.alchemy_plan_meta?.length)navigate('alchemy');else if(draft.migration)navigate('migration');else if(draft.manual)navigate('manual');else if(draft.comparison)navigate('inventory');else if(draft.settings)navigate('settings');else if(draft.play)navigate('play-settings');else if(draft.backup_metadata?.length)navigate('backups');
-    if(draft.open_plan){const old=draft.open_plan;let existing=null,conflict=false;if(old.existing_revision!=null&&!/^[a-f0-9]{64}$/.test(old.existing_revision))throw new Error('命名草稿关联版本格式不正确；原始副本仍保留');if(old.existing_id){try{const latest=(await getJSON('/api/workspace/plan?'+new URLSearchParams({id:old.existing_id}))).plan;if(latest.kind!==old.payload.kind)throw new Error('关联方案类型已经变化');conflict=latest.record_revision!==old.existing_revision;existing={...latest,record_revision:old.existing_revision||'',name:old.existing_name||old.name||latest.name,note:old.existing_note??old.note??'',origin:old.existing_origin||old.payload.source||latest.origin};}catch(error){conflict=true;/* Keep as a new independent draft. */}}openPlanSave(old.payload,existing,old.name);$('#plan-name').value=old.name;$('#plan-note').value=old.note||'';if(conflict)inlineError($('#plan-error'),'关联方案已变化；原始条件、名称和备注按旧版本保留。可另存副本，或明确重新读取最新方案；旧草稿不能覆盖新内容。');}
+    // Navigation above belongs to this recovery, before awaiting naming metadata.
+    navForRecovery=navigationSerial;
+    if(draft.open_plan){const old=draft.open_plan;let existing=null,conflict=false;if(old.existing_revision!=null&&!/^[a-f0-9]{64}$/.test(old.existing_revision))throw new Error('命名草稿关联版本格式不正确；原始副本仍保留');if(old.existing_id){try{const latest=(await getJSON('/api/workspace/plan?'+new URLSearchParams({id:old.existing_id}))).plan;if(latest.kind!==old.payload.kind)throw new Error('关联方案类型已经变化');conflict=latest.record_revision!==old.existing_revision;existing={...latest,record_revision:old.existing_revision||'',name:old.existing_name||old.name||latest.name,note:old.existing_note??old.note??'',origin:old.existing_origin||old.payload.source||latest.origin};}catch(error){conflict=true;/* Keep as a new independent draft. */}}checkRecovery();openPlanSave(old.payload,existing,old.name);$('#plan-name').value=old.name;$('#plan-note').value=old.note||'';if(conflict)inlineError($('#plan-error'),'关联方案已变化；原始条件、名称和备注按旧版本保留。可另存副本，或明确重新读取最新方案；旧草稿不能覆盖新内容。');}
+    // Navigation performed by this recovery is intentional; editing generations still guard pending IO.
+    navForRecovery=navigationSerial;
     await Promise.all([verifySettingsRecovery(settingsRecovery),verifySettingsRecovery(playRecovery)]);
+    checkRecovery();
     applySettingsRecovery(settingsRecovery);applySettingsRecovery(playRecovery);
     if(draft.backup_metadata?.length&&typeof restoreBackupMetadataDrafts==='function')restoreBackupMetadataDrafts(draft.backup_metadata);
     toast('已找回原始草稿；未计算、未提交局势、未应用设置。');inlineError($('#draft-error'),'');

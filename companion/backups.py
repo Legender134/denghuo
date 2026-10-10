@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from io import BytesIO
 from itertools import islice
 import json
@@ -75,6 +76,16 @@ def atomic_json(path, value):
     temporary.replace(path)
 
 
+@dataclass(frozen=True)
+class BackupLibrary:
+    """An assistant-owned library identity, deliberately not a game filesystem path."""
+    key: str
+
+    def __post_init__(self):
+        if not isinstance(self.key, str) or not re.fullmatch(r'[0-9a-f]{24}', self.key):
+            raise ValueError('备份库编号不正确，请从现有库清单重新选择')
+
+
 class BackupManager:
     def __init__(self, directory, clock=time.time, closed_check=game_closed):
         self.directory = Path(directory)
@@ -108,6 +119,8 @@ class BackupManager:
                 self.error = "备份设置无法读取，自动备份已暂停；请在存档时光机中重新开启"
 
     def scope(self, root):
+        if isinstance(root, BackupLibrary):
+            return unlinked(self.directory / root.key)
         key = hashlib.sha256(str(unlinked(Path(root)).resolve()).casefold().encode()).hexdigest()[:24]
         return unlinked(self.directory / key)
 
@@ -156,6 +169,15 @@ class BackupManager:
             if not directory.exists():
                 return 0
             return sum(unlinked(p).stat().st_size for p in directory.rglob('*') if p.is_file())
+        if isinstance(root, BackupLibrary):
+            key = self.scope(root).name
+            active = size(self.directory/key)
+            recycle = size(self.directory.parent/'backup-recycle'/key)
+            quarantine = size(self.directory.parent/'backup-quarantine'/key)
+            result = {'active': active, 'retained': recycle, 'quarantine': quarantine,
+                      'before_restore': 0, 'interrupted_stage': 0, 'total': active+recycle+quarantine}
+            self._storage_cache = (str(root), now, result)
+            return result
         active = size(self.directory)
         recycle = size(self.directory.parent/'backup-recycle')
         quarantine = size(self.directory.parent/'backup-quarantine')
@@ -248,6 +270,8 @@ class BackupManager:
         return rows
 
     def history(self, root, *, discover=True):
+        if isinstance(root, BackupLibrary):
+            discover = False
         scope = self.scope(root)
         path = unlinked(scope / 'history.json')
         rows = self._history_records(path)

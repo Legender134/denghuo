@@ -20,6 +20,7 @@ function syncBackupContext(context){
   const changed=!!backupContext;
   backupContext=context;backupState=null;manageTarget=null;repairTarget=null;historyRepairTarget=null;restorePreview++;backupViewKeys.clear();
   if(typeof resetBackupWorkflows==='function')resetBackupWorkflows(context);
+  if(typeof resetBackupLibraries==='function')resetBackupLibraries(context);
   $('#backup-slot').value='';$('#backup-slot').innerHTML='';
   $('#backup-history-count').textContent=context?'正在读取当前目录的历史记录…':'服务未连接，历史数量暂不可确认。';
   $('#backup-node-gaps').textContent=context?'正在读取当前目录的时间节点…':'服务未连接，时间节点暂不可确认。';backupHistoryLimit=20;backupRetainedLimit=20;
