@@ -176,7 +176,7 @@ for(const suffix of ['a','b'])$('#compare-'+suffix).addEventListener('change',()
 $('#equipment-comparison').addEventListener('change',()=>{compareEditGeneration++;});
 $('#equipment-comparison').addEventListener('input',e=>{compareEditGeneration++;compareSessionUnsaved=true;compareDirty=true;compareError='';e.target.dataset.manual='true';if(['compare-upgrade-budget','compare-strength-budget'].includes(e.target.id)){compareBudgetOrigin='手填预算';compareBudgetStamp=null;}if($('#compare-kind').value==='missile'&&/^compare-level-[ab]$/.test(e.target.id))$('#compare-level-known-'+e.target.id.slice(-1)).checked=false;if(/^compare-(level|augment|mastery|tier)-[ab]$/.test(e.target.id))fillCompareChoice(e.target.id.slice(-1),true);if(e.target.id==='compare-strength')e.target.dataset.edited='true';refreshComparisonOrigin();});
 $('#equipment-comparison').addEventListener('submit',async event=>{
-  event.preventDefault();const seq=++compareRequest,button=$('#compare-submit'),signature=compareSignature;compareError='';button.disabled=true;comparePending=true;
+  event.preventDefault();if(!validRawNumericForm($('#equipment-comparison')))return;const seq=++compareRequest,button=$('#compare-submit'),signature=compareSignature;compareError='';button.disabled=true;comparePending=true;
   let args;try{args=readComparisonArgs();}catch(error){comparePending=false;button.disabled=false;compareError=error.message;refreshComparisonOrigin();return;}
   const source=calculationStamp(),fields=comparisonFields(args),references=comparisonReferences(),generation=compareEditGeneration;
   $('#equipment-comparison').querySelectorAll('input,select').forEach(el=>el.disabled=true);
@@ -337,7 +337,7 @@ function readComparisonArgs(){
 }
 function comparisonContextMarkup(result,identity,side){
   const fields=result.inputs.filter(f=>!['level','strength'].includes(f.key));if(identity.endsWith('wandoffireblast'))fields.push({key:'charges',label:'本次消耗充能',value:1,min:1,max:3,step:1});
-  return fields.map(f=>`<label>${escapeHTML(f.label)} · 示例，需手填核对<input type="number" data-compare-key="${f.key}_${side}" value="${f.value}" min="${f.min}" max="${f.max}" step="${f.step||1}" required></label>`).join('');
+  return fields.map(f=>`<label>${escapeHTML(f.label)} · 示例，需手填核对<input type="text" data-raw-number inputmode="${f.step==='any'?'decimal':'numeric'}" data-compare-key="${f.key}_${side}" value="${f.value}" min="${f.min}" max="${f.max}" step="${f.step||1}" required></label>`).join('');
 }
 function loadComparisonContext(side,item,checkRecovery=()=>{},retry=false){
   const target=$('#compare-context-'+side),identity=item?.key||'';

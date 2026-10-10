@@ -21,16 +21,16 @@ class PlaySettings:
         self.recovery_pending = None
         self.read_values()
 
-    def read_values(self):
+    def read_values(self, receipt=None):
         preferences = self.manager.play.preferences
-        with preferences.lock:
-            self.revision, state = preferences.generation, copy.deepcopy(preferences.values)
+        receipt = receipt or preferences.published()
+        self.revision, state = receipt['revision'], copy.deepcopy(receipt['settings'])
         self.saved_baseline = copy.deepcopy(state)
         self.vars = {key: Value(next(label for label, anchor in ANCHORS.items() if anchor == value) if key == 'anchor' else value if type(value) is bool else str(value), self.changed)
                      for key, value in state.items() if key != 'bindings'}
         self.bindings = {key: Value(value, self.changed) for key, value in state['bindings'].items()}
         self.draft_baseline = self.draft_values()
-        self.status.text = preferences.error
+        self.status.text = receipt.get('error', '')
         self.emit()
 
     def draft_values(self):
@@ -48,41 +48,101 @@ class PlaySettings:
         self.status.text = ('设置有未保存草稿；保存后才生效。' if self.has_draft()
                             else '本窗口的修改已撤回，没有未保存草稿；需要时可重新读取最新保存值。')
 
+    def prepare_save(self):
+        submitted_values, submitted_bindings = copy.deepcopy(self.draft_values())
+        patch = dict(submitted_values)
+        patch['anchor'] = ANCHORS[patch['anchor']]
+        for key in ('offset_x', 'offset_y'):
+            try:
+                patch[key] = int(patch[key])
+            except (ValueError, TypeError):
+                label = next(label for field, label in FIELDS if field == key)
+                raise ValueError(label+'需填写整数；原始输入仍保留。') from None
+        for key in ('font_scale', 'opacity', 'notice_seconds'):
+            try:
+                patch[key] = float(patch[key])
+            except (ValueError, TypeError):
+                label = next(label for field, label in FIELDS if field == key)
+                raise ValueError(label+'需填写数值；原始输入仍保留。') from None
+        patch['bindings'] = submitted_bindings
+        validate_preferences(patch)
+        return patch, (submitted_values, submitted_bindings)
+
+    def finish_save(self, receipt, submitted):
+        self.revision = receipt['revision']
+        self.saved_baseline = copy.deepcopy(receipt['settings'])
+        self.draft_baseline = submitted
+        self.status.text = self.manager.play_apply_error or ('本次提交已保存；之后的新编辑仍未保存。'
+            if self.has_draft() else '已保存；注册状态见下方。透明度只作用于背景。')
+        self.emit()
+
     def save(self):
+        """Synchronous service entry; UI messages use save_async instead."""
         try:
-            submitted_values, submitted_bindings = copy.deepcopy(self.draft_values())
-            patch = dict(submitted_values)
-            patch['anchor'] = ANCHORS[patch['anchor']]
-            for key in ('offset_x', 'offset_y'):
-                try:
-                    patch[key] = int(patch[key])
-                except (ValueError, TypeError):
-                    label = next(label for field, label in FIELDS if field == key)
-                    raise ValueError(label+'需填写整数；原始输入仍保留。') from None
-            for key in ('font_scale', 'opacity', 'notice_seconds'):
-                try:
-                    patch[key] = float(patch[key])
-                except (ValueError, TypeError):
-                    label = next(label for field, label in FIELDS if field == key)
-                    raise ValueError(label+'需填写数值；原始输入仍保留。') from None
-            patch['bindings'] = submitted_bindings
+            patch, submitted = self.prepare_save()
             receipt = self.manager.play.save(patch, expected_generation=self.revision)
-            self.revision = receipt['revision']
-            self.saved_baseline = copy.deepcopy(receipt['settings'])
-            self.draft_baseline = (submitted_values, submitted_bindings)
-            self.status.text = self.manager.play_apply_error or ('本次提交已保存；之后的新编辑仍未保存。'
-                if self.has_draft() else '已保存；注册状态见下方。透明度只作用于背景。')
-            self.emit()
+            self.finish_save(receipt, submitted)
             return True
         except (ValueError, KeyError, OSError, RuntimeError) as exc:
             self.status.text = str(exc) or '设置未保存，请核对输入'
             self.emit()
             return False
 
-    def reload(self, confirmed=False):
+    def save_async(self, unlock=False):
+        try:
+            if unlock:
+                self.vars['enabled'].set(True)
+            patch, submitted = self.prepare_save()
+            generation = self.revision
+            revision = self.edit_revision
+            ui, preferences = self.manager.native_ui, self.manager.play.preferences
+            def finish(receipt, error):
+                if error:
+                    self.status.text = error
+                    self.emit()
+                    return
+                self.manager.apply_play_settings()
+                self.finish_save(receipt, submitted)
+                if unlock and self.edit_revision == revision and not self.has_draft():
+                    self.manager.play.unlock_layout(persist=False)
+                    self.window.withdraw()
+            queued = ui.queue_io('正在保存游玩设置', lambda: preferences.update(patch,
+                expected_generation=generation, check_current=ui.check_io_current), finish)
+            self.status.text = ('正在保存；可继续编辑，之后的新输入会保留，也可退出或取消。' if queued
+                else '上一项磁盘操作仍在等待；当前草稿保留，请完成后重试。')
+        except (ValueError, KeyError, OSError, RuntimeError) as exc:
+            self.status.text = str(exc) or '设置未保存，请核对输入。'
+        self.emit()
+
+    def reload(self, confirmed=False, *, asynchronous=False, preserve=False):
         if self.has_draft() and not confirmed:
             self.host.command('confirm', surface='settings', title='重新读取游玩设置', purpose='settings_reload',
                 text='重新读取会替换未保存设置草稿。保存副本、取消，或明确放弃后继续。')
+            return
+        if asynchronous:
+            ui, preferences = self.manager.native_ui, self.manager.play.preferences
+            revision, generation = self.edit_revision, preferences.published()['revision']
+            draft = copy.deepcopy(self.draft()) if preserve else None
+            def work():
+                if draft is not None:
+                    self.manager.session.save_exit_draft('native', 'play-settings', '游玩设置未完成草稿', draft)
+                return preferences.reload(expected_generation=generation, check_current=ui.check_io_current)
+            def finish(receipt, error):
+                if error:
+                    self.status.text = error
+                else:
+                    self.manager.apply_play_settings()
+                    if self.edit_revision == revision:
+                        self.edit_revision += 1
+                        self.read_values(receipt)
+                        self.status.text = receipt['error'] or self.manager.play_apply_error or '已重新读取保存值，当前草稿已替换。'
+                    else:
+                        self.status.text = '已读取保存值；等待期间的新编辑仍保留，请核对后再决定是否重新读取。'
+                self.emit()
+            queued = ui.queue_io('正在重新读取游玩设置', work, finish)
+            self.status.text = ('正在重新读取；等待期间的新编辑会保留，可退出或取消。' if queued
+                else '上一项磁盘操作仍在等待；当前草稿保留，请完成后重试。')
+            self.emit()
             return
         self.manager.play.preferences.reload()
         self.manager.apply_play_settings()
@@ -119,6 +179,8 @@ class PlaySettings:
         return {**values, **{'binding.'+key: value for key, value in state['bindings'].items()}}
 
     def restore_draft(self, draft):
+        if getattr(self.manager.native_ui, 'io_busy', False):
+            raise ValueError('磁盘操作仍在等待，请完成后再载入副本；当前输入与原副本仍保留。')
         if self.has_draft():
             raise ValueError('当前游玩设置已有草稿；请先保存或重新读取，原副本仍保留。')
         if (not isinstance(draft, dict) or not isinstance(draft.get('values'), dict)
@@ -177,6 +239,8 @@ class PlaySettings:
         self.finish_recovery({row['key']: 'draft' for row in rows})
 
     def finish_recovery(self, choices):
+        if getattr(self.manager.native_ui, 'io_busy', False):
+            raise ValueError('磁盘操作仍在等待，请完成后再载入副本；当前输入与原副本仍保留。')
         pending = self.recovery_pending
         if pending is None:
             raise ValueError('草稿载入确认已失效，请重新选择副本。')
@@ -229,7 +293,7 @@ class PlaySettings:
             self.edit_revision = max(self.edit_revision+1, int(item.get('draft_revision', 0)))
             self.edit_notice()
         elif action == 'settings_save':
-            self.save()
+            self.save_async()
         elif action == 'settings_recovery_decision':
             if item.get('decision') == 'restore':
                 self.finish_recovery(item.get('choices'))
@@ -237,19 +301,17 @@ class PlaySettings:
                 self.recovery_pending = None
                 self.status.text = '已取消载入；当前设置和原草稿副本保持不变。'
         elif action == 'settings_reload':
-            self.reload()
+            self.reload(asynchronous=True)
         elif action == 'settings_reload_decision':
-            if item.get('decision') == 'saved':
-                self.save_draft_copy()
             if item.get('decision') in ('saved', 'discard'):
-                self.reload(True)
-        elif action == 'unlock' and self.save():
-            self.manager.play.unlock_layout()
-            self.window.withdraw()
+                self.reload(True, asynchronous=True, preserve=item.get('decision') == 'saved')
+        elif action == 'unlock':
+            self.save_async(unlock=True)
         self.emit()
 
     def emit(self):
         values, bindings = self.draft_values()
         self.host.command('settings_state', values=values, bindings=bindings, draft_revision=self.edit_revision,
-            status=self.status.text, registration=self.key_status(), dirty=self.has_draft())
+            status=self.status.text, registration=self.key_status(), dirty=self.has_draft(),
+            io_busy=bool(getattr(self.manager.native_ui, 'io_busy', False)))
         self.manager.native_ui.report_drafts()

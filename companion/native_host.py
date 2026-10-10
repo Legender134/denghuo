@@ -178,6 +178,8 @@ class NativeHost:
                 self.dispatch(item)
             else:
                 self.dispatch(item)
+        if getattr(self, 'idle', None):
+            self.idle()
         self.timer = self.root.after(40, self.poll)
 
     def is_foreground(self, surface, native):

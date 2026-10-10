@@ -434,6 +434,7 @@ namespace Denghuo.Native {
         readonly ListBox references = UI.List("风险与资源参考资料");
         readonly List<string> referenceTokens = new List<string>();
         readonly Panel options = new Panel { Dock = DockStyle.Fill, AutoSize = true, Visible = false };
+        readonly List<Control> connectionControls = new List<Control>();
         readonly Button compact;
         bool rendering, isCompact;
         public ManagerForm(Helper host) : base(host, "manager", "灯火 · 地牢助手", 550, 650) {
@@ -442,8 +443,9 @@ namespace Denghuo.Native {
             compact = UI.Button("收起", delegate { isCompact = !isCompact; references.Visible = !isCompact; summary.Visible = true; compact.Text = isCompact ? "展开" : "收起"; });
             table.Controls.Add(UI.Buttons(compact, UI.Button("设置", delegate { options.Visible = !options.Visible; }), UI.Button("退出", delegate { Host.Send("exit"); })), 0, 0);
             var settings = UI.Table(2); settings.Dock = DockStyle.Top; settings.Controls.Add(UI.Label("存档槽位"), 0, 0); settings.Controls.Add(slot, 1, 0); settings.Controls.Add(top, 0, 1);
-            settings.Controls.Add(UI.Button("刷新", delegate { Host.Send("refresh"); }), 1, 1);
-            settings.Controls.Add(UI.Button("选择存档目录…", delegate { using (var picker = new FolderBrowserDialog { Description = "选择包含 game1、game2 等文件夹的存档目录", ShowNewFolderButton = false }) { if (picker.ShowDialog(this) == DialogResult.OK) Host.Send("directory", "path", picker.SelectedPath); } }), 0, 2);
+            var refresh = UI.Button("刷新", delegate { Host.Send("refresh"); }); settings.Controls.Add(refresh, 1, 1);
+            var directory = UI.Button("选择存档目录…", delegate { using (var picker = new FolderBrowserDialog { Description = "选择包含 game1、game2 等文件夹的存档目录", ShowNewFolderButton = false }) { if (picker.ShowDialog(this) == DialogResult.OK) Host.Send("directory", "path", picker.SelectedPath); } }); settings.Controls.Add(directory, 0, 2);
+            connectionControls.AddRange(new Control[] { slot, top, refresh, directory });
             settings.Controls.Add(UI.Button("游玩显示与快捷键", delegate { Host.Send("show_settings"); }), 1, 2); options.Controls.Add(settings); table.Controls.Add(options, 0, 1);
             table.Controls.Add(summary, 0, 2); table.Controls.Add(references, 0, 3); table.Controls.Add(Status, 0, 4);
             table.Controls.Add(UI.Buttons(UI.Button("查数值", delegate { Host.Send("show_lookup"); }), UI.Button("存档历史", delegate { Host.Send("panel", "page", "backups"); }), UI.Button("完整面板", delegate { Host.Send("panel", "page", "overview"); }), UI.Button("立即备份", delegate { Host.Send("capture"); }), UI.Button("载入未完成草稿", delegate { Host.Send("list_drafts"); })), 0, 5); Controls.Add(table);
@@ -453,7 +455,7 @@ namespace Denghuo.Native {
         }
         void Reference() { int index = references.SelectedIndex; if (index >= 0 && index < referenceTokens.Count) Host.Send("reference", "index", index, "token", referenceTokens[index]); }
         public void Render(Dictionary<string, object> d) {
-            rendering = true; try { UI.ReplaceText(summary, Data.Text(d, "text", "")); UI.ReplaceText(Status, Data.Text(d, "error", "") + "\n" + Data.Text(d, "capabilities", "")); slot.SelectedIndex = (int)Math.Max(0, Math.Min(6, Data.Number(d, "slot"))); top.Checked = Data.Flag(d, "topmost"); if (TopMost != top.Checked) TopMost = top.Checked;
+            rendering = true; try { foreach (Control control in connectionControls) control.Enabled = !Data.Flag(d, "io_busy"); UI.ReplaceText(summary, Data.Text(d, "text", "")); UI.ReplaceText(Status, Data.Text(d, "error", "") + "\n" + Data.Text(d, "capabilities", "")); slot.SelectedIndex = (int)Math.Max(0, Math.Min(6, Data.Number(d, "slot"))); top.Checked = Data.Flag(d, "topmost"); if (TopMost != top.Checked) TopMost = top.Checked;
                 var items = new List<string>(); foreach (object raw in Data.Array(d, "references")) items.Add(Convert.ToString(raw)); var old = new List<string>(); foreach (object raw in references.Items) old.Add(Convert.ToString(raw));
                 var tokens = new List<string>(); foreach (object raw in Data.Array(d, "reference_tokens")) tokens.Add(Convert.ToString(raw));
                 if (String.Join("\n", items.ToArray()) != String.Join("\n", old.ToArray()) || String.Join("|", tokens.ToArray()) != String.Join("|", referenceTokens.ToArray())) { int selected = references.SelectedIndex; string previous = selected >= 0 && selected < referenceTokens.Count ? referenceTokens[selected] : ""; references.BeginUpdate(); references.Items.Clear(); references.Items.AddRange(items.ToArray()); referenceTokens.Clear(); referenceTokens.AddRange(tokens); references.SelectedIndex = previous == "" ? -1 : referenceTokens.IndexOf(previous); references.EndUpdate(); }
@@ -464,6 +466,7 @@ namespace Denghuo.Native {
     sealed class SettingsForm : BaseForm {
         readonly Dictionary<string, Control> values = new Dictionary<string, Control>();
         readonly Dictionary<string, TextBox> bindings = new Dictionary<string, TextBox>();
+        readonly List<Control> persistenceControls = new List<Control>();
         readonly RichTextBox status = UI.Read("游玩设置保存与注册状态");
         bool rendering, changed, initialized;
         long draftRevision;
@@ -478,12 +481,16 @@ namespace Denghuo.Native {
             var notice = UI.Label("全局快捷键可修改或清空禁用；需含Ctrl或Alt。显示为存档参考，不读取实时画面。"); table.Controls.Add(notice, 0, row++); table.SetColumnSpan(notice, 2);
             foreach (string[] pair in new[] { new[] { "capture", "立即备份已落盘进度" }, new[] { "show", "显示管理窗口" }, new[] { "library", "数值手册" }, new[] { "backups", "存档历史" }, new[] { "play_toggle", "开关游玩显示" }, new[] { "quick", "游戏内只读速查" } }) { var edit = UI.Edit(pair[1] + "快捷键"); edit.MaxLength = 80; bindings[pair[0]] = edit; table.Controls.Add(UI.Label(pair[1]), 0, row); table.Controls.Add(edit, 1, row++); edit.TextChanged += delegate { Edited(); }; edit.Enter += delegate { scroll.ScrollControlIntoView(edit); }; }
             table.RowCount = row; for (int i = table.RowStyles.Count; i < row; ++i) table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            outer.Controls.Add(scroll, 0, 0); outer.Controls.Add(status, 0, 1); outer.Controls.Add(UI.Buttons(UI.Button("保存(&S)", delegate { FlushEdit(); Host.Send("settings_save", "surface", "settings"); }), UI.Button("重新读取保存值", delegate { Host.Send("settings_reload", "surface", "settings"); }), UI.Button("拖动位置", delegate { FlushEdit(); Host.Send("unlock", "surface", "settings"); }), UI.Button("数值速查", delegate { Host.Send("show_lookup"); }), UI.Button("完整设置面板", delegate { Host.Send("panel", "page", "play-settings"); })), 0, 2); Controls.Add(outer);
+            var save = UI.Button("保存(&S)", delegate { FlushEdit(); Host.Send("settings_save", "surface", "settings"); });
+            var reload = UI.Button("重新读取保存值", delegate { FlushEdit(); Host.Send("settings_reload", "surface", "settings"); });
+            var unlock = UI.Button("拖动位置", delegate { FlushEdit(); Host.Send("unlock", "surface", "settings"); });
+            persistenceControls.AddRange(new Control[] { save, reload, unlock });
+            outer.Controls.Add(scroll, 0, 0); outer.Controls.Add(status, 0, 1); outer.Controls.Add(UI.Buttons(save, reload, unlock, UI.Button("数值速查", delegate { Host.Send("show_lookup"); }), UI.Button("完整设置面板", delegate { Host.Send("panel", "page", "play-settings"); })), 0, 2); Controls.Add(outer);
         }
         void Edited() { if (rendering || !initialized || Host.Frozen) return; ++draftRevision; changed = Dirty = true; FlushEdit(); }
         public Dictionary<string, object> Raw() { var v = new Dictionary<string, object>(); var b = new Dictionary<string, object>(); foreach (var pair in values) { var check = pair.Value as CheckBox; v[pair.Key] = check == null ? (object)pair.Value.Text : check.Checked; } foreach (var pair in bindings) b[pair.Key] = pair.Value.Text; return Data.Map("values", v, "bindings", b, "draft_revision", draftRevision); }
         public void FlushEdit() { if (!initialized || !changed) return; changed = false; var raw = Raw(); Host.Send("settings_edit", "surface", "settings", "values", raw["values"], "bindings", raw["bindings"], "draft_revision", draftRevision); }
-        public void Render(Dictionary<string, object> d) { if (Data.Number(d, "draft_revision") < draftRevision) return; rendering = true; try { draftRevision = Data.Number(d, "draft_revision"); var v = Data.Object(d, "values"); var b = Data.Object(d, "bindings"); foreach (var pair in values) { var check = pair.Value as CheckBox; if (check != null) check.Checked = Data.Flag(v, pair.Key); else if (pair.Value.Text != Data.Text(v, pair.Key, "")) pair.Value.Text = Data.Text(v, pair.Key, ""); } foreach (var pair in bindings) if (pair.Value.Text != Data.Text(b, pair.Key, "")) pair.Value.Text = Data.Text(b, pair.Key, ""); UI.ReplaceText(status, Data.Text(d, "status", "") + "\n\n" + Data.Text(d, "registration", "")); Dirty = Data.Flag(d, "dirty"); initialized = true; } finally { rendering = false; } }
+        public void Render(Dictionary<string, object> d) { foreach (Control control in persistenceControls) control.Enabled = !Data.Flag(d, "io_busy"); if (Data.Number(d, "draft_revision") < draftRevision) return; rendering = true; try { draftRevision = Data.Number(d, "draft_revision"); var v = Data.Object(d, "values"); var b = Data.Object(d, "bindings"); foreach (var pair in values) { var check = pair.Value as CheckBox; if (check != null) check.Checked = Data.Flag(v, pair.Key); else if (pair.Value.Text != Data.Text(v, pair.Key, "")) pair.Value.Text = Data.Text(v, pair.Key, ""); } foreach (var pair in bindings) if (pair.Value.Text != Data.Text(b, pair.Key, "")) pair.Value.Text = Data.Text(b, pair.Key, ""); UI.ReplaceText(status, Data.Text(d, "status", "") + "\n\n" + Data.Text(d, "registration", "")); Dirty = Data.Flag(d, "dirty"); initialized = true; } finally { rendering = false; } }
     }
 
     sealed class RecoveryForm : Form {

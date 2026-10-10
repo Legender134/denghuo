@@ -577,6 +577,9 @@ class Session:
         if health['pending']:
             health['state'] = 'working'
             health['last_save_protected'] = False
+        health['global_progress'] = self.backups.global_health_status(context.settings['save_root'])
+        if health['pending'] and health['global_progress']['state'] not in ('paused', 'blocked', 'warning'):
+            health['global_progress'].update(state='working', protected=False)
         return health
 
     @contextmanager
@@ -711,6 +714,52 @@ class Session:
         if not isinstance(context, str) or context != self.backup_context:
             raise ValueError('存档连接已变化或确认已过期，请重新打开存档历史并预览')
 
+    def global_history_status(self, library=None, expected_context=None):
+        from . import global_history, backup_libraries
+        with self._backup_operation() as context:
+            if expected_context is not None:
+                self.check_backup_context(expected_context)
+            if self.config_error:
+                raise ValueError('请先修复连接设置；全局历史保护状态尚未确认。')
+            context.backups.ensure_storage()
+            root = context.settings['save_root']
+            reference = backup_libraries.resolve_library(context.backups, library, root) if library else root
+            result = global_history.status(context.backups, root, reference)
+            available = backup_libraries.catalog(context.backups, root)
+            return {**result, 'context': context.backup_context, 'target_root': root,
+                    'libraries': [{'id': row['id'], 'current': row['current']} for row in available['libraries']]}
+
+    def global_history_action(self, payload):
+        from . import global_history, backup_libraries
+        if not isinstance(payload, dict) or payload.get('action') not in ('export', 'portable-export', 'restore-preview', 'restore'):
+            raise ValueError('全局历史请求格式不正确。')
+        action = payload['action']
+        allowed = {'action', 'context', 'library', 'id'}
+        if action == 'restore':
+            allowed |= {'expected', 'confirmed', 'version', 'version_confirmed', 'choices'}
+        if action == 'portable-export':
+            allowed |= {'selected', 'version', 'version_confirmed'}
+        if set(payload) != allowed:
+            raise ValueError('全局历史请求字段不完整或不受支持。')
+        with self._backup_operation(mutating=action == 'restore') as context:
+            self.check_backup_context(payload['context'])
+            if self.config_error:
+                raise ValueError('请先修复连接设置，再处理全局历史。')
+            root = context.settings['save_root']
+            reference = backup_libraries.resolve_library(context.backups, payload['library'], root)
+            if action == 'export':
+                return global_history.export(context.backups, reference, payload['id'])
+            if action == 'portable-export':
+                return global_history.portable_export(context.backups, reference, payload)
+            if action == 'restore-preview':
+                return {**global_history.preview(context.backups, root, reference, payload['id']),
+                        'context': context.backup_context, 'target_root': root}
+            result = global_history.restore(context.backups, root, reference, payload,
+                lambda: self._check_settings_commit(context))
+            context.backups.global_health = global_history._health(context.backups, root, 'working',
+                error='全局恢复已完成，正在等待自动历史重新核对。')
+            return {**result, 'context': context.backup_context}
+
     def backup_destination_status(self):
         from .backup_destination import status
         with self._backup_operation() as context:
@@ -718,15 +767,23 @@ class Session:
 
     def backup_destination_action(self, payload):
         from . import backup_destination
-        if not isinstance(payload, dict) or not isinstance(payload.get('action'), str) or payload['action'] not in ('preview', 'apply'):
+        from . import backup_destination_recovery
+        if not isinstance(payload, dict) or not isinstance(payload.get('action'), str) or payload['action'] not in ('preview', 'apply', 'recovery-preview', 'recover'):
             raise ValueError('备份目的地请求格式不正确')
-        allowed = {'action', 'backup_root', 'expected_settings_revision', 'context'}
-        if payload['action'] == 'apply':
+        action = payload['action']
+        allowed = {'action', 'expected_settings_revision', 'context'}
+        optional = set()
+        if action in ('preview', 'apply'):
+            allowed.add('backup_root')
+            optional.add('start_new')
+        if action in ('apply', 'recover'):
             allowed |= {'expected', 'confirmed'}
-        if (set(payload) - (allowed | {'start_new'}) or not allowed.issubset(payload)
+        if action == 'recover':
+            allowed.add('direction')
+        if (set(payload) - (allowed | optional) or not allowed.issubset(payload)
                 or type(payload.get('start_new', False)) is not bool):
             raise ValueError('备份目的地请求格式不正确')
-        with self._backup_operation(mutating=payload['action'] == 'apply') as context:
+        with self._backup_operation(mutating=action in ('apply', 'recover')) as context:
             self.check_backup_context(payload['context'])
             if payload['expected_settings_revision'] != self.settings_revision:
                 raise SettingsConflict('连接设置已变化，请重新载入已保存设置并预览备份目录')
@@ -737,6 +794,11 @@ class Session:
             with context.backups.lock:
                 if payload['action'] == 'preview':
                     return backup_destination.plan(context, payload['backup_root'], start_new=payload.get('start_new', False))[0]
+                if action == 'recovery-preview':
+                    result = backup_destination_recovery.preview(context)
+                    if result is None:
+                        raise ValueError('当前没有待恢复的目录切换，请重新读取备份位置。')
+                    return result
                 if payload['confirmed'] is not True:
                     raise ValueError('请明确确认复制历史并切换自动备份目的地')
                 def persist(root, manager):
@@ -748,8 +810,12 @@ class Session:
                         self.backup_context = uuid.uuid4().hex
                         self._backup_health_cache = None
                     self._persist_settings(updated, context, publish)
-                result = backup_destination.apply(context, payload['backup_root'], payload['expected'], persist,
-                    start_new=payload.get('start_new', False), check_current=lambda: self._check_settings_commit(context))
+                if action == 'recover':
+                    result = backup_destination_recovery.recover(context, payload['expected'], payload['direction'], persist,
+                        check_current=lambda: self._check_settings_commit(context))
+                else:
+                    result = backup_destination.apply(context, payload['backup_root'], payload['expected'], persist,
+                        start_new=payload.get('start_new', False), check_current=lambda: self._check_settings_commit(context))
                 return {**result, 'settings': dict(self.settings), 'settings_revision': self.settings_revision,
                         'context': self.backup_context, 'directory': str(self.backups.directory)}
 

@@ -106,8 +106,10 @@ class MatureContextTests(unittest.TestCase):
         self.assertEqual(result['choices'][1]['current']['合计戒指效果等级'],'-1')
         self.assertIn('after_curse_removed',result['choices'][1])
         unknown=compare_equipment(self.values,{**args,'curse_b':'unknown'})['choices'][1]
-        self.assertNotIn('移动速度倍率',unknown['current'])
-        self.assertEqual(unknown['current']['戒指效果'],'诅咒状态未确认')
+        self.assertEqual(unknown['current']['移动速度倍率'],'待确认')
+        self.assertEqual(unknown['current']['合计戒指效果等级'],'待确认')
+        movement=next(cell for cell in unknown['current_metrics'] if cell['label']=='移动速度倍率')
+        self.assertIn('诅咒状态未确认',movement['condition'])
         # Official RingOfForce min/max forces tier=1 only in the base range when bonus<=0.
         # Brawler extra retains the STR-derived tier (STR22 => tier6), giving +5 at bonus-2.
         force=compare_equipment(self.values,{'id_a':'items.rings.ringofforce','id_b':'items.rings.ringofforce',
@@ -159,7 +161,7 @@ class MatureContextTests(unittest.TestCase):
         water=next(o for o in self.actions(snapshot)['options'] if o['entry']=='items.waterskin')
         self.assertEqual((water['params']['current_shield'],water['params']['dew_volume']),(25,20))
         self.assertEqual(water['source']['label'],'旧快照记录')
-        self.assertNotIn('shielding_dew',water['params'])
+        self.assertEqual(water['params']['shielding_dew'],0)
 
     def test_only_whitelisted_valid_single_barrier_is_public(self):
         for buffs in ([self.buff('Barrier',shielding=True)],[self.buff('Barrier',shielding=-1)],

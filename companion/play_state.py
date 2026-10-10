@@ -66,9 +66,17 @@ class PlayPreferences:
         except (ValueError, OSError, RecursionError):
             self.error = '游玩设置无法读取，游玩显示已暂停；保存设置时会保留原文件。'
             self.values['enabled'] = False
+        self._published = (self.generation, self.values, self.error)
 
-    def update(self, patch, expected_generation=None):
+    def published(self):
+        # One immutable reference swap; UI readers never wait for the disk lock.
+        generation, values, error = self._published
+        return {'revision': generation, 'settings': copy.deepcopy(values), 'error': error}
+
+    def update(self, patch, expected_generation=None, *, check_current=None):
         with self.lock:
+            if check_current:
+                check_current()
             if expected_generation is not None and (type(expected_generation) is not int or expected_generation != self.generation):
                 raise ValueError('游玩设置刚在另一窗口修改，请重新读取已保存设置；当前草稿仍保留')
             if not isinstance(patch, dict) or set(patch) - set(PLAY_DEFAULTS):
@@ -93,6 +101,8 @@ class PlayPreferences:
             try:
                 with pending.open('xb') as stream:
                     stream.write(raw)
+                if check_current:
+                    check_current()
                 pending.replace(self.path)
             finally:
                 if pending.exists():
@@ -100,13 +110,20 @@ class PlayPreferences:
             self.values, self.error = clean, ''
             self._disk_stamp = hashlib.sha256(raw).hexdigest()
             self.generation += 1
+            self._published = (self.generation, clean, '')
             return {'settings': copy.deepcopy(clean), 'revision': self.generation}
 
-    def reload(self):
+    def reload(self, *, expected_generation=None, check_current=None):
         with self.lock:
+            if expected_generation is not None and expected_generation != self.generation:
+                raise ValueError('游玩设置刚在另一窗口修改；当前草稿仍保留，请重新读取。')
             saved = type(self)(self.path.parent)
+            if check_current:
+                check_current()
             self.values, self.error, self._disk_stamp = saved.values, saved.error, saved._disk_stamp
             self.generation += 1
+            self._published = (self.generation, self.values, self.error)
+            return self.published()
 
 def source_label(snap):
     if snap.get('waiting_for_save'):

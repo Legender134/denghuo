@@ -5,7 +5,7 @@ const numericalFormDrafts=new Map();
 const numericalCalculated=new Map();
 const heroParameterKeys=['hero_level','max_hp','hp','depth','strength','current_shield'];
 const healingParameterKeys=['power','healing_percent','healing_flat','vial'];
-function currentParameterKeys(identity){return identity==='actors.buffs.healing'?[...heroParameterKeys,...healingParameterKeys]:identity?.startsWith('actors.hero.spells.')&&!identity.includes('$')?[...heroParameterKeys,'talent']:heroParameterKeys;}
+function currentParameterKeys(identity){return identity==='actors.buffs.healing'?[...heroParameterKeys,...healingParameterKeys]:['items.waterskin','items.dewdrop'].includes(identity)?[...heroParameterKeys,'shielding_dew','vial','dew_volume']:identity?.startsWith('actors.hero.talent.')||identity?.startsWith('actors.hero.spells.')&&!identity.includes('$')?[...heroParameterKeys,'talent']:heroParameterKeys;}
 const fixedNumericalDrafts=new Map();
 function numericalDraftKey(detail=numericalDetail){return detail?.savedPlan?'plan:'+detail.savedPlan.id:detail?.identity;}
 function sameNumericalParams(left,right){const keys=Object.keys(left||{}).sort(),other=Object.keys(right||{}).sort();return keys.length===other.length&&keys.every((key,index)=>key===other[index]&&Number(left[key])===Number(right[key]));}
@@ -35,14 +35,18 @@ function associateNumericalPlan(detail,plan,submitted,signature){
 }
 function rememberFixedNumericalDraft(){const d=numericalDetail;if(!d?.savedPlan)return;fixedNumericalDrafts.set(d.savedPlan.id,JSON.parse(JSON.stringify({...d,pending:false,rawDraft:numericalFormDrafts.get('plan:'+d.savedPlan.id)||{}})));}
 function currentSkillContext(identity){
-  if(!identity?.startsWith('actors.hero.spells.')||identity.includes('$'))return null;
-  const row=state?.error?null:state?.data?.hero?.skills?.[identity];
-  const learned=row?.state==='learned'&&Number.isInteger(row.points)&&row.points>=0&&row.points<=4;
+  const spell=identity?.startsWith('actors.hero.spells.')&&!identity.includes('$'),talent=identity?.startsWith('actors.hero.talent.'),resource=['items.waterskin','items.dewdrop'].includes(identity),ability=identity?.startsWith('actors.hero.abilities.');
+  if(!spell&&!talent&&!resource&&!ability)return null;
+  const hero=state?.error?null:state?.data?.hero,build=hero?.build;
+  if(ability)return {state:build?.ability?.id===identity?'selected':'unknown',params:{},conditions:build?.ability?.id===identity?build.ability.conditions:'未确认当前选择此护甲能力；以下为独立参考。',origin:'所选护甲能力参考'};
+  const target=resource?'actors.hero.talent.shielding_dew':identity;
+  const row=spell?hero?.skills?.[identity]:build?.talents?.[target]||(build?.state==='known'?{state:'not_applicable',points:0,conditions:'当前职业与转职不提供此天赋，按未投入 0 点参考。'}:null);
+  const learned=(spell?row?.state==='learned':!!row)&&Number.isInteger(row.points)&&row.points>=0&&row.points<=4;
   const conditions=row?.conditions||'当前已学技能条件未确认；百科点数为独立示例。';
-  return {state:row?.state||'unknown',conditions,params:learned&&row.talent&&row.points>0?{talent:row.points}:{},
-    origin:learned?(state?.settings?.mode==='manual'?'手动局势':'快照')+` · 此技能已学 ${row.points} 点`:'示例 · '+conditions.split('；')[0]};
+  return {state:row?.state||'unknown',conditions,params:learned&&(!spell||row.talent&&row.points>0)?{[resource?'shielding_dew':'talent']:row.points}:{},
+    origin:learned?(state?.settings?.mode==='manual'?'手动局势':'快照')+` · ${spell?'此技能已学':'此天赋已投入'} ${row.points} 点`:'示例 · '+conditions.split('；')[0]};
 }
-function heroInputOrigin(key,stamp=calculationStamp()){if(key==='talent'){const skill=currentSkillContext(numericalDetail?.identity);if(skill)return skill.origin;}return (stamp===null?'参考来源未确认':stamp?.mode==='manual'?'手动局势':'快照')+(key==='strength'?(typeof currentCharacterStrengthLabel==='function'?currentCharacterStrengthLabel():'基础力量参考'):key==='current_shield'?'公开当前护盾':'');}
+function heroInputOrigin(key,stamp=calculationStamp()){if(key==='talent'||key==='shielding_dew'){const skill=currentSkillContext(numericalDetail?.identity);if(skill)return skill.origin;}return (stamp===null?'参考来源未确认':stamp?.mode==='manual'?'手动局势':'快照')+(key==='strength'?(typeof currentCharacterStrengthLabel==='function'?currentCharacterStrengthLabel():'基础力量参考'):key==='current_shield'?'公开当前护盾':'');}
 function cancelNumericalDetail(){rememberFixedNumericalDraft();numericalRequest++;numericalDetail=null;}
 $('#detail-dialog').addEventListener('close',cancelNumericalDetail);
 function exampleHTML(example){
@@ -60,9 +64,15 @@ function displayNumber(value){
 function visibleCalculationContext(identity=numericalDetail?.identity){
   const hero=state?.data?.hero;
   if(!hero)return {};
-  const barriers=(state.data.buffs||[]).filter(buff=>buff.kind==='Barrier'),shield=barriers.length===1?barriers[0].current_shield:null;
+  const barriers=(state.data.buffs||[]).filter(buff=>buff.kind==='Barrier'),shield=barriers.length===1?barriers[0].current_shield:barriers.length===0&&state.data.buffs_known===true&&hero.build?.state==='known'?0:null;
   const healing=(state.data.buffs||[]).filter(buff=>buff.kind==='Healing'),conditions={};
   if(identity==='actors.buffs.healing'&&healing.length===1){const buff=healing[0];for(const [field,key] of [['left','power'],['percent','healing_percent'],['flat','healing_flat'],['vial_level','vial']])if(typeof buff[field]==='number'&&Number.isFinite(buff[field]))conditions[key]=field==='percent'?buff[field]*100:buff[field];}
+  if(['items.waterskin','items.dewdrop'].includes(identity)){
+    const items=state.data.items||[],vials=items.filter(item=>item.kind==='VialOfBlood'),water=items.filter(item=>item.key==='items.waterskin'&&item.known&&item.available);
+    if(!vials.length&&hero.build?.state==='known')conditions.vial=-1;
+    else if(vials.length===1&&vials[0].known&&vials[0].available&&vials[0].level_known&&Number.isInteger(vials[0].level)&&vials[0].level>=-1&&vials[0].level<=3)conditions.vial=vials[0].level;
+    if(identity==='items.waterskin'&&water.length===1&&Number.isInteger(water[0].volume))conditions.dew_volume=water[0].volume;
+  }
   return {hero_level:hero.level,max_hp:hero.ht,hp:hero.hp,depth:state.data.depth,strength:typeof currentCharacterStrength==='function'?currentCharacterStrength():hero.strength,...(Number.isInteger(shield)&&shield>=0&&shield<=10000?{current_shield:shield}:{}),...conditions,...currentSkillContext(identity)?.params};
 }
 function validNumericalInputs(inputs,detail){
@@ -166,16 +176,16 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
       const skill=currentSkillContext(identity);
       const currentKeys=currentParameterKeys(identity);
       const retainedInputs=Array.from($$('[data-value-key]')).filter(input=>!currentKeys.includes(input.dataset.valueKey)||!(input.dataset.valueKey in latest));
-      for(const input of retainedInputs)if(currentKeys.includes(input.dataset.valueKey)){detail.origins[input.dataset.valueKey]='手填保留 · 最新快照未确认'+(input.dataset.valueKey==='talent'&&skill?' · '+skill.conditions.split('；')[0]:'');$(`[data-origin-key="${input.dataset.valueKey}"]`).textContent=detail.origins[input.dataset.valueKey];}
+      for(const input of retainedInputs)if(currentKeys.includes(input.dataset.valueKey)){detail.origins[input.dataset.valueKey]='手填保留 · 最新快照未确认'+(['talent','shielding_dew'].includes(input.dataset.valueKey)&&skill?' · '+skill.conditions.split('；')[0]:'');$(`[data-origin-key="${input.dataset.valueKey}"]`).textContent=detail.origins[input.dataset.valueKey];}
       const raw={...numericalFormDrafts.get(key)};
       for(const input of $$('[data-value-key]'))if(currentKeys.includes(input.dataset.valueKey)&&input.dataset.valueKey in latest){input.value=String(latest[input.dataset.valueKey]);input.setCustomValidity?.('');raw[input.dataset.valueKey]=input.value;detail.origins[input.dataset.valueKey]=heroInputOrigin(input.dataset.valueKey);$(`[data-origin-key="${input.dataset.valueKey}"]`).textContent=detail.origins[input.dataset.valueKey];}
-      if(skill){detail.skillState=skill.state;detail.skillConditions=skill.conditions+(!('talent' in latest)&&retainedInputs.some(input=>input.dataset.valueKey==='talent')?' 本次保留原填写点数作为独立参考。':'');if(typeof showDetailContext==='function')showDetailContext(detail.skillConditions);}
+      if(skill){detail.skillState=skill.state;detail.skillConditions=skill.conditions+(retainedInputs.some(input=>['talent','shielding_dew'].includes(input.dataset.valueKey)&&!(input.dataset.valueKey in latest))?' 本次保留原填写点数作为独立参考。':'');if(typeof showDetailContext==='function')showDetailContext(detail.skillConditions);}
       numericalFormDrafts.set(key,raw);detail.dirty=true;
       if(!validNumericalInputs(retainedInputs,detail))return;
       const next={...context,...visibleCalculationContext()};
       retainedInputs.forEach(input=>{const key=input.dataset.valueKey;
         next[key]=Number(input.value);
-        if(key!=='talent'&&(detail.origins[key]||'').startsWith('手填'))detail.origins[key]='手填';
+        if(!['talent','shielding_dew'].includes(key)&&(detail.origins[key]||'').startsWith('手填'))detail.origins[key]='手填';
       });
       for(const key of currentKeys)if(key in latest)detail.origins[key]=heroInputOrigin(key);
       detail.source=calculationStamp();detail.unconfirmedSource=false;

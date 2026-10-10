@@ -22,7 +22,20 @@ results={}
 for name in ('sunray','divinesense','blessspell','holylance'):
     identity='actors.hero.spells.'+name
     results[identity]={str(rank):s.values.detail(identity,{'talent':rank}) for rank in (1,2)}
-print(json.dumps({'snapshots':snapshots,'current':current,'results':results}))`;
+build_current={}
+warrior={'class':'WARRIOR','subClass':'BERSERKER','HP':100,'HT':100,
+    'talents_tier_1':{'HEARTY_MEAL':2},'talents_tier_2':{'RUNIC_TRANSFERENCE':2},'talents_tier_3':{'STRONGMAN':3},
+    'armorAbility':{'__className':'com.shatteredpixel.shatteredpixeldungeon.actors.hero.abilities.warrior.HeroicLeap'}}
+warden={'class':'HUNTRESS','subClass':'WARDEN','HP':100,'HT':100,'armorAbility':None,'talents_tier_1':{},'talents_tier_2':{}}
+for index,(name,fields) in enumerate((('warrior3',dict(warrior,talents_tier_4={'BODY_SLAM':3})),
+    ('warrior1',dict(warrior,talents_tier_4={'BODY_SLAM':1})),('warrior0',dict(warrior,talents_tier_4={})),
+    ('warden3',dict(warden,talents_tier_3={'SHIELDING_DEW':3},inventory=[{'__className':'com.shatteredpixel.shatteredpixeldungeon.items.Waterskin','volume':20,'quantity':1}])),
+    ('warden1',dict(warden,talents_tier_3={'SHIELDING_DEW':1},inventory=[{'__className':'com.shatteredpixel.shatteredpixeldungeon.items.Waterskin','volume':10,'quantity':1}])),
+    ('wardenUnknown',dict(warden,talents_tier_3=[],inventory=[{'__className':'com.shatteredpixel.shatteredpixeldungeon.items.Waterskin','volume':10,'quantity':1}])))):
+    write(fields,1700000020+index);s.refresh();snapshots[name]=s.snapshot();build_current[name]=s.workspace_status()['current']
+results['actors.hero.talent.body_slam']={str(rank):s.values.detail('actors.hero.talent.body_slam',{'talent':rank,'power':10}) for rank in range(5)}
+results['items.waterskin']={str(rank)+'-'+str(volume):s.values.detail('items.waterskin',{'hp':100,'max_hp':100,'vial':-1,'current_shield':0,'shielding_dew':rank,'dew_volume':volume}) for rank in (0,1,3) for volume in (10,20)}
+print(json.dumps({'snapshots':snapshots,'current':current,'results':results,'build_current':build_current}))`;
 const child=require('node:child_process').spawnSync(python,['-B','-c',source],{cwd:root,encoding:'utf8',timeout:30000,maxBuffer:4*1024*1024,
   env:{...process.env,APPDATA:path.join(temporary,'appdata'),LOCALAPPDATA:path.join(temporary,'localappdata'),TMPDIR:os.tmpdir(),PUBLIC_SKILL_TEST_ROOT:temporary,PYTHONIOENCODING:'utf-8',PYTHONDONTWRITEBYTECODE:'1'}});
 if(child.error)throw child.error;assert.equal(child.status,0,child.stderr);const fixture=JSON.parse(child.stdout),clone=value=>JSON.parse(JSON.stringify(value));
@@ -37,7 +50,7 @@ function harness(){
     state:clone(fixture.snapshots.initial),showDetail(){},setDetailEntry(){},showRelatedReferences(){},showItemNote(){},showDetailContext(text){get('#detail-context').textContent=text;}});
   const run=code=>vm.runInContext(code,context);
   Object.defineProperty(get('#detail-rules'),'innerHTML',{get(){return this.html||'';},set(html){this.html=html;inputs=[...html.matchAll(/<input data-value-key="([^"]+)"[^>]*value="([^"]*)"/g)].map(match=>{const input=element();input.dataset.valueKey=match[1];input.value=match[2];elements.set('[data-value-key="'+match[1]+'"]',input);return input;});}});
-  const response=url=>{const params=Object.fromEntries(new URLSearchParams(url.split('?')[1]));requests.push(params);return {ok:true,json:async()=>clone(fixture.results[params.id][params.talent||'1'])};};
+  const response=url=>{const params=Object.fromEntries(new URLSearchParams(url.split('?')[1]));requests.push(params);const key=params.id==='items.waterskin'?(params.shielding_dew||'0')+'-'+(params.dew_volume||'20'):params.talent||'1';return {ok:true,json:async()=>clone(fixture.results[params.id][key])};};
   context.fetch=async url=>response(url);
   const workspace=fs.readFileSync(path.join(root,'web/workspace.js'),'utf8');
   run(workspace.slice(workspace.indexOf('function lookupCalculationOptions('),workspace.indexOf('function referenceList(')));
@@ -93,6 +106,26 @@ async function main(){
     h.context.state=clone(fixture.snapshots.rank1);await h.run(`loadNumericalDetail('${sunray}',saved.params,'saved',{fixed:true,savedPlan:saved,result:savedResult})`);
     assert.equal(h.get('[data-value-key="talent"]').value,'2');assert(h.run('numericalDetail.fixed'));await h.latest();assert.equal(h.get('[data-value-key="talent"]').value,'1');assert(!h.run('numericalDetail.fixed'));await h.undo();assert.equal(h.get('[data-value-key="talent"]').value,'2');assert(h.run('numericalDetail.fixed'));
     checks.push('fixed saved plan remains stable until explicit latest and undo');
+  }
+  {
+    const identity='actors.hero.talent.body_slam',h=harness();h.context.state=clone(fixture.snapshots.warrior3);await h.open(identity);
+    assert.equal(h.requests.at(-1).talent,'3');assert.match(h.run('numericalDetail.origins.talent'),/投入 3/);
+    h.context.state=clone(fixture.snapshots.warrior1);await h.latest();assert.equal(h.get('[data-value-key="talent"]').value,'1');await h.undo();assert.equal(h.get('[data-value-key="talent"]').value,'3');
+    h.context.state=clone(fixture.snapshots.warrior0);await h.latest();assert.equal(h.get('[data-value-key="talent"]').value,'0');assert.match(h.get('#detail-rules').innerHTML,/未投入/);await h.undo();assert.equal(h.get('[data-value-key="talent"]').value,'3');
+    checks.push('ordinary talent rank, explicit zero, latest and undo use confirmed build projection');
+    const captured=harness();captured.context.state=clone(fixture.snapshots.warrior1);captured.context.row=clone(fixture.build_current.warrior3.find(row=>row.id===identity));captured.run('showReference(row)');await tick();
+    assert.equal(captured.requests.at(-1).talent,'3');assert.match(captured.get('#detail-context').textContent,/投入 3/);
+    checks.push('current talent reference preserves captured rank across later polling');
+    h.context.state=clone(fixture.snapshots.warrior3);const ability=h.run("currentSkillContext('actors.hero.abilities.warrior.heroicleap')");assert.equal(ability.state,'selected');assert.match(ability.conditions,/3 点/);assert.match(ability.conditions,/不代表当前可施放/);
+    checks.push('selected armor ability exposes its own saved talent summary without readiness claims');
+  }
+  {
+    const h=harness();h.context.state=clone(fixture.snapshots.warden3);await h.open('items.waterskin');
+    assert.equal(h.requests.at(-1).shielding_dew,'3');assert.equal(h.requests.at(-1).dew_volume,'20');assert.equal(h.requests.at(-1).current_shield,'0');assert.equal(h.requests.at(-1).vial,'-1');assert.match(h.get('#detail-rules').innerHTML,/60/);
+    h.context.state=clone(fixture.snapshots.warden1);await h.latest();assert.equal(h.get('[data-value-key="shielding_dew"]').value,'1');assert.equal(h.get('[data-value-key="dew_volume"]').value,'10');await h.undo();assert.equal(h.get('[data-value-key="shielding_dew"]').value,'3');assert.equal(h.get('[data-value-key="dew_volume"]').value,'20');
+    checks.push('Warden water defaults carry real rank, volume, vial and known absent barrier; latest is undoable');
+    h.context.state=clone(fixture.snapshots.wardenUnknown);h.get('[data-value-key="shielding_dew"]').value='-';h.get('[data-value-key="shielding_dew"]').listeners.input();const count=h.requests.length;await h.latest();assert.equal(h.requests.length,count);assert.equal(h.get('[data-value-key="shielding_dew"]').value,'-');await h.undo();assert.equal(h.get('[data-value-key="shielding_dew"]').value,'-');
+    checks.push('unknown Warden talent retains invalid raw draft and blocks calculation through latest/undo');
   }
   console.log(JSON.stringify({public_skill_checks:checks,fixture:'real synthetic gzip saves -> Session -> workspace/values',local_only:temporary},null,2));
 }

@@ -19,6 +19,7 @@ class NativeManager:
         self.revision, self.reported = 0, None
         self.frozen, self.signature, self.references = False, None, []
         self.host = NativeHost(manager.root, self.dispatch, self.error)
+        self.host.idle = self.process_io
         self.session.register_exit_surface('native', kind='native', label='桌面速查与游玩设置', notify=self.notify_exit)
         self.report_drafts()
 
@@ -254,6 +255,91 @@ class NativeManager:
                     message='本窗口草稿已确认，正在等待其他窗口。' if current['phase'] == 'confirming'
                     else '草稿确认完成，正在保留最后备份与退出回执。')
 
+    @property
+    def io_busy(self):
+        return getattr(self, '_io_job', None) is not None
+
+    def queue_io(self, label, work, finish=None):
+        """Capture on the UI thread; run only disk/service work in one bounded worker."""
+        if self.io_busy:
+            self.manager.action_error = '上一项磁盘操作仍在等待；当前输入仍保留，请完成后重试。'
+            self.manager.action_error_until = time.monotonic()+10
+            return False
+        if not hasattr(self, '_io_queue'):
+            self._io_queue, self._io_results = Queue(maxsize=1), Queue(maxsize=1)
+            self._io_stop = threading.Event()
+            self._io_thread = threading.Thread(target=self._persist_io, daemon=True, name='native-disk-actions')
+            self._io_thread.start()
+        job = {'label': label, 'work': work, 'finish': finish, 'done': threading.Event()}
+        self._io_job = job
+        self._io_queue.put_nowait(job)
+        return True
+
+    def check_io_current(self):
+        stop = getattr(self, '_io_stop', None)
+        if (stop is not None and stop.is_set()
+                or self.session.stop.is_set() or self.session._shutdown_requested.is_set()):
+            raise ValueError('助手正在结束，尚未应用本次磁盘操作；原始输入仍保留。')
+
+    def _persist_io(self):
+        while not self._io_stop.is_set():
+            try:
+                job = self._io_queue.get(timeout=.2)
+            except Empty:
+                continue
+            try:
+                self.check_io_current()
+                job['result'] = job['work']()
+            except Exception as exc:
+                job['error'] = str(exc) or '磁盘操作未完成；原始输入仍保留。'
+                logging.exception('Native disk action did not complete: %s', job['label'])
+            finally:
+                self._io_results.put_nowait(job)
+                job['done'].set()
+
+    def process_io(self):
+        if not self.io_busy or self.frozen:
+            return
+        try:
+            job = self._io_results.get_nowait()
+        except Empty:
+            return
+        self._io_job = None
+        if (self._io_stop.is_set() or self.session.stop.is_set()
+                or self.session._shutdown_requested.is_set()):
+            return  # Late completion never reopens controls or replaces a draft at shutdown.
+        try:
+            if job['finish']:
+                job['finish'](job.get('result'), job.get('error'))
+            else:
+                self.manager.action_error = job.get('error', '')
+                self.manager.action_error_until = time.monotonic()+15
+        except Exception as exc:
+            logging.exception('Native disk completion could not be displayed')
+            self.manager.action_error = str(exc) or '磁盘操作回执未能显示；当前草稿仍保留。'
+            self.manager.action_error_until = time.monotonic()+15
+        self.update(self.session.snapshot(), force=True)
+
+    def change_connection(self, patch):
+        revision = self.session.snapshot()['settings_revision']
+        submitted = copy.deepcopy(patch)
+        return self.queue_io('正在保存连接设置', lambda: self.session.update_settings(
+            submitted, expected_revision=revision))
+
+    def change_preferences(self, patch, finish=None):
+        preferences = self.manager.play.preferences
+        generation = preferences.published()['revision']
+        submitted = copy.deepcopy(patch)
+        def complete(receipt, error):
+            self.manager.action_error = error or ''
+            self.manager.action_error_until = time.monotonic()+15
+            if not error:
+                self.manager.apply_play_settings()
+                if finish:
+                    finish()
+        return self.queue_io('正在保存游玩显示设置', lambda: preferences.update(submitted,
+            expected_generation=generation, check_current=self.check_io_current), complete)
+
     def dispatch(self, item):
         action = item.get('action')
         try:
@@ -286,13 +372,13 @@ class NativeManager:
                 self.manager.open_panel(item.get('page', 'overview'))
             elif action == 'slot':
                 slot = item.get('index', 0)
-                self.manager.safely(lambda: self.session.update_settings({'slot': slot if slot else 'auto', 'mode': 'save'}))
+                self.change_connection({'slot': slot if slot else 'auto', 'mode': 'save'})
             elif action == 'directory' and item.get('path'):
-                self.manager.safely(lambda: self.session.update_settings({'save_root': item['path'], 'mode': 'save', 'slot': 'auto'}))
+                self.change_connection({'save_root': item['path'], 'mode': 'save', 'slot': 'auto'})
             elif action == 'pin_manager':
-                self.manager.safely(lambda: self.session.update_settings({'always_on_top': bool(item.get('checked'))}))
+                self.change_connection({'always_on_top': bool(item.get('checked'))})
             elif action == 'refresh':
-                self.manager.refresh()
+                self.queue_io('正在读取存档', self.session.refresh)
             elif action == 'capture':
                 self.manager.commands.put(('capture', None))
             elif action == 'reference':
@@ -373,6 +459,16 @@ class NativeManager:
         backup = snap.get('backup_health', {})
         texts = [self.manager.status.cget('text'), self.manager.backup_status.cget('text'),
                  self.manager.hero.cget('text'), self.manager.metrics.cget('text')]
+        global_health = backup.get('global_progress', {})
+        global_labels = {'protected': '成就与排行榜最近文件已备份', 'warning': '全局进度结构不支持，原始字节已保留',
+            'blocked': '全局历史新增受阻', 'paused': '全局自动历史已暂停', 'waiting': '等待游戏产生全局进度',
+            'working': '正在核对全局历史', 'unknown': '全局历史尚未确认'}
+        if global_health:
+            global_label = global_labels.get(global_health.get('state'), '全局历史尚未确认')
+            if global_health.get('state') == 'protected' and len(global_health.get('files', {})) == 1:
+                global_label = ('成就记录已备份' if 'badges.dat' in global_health['files'] else '排行榜与每日记录已备份')
+            texts.append(global_label
+                + ('：'+global_health['error'] if global_health.get('error') else ''))
         for buff in data.get('buffs', []):
             if buff.get('reference_id') == 'actors.buffs.healing':
                 source = '手动局势' if snap['settings']['mode'] == 'manual' else '最近保存'
@@ -411,9 +507,11 @@ class NativeManager:
         if snap.get('draft_recovery_notice'):
             texts.append(snap['draft_recovery_notice'])
         state = {'text': '\n\n'.join(filter(None, texts)), 'slot': 0 if snap['settings']['slot'] == 'auto' else snap['settings']['slot'],
+            'io_busy': self.io_busy,
             'topmost': snap['settings']['always_on_top'], 'references': reference_texts,
             'reference_tokens': [binding_token(row) for row in references],
-            'capabilities': registration, 'error': '\n'.join(filter(None, [self.manager.action_error] +
+            'capabilities': registration, 'error': '\n'.join(filter(None, [
+                self._io_job['label']+'；磁盘等待期间仍可退出或取消。' if self.io_busy else '', self.manager.action_error] +
                 [row.get('recovery_error', '') for row in snap.get('exit', {}).get('participants', [])
                  if row['surface_id'] == 'native']))}
         if self.exit_state and self.exit_state.get('phase') == 'finished':
@@ -433,6 +531,8 @@ class NativeManager:
         self.host.command('hide' if self.manager.tray is not None else 'minimize_manager', surface='manager')
 
     def close(self):
+        if hasattr(self, '_io_stop'):
+            self._io_stop.set()
         if self.session.exit_status()['phase'] not in ('backing-up', 'finished'):
             self.report_drafts()
             self.session.unregister_exit_surface('native', self.revision, bool(self.drafts()), draft=self.drafts())

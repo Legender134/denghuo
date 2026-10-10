@@ -49,6 +49,8 @@ def public_context(snapshot):
     barriers = [buff for buff in data.get('buffs',[]) if buff.get('kind') == 'Barrier']
     if len(barriers) == 1 and type(barriers[0].get('current_shield')) is int:
         context['current_shield'] = barriers[0]['current_shield']
+    elif not barriers and data.get('buffs_known') is True and hero.get('build', {}).get('state') == 'known':
+        context['current_shield'] = 0
     return context
 
 
@@ -203,10 +205,18 @@ def context_actions(session,snapshot):
                                           if row['label'] in ('首次恢复','最终实际恢复','治疗池耗尽')]
                         option['note']='逐次恢复，首次恢复与最终总量不同；表中假设期间不再受伤，不保证实际行动时机或安全'
             else:
+                from .public_skills import skill_context
+                specific = skill_context(snapshot, entry)
                 option['params']={key:value for key,value in option['params'].items() if key in ('hp','max_hp','vial','current_shield')}
+                option['params'].update(specific.get('params', {}))
+                option['field_origins']=specific.get('field_origins', {})
                 if type(item.get('volume')) is int:option['params']['dew_volume']=item['volume']
-                option['calculation_missing']=('护盾露珠天赋仍需核对；屏障与生命使用该保存记录，未确认参数仍是示例'
-                    if 'current_shield' in option['params'] else '露珠量、护盾天赋与现有屏障需核对后计算；未确认的参数仍是示例')
+                missing = [label for key,label in [('vial','凝血试管'),('dew_volume','露珠量'),('shielding_dew','护盾露珠天赋'),('current_shield','当前屏障')]
+                           if key not in option['params']]
+                option['calculation_missing']=('、'.join(missing)+'未确认；补全后计算，未确认参数仍是示例') if missing else ''
+                if not option['restriction'] and not missing:
+                    details=session.values.detail(entry,option['params'])
+                    option['values']=[row for block in details['blocks'] for row in block.get('values',[]) if row['label'] in ('本次消耗露珠','饮用后剩余露珠','首次恢复','最终实际恢复','实际新增屏障')]
                 option['note']='凝血试管可能让多滴露珠逐次恢复；回血与护盾按实际分支分配'
         if kind in FOODS:
             add_food_context(session, data, kind, entry, option, known_available)

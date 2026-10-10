@@ -47,7 +47,7 @@ function refreshPlaySettings(){if(state&&state.play_revision!==playSeenRevision)
 $('#play-form').addEventListener('input',()=>{playDirty=capturePlayDraft().changed.length>0;playDraftGeneration++;renderPlayDraftNotice();});
 $('#play-reload').addEventListener('click',reloadPlaySettings);
 $('#play-form').addEventListener('submit',async event=>{
-  event.preventDefault();if(playRevision===null){inlineError($('#play-error'),'请先读取已保存设置，不能把默认值当作当前配置。');return;}if(playConflict){inlineError($('#play-error'),'其他窗口已修改配置；草稿保留，请明确重新读取再保存。');return;}
+  event.preventDefault();if(!validRawNumericForm($('#play-form')))return;if(playRevision===null){inlineError($('#play-error'),'请先读取已保存设置，不能把默认值当作当前配置。');return;}if(playConflict){inlineError($('#play-error'),'其他窗口已修改配置；草稿保留，请明确重新读取再保存。');return;}
   const operation=++playRequest,generation=playDraftGeneration,settings=playFormValues(),revision=playRevision;$('#play-save').disabled=true;
   try{
     const result=await post('/api/play-settings',{settings,revision});if(operation!==playRequest)return;playRevision=result.revision;playSeenRevision=result.revision;playSaved=result.settings||settings;playConflict=false;

@@ -50,9 +50,11 @@ INPUTS = {
 }
 
 
-def integer_parameters(raw, *, signed_equipment=False, health_fields=None):
+def integer_parameters(raw, *, signed_equipment=False, health_fields=None, zero_talent=False):
     result = {}
     for key, (label, default, low, high) in INPUTS.items():
+        if key == 'talent' and zero_talent:
+            low = 0
         if key == 'level' and signed_equipment:
             low = -100
         value = raw.get(key, default)
@@ -210,10 +212,14 @@ class PlayerValues:
         raw = dict(raw or {})
         healing_fields = ('power', 'healing_percent', 'healing_flat', 'vial')
         healing_missing = [key for key in healing_fields if key not in raw or raw[key] in ('', None)] if identity == 'actors.buffs.healing' else []
-        p = integer_parameters({key:value for key,value in raw.items() if key not in healing_missing}, signed_equipment=signed_equipment, health_fields=())
+        talent_reference = identity.startswith('actors.hero.talent.')
+        p = integer_parameters({key:value for key,value in raw.items() if key not in healing_missing}, signed_equipment=signed_equipment, health_fields=(), zero_talent=talent_reference)
         if identity == 'actors.buffs.healing' and 'power' not in healing_missing and p['power'] != int(p['power']):
             raise ValueError('剩余治疗池必须是整数')
         talent_cap=4
+        if talent_reference:
+            talent_cap=next((int(v['value']) for v in entry.get('numbers',[]) if v['label']=='最大天赋点数'),4)
+            if p['talent']>talent_cap:raise ValueError(f'此天赋最多投入{talent_cap}点')
         if identity.startswith('actors.hero.spells.'):
             name=identity.rsplit('.',1)[-1].split('$')[0].removesuffix('spell')
             talent_entry=next((e for e in self.catalog.entries if e['id'].startswith('actors.hero.talent.') and e['id'].rsplit('.',1)[-1].replace('_','')==name),None)
@@ -358,7 +364,14 @@ class PlayerValues:
                                 '材料：' + '、'.join(f'{row["name"]} ×{row["quantity"]}' for row in recipe['inputs']) +
                                 '；官方 4.0.2，已知身份或明确手填假设；可在炼金规划中填写库存和保留预算。'))
         result=[b for b in result if b['title']!='出售与回收']+[b for b in result if b['title']=='出售与回收']
-        inputs=[{'key':k,'label':INPUTS[k][0],'value':p[k],'min':-100 if k=='level' and signed_equipment else INPUTS[k][2],'max':talent_cap if k=='talent' else INPUTS[k][3],'step':'any' if k in ('accuracy','evasion','glyph_multiplier','power','healing_percent','loot_chance') else 1} for k in INPUTS if k in requested]
+        if talent_reference:
+            requested.add('talent')
+            result.insert(0,block('所填天赋投入',[metric('已填点数',p['talent'],'点')],
+                '未投入此天赋；下方各级表仅供参考。' if p['talent']==0 else '下方标出所填点数；实际触发条件仍需核对。'))
+            for section in result:
+                if section.get('columns',[None])[0]=='投入点数':
+                    section['selected_row']=next((index for index,row in enumerate(section['rows']) if str(row[0]).lstrip('+')==str(p['talent'])),None)
+        inputs=[{'key':k,'label':INPUTS[k][0],'value':p[k],'min':-100 if k=='level' and signed_equipment else 0 if k=='talent' and talent_reference else INPUTS[k][2],'max':talent_cap if k=='talent' else INPUTS[k][3],'step':'any' if k in ('accuracy','evasion','glyph_multiplier','power','healing_percent','loot_chance') else 1} for k in INPUTS if k in requested]
         if identity=='items.armor.glyphs.stone':
             labels={'accuracy':'攻击者有效命中值（通常是敌人）','evasion':'穿戴者转换前的有效闪避值（通常是你）','damage':'刻印处理前的本次伤害'}
             for value in inputs:
@@ -450,7 +463,7 @@ class PlayerValues:
         for recipe in entry.get('recipes',[]):
             result.append(block('炼金配方',[metric('能量消耗',recipe['cost'],'点'),metric('产出数量',recipe['quantity'],'件/次')], '材料：'+ '、'.join(f'{x["name"]} ×{x["quantity"]}' for x in recipe['inputs'])))
 
-    def rings(self, identity, p, result, requested, *, effective_bonus=None):
+    def rings(self, identity, p, result, requested, *, bonuses=None):
         if not identity.startswith('items.rings.ringof') or '$' in identity or identity.endswith('.ability'):
             return
         kind=identity.rsplit('.',1)[-1][6:]
@@ -475,26 +488,36 @@ class PlayerValues:
             extra=rounded(3+force_tier+bonus*(4+2*force_tier)/8)
             return f'{low}–{high}',f'{low+extra}–{high+extra}'
 
-        if effective_bonus is not None:
-            if type(effective_bonus) is not int or not -1000<=effective_bonus<=1000:
-                raise ValueError('合计戒指效果等级需要是−1000–1000的整数')
-            rows=[metric(label,base**effective_bonus,unit) for label,base,unit in formulas.get(kind,[])]
+        if bonuses is not None:
+            for channel in bonuses.values():
+                value=channel['value']
+                if value is not None and (type(value) is not int or not -1000<=value<=1000):
+                    raise ValueError('合计戒指效果等级需要是−1000–1000的整数')
+            def effect(label, unit, calculate, channel='buffed'):
+                state=bonuses[channel]
+                return metric(label, '待确认' if state['value'] is None else calculate(state['value']), unit,
+                              '、'.join(state['missing']) if state['missing'] else state['source'])
+            rows=[effect(label,unit,lambda bonus,base=base:base**bonus,
+                         'unbuffed' if kind=='sharpshooting' else 'buffed')
+                  for label,base,unit in formulas.get(kind,[])]
             if kind in ('might','sharpshooting','force'):
                 label='力量增益' if kind=='might' else '投掷有效等级增益' if kind=='sharpshooting' else '持武器额外伤害'
-                rows.append(metric(label,effective_bonus,'HP' if kind=='force' else '点'))
+                rows.append(effect(label,'HP' if kind=='force' else '点',lambda bonus:bonus,
+                                   'unbuffed' if kind=='might' else 'buffed'))
             if kind=='tenacity':
                 requested.update(('max_hp','hp'))
                 missing=(p['max_hp']-p['hp'])/p['max_hp']
-                rows.append(metric('当前血量下的减伤',100*(1-.85**(effective_bonus*missing)),'%',
-                                   f'当前生命 {p["hp"]}/{p["max_hp"]}；负数表示增伤'))
+                rows.append(effect('当前血量下的减伤','%',lambda bonus:100*(1-.85**(bonus*missing))))
+                rows[-1]['condition']+=f'；当前生命 {p["hp"]}/{p["max_hp"]}；负数表示增伤'
             if kind=='force':
                 requested.add('strength')
-                unarmed,brawler=force_range(effective_bonus)
-                rows.extend([metric('普通徒手伤害',unarmed,'HP','装备武力之戒且未使用武僧徒手能力；未计目标防御'),
-                             metric('拳击架势伤害',brawler,'HP','决斗家拳击架势已开启；额外伤害按所填力量')])
+                rows.extend([effect('普通徒手伤害','HP',lambda bonus:force_range(bonus)[0]),
+                             effect('拳击架势伤害','HP',lambda bonus:force_range(bonus)[1])])
+                rows[-2]['condition']+='；装备武力之戒且未使用武僧徒手能力；未计目标防御'
+                rows[-1]['condition']+='；决斗家拳击架势已开启；额外伤害按所填力量'
             if rows:
                 result.append(block('给定条件下的戒指效果',rows,
-                    f'合计戒指效果等级 {effective_bonus:+d}；有效力量 {p["strength"]}。组合、诅咒和临时等级由调用方明确核对。'))
+                    f'有效力量 {p["strength"]}；根骨力量与神射耐久使用未增强等级，其他所列效果使用增强等级。'))
             return
 
         levels=sorted(set([*range(11),p['level']]))
