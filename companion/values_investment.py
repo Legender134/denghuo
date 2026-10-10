@@ -8,7 +8,7 @@ from __future__ import annotations
 from .public_source_data import MISSILE_PUBLIC_TYPES
 
 CONTEXT_KEYS = ('hp','max_hp','hero_level','depth','target_hp','target_max_hp','enemy_exp','minor','major','charges')
-EXTRA_KEYS = {'investment_mode', 'character_scene', 'scene_ring_slot', *(f'{key}_{side}' for side in ('a','b')
+EXTRA_KEYS = {'investment_mode', 'character_scene', 'scene_ring_slot', 'combat_model', 'target_context', *(f'{key}_{side}' for side in ('a','b')
     for key in ('level_known','curse','ring_pair','ring_pair_level','ring_pair_curse','resin','infusion','hardened', *CONTEXT_KEYS))}
 FAMILIES = {'weapon':'items.weapon.melee.', 'armor':'items.armor.', 'wand':'items.wands.', 'ring':'items.rings.'}
 
@@ -99,6 +99,8 @@ def canonical_comparison(values, raw):
     elif set(raw)&(budget-{'planning'}|{'investment_mode'}):raise ValueError('预算参数需要明确启用升级规划')
     from .character_comparison import canonical_scene
     canonical_scene(raw, result, kinds[0])
+    from .combat_context import canonical_combat
+    canonical_combat(raw, result, kinds[0])
     return result
 
 

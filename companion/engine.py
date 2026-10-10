@@ -11,6 +11,7 @@ from .public_item_levels import level_applies, scroll_upgradable, visible_level
 from .public_item_state import project_item_state, cooked_fruit_name, project_equipment_state
 from .character_scene import scene_from_game
 from .public_source_data import MISSILE_PUBLIC_TYPES
+from .public_skills import project_skills
 from .saves import SaveError, validate_map
 from .game_math import healing_tick
 
@@ -421,6 +422,7 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
     if isinstance(version, int) and version > 0 and version != catalog.data["version_code"]:
         compatibility = f"存档版本码 {version} 与参考版本不同；手册和规则按 {catalog.data['version']}，差异请以游戏说明为准。"
     return {"hero": {"class": CLASSES.get(hero_class, str(hero_class)), "class_id": hero_class,
+                     "skills": project_skills(game, catalog.data['version_code']),
                      "subclass": hero.get("subClass", "NONE"), "level": int(number(hero.get("lvl"), 1)),
                      "hp": hp, "ht": ht, "strength": number(hero.get("STR"), 10),
                      "strength_label": "基础力量", "hunger": hunger,

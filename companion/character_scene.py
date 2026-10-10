@@ -30,13 +30,13 @@ def ring_identity(value):
 
 
 def validate_scene(raw):
-    if not isinstance(raw, dict) or set(raw) != KEYS or type(raw['format']) is not int or raw['format'] != 1:
+    if not isinstance(raw, dict) or type(raw.get('format')) is not int or raw['format'] not in (1, 2) or set(raw) != (KEYS | ({'enhanced_rings'} if raw['format'] == 2 else set())):
         raise ValueError('角色条件格式不正确')
     optional_int(raw['base_strength'], '基础力量', 1, 1000)
     optional_int(raw['strongman'], '力大无穷天赋点数', 0, 3)
     optional_int(raw['adrenaline'], '激素涌动力量', 0, 1000)
     optional_int(raw['spirit_level'], '精神形态戒指等级', 0, 4)
-    for key in ('magic_immune', 'spirit_form', 'spirit_cursed'):
+    for key in ('magic_immune', 'spirit_form', 'spirit_cursed', *(['enhanced_rings'] if raw['format'] == 2 else [])):
         if raw[key] is not None and type(raw[key]) is not bool:
             raise ValueError('临时状态需要明确选择，未确认不能当作没有')
     if raw['spirit_ring'] != 'none':
@@ -119,6 +119,7 @@ def scene_from_game(game, catalog, items):
         return calculate_scene(raw)
     base = hero.get('STR')
     raw = empty_scene(base if type(base) is int and 1 <= base <= 1000 else None)
+    raw.update(format=2, enhanced_rings=None)
     raw['strongman'] = talent_points(hero, 'STRONGMAN')
     buffs = hero.get('buffs', [])
     if not isinstance(buffs, list) or any(not isinstance(buff, dict) for buff in buffs):
@@ -126,6 +127,7 @@ def scene_from_game(game, catalog, items):
         return calculate_scene(raw)
     kinds = {buff.get('__className'): buff for buff in buffs}
     raw['magic_immune'] = PREFIX + 'actors.buffs.MagicImmune' in kinds
+    raw['enhanced_rings'] = PREFIX + 'actors.buffs.EnhancedRings' in kinds
     surges = [buff for buff in buffs if buff.get('__className') == PREFIX + 'actors.buffs.AdrenalineSurge']
     if surges:
         boost = surges[0].get('boost')

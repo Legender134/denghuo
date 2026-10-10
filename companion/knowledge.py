@@ -21,6 +21,24 @@ KEY = re.compile(r'[a-z0-9_.\-$]{1,300}\Z')
 RECORD_ID = re.compile(r'[a-f0-9]{32}\Z')
 
 
+def library_json(raw):
+    """Reject ambiguous JSON instead of guessing which duplicate value to retain."""
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError('JSON 含重复字段，无法确定原记录')
+            result[key] = value
+        return result
+    def number(value):
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError('JSON 含非有限数值，无法确定原记录')
+        return result
+    return json.loads(raw, object_pairs_hook=pairs, parse_float=number,
+        parse_constant=lambda _: (_ for _ in ()).throw(ValueError('JSON 含非有限数值')))
+
+
 def text(value, label, maximum=80):
     if (not isinstance(value, str) or not value.strip() or len(value)>maximum
             or any(ord(char)<32 or ord(char)==127 for char in value)):
@@ -166,7 +184,7 @@ class KnowledgeWorkspace:
         if len(raw)>MAX_BYTES:
             raise ValueError('收藏与方案库过大；原文件仍保留，请先导出或保留后重建')
         try:
-            value = json.loads(raw,parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+            value = library_json(raw)
             self._validate(value)
         except (ValueError,TypeError,KeyError,AttributeError,RecursionError,OverflowError) as exc:
             raise ValueError('收藏与方案库无法读取；原文件仍保留，查资料和自动备份可以继续') from exc
@@ -175,34 +193,34 @@ class KnowledgeWorkspace:
     @staticmethod
     def _validate(value):
         if not isinstance(value,dict) or set(value)!={'format','favorites','recent','plans'} or type(value['format']) is not int or value['format']!=1:
-            raise ValueError()
+            raise ValueError('资料库根字段或版本不正确')
         for key,maximum in (('favorites',MAX_FAVORITES),('recent',MAX_RECENT),('plans',MAX_PLANS)):
             if not isinstance(value[key],list) or len(value[key])>maximum:
-                raise ValueError()
+                raise ValueError(f'{key} 需要不超过 {maximum} 条的记录列表')
         favorite_ids = [identity(entry) for entry in value['favorites']]
         if len(favorite_ids)!=len(set(favorite_ids)):
-            raise ValueError()
+            raise ValueError('收藏身份重复冲突')
         recent_ids = []
         for row in value['recent']:
             if not isinstance(row,dict) or set(row)!={'entry','opened'} or not 0<finite(row['opened'],'最近查看时间')<1e12:
-                raise ValueError()
+                raise ValueError('最近查看需要 entry 和有效的 opened 时间')
             recent_ids.append(identity(row['entry']))
         if len(recent_ids)!=len(set(recent_ids)):
-            raise ValueError()
+            raise ValueError('最近查看身份重复冲突')
         ids = []
         for row in value['plans']:
             if (not isinstance(row,dict) or set(row)-{'note'}!={'id','name','kind','entry','params','rules_version','created','updated','origin'}
                     or not isinstance(row['id'],str) or not RECORD_ID.fullmatch(row['id'])):
-                raise ValueError()
+                raise ValueError('方案必要字段不完整、含未知字段或记录 ID 不正确')
             text(row['name'],'方案名称')
             user_note(row.get('note', ''))
             text(row['rules_version'],'资料版本',80)
-            if row['kind'] not in ('numeric','equipment','manual','alchemy','character') or row['kind']=='numeric' and not KEY.fullmatch(row['entry']):
-                raise ValueError()
+            if row['kind'] not in ('numeric','equipment','manual','alchemy','character') or row['kind']=='numeric' and (not isinstance(row['entry'],str) or not KEY.fullmatch(row['entry'])):
+                raise ValueError('方案类型或数值条目身份不正确')
             if row['kind']!='numeric' and row['entry'] is not None:
-                raise ValueError()
+                raise ValueError('非数值方案的 entry 必须为空')
             if not isinstance(row['params'],dict) or len(row['params'])>64 or not row['params']:
-                raise ValueError()
+                raise ValueError('方案参数需要含 1–64 个字段的对象')
             # Type validation is independent of currently available rules: retain old plans.
             if row['kind']=='numeric':
                 for key,item in row['params'].items():
@@ -213,9 +231,20 @@ class KnowledgeWorkspace:
                 planning_keys = {'planning','upgrade_budget','strength_budget'} if row['params'].get('planning') == '1' else set()
                 from companion.values_investment import EXTRA_KEYS, CONTEXT_KEYS
                 if not base_keys.issubset(row['params']) or set(row['params'])-base_keys-planning_keys-EXTRA_KEYS:
-                    raise ValueError()
+                    raise ValueError('装备参数缺少必要字段或含不支持字段')
+                if 'combat_model' in row['params'] and (row['params']['combat_model']!='ordinary-v1' or any(
+                        not isinstance(row['params'].get('id_'+side),str) or not row['params']['id_'+side].startswith('items.weapon.melee.') for side in ('a','b'))):
+                    raise ValueError('普通持械近战模型仅用于普通近战武器')
+                if 'target_context' in row['params'] and row['params'].get('combat_model')!='ordinary-v1':
+                    raise ValueError('目标条件需要明确启用普通持械近战模型')
                 for key,item in row['params'].items():
-                    if key == 'character_scene':
+                    if key == 'combat_model':
+                        continue
+                    elif key == 'target_context':
+                        from companion.combat_context import validate_target
+                        if not isinstance(item,dict):raise ValueError('目标条件需要完整对象')
+                        validate_target(item)
+                    elif key == 'character_scene':
                         from companion.character_scene import validate_scene
                         validate_scene(item)
                     elif key == 'scene_ring_slot':
@@ -254,12 +283,12 @@ class KnowledgeWorkspace:
                 from companion.service import manual_game
                 manual_game(row['params'])
             if not 0<finite(row['created'],'创建时间')<=finite(row['updated'],'更新时间')<1e12:
-                raise ValueError()
-            if row['origin']!=origin(row['origin']):raise ValueError()
-            if set(row['origin'].get('fields', {})) - set(row['params']):raise ValueError()
+                raise ValueError('方案创建、更新时间无效或顺序不正确')
+            if row['origin']!=origin(row['origin']):raise ValueError('方案来源不是完整固定参考')
+            if set(row['origin'].get('fields', {})) - set(row['params']):raise ValueError('方案字段来源包含未保存的参数')
             validate_references(row['origin'], row['kind'], row['params'])
             ids.append(row['id'])
-        if len(ids)!=len(set(ids)):raise ValueError()
+        if len(ids)!=len(set(ids)):raise ValueError('方案 ID 重复冲突')
 
     @staticmethod
     def record_view(row):
@@ -354,12 +383,23 @@ class KnowledgeWorkspace:
         try:
             _,result = canonical_plan(self.session,row['kind'],row['entry'],row['params'])
         except ValueError as exc:
-            if row['kind'] not in ('alchemy', 'numeric'):
-                raise
             # Structural validation already succeeded. Keep unsupported old
-            # numeric/alchemy inputs available for explicit correction; never
+            # inputs available for explicit correction; never
             # rewrite their historical parameters to today's canonical defaults.
             result,calculation_error = None,str(exc)
+            from .public_skills import FREE_SPELLS, SPELL_PREFIX
+            points = row['params'].get('talent')
+            if (row['kind']=='numeric' and row['entry'] in {SPELL_PREFIX+name for name in FREE_SPELLS}
+                    and type(points) in (int,float) and 1 <= points <= 4 and int(points)==points):
+                try:
+                    current = self.session.values.detail(row['entry'],{key:value for key,value in row['params'].items() if key!='talent'})
+                    keys = {field['key'] for field in current['inputs']}
+                    if current.get('status')!='legacy' and set(row['params']) <= keys | {'talent'}:
+                        result,calculation_error = current,None
+                        result['retained_legacy_params'] = ['talent']
+                        result['notice'] += ' 旧方案的天赋点数字段完整保留；此法术不使用该字段，当前公式结果不受其影响。'
+                except (ValueError,KeyError):
+                    pass
         return {'plan':plan,'result':result,
                 'source_label':'保存的参考方案 · 固定参数，未跟随当前角色',
                 'rules_changed':row['rules_version']!=self.session.catalog.data['version'],
@@ -384,7 +424,7 @@ class KnowledgeWorkspace:
         if not isinstance(raw,bytes) or not 0<len(raw)<=MAX_BYTES:
             raise ValueError('请选择小于1 MiB的灯火收藏与方案 JSON')
         try:
-            incoming = json.loads(raw,parse_constant=lambda _:(_ for _ in ()).throw(ValueError()))
+            incoming = library_json(raw)
             self._validate(incoming)
         except (ValueError,TypeError,KeyError,AttributeError,RecursionError,OverflowError) as exc:
             raise ValueError('导入资料格式不正确，已有收藏与方案保持不变') from exc
@@ -426,38 +466,135 @@ class KnowledgeWorkspace:
             raise ValueError('原资料库过大，请先在助手数据目录中保留原件后处理；尚未重建')
         return raw
 
+    def _recovery_candidate(self, raw):
+        recovered = {'format':1,'favorites':[],'recent':[],'plans':[]}
+        categories = {key:{'healthy':0,'invalid':0,'ambiguous':0,'blocked':False,'total':None}
+                      for key in ('favorites','recent','plans')}
+        issues = []
+        root_error = ''
+        try:
+            if len(raw)>MAX_BYTES:
+                raise ValueError('原资料库超过 1 MiB，不能按记录安全恢复')
+            value = library_json(raw)
+            if (not isinstance(value,dict) or set(value)!=set(recovered)
+                    or type(value['format']) is not int or value['format']!=1):
+                raise ValueError('根格式不是完整的第 1 版资料库，无法证明记录结构')
+        except (ValueError,TypeError,RecursionError,OverflowError) as exc:
+            root_error = str(exc) or 'JSON 无法完整读取，无法证明记录结构'
+            for counts in categories.values():
+                counts['blocked'] = True
+            issues.append({'category':'library','index':None,'reason':root_error})
+        else:
+            for category,maximum in (('favorites',MAX_FAVORITES),('recent',MAX_RECENT),('plans',MAX_PLANS)):
+                rows = value[category]
+                categories[category]['total'] = len(rows) if isinstance(rows,list) else None
+                if not isinstance(rows,list) or len(rows)>maximum:
+                    categories[category]['blocked'] = True
+                    reason = '类别需要记录列表' if not isinstance(rows,list) else f'类别超过 {maximum} 条上限，整类保留在原件，不截断恢复'
+                    issues.append({'category':category,'index':None,'reason':reason})
+                    continue
+                identities = []
+                for row in rows:
+                    key = row if category=='favorites' else row.get('entry' if category=='recent' else 'id') if isinstance(row,dict) else None
+                    identities.append(key if isinstance(key,str) else None)
+                duplicate_ids = {key for key in identities if key is not None and identities.count(key)>1}
+                for index,row in enumerate(rows):
+                    key = identities[index]
+                    issue = {'category':category,'index':index+1}
+                    if key is not None:
+                        issue['identity'] = key
+                    if key in duplicate_ids:
+                        categories[category]['ambiguous'] += 1
+                        issues.append({**issue,'reason':'身份重复冲突；所有同身份记录均不选择，保留在原件'})
+                        continue
+                    single = {'format':1,'favorites':[],'recent':[],'plans':[]}
+                    single[category] = [row]
+                    try:
+                        self._validate(single)
+                    except (ValueError,TypeError,KeyError,AttributeError,RecursionError,OverflowError) as exc:
+                        categories[category]['invalid'] += 1
+                        issues.append({**issue,'reason':str(exc) or '记录字段、类型、范围或来源不符合资料库结构'})
+                    else:
+                        recovered[category].append(copy.deepcopy(row))
+                        categories[category]['healthy'] += 1
+        self._validate(recovered)
+        count = sum(row['healthy'] for row in categories.values())
+        preview = {'expected':hashlib.sha256(raw).hexdigest(),'bytes':len(raw),
+                   'mode':'recover' if count else 'empty','categories':categories,'issues':issues,
+                   'healthy_count':count,'can_export':bool(count),
+                   'message':f'先完整保留原文件，再恢复 {count} 条结构健康记录；损坏和冲突记录留在原件中'
+                             if count else '未能证明有健康记录；先完整保留原文件，再建立空资料库',
+                   'root_error':root_error}
+        return preview,recovered
+
+    def _repair_candidate(self):
+        try:
+            raw = self._recovery_bytes()
+        except FileNotFoundError:
+            raise ValueError('收藏与方案库可以正常读取，无需恢复') from None
+        try:
+            if len(raw)>MAX_BYTES:raise ValueError('资料库超出读取上限')
+            self._validate(library_json(raw))
+        except (ValueError,TypeError,KeyError,AttributeError,RecursionError,OverflowError):
+            return raw,*self._recovery_candidate(raw)
+        raise ValueError('收藏与方案库可以正常读取，无需恢复')
+
     def repair_preview(self):
         with self.lock:
-            try:
-                self._read()
-            except ValueError:
-                raw = self._recovery_bytes()
-                return {'expected':hashlib.sha256(raw).hexdigest(), 'bytes':len(raw),
-                        'message':'先保留原收藏与方案文件，再建立空资料库；游戏存档和自动备份不会改动'}
-            raise ValueError('收藏与方案库可以正常读取，无需重建')
+            return self._repair_candidate()[1]
+
+    @staticmethod
+    def _recovery_document(value):
+        raw = json.dumps(value,ensure_ascii=False,indent=2,allow_nan=False).encode('utf-8')
+        if len(raw)>MAX_BYTES:
+            # Pretty formatting must not make an otherwise bounded subset unusable.
+            raw = json.dumps(value,ensure_ascii=False,separators=(',',':'),allow_nan=False).encode('utf-8')
+        if len(raw)>MAX_BYTES:
+            raise ValueError('健康记录仍超过资料库容量；原文件未替换，不能截断恢复')
+        return raw
+
+    def repair_export(self, expected):
+        with self.lock:
+            _,preview,recovered = self._repair_candidate()
+            if expected!=preview['expected']:
+                raise ValueError('原资料库刚被修改，请重新预览；尚未导出')
+            if not preview['can_export']:
+                raise ValueError('没有可证明健康的记录可以导出；原文件仍保留')
+            raw = self._recovery_document(recovered)
+            if hashlib.sha256(self._recovery_bytes()).hexdigest()!=expected:
+                raise ValueError('原资料库刚被修改，请重新预览；尚未导出')
+            return raw
 
     def repair(self,expected,confirmed):
         if confirmed is not True:
-            raise ValueError('请先确认保留原文件并重建收藏与方案库')
+            raise ValueError('请先确认完整保留原文件并恢复收藏与方案库')
         with self.lock:
-            preview = self.repair_preview()
+            raw,preview,recovered = self._repair_candidate()
             if expected!=preview['expected']:
                 raise ValueError('原资料库刚被修改，请重新预览；尚未重建')
-            raw = self._recovery_bytes()
-            if hashlib.sha256(raw).hexdigest()!=expected:
+            if hashlib.sha256(self._recovery_bytes()).hexdigest()!=expected:
                 raise ValueError('原资料库刚被修改，请重新预览；尚未重建')
+            recovered_raw = self._recovery_document(recovered)
             preserved = self.path.with_name(self.path.stem+'.preserved-'+uuid.uuid4().hex+'.json')
             with preserved.open('xb') as stream:
                 stream.write(raw)
-            empty = {'format':1,'favorites':[],'recent':[],'plans':[]}
+                stream.flush()
+            if preserved.read_bytes()!=raw:
+                raise ValueError('原件保留副本校验失败；尚未恢复资料库')
             pending = self.path.with_name(self.path.name+'.'+uuid.uuid4().hex+'.pending')
             try:
                 with pending.open('xb') as stream:
-                    stream.write(json.dumps(empty).encode('utf-8'))
+                    stream.write(recovered_raw)
+                    stream.flush()
+                staged = pending.read_bytes()
+                if len(staged)>MAX_BYTES or library_json(staged)!=recovered:
+                    raise ValueError('恢复资料库校验失败；原文件未替换')
+                self._validate(library_json(staged))
                 if hashlib.sha256(self._recovery_bytes()).hexdigest()!=expected:
                     raise ValueError('原资料库刚被修改，保留副本已建立，但尚未重建；请刷新')
                 pending.replace(self.path)
                 self.generation += 1
             finally:
                 if pending.exists():pending.unlink()
-            return {'preserved_file':preserved.name}
+            return {'preserved_file':preserved.name,'mode':preview['mode'],
+                    'recovered_count':preview['healthy_count'],'categories':preview['categories']}

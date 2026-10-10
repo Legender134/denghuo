@@ -154,6 +154,7 @@ class SnapshotNotices:
         self.notice = None
         self.until = 0
         self.last_modified = None
+        self.last_revision = None
 
     def update(self, snap, now, duration=5, enabled=True):
         data = snap.get('data')
@@ -166,7 +167,9 @@ class SnapshotNotices:
         new_instance = not self.initialized or self.identity != identity
         if new_instance:
             self.notice, self.until = None, 0
-        changed = self.last_modified != snap.get('modified')
+        # Content revisions also detect two saves within the filesystem's timestamp precision.
+        changed = (self.last_revision != snap.get('revision')
+                   or self.last_modified != snap.get('modified'))
         appeared = current - self.seen
         if eligible and not new_instance and changed and appeared:
             selected = next(t for t in tips if (t['id'], t['severity']) in appeared)
@@ -178,6 +181,7 @@ class SnapshotNotices:
             self.notice, self.until = None, 0
         self.initialized, self.identity = True, identity
         self.seen, self.last_modified = current, snap.get('modified')
+        self.last_revision = snap.get('revision')
         return self.notice if self.notice and now < self.until else None
 
 

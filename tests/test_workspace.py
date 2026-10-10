@@ -52,7 +52,7 @@ class WorkspaceTests(unittest.TestCase):
         from companion.workspace_service import reload_play, update_play
         for operation in ('save', 'reload'):
             with self.subTest(operation=operation), tempfile.TemporaryDirectory() as directory:
-                session = Session(Path(directory) / 'settings.json', self.catalog)
+                session = self.synthetic_session(Path(directory) / 'settings.json')
                 session.manager_available = True
                 def competing_native_write(_):
                     session.play_preferences.update({'anchor': 'bottom_right', 'offset_y': 222},
@@ -79,8 +79,14 @@ class WorkspaceTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix='denghuo-workspace-')
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
-        self.session = Session(self.directory / 'settings.json', self.catalog)
-        self.session.settings['save_root'] = str(self.directory / 'synthetic-saves')
+        self.session = self.synthetic_session(self.directory / 'settings.json')
+
+    def synthetic_session(self, config):
+        config.parent.mkdir(parents=True,exist_ok=True)
+        if not config.exists():
+            config.write_text(json.dumps({'save_root':str(config.parent/'synthetic-saves'),
+                'slot':'auto','mode':'save'}),encoding='utf-8')
+        return Session(config,self.catalog)
 
     def test_reading_shared_views_does_not_create_personal_library_or_preferences(self):
         view = self.session.workspace_status()
@@ -168,11 +174,11 @@ class WorkspaceTests(unittest.TestCase):
             self.assertEqual(store.reopen(row['id'])['plan']['note'],'新假设')
             copy=store.save(kind+'副本',kind,entry,params,note=updated['note'])
             self.assertEqual(copy['note'],'新假设')
-        exported=store.export();other=Session(self.directory/'other'/'settings.json',self.catalog).knowledge
+        exported=store.export();other=self.synthetic_session(self.directory/'other'/'settings.json').knowledge
         other.import_records(exported);self.assertTrue(all(row['note'] for row in other.status()['plans']))
         legacy=json.loads(exported)
         for row in legacy['plans']:row.pop('note')
-        old=Session(self.directory/'old'/'settings.json',self.catalog).knowledge
+        old=self.synthetic_session(self.directory/'old'/'settings.json').knowledge
         old.import_records(json.dumps(legacy).encode());opened=old.status()['plans'][0]
         self.assertEqual(old.reopen(opened['id'])['plan']['note'],'')
         modified=old.save(opened['name'],opened['kind'],opened['entry'],opened['params'],record_id=opened['id'],expected_record_revision=opened['record_revision'],note='旧版新增备注')

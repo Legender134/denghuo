@@ -802,7 +802,9 @@ class PlayerValues:
             cap=self.rules.constants(owner).get('baseChargeUse',35)
             result.append(table('英雄护甲技能充能消耗',['英勇能量天赋','消耗充能%'],[[0,display(cap)],*[['+'+str(n),display(cap*factor)] for n,factor in enumerate((.88,.77,.68,.6),1)]],'首次普通使用；连续跳跃、双重标记等天赋另有优惠。'))
         if identity.startswith('actors.hero.spells.') and owner and '$' not in identity:
-            name=identity.rsplit('.',1)[-1];requested.add('talent')
+            name=identity.rsplit('.',1)[-1]
+            if name not in ('guidinglight','holyweapon','holyward','radiance','smite'):
+                requested.add('talent')
             try:cost=self.pure_value(owner,'chargeUse',[None],context={'hero':None})
             except UnknownFormula:cost={'guidinglight':1,'holyintuition':max(0,4-t),'flash':2,'recallinscription':None,'stasis':2,'walloflight':3}.get(name)
             if cost is not None:rows.append(metric('普通施法消耗',cost,'次圣典充能','祭司的神导之光每50回合可免费一次；提前放出保存的友军或撤去光墙免费'))

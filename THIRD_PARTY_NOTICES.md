@@ -24,6 +24,8 @@
 
 Workflow design was informed by official Ludusavi, Path of Building Community, Teamcraft and FactorioLab documentation and their MIT main repositories, and by other assistants' public documentation. No Ludusavi, Path of Building, Teamcraft, FactorioLab, Hearthstone Deck Tracker, Destiny Item Manager or Blish HUD application code was copied into this implementation; their names identify design comparisons, not bundled dependencies or endorsements. The game arithmetic identified above is the actual code-derived reuse.
 
+`companion/combat_context.py` translates bounded ordinary melee branches from `Hero.attackSkill` / `damageRoll`, `Weapon.delayFactor`, `Char.hit` and the Force, Furor and Accuracy rings at the same pinned revision under GPL-3.0-or-later. It preserves Java single-precision boundaries and the infinite-evasion precedence; its manual target model does not simulate damage distributions, procs, mean DPS or time-to-kill. `public_skills.py` and `public_talents.py` check publicly saved skill eligibility against `Talent`, `HeroClass`, `HeroSubClass`, armor abilities and the corresponding spells. The original game copyrights above apply. Destiny Item Manager's MIT repository also informed refresh continuity; no application code from that repository is bundled.
+
 The optional development checkout at `.research/player-upstream-4.0.2` retains the original source and notices. It is excluded from the source-only ZIP; the pinned source is available at the repository and revision above, with fetch/archive commands in `BUILD.md`. Player packages include it in `corresponding-source/`. The full license is in `LICENSE.txt`. No endorsement by the original game's author is implied.
 
 ## Independent Windows package

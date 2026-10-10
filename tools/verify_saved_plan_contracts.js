@@ -61,6 +61,8 @@ async function selfTest(){
   const unfinished=harness('weapon',id,items);unfinished.c.webDirtySummary=()=>[];
   unfinished.run(extract(workspace,'collectWebDraft'));unfinished.run('compareSessionUnsaved=true');
   const draft=unfinished.run('collectWebDraft().draft');assert.equal(draft.comparison.references.b.user_note.title,'备用冰剑');
+  unfinished.run("compareRepairOriginal={id:'original-old-plan',name:'旧方案',params:{id_a:'items.weapon.melee.retiredsword'},note:'原备注'}");
+  assert.equal(unfinished.run('collectWebDraft().draft.comparison.repair_original.id'),'original-old-plan','repaired equipment draft must retain copy-only original identity');
   const unavailable=harness('weapon',id,items);unavailable.c.showDetail=(name,text)=>{unavailable.c.originalText=text;};
   unavailable.c.view='library';unavailable.c.legacy={plan:{id:'1'.repeat(32),kind:'numeric',entry:'items.weapon.missiles.boomerang',name:'原名称',params:{level:3},rules_version:'2.0.0',note:'原备注',origin:{mode:'save',slot:2,snapshot_at:100}},result:null,calculation_error:'此条目不支持计算'};
   unavailable.run('let planRequest=0;');unavailable.run(extract(workspace,'openUnavailableNumericPlan'));unavailable.run(extract(workspace,'openPlan'));

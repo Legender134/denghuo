@@ -72,7 +72,24 @@ class NumericLookup:
     def hero_context(snap):
         from .decisions import public_context
         return {key: value for key, value in public_context(snap).items()
-                if key in ('hero_level', 'max_hp', 'hp', 'strength', 'depth')}
+                if key in ('hero_level', 'max_hp', 'hp', 'strength', 'depth', 'current_shield')}
+
+    @classmethod
+    def entry_context(cls, snap, identity):
+        from .decisions import source, healing_context
+        from .public_skills import skill_context
+        specific = skill_context(snap, identity)
+        params = cls.hero_context(snap)
+        params.update(specific.get('params', {}))
+        if identity == 'actors.buffs.healing' and not snap.get('error'):
+            buffs = [row for row in (snap.get('data') or {}).get('buffs', []) if row.get('kind') == 'Healing']
+            if len(buffs) == 1:
+                params.update(healing_context(buffs[0]))
+        provenance = source(snap)
+        context = {**specific, 'params': params, 'stamp': cls.source_stamp(snap),
+                   'source': provenance, 'source_label': provenance['label'], 'mode': provenance['mode']}
+        cls.bind_strength_context(context, (snap.get('data') or {}).get('character_scene'))
+        return context
 
     @staticmethod
     def bind_strength_context(context, scene):
@@ -96,8 +113,10 @@ class NumericLookup:
                 '总力量条件待确认：' + '；'.join(missing) + '。基础值不代表实际总力量。')
 
     def has_draft(self):
+        retained = (self.rendered or {}).get('retained_legacy_params', [])
+        saved_params = {key: value for key, value in (self.saved_plan or {}).get('params', {}).items() if key not in retained}
         return bool(self.pending_save) or self.draft_modified or self.dirty or bool(self.saved_plan and (
-            (self.calculated is not None and self.calculated != self.saved_plan['params']) or self.note.get() != self.saved_plan.get('note', '')))
+            (self.calculated is not None and self.calculated != saved_params) or self.note.get() != self.saved_plan.get('note', '')))
 
     def schedule_search(self):
         root = self.owner.manager.root
@@ -195,11 +214,9 @@ class NumericLookup:
         self.context = copy.deepcopy(row.get('lookup_context'))
         if self.context is None and not row.get('lookup_example'):
             snap = self.owner.manager.session.snapshot()
-            params = self.hero_context(snap)
-            if params:
-                self.context = {'stamp': self.source_stamp(snap), 'params': params,
-                                'level_unknown': False, 'mode': snap['settings']['mode']}
-                self.bind_strength_context(self.context, (snap.get('data') or {}).get('character_scene'))
+            context = self.entry_context(snap, self.identity)
+            if context['params'] or context.get('skill_state'):
+                self.context = context
         self.ticket = self.owner.worker.request('detail', self.identity, self.context['params'] if self.context else {})
         self.submitted = None
         self.show_text('正在读取数值…')
@@ -234,7 +251,7 @@ class NumericLookup:
                 if key in detail.get('missing_inputs', []):
                     self.input_origins[key] = '未确认 · 请填写'
                 elif not self.saved_plan and key in (self.context or {}).get('field_origins', {}):
-                    self.input_origins[key] = prefix+' · '+self.context['field_origins'][key]
+                    self.input_origins[key] = ('' if key == 'talent' else prefix+' · ')+self.context['field_origins'][key]
                 self.variables[key] = Value(str(field['value']), lambda key=key: self.changed(key))
         self.calculated = None if detail.get('missing_inputs') else {field['key']: field['value'] for field in self.inputs}
         self.dirty, self.parameter_error = False, ''
@@ -263,7 +280,7 @@ class NumericLookup:
             self.origin.text = '参数已修改，旧结果不可继续参考；点击计算。'
         elif self.rendered and self.rendered.get('missing_inputs'):
             self.origin.text = '当前治疗条件未确认，请补全空白参数后计算。'
-        elif self.saved_plan:
+        elif self.saved_plan and not (self.context or {}).get('imported_latest'):
             self.origin.text = '保存的参考方案 · '+self.saved_plan['name']+' · 固定参数，未跟随当前角色'
         elif self.rendered:
             uses = any(value.startswith(('快照', '手动局势', '参考来源未确认')) for value in self.input_origins.values())
@@ -322,6 +339,38 @@ class NumericLookup:
         self.emit()
         return 'break'
 
+    def use_latest(self):
+        """Explicit, undoable import; unknown fields preserve the actual raw input."""
+        if not self.identity or not self.inputs:
+            return
+        snap = self.owner.manager.session.snapshot()
+        if snap.get('error') or not snap.get('data'):
+            self.origin.text = '当前角色状态未确认；原参数仍保留。'
+            self.emit()
+            return
+        self.undo_state = self.draft(include_result=True)
+        context = self.entry_context(snap, self.identity)
+        context['imported_latest'] = True
+        current_keys = {'hero_level', 'max_hp', 'hp', 'strength', 'depth', 'current_shield'}
+        if self.identity.startswith('actors.hero.spells.') and '$' not in self.identity:
+            current_keys.add('talent')
+        if self.identity == 'actors.buffs.healing':
+            current_keys.update(('power', 'healing_percent', 'healing_flat', 'vial'))
+        prefix = '手动局势' if context['mode'] == 'manual' else '快照'
+        for key, variable in self.variables.items():
+            if key in current_keys and key in context['params']:
+                variable.value = str(context['params'][key])
+                self.input_origins[key] = context.get('field_origins', {}).get(key, prefix)
+            elif key in current_keys:
+                self.input_origins[key] = '手填保留 · 最新记录未确认' + (
+                    ' · ' + context['conditions'].split('；')[0] if key == 'talent' and context.get('conditions') else '')
+        self.context = context
+        self.edit_revision += 1
+        self.ticket = self.submitted = None
+        self.dirty = self.draft_modified = True
+        self.calculate()
+        self.emit()
+
     def pin(self):
         if not self.identity or self.dirty or self.rendered is None or self.calculated is None:
             self.origin.text = '先选择条目并计算有效参数，再固定参考。'
@@ -359,7 +408,7 @@ class NumericLookup:
             self.host.command('name_plan', name=self.saved_plan['name'] if self.saved_plan else self.rendered['name'],
                               note=self.note.get(), existing=bool(self.saved_plan), pending_save=self.pending_save)
             return False
-        source = dict(self.saved_plan['origin'] if self.saved_plan else (self.context or {}).get('source') or {'mode': 'example', 'snapshot_at': None, 'slot': None})
+        source = dict(self.saved_plan['origin'] if self.saved_plan and not (self.context or {}).get('imported_latest') else (self.context or {}).get('source') or {'mode': 'example', 'snapshot_at': None, 'slot': None})
         if self.context and self.context.get('stamp') and not self.saved_plan and source.get('mode') == 'example':
             source = {'mode': self.context['mode'], 'snapshot_at': self.context['stamp'][-1], 'slot': self.context['stamp'][3]}
         source = {key: copy.deepcopy(source[key]) for key in ('mode', 'snapshot_at', 'slot', 'references') if key in source}
@@ -370,6 +419,8 @@ class NumericLookup:
             payload.update(record_id=self.saved_plan['id'], expected_record_revision=self.saved_plan['record_revision'])
         try:
             self.saved_plan = self.owner.manager.session.workspace_action(payload)['plan']
+            if self.context:
+                self.context.pop('imported_latest', None)
             self.note.value = self.saved_plan.get('note', '')
             self.pending_save = None
             self.plan_error, self.draft_modified = '', False
@@ -457,7 +508,7 @@ class NumericLookup:
             self.identity = reference['entry']
             self.context = {'params': dict(reference.get('params', {})), 'stamp': stamp,
                 'mode': source.get('mode') or (stamp[2] if stamp else 'example'), 'level_unknown': reference.get('level_origin') == 'unknown',
-                'source': source or {}, 'conditions': note, 'source_label': reference.get('source_label', '')}
+                'source': source or {}, 'conditions': note or reference.get('conditions', ''), 'source_label': reference.get('source_label', '')}
             self.context['field_origins'] = dict(reference.get('field_origins', {}))
             if 'strength' in self.context['params']:
                 exact_source = (stamp == self.source_stamp(snap) and source and source.get('mode') == snap['settings']['mode']
@@ -551,7 +602,7 @@ class NumericLookup:
             except ValueError:
                 name = ''
             if name:
-                source = copy.deepcopy(self.saved_plan['origin'] if self.saved_plan else
+                source = copy.deepcopy(self.saved_plan['origin'] if self.saved_plan and not (self.context or {}).get('imported_latest') else
                     (self.context or {}).get('source') or {'mode': 'example', 'snapshot_at': None, 'slot': None})
                 if self.context and self.context.get('stamp') and not self.saved_plan and source.get('mode') == 'example':
                     source = {'mode': self.context['mode'], 'snapshot_at': self.context['stamp'][-1], 'slot': self.context['stamp'][3]}
@@ -622,7 +673,7 @@ class NumericLookup:
                 self.save_draft_copy()
             if callback and item.get('decision') in ('saved', 'discard'):
                 callback()
-        elif action in ('favorite', 'pin', 'clear_pin', 'choose_plan', 'save_plan', 'reload_plan', 'undo_import'):
+        elif action in ('favorite', 'pin', 'clear_pin', 'choose_plan', 'save_plan', 'reload_plan', 'undo_import', 'use_latest'):
             getattr(self, action)()
         elif action == 'provenance' and self.rendered:
             provenance = self.rendered.get('provenance', {})
@@ -651,6 +702,7 @@ class NumericLookup:
             rows=[{'text': text, 'token': binding_token(row)} for text, row in zip(self.list.values, self.rows)], fields=fields, note=self.note.get(),
             result=self.text.text, status=self.origin.text, dirty=self.has_draft(),
             can_more=self.suggested or len(self.rows) < self.total, undo=bool(self.undo_state),
+            can_latest=bool(self.identity and self.inputs and self.owner.manager.session.snapshot().get('data')),
             sources=self.rendered.get('provenance', {}).get('links', []) if self.rendered else [],
             sources_token=self.source_token())
         self.owner.manager.native_ui.report_drafts()

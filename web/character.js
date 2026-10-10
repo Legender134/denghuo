@@ -5,7 +5,7 @@ let characterDirty=false,characterUnsaved=false,characterRequest=0,characterImpo
 let manualCharacterReference=null,manualCharacterUndo=null,compareCharacterReference=null;
 let characterCatalogLoading=null,characterCatalogLoaded=false,characterCatalogError='';
 const characterClone=value=>value==null?null:JSON.parse(JSON.stringify(value));
-function blankCharacterScene(){return {format:1,base_strength:10,rings:[],strongman:0,adrenaline:0,magic_immune:false,spirit_form:false,spirit_ring:null,spirit_level:null,spirit_cursed:null};}
+function blankCharacterScene(){return {format:2,base_strength:10,rings:[],strongman:0,adrenaline:0,magic_immune:false,enhanced_rings:false,spirit_form:false,spirit_ring:null,spirit_level:null,spirit_cursed:null};}
 function characterOptionalInteger(value,label,min,max){
   const raw=String(value).trim();if(!raw)return null;
   if(!/^[+-]?\d{1,7}$/.test(raw)||Number(raw)<min||Number(raw)>max)throw new Error(`${label}需要 ${min}–${max} 的整数，未确认请留空。`);
@@ -14,7 +14,8 @@ function characterOptionalInteger(value,label,min,max){
 function characterBoolean(value){if(value==='unknown')return null;if(value==='yes')return true;if(value==='no')return false;throw new Error('角色状态选项不正确');}
 function readCharacterScene(){
   const optional=(id,label,min,max)=>characterOptionalInteger($('#character-'+id).value,label,min,max);
-  const params={format:1,base_strength:optional('base','基础力量',1,1000),strongman:optional('strongman','力大无穷天赋',0,3),adrenaline:optional('adrenaline','激素涌动力量',0,1000),
+  const params={format:2,base_strength:optional('base','基础力量',1,1000),strongman:optional('strongman','力大无穷天赋',0,3),adrenaline:optional('adrenaline','激素涌动力量',0,1000),
+    enhanced_rings:characterBoolean($('#character-enhanced').value),
     magic_immune:characterBoolean($('#character-immune').value),spirit_form:characterBoolean($('#character-spirit').value),
     spirit_ring:$('#character-spirit-ring').value==='unknown'?null:$('#character-spirit-ring').value,
     spirit_level:optional('spirit-level','精神形态戒指等级',0,4),spirit_cursed:characterBoolean($('#character-spirit-curse').value),rings:[]};
@@ -30,6 +31,7 @@ function fillCharacterScene(params){
   const boolean=value=>value===null?'unknown':value?'yes':'no';
   for(const [key,id] of [['base_strength','base'],['strongman','strongman'],['adrenaline','adrenaline'],['spirit_level','spirit-level']])$('#character-'+id).value=params[key]??'';
   for(const [key,id] of [['magic_immune','immune'],['spirit_form','spirit'],['spirit_cursed','spirit-curse']])$('#character-'+id).value=boolean(params[key]);
+  $('#character-enhanced').value=boolean(params.enhanced_rings??(params.format===1?false:null));
   ensureCharacterIdentity($('#character-spirit-ring'),params.spirit_ring);$('#character-spirit-ring').value=params.spirit_ring??'unknown';
   for(let index=0;index<2;index++){
     const ring=params.rings[index],select=$('#character-ring-'+index);ensureCharacterIdentity(select,ring?.identity);

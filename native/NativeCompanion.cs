@@ -325,6 +325,7 @@ namespace Denghuo.Native {
         readonly Dictionary<string, Label> labels = new Dictionary<string, Label>();
         readonly ToolStripMenuItem sources = new ToolStripMenuItem("官方依据");
         readonly ToolStripMenuItem undo = new ToolStripMenuItem("撤回本次参数导入");
+        readonly ToolStripMenuItem latest = new ToolStripMenuItem("带入最新角色状态");
         readonly Button more;
         bool rendering, changed;
         long draftRevision;
@@ -337,6 +338,7 @@ namespace Denghuo.Native {
                 string action = pair[1]; var item = new ToolStripMenuItem(pair[0]); item.AccessibleName = pair[0]; item.Click += delegate { FlushEdit(); Host.Send(action, "surface", "lookup"); }; actions.DropDownItems.Add(item);
             }
             undo.Click += delegate { Host.Send("undo_import", "surface", "lookup"); }; actions.DropDownItems.Add(undo); actions.DropDownItems.Add(sources);
+            latest.Click += delegate { FlushEdit(); Host.Send("use_latest", "surface", "lookup"); }; actions.DropDownItems.Add(latest);
             var panel = new ToolStripMenuItem("完整资料库"); panel.Click += delegate { Host.Send("panel", "page", "workspace"); }; actions.DropDownItems.Add(panel);
             foreach (string[] pair in new string[][] { new[] { "共享角色条件（网页）", "workspace" }, new[] { "装备比较（网页）", "inventory" }, new[] { "完整炼金规划（网页）", "alchemy" } }) {
                 string page = pair[1]; var item = new ToolStripMenuItem(pair[0]); item.AccessibleName = pair[0]; item.Click += delegate { FlushEdit(); Host.Send("panel", "page", page); }; actions.DropDownItems.Add(item);
@@ -371,7 +373,7 @@ namespace Denghuo.Native {
             if (Data.Number(d, "draft_revision") < draftRevision) return;
             rendering = true;
             try {
-                draftRevision = Data.Number(d, "draft_revision"); Dirty = Data.Flag(d, "dirty");
+                draftRevision = Data.Number(d, "draft_revision"); Dirty = Data.Flag(d, "dirty"); latest.Enabled = Data.Flag(d, "can_latest");
                 if (!search.Focused) search.Text = Data.Text(d, "query", "");
                 int selected = rows.SelectedIndex; string old = selected >= 0 && selected < rowTokens.Count ? rowTokens[selected] : "";
                 var texts = new List<string>(); var tokens = new List<string>(); foreach (object raw in Data.Array(d, "rows")) { var row = (Dictionary<string, object>)raw; texts.Add(Data.Text(row, "text", "")); tokens.Add(Data.Text(row, "token", "")); }

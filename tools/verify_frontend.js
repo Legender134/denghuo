@@ -20,6 +20,65 @@ function harness(){
 }
 function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revision:1,started:90,stale:false,
   data:{hero:{level:1,ht:20,hp:10,strength:10},depth:1,items:[]}};}
+async function verifyNumericalSaveTransitions(){
+  const identity='items.potions.potionofhealing',tick=()=>new Promise(resolve=>setImmediate(resolve));
+  const workspace=fs.readFileSync(path.join(root,'web/workspace.js'),'utf8');
+  function setup(){
+    const h=harness();h.context.state=stamp();let inputs=[],nextId=0;
+    Object.assign(h.context,{calculationStamp:()=>({mode:'save',slot:1,modified:h.context.state.modified,revision:h.context.state.revision}),
+      toast(){},inlineError(node,text){node.textContent=text;},loadWorkspace:async()=>{}});
+    h.context.$$=()=>inputs;
+    Object.defineProperty(h.get('#detail-rules'),'innerHTML',{set(html){inputs=[...html.matchAll(/<input data-value-key="([^"]+)"[^>]*value="([^"]+)"/g)].map(match=>{const input=element();input.dataset.valueKey=match[1];input.value=match[2];h.elements.set(`[data-value-key="${match[1]}"]`,input);return input;});h.get('#value-calculator').querySelectorAll=()=>inputs;}});
+    const response=params=>({status:'current',version:'4.0.2',blocks:[],notice:'',inputs:['hero_level','max_hp','hp','vial'].map(key=>({key,label:key,min:-1,max:1000,value:Number(params[key]??-1)}))});
+    h.context.fetch=async url=>({ok:true,json:async()=>response(Object.fromEntries(new URLSearchParams(url.split('?')[1])))});
+    h.context.post=async(url,payload)=>({plan:{...structuredClone(payload),id:payload.record_id||'numeric-'+(++nextId),record_revision:'b'.repeat(64),origin:payload.source}});
+    h.load('rules.js');h.run("let planDialogSerial=0,planDraft=null;const planNameDrafts=new Map(),planNoteDrafts=new Map(),planMetaOriginals=new Map(),planLabels={numeric:'数值'};");
+    h.run(workspace.slice(workspace.indexOf('function planDraftKey('),workspace.indexOf('async function getJSON(')));
+    h.run(workspace.slice(workspace.indexOf('function actualNumericalParams('),workspace.indexOf('async function confirmReloadSavedPlan(')));
+    const edit=raw=>{const field=h.get('[data-value-key="hp"]');field.value=raw;field.listeners.input();};
+    const calculate=async()=>{h.get('#value-calculator').listeners.submit({preventDefault(){}});await tick();};
+    const beginSave=()=>h.run("openPlanSave({kind:'numeric',entry:numericalDetail.identity,params:actualNumericalParams(numericalDetail),source:{mode:'example'}},numericalDetail.savedPlan,'命名计算')");
+    const reopen=async plan=>{h.run('cancelNumericalDetail()');h.context.reopenPlan=plan;h.context.reopenResult=response(plan.params);await h.run(`loadNumericalDetail('${identity}',reopenPlan.params,'saved',{fixed:true,savedPlan:reopenPlan,result:reopenResult})`);};
+    return {h,edit,calculate,beginSave,reopen,open:()=>h.run(`loadNumericalDetail('${identity}')`)};
+  }
+  const checks=[];
+  for(const raw of ['-','',' 7 ','1e']){
+    const t=setup();await t.open();t.beginSave();await t.h.run('savePlan()');const plan=t.h.run('numericalDetail.savedPlan');
+    t.edit(raw);await t.reopen(plan);assert.equal(t.h.get('[data-value-key="hp"]').value,raw);assert.equal(Number(t.h.run('numericalDetail.inputs.find(i=>i.key==="hp").value')),10);assert(t.h.run('numericalDetail.dirty'));
+    checks.push('first save retains raw '+JSON.stringify(raw));
+  }
+  {
+    const t=setup();await t.open();t.beginSave();await t.h.run('savePlan()');const original=t.h.run('numericalDetail.savedPlan');
+    t.edit('6');await t.calculate();t.beginSave();let finish;t.h.context.post=()=>new Promise(resolve=>finish=resolve);const saving=t.h.run('savePlan()');t.edit('-');
+    const copy={...structuredClone(original),id:'copy',params:{...original.params,hp:6}};finish({plan:copy});await saving;
+    await t.reopen(copy);assert.equal(t.h.get('[data-value-key="hp"]').value,'-');t.edit('8');
+    await t.reopen(original);assert.equal(t.h.get('[data-value-key="hp"]').value,'-','later copy input must not change the original session');assert.equal(Number(t.h.run('numericalDetail.inputs.find(i=>i.key==="hp").value')),6,'original last calculated result remains independently available');
+    checks.push('save copy preserves both plan sessions');
+  }
+  {
+    const t=setup();await t.open();t.beginSave();await t.h.run('savePlan()');const plan=t.h.run('numericalDetail.savedPlan');t.edit('7');await t.calculate();
+    t.beginSave();await t.h.run('savePlan(true)');const updated=t.h.run('numericalDetail.savedPlan');assert.equal(updated.id,plan.id);t.edit('-');await t.reopen(updated);assert.equal(t.h.get('[data-value-key="hp"]').value,'-');checks.push('explicit update keeps subsequent raw input');
+  }
+  {
+    const t=setup();await t.open();t.beginSave();let finish;t.h.context.post=()=>new Promise(resolve=>finish=resolve);const saving=t.h.run('savePlan()');
+    t.edit('4');await t.calculate();assert(!t.h.run('numericalDetail.dirty'));
+    const submitted=t.h.run('JSON.parse(JSON.stringify(planDraft.payload))');const plan={...submitted,id:'delayed',record_revision:'c'.repeat(64),origin:submitted.source};finish({plan});await saving;
+    assert(t.h.run('numericalDetail.sessionUnsaved'));assert.equal(Number(t.h.run('numericalDetail.inputs.find(i=>i.key==="hp").value')),4);await t.reopen(plan);assert.equal(Number(t.h.get('[data-value-key="hp"]').value),4);checks.push('new calculation survives older save acknowledgement');
+  }
+  {
+    const t=setup();await t.open();t.beginSave();let finish;t.h.context.post=()=>new Promise(resolve=>finish=resolve);const saving=t.h.run('savePlan()');
+    const payload=t.h.run('JSON.parse(JSON.stringify(planDraft.payload))');t.h.run('cancelNumericalDetail()');await t.open();const newOwner=t.h.run('numericalDetail');
+    finish({plan:{...payload,id:'old-owner',record_revision:'d'.repeat(64),origin:payload.source}});await saving;
+    assert.equal(t.h.run('numericalDetail'),newOwner);assert.equal(t.h.run('numericalDetail.savedPlan'),null);checks.push('same entry reopened during save keeps its own identity');
+  }
+  {
+    const t=setup();await t.open();t.h.context.state.modified=130;t.h.context.state.data.hero.hp=5;t.h.get('#values-use-latest').listeners.click();await tick();
+    t.beginSave();await t.h.run('savePlan()');const plan=t.h.run('numericalDetail.savedPlan');t.h.get('#values-undo-import').listeners.click();await tick();
+    assert.equal(t.h.run('numericalDetail.savedPlan.id'),plan.id);assert.equal(Number(t.h.get('[data-value-key="hp"]').value),10);assert(t.h.run('numericalDetail.sessionUnsaved'));
+    t.edit('-');await t.reopen(plan);assert.equal(t.h.get('[data-value-key="hp"]').value,'-');checks.push('latest import undo follows newly saved identity and retains original result');
+  }
+  console.log('PASS: '+checks.length+' numeric save transition checks (production handlers, synthetic values/transport)');
+}
 async function verifyComparisonPlanOpenings(){
 const entries=[['items.weapon.melee.shortsword','shortsword'],['items.weapon.melee.battleaxe','battleaxe'],['items.wands.wandoffireblast','fireblast'],['items.wands.wandofprismaticlight','prismatic']].map(([id,name])=>({id,name}));
 const result={family:'weapon',choices:[{name:'shortsword',level:0,upgrade_risk:0,current_metrics:[],upgraded_metrics:[]},{name:'battleaxe',level:5,upgrade_risk:0,current_metrics:[],upgraded_metrics:[]}],rows:[],notice:'',version:'4.0.2'};
@@ -114,6 +173,7 @@ async function verifyInventoryEntrySnapshots(){
       user_note:{title:'备用剑',body:'另一个实例',scope:'specific_item'}}];
   for(const [selector,kind] of [['#inventory-list','inventory'],['#equipped','equipped']]){
     let markup='';Object.defineProperty(h.get(selector),'innerHTML',{get:()=>markup,set:value=>{markup=value;buttons[kind]=[...value.matchAll(/<button /g)].map(()=>element());}});
+    h.get(selector).querySelectorAll=()=>buttons[kind];
   }
   Object.assign(h.context,{navigationSerial:0,webEditingFrozen:false,displayNumber:String,exampleHTML:()=>'',inlineError:(el,text)=>el.textContent=text,
     calculationStamp:()=>({revision:h.context.state.revision}),cancelNumericalDetail(){},loadNumericalDetail(){},navigate(){},
@@ -126,19 +186,19 @@ async function verifyInventoryEntrySnapshots(){
   h.load('compare.js');await h.run('comparisonReady');
   const app=fs.readFileSync(path.join(root,'web/app.js'),'utf8');
   h.run(app.slice(app.indexOf('const escapeHTML ='),app.indexOf('const fmtTime =')));
-  h.run("let lastRender='';"+app.slice(app.indexOf('function render(){'),app.indexOf('function renderMapText(')));
+  h.run("let lastRender='';"+app.slice(app.indexOf('function snapshotViewOwner('),app.indexOf('function renderMapText(')));
   h.run(app.slice(app.indexOf('function itemSnapshotReference('),app.indexOf('function showReference(')));
   h.context.renderMap=()=>{};h.run('render()');
   const inventoryButton=buttons.inventory[1],equippedButton=buttons.equipped[0];
   h.context.state.data.items=structuredClone(rows);h.run('render()');
-  inventoryButton.listeners.click();assert.equal(h.get('#detail-user-note').children[2].textContent,'备用剑');
+  inventoryButton.onclick();assert.equal(h.get('#detail-user-note').children[2].textContent,'备用剑');
   assert.equal(await h.get('#detail-related').children.at(-1).listeners.click(),true);
   assert.equal(Number(h.run('readComparisonArgs().level_a')),7,'poll before inventory click keeps the exact second instance');
-  equippedButton.listeners.click();assert.equal(h.get('#detail-user-note').children[2].textContent,'保留_<剑>');
+  equippedButton.onclick();assert.equal(h.get('#detail-user-note').children[2].textContent,'保留_<剑>');
   assert.equal(h.get('#detail-user-note').children[3].textContent,'第一行\n<不是标签>');
   assert.equal(await h.get('#detail-related').children.at(-1).listeners.click(),true);
   assert.equal(Number(h.run('readComparisonArgs().level_a')),2,'equipped entry captures the same original full item list');
-  h.context.state.revision=2;h.context.state.data.items=structuredClone(rows);inventoryButton.listeners.click();
+  h.context.state.revision=2;h.context.state.data.items=structuredClone(rows);inventoryButton.onclick();
   assert.equal(await h.get('#detail-related').children.at(-1).listeners.click(),false,'genuine save changes cannot rematch the old instance');
   assert.match(h.get('#detail-workspace-error').textContent,/背包快照已变化/);
   h.run("showDetail('Other','','','')");assert(h.get('#detail-user-note').hidden);
@@ -269,6 +329,9 @@ async function verifyComparisonRecovery(){
     verifySettingsRecovery:async()=>{},applySettingsRecovery(){},toast:text=>messages.push(text)});
   const workspace=fs.readFileSync(path.join(root,'web/workspace.js'),'utf8');draft.h.run(workspace.slice(workspace.indexOf('async function loadUnfinishedDraft('),workspace.indexOf("$('#draft-refresh').addEventListener")));
   await draft.h.run('loadUnfinishedDraft("original")');assert.equal(draft.catalogCalls(),10,'comparison draft recovery retries startup catalog failure');assert.equal(draft.h.get('#draft-error').textContent,'');assert(messages.some(text=>text.startsWith('已找回原始草稿')));assert.equal(draft.h.get('#compare-level-a').value,'7');assert.equal(draft.h.run('readComparisonArgs().level_known_a'),'1');assert(draft.h.run('compareDirty&&compareSessionUnsaved'));assert.equal(draft.h.run('compareResultArgs'),null);
+  const retired='items.weapon.melee.retiredsword',original={id:'c'.repeat(32),kind:'equipment',name:'保留原件',note:'旧备注',rules_version:'旧规则',params:{id_a:retired,id_b:entries[1].id,level_a:12},origin:{mode:'example'}};
+  draft.h.context.post=async()=>({draft:{draft:{schema:'denghuo-web-session',format:2,comparison:{form:{'compare-kind':{value:'weapon'},'compare-level-a':{value:'-',checked:false}},choices:{a:retired,b:entries[1].id},references:{a:{id:retired,name:'原剑',effect_id:retired,user_note:null},b:{id:entries[1].id,name:'原斧',effect_id:entries[1].id,user_note:null}},repair_original:original}}}});
+  await draft.h.run('loadUnfinishedDraft("retired-original")');assert.equal(draft.h.get('#draft-error').textContent,'');assert(draft.h.run('compareItems[Number($("#compare-a").value)].unavailable'));assert.equal(draft.h.get('#compare-level-a').value,'-');assert.equal(draft.h.run('compareRepairOriginal.id'),original.id);assert.match(draft.h.get('#compare-original-plan').textContent,/保留原件/);assert.throws(()=>draft.h.run('readComparisonArgs()'),/替换装备/);
   console.log(JSON.stringify({comparison_recovery_and_applicability:true}));
 }
 async function verifyUpgradeContextBackendFlow(){
@@ -332,6 +395,7 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
 (async()=>{
   verifyNavigationHistory();
   await verifyInventoryEntrySnapshots();
+  await verifyNumericalSaveTransitions();
   await verifyBackupDestinationDrafts();
   await verifyNestedBuffReference();
   await verifyComparisonPlanOpenings();
@@ -1065,6 +1129,7 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert(buffInputs[1].checked);assert(!buffInputs[0].checked);assert(challengeInputs[0].checked);assert.equal(manualPosts,0,'opening a manual plan never applies session state');
   let finishPlan;plans.context.fetch=()=>new Promise(resolve=>finishPlan=resolve);const stalePlan=plans.run("openPlan('manual')");plans.context.navigate('library');formValues.get('hp').value='17';finishPlan({ok:true,json:async()=>({plan:manualPlan})});await stalePlan;
   assert.equal(formValues.get('hp').value,'17','late plan reply cannot overwrite form after navigation');
+  plans.context.numericalDetail=null;
   plans.context.numericDetail={inputs:[{key:'hp',value:7},{key:'vial',value:-1}],context:{hp:999,strength:1000}};
   assert.deepEqual(JSON.parse(plans.run('JSON.stringify(actualNumericalParams(numericDetail))')),{hp:7,vial:-1});
   let savedPayload;plans.context.post=async(path,payload)=>{savedPayload=payload;throw new Error('controlled full store');};
