@@ -33,6 +33,11 @@ class StartupTests(unittest.TestCase):
         server = self.servers[0]
         self.assertEqual(server.fileno(),-1)
         with socket.socket() as probe:
+            probe.settimeout(.3)
+            self.assertNotEqual(probe.connect_ex(('127.0.0.1', server.server_port)), 0)
+        with socket.socket() as probe:
+            # A real HTTP request can leave TIME_WAIT after the listener closes.
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind(('127.0.0.1',server.server_port))
 
     def test_failed_runtime_write_releases_bound_port_before_threads_start(self):
@@ -68,13 +73,47 @@ class StartupTests(unittest.TestCase):
                 self.assertEqual(calls, [{'start_hidden': hidden}])
                 self.assert_port_released()
 
-    def test_false_browser_result_exits_with_url_and_releases_port(self):
-        with patch.object(cli, 'Server', side_effect=self.server), patch('companion.panel.webbrowser.open', return_value=False):
-            with patch('companion.diagnostics.report_failure') as failure:
-                self.assertEqual(cli.entrypoint(['--config', str(self.config)]), 1)
-        self.assertIn('http://127.0.0.1:', str(failure.call_args.args[0]))
-        self.assertIn('复制', str(failure.call_args.args[0]))
-        self.assert_port_released()
+    def test_default_browser_failure_keeps_a_visible_native_entry_and_live_service(self):
+        for browser_failure in (False, OSError('controlled default browser failure')):
+            with self.subTest(failure=browser_failure):
+                self.servers = []
+                original = self.config.read_bytes()
+                calls = []
+                def overlay(session, url, **kwargs):
+                    with cli.urlopen(url + 'api/status', timeout=3) as response:
+                        state = json.load(response)
+                    calls.append((kwargs, state['stopped'], session.configuration_notice, url))
+                    return SimpleNamespace(run=lambda: session.stop.set())
+                browser_options = ({'side_effect': browser_failure} if isinstance(browser_failure, Exception)
+                                   else {'return_value': browser_failure})
+                with patch.dict('sys.modules', {'companion.overlay': SimpleNamespace(Overlay=overlay)}):
+                    with patch.object(cli, 'Server', side_effect=self.server), patch('companion.panel.webbrowser.open', **browser_options):
+                        self.assertEqual(cli.entrypoint(['--config', str(self.config)]), 0)
+                self.assertEqual(len(calls), 1)
+                kwargs, stopped, notice, url = calls[0]
+                self.assertEqual(kwargs, {'start_hidden': False})
+                self.assertFalse(stopped)
+                self.assertIn('浏览器未能打开', notice)
+                self.assertIn(url, notice)
+                self.assertEqual(self.config.read_bytes(), original)
+                self.assertTrue((self.root / 'last-exit.json').is_file())
+                self.assert_port_released()
+
+    def test_explicit_browser_only_failure_reports_closed_service_without_dead_url(self):
+        for flag in ('--web', '--no-overlay'):
+            with self.subTest(flag=flag):
+                self.servers = []
+                overlay = SimpleNamespace(Overlay=unittest.mock.Mock())
+                with patch.dict('sys.modules', {'companion.overlay': overlay}):
+                    with patch.object(cli, 'Server', side_effect=self.server), patch('companion.panel.webbrowser.open', return_value=False):
+                        with patch('companion.diagnostics.report_failure') as failure:
+                            self.assertEqual(cli.entrypoint(['--config', str(self.config), flag]), 1)
+                overlay.Overlay.assert_not_called()
+                message = str(failure.call_args.args[0])
+                self.assertIn('助手服务已关闭', message)
+                self.assertNotIn('http://', message)
+                self.assertNotIn('复制', message)
+                self.assert_port_released()
 
     def test_web_contradictions_fail_before_session(self):
         with patch.object(cli, 'Session') as session, patch('sys.stderr', io.StringIO()):

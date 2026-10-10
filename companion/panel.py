@@ -7,6 +7,10 @@ import webbrowser
 PAGES = {'overview','inventory','library','backups','manual','settings','workspace','help','play-settings','alchemy','migration'}
 
 
+class BrowserOpenError(ValueError):
+    """The operating system could not open the requested browser entry."""
+
+
 class PanelBridge:
     def __init__(self, clock=time.monotonic, opener=None):
         self.clock, self.opener = clock, opener
@@ -42,8 +46,12 @@ class PanelBridge:
         if not self.url:
             raise ValueError('完整面板地址尚未就绪')
         url = self.url+('?' + 'plan=' + plan_id if plan_id else '')+('#'+page if page!='overview' else '')
-        if not (self.opener or webbrowser.open)(url):
-            raise ValueError('浏览器未能打开完整面板。请复制此地址到浏览器，或重新启动：'+url)
+        try:
+            opened = (self.opener or webbrowser.open)(url)
+        except Exception as exc:
+            raise BrowserOpenError('浏览器未能打开完整面板：'+url) from exc
+        if not opened:
+            raise BrowserOpenError('浏览器未能打开完整面板：'+url)
         self.last_open = self.clock()
 
     def heartbeat(self, client, acknowledged=None):

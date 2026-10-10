@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -61,6 +62,84 @@ except ValueError as exc:
 
     def journal(self):
         return ExitRecoveryJournal(self.directory/'exit-recovery',ExitDraftStore(self.directory/'exit-drafts'))
+
+    def test_bounded_reader_accepts_stable_written_copied_and_renamed_originals(self):
+        source = self.directory / 'source.bin'; original = b'rewritten original bytes'
+        source.write_bytes(b'first write'); source.write_bytes(original)
+        attrs = source.stat(); os.utime(source, ns=(attrs.st_atime_ns, attrs.st_mtime_ns - 10_000_000_000))
+        copied = self.directory / 'copied.bin'; shutil.copy2(source, copied)
+        pending = self.directory / 'rename.pending'; shutil.copy2(source, pending)
+        renamed = self.directory / 'renamed.bin'; pending.replace(renamed)
+        for path in (source, copied, renamed):
+            with self.subTest(path=path.name):
+                self.assertEqual(ExitRecoveryJournal._bounded_bytes(path, 4096), original)
+                self.assertEqual(path.read_bytes(), original)
+
+    def test_bounded_reader_compares_windows_ctime_within_each_api_and_posix_across_apis(self):
+        from types import SimpleNamespace
+        path = self.directory / 'different-ctime.bin'; original = b'stable original'; path.write_bytes(original)
+        real_fstat = os.fstat
+        fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+        def handle_stat(descriptor):
+            row = real_fstat(descriptor)
+            value = {key: getattr(row, key) for key in fields}
+            value['st_ctime_ns'] += 1_000_000_000
+            return SimpleNamespace(**value)
+        with patch('companion.session_exit.os', SimpleNamespace(name='nt', fstat=handle_stat)):
+            self.assertEqual(ExitRecoveryJournal._bounded_bytes(path, 4096), original)
+        with patch('companion.session_exit.os', SimpleNamespace(name='posix', fstat=handle_stat)):
+            with self.assertRaisesRegex(ValueError, '正在变化'):
+                ExitRecoveryJournal._bounded_bytes(path, 4096)
+        for method in ('path', 'handle'):
+            with self.subTest(method=method):
+                count = 0
+                def changing_handle(descriptor):
+                    nonlocal count
+                    value = handle_stat(descriptor); count += 1
+                    if count == 2 and method == 'handle': value.st_ctime_ns += 1
+                    return value
+                real_stat = Path.stat
+                def changing_path(selected, *args, **kwargs):
+                    value = real_stat(selected, *args, **kwargs)
+                    if selected == path and not kwargs and count == 2 and method == 'path':
+                        return SimpleNamespace(**{key: getattr(value, key) + (1 if key == 'st_ctime_ns' else 0)
+                                                  for key in fields})
+                    return value
+                with patch('companion.session_exit.os', SimpleNamespace(name='nt', fstat=changing_handle)), \
+                        patch.object(Path, 'stat', changing_path):
+                    with self.assertRaisesRegex(ValueError, '正在变化'):
+                        ExitRecoveryJournal._bounded_bytes(path, 4096)
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_bounded_reader_rejects_real_same_size_edit_and_path_replacement_during_read(self):
+        actual_open = Path.open
+        for operation in ('edit', 'replace'):
+            with self.subTest(operation=operation):
+                path = self.directory / (operation + '.bin'); original = b'old raw original'; changed = b'new raw original'
+                self.assertEqual(len(original), len(changed)); path.write_bytes(original)
+                attrs = path.stat()
+                replacement = self.directory / (operation + '.replacement'); replacement.write_bytes(changed)
+                os.utime(replacement, ns=(attrs.st_atime_ns, attrs.st_mtime_ns))
+                class ChangedRead:
+                    def __init__(self, stream): self.stream = stream
+                    def __enter__(self): return self
+                    def fileno(self): return self.stream.fileno()
+                    def read(self, maximum):
+                        raw = self.stream.read(maximum)
+                        if operation == 'edit':
+                            with actual_open(path, 'wb') as writer: writer.write(changed)
+                            os.utime(path, ns=(attrs.st_atime_ns, attrs.st_mtime_ns + 2_000_000_000))
+                        return raw
+                    def __exit__(self, *args):
+                        self.stream.close()
+                        if operation == 'replace': replacement.replace(path)
+                def changed_open(selected, *args, **kwargs):
+                    stream = actual_open(selected, *args, **kwargs)
+                    return ChangedRead(stream) if selected == path and args == ('rb',) else stream
+                with patch.object(Path, 'open', changed_open):
+                    with self.assertRaisesRegex(ValueError, '正在变化'):
+                        ExitRecoveryJournal._bounded_bytes(path, 4096)
+                self.assertEqual(path.read_bytes(), changed)
 
     def test_actual_interrupted_write_is_explicitly_recoverable_without_applying(self):
         result=self.crash_pending()
@@ -192,6 +271,191 @@ except ValueError as exc:
             state=self.report(restarted)
         self.assertFalse(state['participants'][0]['recovery_saved'])
         self.assertEqual(path.read_bytes(),before)
+
+    def test_damaged_real_interruption_can_be_confirmed_preserved_and_unblock_writer(self):
+        self.assertEqual(self.crash_pending(initial=True, damaged=True).returncode, 23)
+        session = Session(self.config)
+        pending = next(row for row in session.list_exit_drafts() if row['pending'])
+        path = Path(pending['path']); original = path.read_bytes()
+        committed = path.with_name(path.name[:-8]); committed_before = committed.read_bytes()
+        self.assertTrue(pending['raw_preservable'])
+        self.assertEqual(pending['bytes'], len(original))
+        self.assertEqual(pending['state_revision'], hashlib.sha256(original).hexdigest())
+        result = session.exit_action({'action': 'draft-preserve-raw', 'id': pending['id'],
+            'expected_revision': pending['state_revision'], 'confirmed': True})['draft_state']
+        self.assertFalse(result['applied']); self.assertFalse(path.exists())
+        self.assertEqual(committed.read_bytes(), committed_before)
+        archived = next(row for row in session.list_exit_drafts(True) if row.get('raw_original'))
+        value, raw = session.exit_recovery.original(archived['id'], archived['state_revision'])
+        self.assertEqual(raw, original); self.assertEqual(value['bytes'], len(original))
+        self.assertEqual(Path(value['path']).read_bytes(), original)
+        self.assertEqual(session.exit_action({'action': 'draft-original-info', 'id': archived['id'],
+            'expected_revision': archived['state_revision']})['original']['sha256'], hashlib.sha256(original).hexdigest())
+        self.assertFalse(any(row.get('raw_original') for row in session.list_exit_drafts()))
+        for action in ('load', 'restore'):
+            with self.assertRaisesRegex(ValueError, '原始文件'):
+                if action == 'load': session.load_exit_draft(archived['id'])
+                else: session.set_exit_draft_lifecycle(archived['id'], 'active', archived['state_revision'])
+        session.exit_recovery.session_id = json.loads(committed_before)['session_id']
+        self.assertTrue(session.exit_recovery.checkpoint('web-aaaaaaaa', 3, True, {'raw': 'new input'}, 'web', 'new'))
+        self.assertEqual(session.exit_recovery.load(pending['id'][:-8])['draft'], {'raw': 'new input'})
+        self.assertFalse(self.config.exists())
+
+    def damaged(self, raw=b'{incomplete', pending=False):
+        j = self.journal(); j.directory.mkdir(exist_ok=True)
+        path = j.directory / ('a' * 32 + '.json' + ('.pending' if pending else ''))
+        path.write_bytes(raw)
+        return j, path, j.list()[0]
+
+    def test_unreadable_formats_and_empty_bytes_are_preserved_without_interpretation(self):
+        for raw in (b'', b'{truncated', b'{"format":900,"kind":"unknown"}', b'\xff\x00\xfe'):
+            with self.subTest(raw=raw):
+                j, path, row = self.damaged(raw)
+                result = j.preserve_raw(row['id'], row['state_revision'], True)
+                metadata, copied = j.read_preserved(result['id'][4:])
+                self.assertEqual(copied, raw); self.assertEqual(metadata['bytes'], len(raw))
+                self.assertEqual(metadata['source_name'], path.name)
+                self.assertEqual(metadata['sha256'], hashlib.sha256(raw).hexdigest())
+                self.assertFalse(path.exists())
+
+    def test_preserve_requires_explicit_confirmation_and_current_raw_revision(self):
+        j, path, row = self.damaged()
+        for confirmed in (None, False, 1, 'true'):
+            with self.subTest(confirmed=confirmed):
+                with self.assertRaisesRegex(ValueError, '明确确认'):
+                    j.preserve_raw(row['id'], row['state_revision'], confirmed)
+                self.assertEqual(path.read_bytes(), b'{incomplete')
+        with self.assertRaisesRegex(ValueError, '已更新'):
+            j.preserve_raw(row['id'], '0' * 64, True)
+        path.write_bytes(b'{later bytes')
+        with self.assertRaisesRegex(ValueError, '已更新'):
+            j.preserve_raw(row['id'], row['state_revision'], True)
+        self.assertEqual(path.read_bytes(), b'{later bytes')
+        self.assertFalse(j.preserved_directory.exists())
+
+    def test_read_and_size_failures_do_not_offer_or_consume_raw_revision(self):
+        j, path, row = self.damaged()
+        with patch.object(j, '_raw', side_effect=PermissionError('synthetic read denied')):
+            denied, = j.list()
+            self.assertFalse(denied['raw_preservable']); self.assertNotIn('state_revision', denied)
+            self.assertIn('read denied', denied['error'])
+            with self.assertRaises(PermissionError): j.preserve_raw(row['id'], row['state_revision'], True)
+        with patch('companion.session_exit.MAX_DRAFT_FILE', 4):
+            oversized, = j.list()
+            self.assertFalse(oversized['raw_preservable']); self.assertNotIn('state_revision', oversized)
+            with self.assertRaisesRegex(ValueError, '大小限制'):
+                j.preserve_raw(row['id'], row['state_revision'], True)
+        self.assertEqual(path.read_bytes(), b'{incomplete'); self.assertFalse(j.preserved_directory.exists())
+
+    def test_original_write_and_fsync_failures_keep_active_original(self):
+        j, path, row = self.damaged()
+        with patch.object(j, '_write_original', side_effect=OSError('synthetic full')):
+            with self.assertRaisesRegex(OSError, 'synthetic full'):
+                j.preserve_raw(row['id'], row['state_revision'], True)
+        with patch('companion.session_exit.os.fsync', side_effect=OSError('synthetic fsync failure')):
+            with self.assertRaisesRegex(OSError, 'fsync'):
+                j.preserve_raw(row['id'], row['state_revision'], True)
+        self.assertEqual(path.read_bytes(), b'{incomplete')
+        rows = j.list_preserved()
+        self.assertTrue(rows); self.assertTrue(all(row.get('error') for row in rows))
+
+    def test_short_original_write_is_rejected_before_consuming_active_source(self):
+        from unittest.mock import MagicMock
+        j, path, row = self.damaged()
+        actual_open = Path.open
+        def short_open(selected, *args, **kwargs):
+            if selected.suffix == '.raw':
+                stream = MagicMock(); stream.__enter__.return_value = stream; stream.write.return_value = 1
+                return stream
+            return actual_open(selected, *args, **kwargs)
+        with patch.object(Path, 'open', short_open):
+            with self.assertRaisesRegex(OSError, '未完整写入'):
+                j.preserve_raw(row['id'], row['state_revision'], True)
+        self.assertEqual(path.read_bytes(), b'{incomplete')
+
+    def test_raw_copy_verification_failure_keeps_active_source_and_reports_preserved_error(self):
+        j, path, row = self.damaged()
+        write = j._write_original
+        def corrupt_copy(selected, raw):
+            write(selected, raw)
+            if selected.suffix == '.raw': selected.write_bytes(b'changed stored copy')
+        with patch.object(j, '_write_original', side_effect=corrupt_copy):
+            with self.assertRaisesRegex(ValueError, '大小或内容已变化'):
+                j.preserve_raw(row['id'], row['state_revision'], True)
+        self.assertEqual(path.read_bytes(), b'{incomplete')
+        preserved, = j.list_preserved(); self.assertTrue(preserved['error'])
+        with self.assertRaises(ValueError): j.original(preserved['id'], row['state_revision'])
+
+    def test_source_changed_after_copy_keeps_new_active_bytes_and_verified_old_copy(self):
+        j, path, row = self.damaged()
+        read = j.read_preserved
+        def change_after_copy(identity):
+            result = read(identity); path.write_bytes(b'{new active original'); return result
+        with patch.object(j, 'read_preserved', side_effect=change_after_copy):
+            with self.assertRaisesRegex(ValueError, '保留期间'):
+                j.preserve_raw(row['id'], row['state_revision'], True)
+        self.assertEqual(path.read_bytes(), b'{new active original')
+        preserved, = j.list_preserved()
+        self.assertEqual(j.original(preserved['id'], preserved['state_revision'])[1], b'{incomplete')
+
+    def test_source_remove_failure_retains_active_original_and_usable_raw_copy(self):
+        j, path, row = self.damaged()
+        with patch.object(Path, 'unlink', side_effect=PermissionError('synthetic remove denied')):
+            with self.assertRaises(PermissionError): j.preserve_raw(row['id'], row['state_revision'], True)
+        self.assertEqual(path.read_bytes(), b'{incomplete')
+        preserved, = j.list_preserved()
+        self.assertEqual(j.original(preserved['id'], preserved['state_revision'])[1], b'{incomplete')
+
+    def test_raw_preserved_metadata_is_strict_and_changed_download_revision_is_rejected(self):
+        j, path, row = self.damaged()
+        result = j.preserve_raw(row['id'], row['state_revision'], True)
+        identity = result['id'][4:]
+        metadata_path = j.preserved_directory / (identity + '.json')
+        original = metadata_path.read_bytes(); metadata = json.loads(original)
+        for changes in ({'format': True}, {'bytes': True}, {'source_name': '../private'},
+                        {'id': 'b' * 32}, {'sha256': 'x' * 64}, {'extra': 1}):
+            with self.subTest(changes=changes):
+                metadata_path.write_text(json.dumps({**metadata, **changes}), encoding='utf-8')
+                with self.assertRaises(ValueError): j.read_preserved(identity)
+        metadata_path.write_bytes(original)
+        with self.assertRaisesRegex(ValueError, '已变化'): j.original(result['id'], '0' * 64)
+        self.assertEqual(j.original(result['id'], row['state_revision'])[1], b'{incomplete')
+
+    def test_default_200_record_quota_can_be_released_then_checkpoint_succeeds(self):
+        session = Session(self.config); j = session.exit_recovery; j.directory.mkdir(exist_ok=True)
+        for number in range(200):
+            (j.directory / (format(number, '032x') + '.json.pending')).write_bytes(b'{interrupted')
+        state = self.report(session)
+        self.assertFalse(state['participants'][0]['recovery_saved'])
+        rows = session.list_exit_drafts(); self.assertEqual(len(rows), 200)
+        row = rows[0]
+        session.exit_action({'action': 'draft-preserve-raw', 'id': row['id'],
+            'expected_revision': row['state_revision'], 'confirmed': True})
+        state = self.report(session, revision=2, raw='after confirmed preservation')
+        self.assertTrue(state['participants'][0]['recovery_saved'])
+        self.assertEqual(len(j._files()), 200)
+        self.assertEqual(len(j.list_preserved()), 1)
+        self.assertEqual(j.load(j.identity('web-aaaaaaaa'))['draft']['numeric'][0]['raw']['power'], 'after confirmed preservation')
+
+    def test_incompatible_numeric_metadata_still_has_raw_preservation_path(self):
+        session = Session(self.config); self.report(session)
+        identity = session.exit_recovery.identity('web-aaaaaaaa')
+        path = session.exit_recovery.directory / (identity + '.json')
+        record = json.loads(path.read_bytes()); record['record']['saved'] = 10 ** 1000
+        original = json.dumps(record).encode(); path.write_bytes(original)
+        restarted = Session(self.config); row, = restarted.list_exit_drafts()
+        self.assertTrue(row['raw_preservable']); self.assertTrue(row['error'])
+        result = restarted.exit_recovery.preserve_raw(row['id'], row['state_revision'], True)
+        self.assertEqual(restarted.exit_recovery.read_preserved(result['id'][4:])[1], original)
+
+    def test_valid_recovery_cannot_be_downgraded_to_raw_original(self):
+        original = Session(self.config); self.report(original)
+        restarted = Session(self.config); row, = restarted.list_exit_drafts()
+        path = self.directory / 'exit-recovery' / (row['id'] + '.json'); before = path.read_bytes()
+        with self.assertRaisesRegex(ValueError, '完整草稿'):
+            restarted.exit_recovery.preserve_raw(row['id'], row['state_revision'], True)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(restarted.exit_recovery.preserved_directory.exists())
 
     def test_pending_archive_copy_and_remove_failures_preserve_original(self):
         self.assertEqual(self.crash_pending().returncode,23)

@@ -442,16 +442,28 @@ async function loadExitDrafts(){
   try{const result=await post('/api/session-exit',{action:'draft-list',include_archived:includeArchived});
     if(request!==exitDraftListRequest)return;
     const target=$('#session-drafts');target.replaceChildren();
-    $('#draft-count').textContent=`${result.drafts.filter(row=>row.state!=='archived').length} 份未完成 · ${result.archived_count||0} 份已归档。归档保留原始副本，可随时恢复。`;
+    $('#draft-count').textContent=`${result.drafts.filter(row=>row.state!=='archived').length} 份未完成 · ${result.archived_count||0} 份已归档。完整草稿可恢复；原始文件仅保留字节，可核对和获取。`;
     if(!result.drafts.length)target.innerHTML='<p class="muted">当前列表没有草稿副本。</p>';
-    for(const record of result.drafts){const row=document.createElement('article');row.className='plan-row';row.innerHTML=`<div><h3>${escapeHTML(record.label||'无法读取的草稿')}</h3><small>${record.state==='archived'?'已归档':'未完成'} · ${escapeHTML(record.draft_kind||'')} · ${escapeHTML(fmtTime(record.saved))} · ${escapeHTML(record.id.slice(0,12))}</small>${record.error?`<p>${escapeHTML(record.error)}；原件保留。</p>`:''}</div>`;
-      if(!record.error){const actions=document.createElement('div');actions.className='backup-actions';
+    for(const record of result.drafts){const row=document.createElement('article');row.className='plan-row';row.innerHTML=`<div><h3>${escapeHTML(record.label||'无法读取的草稿')}</h3><small>${record.state==='archived'?'已归档':'未完成'} · ${escapeHTML(record.draft_kind||'')} · ${escapeHTML(fmtTime(record.saved))} · ${escapeHTML(record.id.slice(0,12))}</small>${record.error?`<p>${escapeHTML(record.error)}；原件保留。</p>`:''}${record.raw_original||record.raw_preservable?`<p>原始文件 · ${Number.isInteger(record.bytes)?escapeHTML(String(record.bytes))+' 字节':'字节数尚未核对'}<br>位置：${escapeHTML(record.path||'')}<br>SHA-256：${escapeHTML(record.sha256||'尚未核对')}<br>仅保留原始字节，不能载入为表单。</p>`:''}</div>`;
+      const actions=document.createElement('div');actions.className='backup-actions';
+      if(record.raw_original){
+        if(!record.error){const download=document.createElement('button');download.className='secondary';download.textContent='获取原始文件';download.addEventListener('click',async()=>{download.disabled=true;try{await downloadRecoveryOriginal(record);}catch(error){inlineError($('#draft-error'),error.message);}finally{download.disabled=false;}});actions.append(download);}
+      }else if(record.raw_preservable){
+        const preserve=document.createElement('button');preserve.className='quiet';preserve.textContent='保留原始文件并归档';
+        preserve.addEventListener('click',async()=>{if(!window.confirm(`此文件无法载入为表单。确认先保留独立原始副本、核验后移出未完成列表？\n${record.path}\n${record.bytes} 字节\nSHA-256：${record.sha256}\n保留后可勾选「显示已归档」核对和获取原始文件。`))return;preserve.disabled=true;try{await post('/api/session-exit',{action:'draft-preserve-raw',id:record.id,expected_revision:record.state_revision,confirmed:true});await loadExitDrafts();toast('原始文件已独立保留并核验；勾选「显示已归档」可核对和获取。');}catch(error){inlineError($('#draft-error'),error.message);}finally{preserve.disabled=false;}});actions.append(preserve);
+      }else if(!record.error){
         const load=document.createElement('button');load.className='secondary';load.textContent='载入为未提交草稿';load.addEventListener('click',()=>loadUnfinishedDraft(record.id));actions.append(load);
         const archive=document.createElement('button');archive.className='quiet';archive.textContent=record.state==='archived'?'恢复到未完成列表':'已处理，归档副本';
-        archive.addEventListener('click',async()=>{archive.disabled=true;try{await post('/api/session-exit',{action:'draft-state',id:record.id,state:record.state==='archived'?'active':'archived',expected_revision:record.state_revision});await loadExitDrafts();toast(record.state==='archived'?'已恢复到未完成列表；原始内容保留。':'已归档；可勾选「显示已归档」找回。');}catch(error){inlineError($('#draft-error'),error.message);}finally{archive.disabled=false;}});actions.append(archive);row.append(actions);
-      }target.append(row);
+        archive.addEventListener('click',async()=>{archive.disabled=true;try{await post('/api/session-exit',{action:'draft-state',id:record.id,state:record.state==='archived'?'active':'archived',expected_revision:record.state_revision});await loadExitDrafts();toast(record.state==='archived'?'已恢复到未完成列表；原始内容保留。':'已归档；可勾选「显示已归档」找回。');}catch(error){inlineError($('#draft-error'),error.message);}finally{archive.disabled=false;}});actions.append(archive);
+      }if(actions.children.length)row.append(actions);target.append(row);
     }inlineError($('#draft-error'),'');
   }catch(error){if(request===exitDraftListRequest)inlineError($('#draft-error'),error.message);}
+}
+async function downloadRecoveryOriginal(record){
+  if(!token)throw new Error('助手未连接，请恢复后重试');
+  const response=await fetch('/api/session-exit',{method:'POST',headers:{'Content-Type':'application/json','X-Companion-Token':token},body:JSON.stringify({action:'draft-original-download',id:record.id,expected_revision:record.state_revision})});
+  if(!response.ok)throw new Error((await response.json()).error||'原始文件暂时无法获取；副本保留');
+  const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');link.href=url;link.download=record.source_name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 async function restoreNumericSession(item,checkRecovery=()=>{}){
   if(!item||typeof item.identity!=='string'||!/^[a-z0-9_.\-$]{1,300}$/.test(item.identity)||!item.raw||typeof item.raw!=='object')throw new Error('数值草稿身份或原始参数不正确');

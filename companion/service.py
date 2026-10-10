@@ -177,6 +177,17 @@ class Session:
             if isinstance(unavailable, list) and unavailable:
                 notice = '旧版有未完成草稿格式或版本不兼容，未计为可用迁移；原始副本已单独保留，请在旧版核对。'
                 self.configuration_notice = ' '.join(filter(None, (self.configuration_notice, notice)))
+            recovery_unavailable = migration_report.get('unavailable_exit_recovery')
+            preserved_unavailable = migration_report.get('unavailable_preserved_recovery')
+            if isinstance(recovery_unavailable, list) and recovery_unavailable:
+                notice = '旧版有自动恢复原件无法核对；有界原始文件已复制到未完成草稿列表，可核对后明确保留归档；尚未载入或应用。'
+                self.configuration_notice = ' '.join(filter(None, (self.configuration_notice, notice)))
+            if isinstance(preserved_unavailable, list) and preserved_unavailable:
+                notice = '旧版有已保留原始文件无法核对或配对不全；有界副本保存在 exit-recovery-preserved-unavailable，具体位置、字节数和摘要见迁移记录；尚未载入或应用。'
+                self.configuration_notice = ' '.join(filter(None, (self.configuration_notice, notice)))
+            if migration_report.get('source_recognition') == 'bounded-recovery-originals':
+                notice = '旧版仅发现有界待核对原始文件，未发现可用的已验证草稿；本次只复制保留原件，未载入、计算或应用。'
+                self.configuration_notice = ' '.join(filter(None, (self.configuration_notice, notice)))
         except FileNotFoundError:
             pass
         except (OSError, ValueError, RecursionError):
@@ -254,17 +265,23 @@ class Session:
 
     def list_exit_drafts(self, include_archived=False):
         rows = self.exit_drafts.list(include_archived=include_archived) + self.exit_recovery.list()
+        if include_archived:
+            rows += self.exit_recovery.list_preserved()
         count = sum(bool(row.get('recovery')) for row in rows)
         self.draft_recovery_notice = (f'找到 {count} 份之前或其他会话自动保留的未完成输入；'
             '请从未完成草稿列表核对、明确载入或归档。' if count else '')
         return sorted(rows, key=lambda row: row['saved'], reverse=True)
 
     def load_exit_draft(self, identity):
+        if isinstance(identity, str) and identity.startswith('raw-'):
+            raise ValueError('这是仅保留字节的原始文件，不能载入为表单；请核对或获取原始文件')
         if self.exit_recovery.contains(identity):
             return self.exit_recovery.load(identity)
         return self.exit_drafts.load(identity)
 
     def set_exit_draft_lifecycle(self, identity, state, expected_revision):
+        if isinstance(identity, str) and identity.startswith('raw-'):
+            raise ValueError('仅保留字节的原始文件不能恢复为表单；请核对或获取原始文件')
         if self.exit_recovery.contains(identity):
             if state != 'archived':
                 raise ValueError('自动保留副本尚未归档；可明确载入或归档保留原始内容')
@@ -297,6 +314,12 @@ class Session:
                     'archived_count': sum(row.get('state') == 'archived' for row in rows)}
         elif action == 'draft-load':
             return {'draft': self.load_exit_draft(payload.get('id'))}
+        elif action == 'draft-preserve-raw':
+            return {'draft_state': self.exit_recovery.preserve_raw(payload.get('id'),
+                payload.get('expected_revision'), payload.get('confirmed'))}
+        elif action == 'draft-original-info':
+            value, _ = self.exit_recovery.original(payload.get('id'), payload.get('expected_revision'))
+            return {'original': value}
         elif action == 'draft-state':
             return {'draft_state': self.set_exit_draft_lifecycle(payload.get('id'), payload.get('state'),
                 payload.get('expected_revision'))}

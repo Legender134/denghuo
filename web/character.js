@@ -84,6 +84,18 @@ function captureCharacterDraft(){
   if(!characterUnsaved)return null;
   return {format:1,form:captureNamedForm('#character-form'),source:characterClone(characterSource),stamp:characterClone(characterStamp),undo:characterImportUndo?{...characterClone(characterImportUndo),result:null,dirty:true,unsaved:true}:null,saved:characterSavedPlan?{id:characterSavedPlan.id,record_revision:characterSavedPlan.record_revision,name:characterSavedPlan.name,note:characterSavedPlan.note||'',origin:characterSavedPlan.origin}:null};
 }
+function showCharacterEditor(){
+  $('#character-disclosure').open=true;
+  $('#character-editor').scrollIntoView({block:'start'});
+  $('#character-base').focus();
+}
+$('#workspace-character-open').addEventListener('click',showCharacterEditor);
+$('#character-back-to-plans').addEventListener('click',()=>{
+  $('#character-disclosure').open=false;
+  $('#workspace-plans').scrollIntoView({block:'start'});
+  if(typeof returnWorkspaceDetailFocus==='function'&&workspaceDetailReturn)returnWorkspaceDetailFocus();
+  else $('#workspace-search').focus({preventScroll:true});
+});
 async function restoreCharacterDraft(raw,checkRecovery=()=>{}){
   if(!raw||raw.format!==1)throw new Error('角色条件草稿格式不正确');
   const serial=characterRequest;await loadCharacterCatalog();checkRecovery();
@@ -94,7 +106,7 @@ async function restoreCharacterDraft(raw,checkRecovery=()=>{}){
   }
   checkRecovery();if(serial!==characterRequest)throw new Error('载入期间角色条件已修改；当前输入和原副本都保留。');
   restoreNamedForm('#character-form',raw.form);characterRequest++;characterSource=raw.source||{mode:'manual',snapshot_at:null,slot:null};characterStamp=raw.stamp||null;characterSavedPlan=saved;
-  characterImportUndo=raw.undo||null;characterResult=null;characterDirty=true;characterUnsaved=true;renderCharacterResult();
+  characterImportUndo=raw.undo||null;characterResult=null;characterDirty=true;characterUnsaved=true;renderCharacterResult();$('#character-disclosure').open=true;
 }
 async function openCharacterPlan(plan,result,rulesChanged){
   const serial=++characterRequest,nav=navigationSerial;await loadCharacterCatalog();
@@ -102,7 +114,7 @@ async function openCharacterPlan(plan,result,rulesChanged){
   fillCharacterScene(plan.params);characterSavedPlan=plan;characterSource=cleanStoredOrigin(plan.origin);characterStamp=null;
   characterResult=result;characterDirty=false;characterUnsaved=false;characterImportUndo=null;renderCharacterResult();
   inlineError($('#character-error'),rulesChanged?'规则版本已有变化；当前资料按保存条件重新计算，请核对。':'');
-  navigate('workspace');$('#character-editor').scrollIntoView({block:'start'});$('#character-base').focus();return true;
+  navigate('workspace');showCharacterEditor();return true;
 }
 function characterPlanSaved(plan,payload){
   if(characterSavedPlan&&characterSavedPlan.id!==plan.id&&characterSavedPlan.id!==planDraft?.existing?.id)return;
@@ -137,7 +149,7 @@ function editAttachedCharacter(reference,baseRaw){
     if(baseRaw!==undefined){$('#character-base').value=baseRaw;if(baseRaw!==String(reference.params.base_strength))characterSource.mode='manual';}
     renderCharacterResult();
   }
-  navigate('workspace');$('#character-editor').scrollIntoView({block:'start'});$('#character-base').focus();
+  navigate('workspace');showCharacterEditor();
 }
 $('#manual-character-open').addEventListener('click',()=>editAttachedCharacter(manualCharacterReference,$('#manual-form').elements.namedItem('strength').value));
 $('#manual-character-clear').addEventListener('click',()=>{manualCharacterUndo={reference:characterClone(manualCharacterReference),base:$('#manual-form').elements.namedItem('strength').value};setManualCharacterReference(null);manualUnsaved=true;manualFormGeneration++;});

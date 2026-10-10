@@ -215,15 +215,16 @@ def status(session):
                 'note': '仅迁移所选助手资料。每包最多200份草稿，可分批迁移；本机已保存的草稿原件继续保留。进度进入助手档案，回档需另行预览确认；本机目录和位置保持。'}
 
 
-def _export(session, payload):
+def _export(session, payload, backup_expected=None):
     view = status(session)
     available = {row['key']: row for row in view['rows'] if row['valid']}
     selected = _selection(payload.get('selected'), available)
     contents = {}
     backups = [{'slot': available[key]['slot'], 'id': available[key]['id']} for key in selected if key.startswith('backup:')]
     if backups:
-        preview = flows.export_preview(session.backups, session.settings['save_root'], {'selected': backups})
-        raw, _ = flows.export_batch(session.backups, session.settings['save_root'], {'selected': backups, 'expected': preview['expected']})
+        if backup_expected is None:
+            backup_expected = flows.export_preview(session.backups, session.settings['save_root'], {'selected': backups})['expected']
+        raw, _ = flows.export_batch(session.backups, session.settings['save_root'], {'selected': backups, 'expected': backup_expected})
         contents['backups.zip'] = _portable_backups(raw)
     if any(key.startswith(('plan:', 'favorite:')) for key in selected):
         value, _ = session.knowledge._read()
@@ -247,17 +248,27 @@ def _export(session, payload):
     raw = _zip(contents)
     return {'rows': [available[key] for key in selected], 'count': len(selected), 'bytes': len(raw),
             'expected': checksum(raw), 'source': manifest['source'],
-            'note': '不含连接口令、旧机器目录、窗口坐标、最近访问记录；名称、备注和草稿原始文字中的路径与标记秘密会脱敏，普通无效文字逐字保留。请预览具体内容后再分享。'}, raw
+            'note': '不含连接口令、旧机器目录、窗口坐标、最近访问记录；名称、备注和草稿原始文字中的路径与标记秘密会脱敏，普通无效文字逐字保留。请预览具体内容后再分享。'}, raw, backup_expected
 
 
 def export_preview(session, payload):
     with session.lock, _locks(session):
-        return _export(session, payload)[0]
+        preview, _, backup_expected = _export(session, payload)
+        if not hasattr(session, '_migration_export_previews'):
+            session._migration_export_previews = {}
+        session._migration_export_previews[preview['expected']] = backup_expected
+        while len(session._migration_export_previews) > flows.MAX_BATCH:
+            session._migration_export_previews.pop(next(iter(session._migration_export_previews)))
+        return preview
 
 
 def export_bundle(session, payload):
     with session.lock, _locks(session):
-        preview, raw = _export(session, payload)
+        expected = payload.get('expected')
+        previews = getattr(session, '_migration_export_previews', {})
+        if not isinstance(expected, str) or expected not in previews:
+            raise ValueError('导出预览已过期，请重新预览导出清单')
+        preview, raw, _ = _export(session, payload, previews[expected])
         if payload.get('expected') != preview['expected']:
             raise ValueError('所选资料、名称或偏好已变化，请重新预览导出清单')
         return raw, 'denghuo-portable-bundle.zip'

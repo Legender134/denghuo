@@ -240,23 +240,29 @@ def validate_selection(selected):
     return result
 
 
-def stable_transfer(raw):
+def stable_transfer(raw, observation=None):
     """Keep preview signatures independent of ZIP container wall-clock timestamps."""
     output = BytesIO()
     with ZipFile(BytesIO(raw)) as original, ZipFile(output,'w') as target:
         for name in sorted(original.namelist()):
             info = ZipInfo(name, date_time=(1980,1,1,0,0,0))
             info.compress_type = ZIP_DEFLATED
-            target.writestr(info, original.read(name))
+            content = original.read(name)
+            if name == 'manifest.json' and observation is not None:
+                metadata = json.loads(content)
+                metadata['transfer']['last_observed'] = observation['last_observed']
+                content = json.dumps(metadata, ensure_ascii=True).encode('utf-8')
+            target.writestr(info, content)
     return output.getvalue()
 
 
-def prepare_export(manager, root, selected):
+def prepare_export(manager, root, selected, observations=None):
     selected = validate_selection(selected)
     rows, contents, size = [], {}, 0
     for item in selected:
         raw, _ = manager.export(root,item)
-        raw = stable_transfer(raw)
+        observation = (observations or {}).get((item['slot'], item['id']))
+        raw = stable_transfer(raw, observation)
         row = manager.selected(root,item)
         size += len(raw)
         if size>MAX_TOTAL:
@@ -265,7 +271,7 @@ def prepare_export(manager, root, selected):
         rows.append({'file':member,'slot':item['slot'],'id':item['id'],'bytes':len(raw),
                      'sha256':hashlib.sha256(raw).hexdigest(), 'label':row.get('label',''),
                      'saved':row['saved'],'first_observed':None if row.get('recovered_at') else row['time'],
-                     'last_observed':None if row.get('recovered_at') else row['last_seen'],
+                     'last_observed':observation['last_observed'] if observation is not None else None if row.get('recovered_at') else row['last_seen'],
                      'class':row['class'],'level':row['level'],'depth':row['depth']})
         contents[member] = raw
     return rows, contents
@@ -274,13 +280,28 @@ def prepare_export(manager, root, selected):
 def export_preview(manager, root, payload):
     with manager.lock:
         rows, _ = prepare_export(manager,root,payload.get('selected'))
+        expected = digest(rows)
+        # Retain only small observation metadata, never a cache of entire ZIPs.
+        # Separate roots and concurrent previews remain independent, up to 32.
+        if not hasattr(manager, '_transfer_export_previews'):
+            manager._transfer_export_previews = {}
+        manager._transfer_export_previews[(str(unlinked(manager.scope(root))), expected)] = {
+            (row['slot'], row['id']): dict(row) for row in rows}
+        while len(manager._transfer_export_previews) > MAX_BATCH:
+            manager._transfer_export_previews.pop(next(iter(manager._transfer_export_previews)))
         return {'rows':rows,'count':len(rows),'bytes':sum(row['bytes'] for row in rows),
-                'expected':digest(rows),'message':'所选进度将逐份完整校验并附迁移索引；不会移出或恢复游戏存档'}
+                'expected':expected,'message':'所选进度将逐份完整校验并附迁移索引；保留预览时的观察时间，不会移出或恢复游戏存档'}
 
 
 def export_batch(manager, root, payload):
     with manager.lock:
-        rows, contents = prepare_export(manager,root,payload.get('selected'))
+        expected = payload.get('expected')
+        if not isinstance(expected, str) or not IDENTITY.fullmatch(expected):
+            raise ValueError('导出预览无效，请重新预览导出清单')
+        observations = getattr(manager, '_transfer_export_previews', {}).get((str(unlinked(manager.scope(root))), expected))
+        if observations is None:
+            raise ValueError('导出预览已过期，请重新预览导出清单')
+        rows, contents = prepare_export(manager,root,payload.get('selected'),observations)
         if payload.get('expected')!=digest(rows):
             raise ValueError('备份内容、名称或选择已变化，请重新预览导出清单')
         output = BytesIO()

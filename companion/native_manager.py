@@ -207,6 +207,13 @@ class NativeManager:
                 self.host.command('drafts', rows=self.draft_rows(include_archived), include_archived=include_archived)
             elif action == 'load_draft':
                 self.restore_draft(self.session.load_exit_draft(item['id']), item.get('component'))
+            elif action == 'preserve_raw_draft':
+                self.session.exit_recovery.preserve_raw(item['id'], item.get('expected_revision'), item.get('confirmed'))
+                self.host.command('drafts', rows=self.draft_rows(item.get('include_archived', False)),
+                                  include_archived=item.get('include_archived', False))
+            elif action == 'inspect_raw_draft':
+                value, _ = self.session.exit_recovery.original(item['id'], item.get('expected_revision'))
+                self.host.command('raw_draft', original=value)
             elif action == 'draft_state':
                 self.session.set_exit_draft_lifecycle(item['id'], item.get('state'), item.get('expected_revision'))
                 self.host.command('drafts', rows=self.draft_rows(item.get('include_archived', False)),

@@ -293,7 +293,7 @@ class NumericLookup:
                 raise ValueError('请填写全部显示的参数')
             # The actual detail bounds determine whether this entry supports signed equipment levels.
             signed = any(field['key'] == 'level' and field.get('min', 0) < 0 for field in self.inputs)
-            integer_parameters(raw, signed_equipment=signed)
+            integer_parameters(raw, signed_equipment=signed, health_fields=raw)
             for field in self.inputs:
                 number = float(raw[field['key']])
                 if not field.get('min', number) <= number <= field.get('max', number):

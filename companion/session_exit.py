@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import re
+import stat
 import threading
 import time
 import uuid
@@ -297,6 +298,7 @@ class ExitRecoveryJournal:
     """Bounded recent raw reports, separate from explicitly saved user drafts."""
     def __init__(self, directory, saved_drafts):
         self.directory, self.saved_drafts = Path(directory), saved_drafts
+        self.preserved_directory = self.directory.with_name('exit-recovery-preserved')
         self.session_id = uuid.uuid4().hex
         self.lock = threading.RLock()
         self.fingerprints = {}
@@ -349,12 +351,40 @@ class ExitRecoveryJournal:
         directory = unlinked(self.directory)
         return [*directory.glob('*.json'), *directory.glob('*.json.pending')]
 
-    def _read(self, identity):
-        path, original = self._path(identity)
+    @staticmethod
+    def _bounded_bytes(path, maximum):
+        path = unlinked(path)
+        before = path.stat()
+        if not stat.S_ISREG(before.st_mode) or before.st_size > maximum:
+            raise ValueError('自动草稿文件不是普通文件或超过大小限制，原件保留')
         with path.open('rb') as stream:
-            raw = stream.read(MAX_DRAFT_FILE + 1)
-        if len(raw) > MAX_DRAFT_FILE:
-            raise ValueError('自动草稿文件过大，原件保留')
+            opened = os.fstat(stream.fileno())
+            raw = stream.read(maximum + 1)
+            after = os.fstat(stream.fileno())
+        current = unlinked(path).stat()
+        stamps = {(row.st_dev, row.st_ino, row.st_size, row.st_mtime_ns)
+                  for row in (before, opened, after, current)}
+        # Windows 3.12 stat/fstat can expose different ctime semantics for the
+        # same stable file. Compare each API over time, retaining cross-API
+        # identity, size and mtime checks; POSIX ctime remains cross-checked too.
+        ctime_changed = (before.st_ctime_ns != current.st_ctime_ns
+                         or opened.st_ctime_ns != after.st_ctime_ns)
+        if os.name != 'nt':
+            ctime_changed |= before.st_ctime_ns != opened.st_ctime_ns
+        if len(raw) > maximum or len(raw) != before.st_size or len(stamps) != 1 or ctime_changed:
+            raise ValueError('自动草稿文件正在变化或超过大小限制，原件保留；请重新核对')
+        return raw
+
+    def _raw(self, identity):
+        path, _ = self._path(identity)
+        return self._bounded_bytes(path, MAX_DRAFT_FILE)
+
+    def _read(self, identity):
+        _, original = self._path(identity)
+        raw = self._raw(identity)
+        return self._parse(original, raw), raw
+
+    def _parse(self, original, raw):
         try:
             value = json.loads(raw)
             if (not isinstance(value, dict) or set(value) != {'format', 'kind', 'session_id', 'revision', 'record'}
@@ -366,8 +396,8 @@ class ExitRecoveryJournal:
             record = checked_saved_draft(value['record'], original)
             if original != self.identity(record['surface_id'], value['session_id']):
                 raise ValueError('自动草稿会话与窗口不匹配')
-            return value, raw
-        except (UnicodeError, RecursionError, ValueError) as exc:
+            return value
+        except (UnicodeError, RecursionError, ValueError, OverflowError) as exc:
             raise ValueError('自动草稿无法核对，原件仍保留；尚未载入') from exc
 
     def checkpoint(self, surface_id, revision, dirty, draft, kind, label):
@@ -459,9 +489,122 @@ class ExitRecoveryJournal:
                                      'state': 'active', 'state_revision': hashlib.sha256(raw).hexdigest(),
                                      'recovery': True, 'pending': pending})
                     except (ValueError, OSError) as exc:
-                        rows.append({'id': identity, 'saved': 0, 'recovery': True, 'pending': pending,
-                                     'label': '无法核对的中断副本' if pending else '无法核对的自动草稿', 'error': str(exc)})
+                        row = {'id': identity, 'saved': 0, 'recovery': True, 'pending': pending,
+                               'state': 'active', 'path': str(path), 'raw_preservable': False,
+                               'label': '无法核对的中断副本' if pending else '无法核对的自动草稿', 'error': str(exc)}
+                        try:
+                            raw = self._raw(identity)
+                            row.update(raw_preservable=True, bytes=len(raw),
+                                       state_revision=hashlib.sha256(raw).hexdigest(),
+                                       sha256=hashlib.sha256(raw).hexdigest())
+                        except (ValueError, OSError) as read_error:
+                            row['error'] = str(read_error)
+                        rows.append(row)
             return sorted(rows, key=lambda row: row['saved'], reverse=True)
+
+    def read_preserved(self, identity):
+        """Verify the stored original bytes; never interpret them as a form."""
+        if not isinstance(identity, str) or not DRAFT_ID.fullmatch(identity):
+            raise ValueError('已保留原始文件身份不正确')
+        with self.lock:
+            metadata_raw = self._bounded_bytes(self.preserved_directory / (identity + '.json'), 4096)
+            try:
+                value = json.loads(metadata_raw)
+                if (not isinstance(value, dict)
+                        or set(value) != {'format', 'kind', 'id', 'source_name', 'saved', 'bytes', 'sha256'}
+                        or type(value['format']) is not int or value['format'] != 1
+                        or value['kind'] != 'denghuo-recovery-original' or value['id'] != identity
+                        or not isinstance(value['source_name'], str)
+                        or not re.fullmatch(r'[a-f0-9]{32}\.json(?:\.pending)?', value['source_name'])
+                        or type(value['saved']) not in (int, float) or not 0 <= value['saved'] <= 32503680000
+                        or not math.isfinite(value['saved'])
+                        or type(value['bytes']) is not int or not 0 <= value['bytes'] <= MAX_DRAFT_FILE
+                        or not isinstance(value['sha256'], str) or not re.fullmatch(r'[a-f0-9]{64}', value['sha256'])):
+                    raise ValueError('已保留原始文件的核对记录不兼容')
+            except (UnicodeError, RecursionError, ValueError) as exc:
+                raise ValueError('已保留原始文件的核对记录无法读取，副本仍保留') from exc
+            raw = self._bounded_bytes(self.preserved_directory / (identity + '.raw'), MAX_DRAFT_FILE)
+            if len(raw) != value['bytes'] or hashlib.sha256(raw).hexdigest() != value['sha256']:
+                raise ValueError('已保留原始文件大小或内容已变化，副本仍保留；尚未获取')
+            if self._bounded_bytes(self.preserved_directory / (identity + '.json'), 4096) != metadata_raw:
+                raise ValueError('原始文件的核对记录已变化，副本仍保留；请重新核对')
+            return value, raw
+
+    def list_preserved(self):
+        with self.lock:
+            if not self.preserved_directory.exists():
+                return []
+            directory = unlinked(self.preserved_directory)
+            identities = {path.stem for pattern in ('*.json', '*.raw') for path in directory.glob(pattern)
+                          if DRAFT_ID.fullmatch(path.stem)}
+            rows = []
+            for identity in sorted(identities):
+                row = {'id': 'raw-' + identity, 'saved': 0, 'state': 'archived', 'raw_original': True,
+                       'label': '已保留的原始自动草稿文件', 'path': str(directory / (identity + '.raw'))}
+                try:
+                    value, raw = self.read_preserved(identity)
+                    row.update({key: value[key] for key in ('saved', 'source_name', 'bytes', 'sha256')})
+                    row['state_revision'] = value['sha256']
+                except (ValueError, OSError) as exc:
+                    row['error'] = str(exc)
+                rows.append(row)
+            return sorted(rows, key=lambda row: row['saved'], reverse=True)
+
+    def original(self, identity, expected_revision):
+        if not isinstance(identity, str) or not identity.startswith('raw-'):
+            raise ValueError('请选择已保留的原始文件')
+        value, raw = self.read_preserved(identity[4:])
+        if value['sha256'] != expected_revision:
+            raise ValueError('原始文件已变化，请重新读取列表后核对')
+        return {**value, 'path': str(self.preserved_directory / (value['id'] + '.raw'))}, raw
+
+    @staticmethod
+    def _write_original(path, raw):
+        with unlinked(path).open('xb') as stream:
+            if stream.write(raw) != len(raw):
+                raise OSError('原始副本未完整写入，活动原件保留')
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    def preserve_raw(self, identity, expected_revision, confirmed):
+        if confirmed is not True:
+            raise ValueError('请先核对文件位置、字节数和摘要，并明确确认保留原始文件')
+        with self.lock, self._storage_lock():
+            path, original = self._path(identity)
+            raw = self._raw(identity)
+            digest = hashlib.sha256(raw).hexdigest()
+            if digest != expected_revision:
+                raise ValueError('自动草稿已更新，请重新读取列表；原件仍保留')
+            try:
+                self._parse(original, raw)
+            except ValueError:
+                pass
+            else:
+                raise ValueError('这是可核对的完整草稿，请使用载入或普通归档')
+            stored = uuid.uuid4().hex
+            value = {'format': 1, 'kind': 'denghuo-recovery-original', 'id': stored,
+                     'source_name': path.name, 'saved': time.time(), 'bytes': len(raw), 'sha256': digest}
+            directory = unlinked(self.preserved_directory)
+            directory.mkdir(parents=True, exist_ok=True)
+            self._write_original(directory / (stored + '.raw'), raw)
+            self._write_original(directory / (stored + '.json'), json.dumps(value, ensure_ascii=True).encode())
+            if os.name != 'nt':
+                for synced in (directory, directory.parent):
+                    descriptor = os.open(synced, os.O_RDONLY | os.O_DIRECTORY)
+                    try:
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(descriptor)
+            checked, copied = self.read_preserved(stored)
+            if checked != value or copied != raw:
+                raise ValueError('原始副本尚未核对，活动原件保留')
+            if self._raw(identity) != raw:
+                raise ValueError('保留期间自动草稿已更新；旧原始副本已保留，新原件仍在活动列表，请重新核对')
+            path.unlink()
+            self.fingerprints.pop(original, None)
+            return {'id': 'raw-' + stored, 'state': 'archived', 'state_revision': digest,
+                    'raw_original': True, 'path': str(directory / (stored + '.raw')),
+                    'bytes': len(raw), 'sha256': digest, 'applied': False}
 
     def archive(self, identity, expected_revision):
         with self.lock, self._storage_lock():
