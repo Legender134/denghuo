@@ -1016,6 +1016,7 @@ class BackupContextTests(unittest.TestCase):
 
     def test_completed_restore_undo_remove_receipts_keep_original_scope(self):
         session=self.session;context=session.backup_context
+        expected_root=str(self.a.resolve())
         self.write(self.a,5)
         payload={**self.row,'context':context,'action':'restore','confirm':'恢复槽位 1'}
         preview=session.backup_transfer('preview',payload)
@@ -1033,8 +1034,8 @@ class BackupContextTests(unittest.TestCase):
             with self.subTest(action=action):
                 self.assertIsInstance(receipt,dict)
                 self.assertTrue(receipt['ok']);self.assertEqual(receipt['action'],action)
-                self.assertEqual(receipt['scope'],{'root':str(self.a),'context':context})
-                self.assertEqual(receipt['root'],str(self.a));self.assertEqual(receipt['save_root'],str(self.a))
+                self.assertEqual(receipt['scope'],{'root':expected_root,'context':context})
+                self.assertEqual(receipt['root'],expected_root);self.assertEqual(receipt['save_root'],expected_root)
                 self.assertEqual(receipt['context'],context);self.assertEqual(receipt['slot'],1)
                 self.assertEqual(receipt['id'],identity);self.assertTrue(receipt['results'][0]['ok'])
                 self.assertIn(receipt['message'],('已恢复槽位 1。回档前进度已完整保留，可点击「撤回上次回档」恢复。',
