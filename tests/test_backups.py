@@ -30,11 +30,11 @@ class BackupTests(unittest.TestCase):
         folder.mkdir(exist_ok=True)
         game = {"depth": 2, "branch": branch, "version": 912, "seed": 9,"generated_levels":[2+1000*branch],
                 "hero": {"class": "MAGE", "HP": hp, "HT": 30, "STR": 10, "lvl": 2, "inventory": [], "buffs": []}}
-        (folder / "game.dat").write_bytes(gzip.compress(json.dumps(game).encode()))
+        (folder / "game.dat").write_bytes(gzip.compress(json.dumps(game).encode(), mtime=0))
         floor = "depth2" + (f"-branch{branch}" if branch else "") + ".dat"
         level={'__className':'com.shatteredpixel.shatteredpixeldungeon.levels.SewerLevel','version':912,'width':4,'height':4,
                'map':[4]*16,'visited':[False]*16,'mapped':[False]*16}
-        (folder / floor).write_bytes(gzip.compress(json.dumps({'level':level}).encode()))
+        (folder / floor).write_bytes(gzip.compress(json.dumps({'level':level}).encode(), mtime=0))
         stamp = 1700000000 + hp
         os.utime(folder / "game.dat", (stamp, stamp))
         os.utime(folder / floor, (stamp, stamp))

@@ -26,6 +26,11 @@ function deferred(){let resolve;return {promise:new Promise(done=>resolve=done),
 const plain=value=>JSON.parse(JSON.stringify(value));
 (async()=>{
   let checks=0;
+  for(const context of ['context-b',null]){
+    const changing=harness('backups.js');changing.get('#backup-status').textContent='原目录已恢复，可撤回';
+    changing.run("backupContext='context-a';state.backup_context="+JSON.stringify(context)+";syncBackupContext("+JSON.stringify(context)+")");
+    assert.equal(changing.get('#backup-status').textContent,context?'正在读取当前存档目录的备份状态…':'服务未连接，备份状态暂不可确认。');checks++;
+  }
   const flow=harness('backup-workflows.js');
   flow.run("backupFlow.context='context-a';backupFlow.epoch=1;loadBackupFlowStorage=async()=>{}");
   let pending=deferred(),posted;
@@ -146,5 +151,87 @@ const plain=value=>JSON.parse(JSON.stringify(value));
   libraries.run("backupLibraries.selection.set('1:x',{slot:1,id:'x'});resetBackupLibraries('context-b')");
   assert.equal(libraries.run('backupLibraries.selection.size'),0);assert.equal(libraries.run('backupLibraries.preview'),null);
   assert.equal(libraries.run('backupLibraries.receipts.length'),1);assert.equal(libraries.run('backupLibraries.context'),'context-b');checks++;
-  console.log(JSON.stringify({passed:true,deferred_workflow_cases:checks,scope:'actual JS components with deferred requests; browser/native E2E remains separate'}));
+  let receiptChecks=0;
+  async function restoreReceiptCase(operation,outcome,interrupt){
+    const restore=harness('backups.js');
+    restore.run(fs.readFileSync(path.join(root,'web','backup-workflows.js'),'utf8'));
+    restore.run("initializeBackups();backupContext='context-a';backupFlow.context='context-a';backupFlow.epoch=1;backupState={context:'context-a',save_root:'/synthetic/a',history:[]};loadBackups=async()=>{};loadBackupFlowStorage=async()=>{}");
+    restore.context.completed=[];
+    restore.run("loadBackups=async()=>{completed.push(state.backup_context)}");
+    restore.run(`openConfirm({slot:1,id:'original-id',label:'原始目标',expected_current:'original-digest'},'${operation}','context-a')`);
+    restore.get('#restore-confirm').checked=true;
+    const deferredResult=deferred();let submitted,nextPreview,previewing;
+    restore.context.post=async(url,payload)=>{submitted=plain(payload);return deferredResult.promise;};
+    const completing=restore.get('#restore-form').listeners.submit({preventDefault(){}});
+    assert.equal(submitted.action,operation);assert.equal(submitted.context,'context-a');
+    assert.equal(submitted.expected_current,'original-digest');assert.equal(submitted.id,'original-id');
+    if(interrupt==='close')restore.get('#close-restore').listeners.click();
+    else if(interrupt==='escape'){
+      restore.get('#restore-dialog').listeners.cancel();restore.get('#restore-dialog').close();
+    }else if(interrupt==='connection'){
+      restore.run("state.backup_context='context-b';state.settings.save_root='/synthetic/b';syncBackupContext('context-b');backupState={context:'context-b',save_root:'/synthetic/b',history:[]}");
+    }else if(interrupt==='new-target'){
+      restore.run("openConfirm({slot:2,id:'new-id',expected_current:'new-digest'},'undo','context-a')");
+      restore.get('#restore-confirm').checked=true;restore.get('#restore-submit').disabled=true;
+      restore.get('#restore-error').textContent='new-preview-error';
+    }else if(interrupt==='pending-preview'){
+      nextPreview=deferred();restore.context.fetch=async()=>({ok:true,json:async()=>nextPreview.promise});
+      previewing=restore.run("openRestore({slot:2,id:'pending-id'},'context-a','undo')");
+      restore.get('#restore-confirm').checked=true;
+      restore.get('#restore-error').textContent='pending-preview-error';
+    }
+    if(outcome==='success')deferredResult.resolve({ok:true,action:operation,root:'/synthetic/a',context:'context-a',
+      scope:{root:'/synthetic/a',context:'context-a'},results:[{action:operation,slot:1,id:'original-id',ok:true}],message:'原目录实际完成'});
+    else {
+      const error=new Error(outcome==='failure'?'真实业务失败':'network-response-lost');
+      if(outcome==='failure')error.status=400;
+      deferredResult.resolve(Promise.reject(error));
+    }
+    await completing;await new Promise(done=>setImmediate(done));
+    assert.equal(restore.run('backupFlow.receipts.length'),1,`${operation}/${outcome}/${interrupt}: completion must survive`);
+    const receipt=plain(restore.run('backupFlow.receipts[0]'));
+    assert.equal(receipt.kind,operation);assert.equal(receipt.root,'/synthetic/a');assert.equal(receipt.context,'context-a');
+    assert.equal(receipt.submitted.action,operation);assert.equal(receipt.submitted.id,'original-id');
+    assert.equal(receipt.submitted.slot,1);assert.equal(receipt.submitted.root,'/synthetic/a');
+    assert.deepEqual(receipt.submitted.scope,{root:'/synthetic/a',context:'context-a'});
+    assert.equal(receipt.submitted.expected_current,'original-digest');
+    assert.equal(receipt.result.results[0].ok,outcome==='success');
+    assert.equal(receipt.result.results[0].id,'original-id');assert.equal(receipt.result.results[0].label,'原始目标');
+    assert(restore.run('Object.isFrozen(backupFlow.receipts[0].submitted.scope)'));
+    assert(restore.run('Object.isFrozen(backupFlow.receipts[0].result.results[0])'));
+    const rendered=restore.get('#backup-operation-receipts').children;
+    assert(rendered.some(node=>node.children?.some(child=>String(child.textContent).includes('/synthetic/a'))),'receipt must be visible with original root');
+    assert.equal(receipt.changed,interrupt!=='none');
+    if(outcome==='failure')assert.equal(receipt.result.outcome,'failed');
+    if(outcome==='unknown'){
+      assert.equal(receipt.result.outcome,'unknown');assert.match(receipt.result.message,/结果尚未确认/);
+    }
+    if(interrupt==='new-target'){
+      assert.equal(restore.run('restoreTarget.id'),'new-id');assert.equal(restore.run('restoreTarget.expected_current'),'new-digest');
+      assert(restore.get('#restore-dialog').open);assert(restore.get('#restore-submit').disabled);
+      assert(restore.get('#restore-confirm').checked);assert.equal(restore.get('#restore-error').textContent,'new-preview-error');
+    }else if(interrupt==='pending-preview'){
+      assert(restore.get('#restore-dialog').open);assert(restore.get('#restore-submit').disabled);
+      assert(restore.get('#restore-confirm').checked);assert.equal(restore.get('#restore-error').textContent,'pending-preview-error');
+      nextPreview.resolve({context:'context-a',expected_current:'pending-digest',current:{empty:true},target:{empty:true}});
+      await previewing;
+      assert.equal(restore.run('restoreTarget.id'),'pending-id');assert.equal(restore.run('restoreTarget.expected_current'),'pending-digest');
+      assert(restore.get('#restore-dialog').open);assert(!restore.get('#restore-confirm').checked);
+    }else if(interrupt==='connection'){
+      assert.equal(restore.run('state.settings.save_root'),'/synthetic/b');assert.equal(restore.run('restoreTarget'),null);
+      assert.equal(restore.context.completed.length,0,'old completion cannot refresh B');
+      restore.run("state.backup_context='context-a-returned';state.settings.save_root='/synthetic/a';syncBackupContext('context-a-returned')");
+      assert.equal(restore.run('backupFlow.receipts.length'),1,'A→B→A retains the submitted result');
+      assert.equal(plain(restore.run('backupFlow.receipts[0]')).context,'context-a');
+    }else if(interrupt==='none'){
+      if(outcome==='success')assert(!restore.get('#restore-dialog').open);
+      else {assert(restore.get('#restore-dialog').open);assert(!restore.get('#restore-submit').disabled);assert(!restore.get('#restore-confirm').checked);assert(!restore.get('#restore-error').hidden);}
+    }
+    receiptChecks++;
+  }
+  for(const operation of ['restore','undo','remove']){
+    for(const outcome of ['success','failure'])for(const interrupt of ['none','close','escape','connection','new-target','pending-preview'])await restoreReceiptCase(operation,outcome,interrupt);
+    await restoreReceiptCase(operation,'unknown','connection');
+  }
+  console.log(JSON.stringify({passed:true,deferred_workflow_cases:checks,restore_receipt_cases:receiptChecks,scope:'actual JS components with deferred requests; browser/native E2E remains separate'}));
 })().catch(error=>{console.error(error);process.exitCode=1;});

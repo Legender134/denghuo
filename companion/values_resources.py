@@ -68,7 +68,7 @@ def add_resource_values(identity,p,result,requested):
         metric('最终实际恢复',outcome['actual_heal'],'HP','不含正在生效的其他治疗'),
         metric('实际新增屏障',outcome['shield'],'点','按所填护盾露珠天赋与现有屏障'),
         metric('治疗池总量',outcome['pool'],'HP','满血后的剩余额度会继续消耗' if outcome['gradual'] else '即时恢复，无新增治疗池'),
-        metric('饮用耗时',1 if p['dew_volume'] else 0,'回合','空水袋未执行饮用'),
+        metric('饮用耗时',1 if p['dew_volume'] else 0,'回合','按所填水量饮用' if p['dew_volume'] else '空水袋未执行饮用'),
     ],'按所填生命、露珠、天赋、现有屏障和凝血试管计算；这些条件不是已确认的实时游戏状态。'))
     result.append(block('露珠生效条件',[
         metric('每滴基础恢复量',rounded(f(p['max_hp']*f(.05))),'HP','单滴，按最大生命的5%取整'),

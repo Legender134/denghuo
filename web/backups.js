@@ -19,6 +19,7 @@ function syncBackupContext(context){
   rememberBackupMetadataDraft();
   const changed=!!backupContext;
   backupContext=context;backupState=null;manageTarget=null;repairTarget=null;historyRepairTarget=null;restorePreview++;backupViewKeys.clear();
+  $('#backup-status').textContent=context?'正在读取当前存档目录的备份状态…':'服务未连接，备份状态暂不可确认。';
   if(typeof resetBackupWorkflows==='function')resetBackupWorkflows(context);
   if(typeof resetBackupLibraries==='function')resetBackupLibraries(context);
   $('#backup-slot').value='';$('#backup-slot').innerHTML='';
@@ -162,7 +163,7 @@ async function openRestore(row,context,operation='restore'){
 }
 function openConfirm(row, operation,context){
   if(context!==state?.backup_context){toast('存档连接已变化，请重新选择备份。',true);return;}
-  restorePreview++;restoreTarget={...row,operation,context};
+  restorePreview++;restoreTarget={...row,operation,context,root:backupState?.save_root||state.settings.save_root};
   $('#restore-repreview').hidden=!['restore','undo'].includes(operation);
   const phrase={restore:'恢复槽位',undo:'撤回槽位',remove:'移出备份'}[operation];
   $('#restore-title').textContent={restore:'恢复前，核对这份进度',undo:'撤回上次回档',remove:'移出活动备份库'}[operation];
@@ -324,15 +325,34 @@ function initializeBackups(){
   $('#restore-repreview').addEventListener('click',()=>{const target=restoreTarget;if(['restore','undo'].includes(target?.operation))action(()=>openRestore(target,target.context,target.operation));});
   $('#close-restore').addEventListener('click',()=>{$('#restore-dialog').close();restoreTarget=null;restorePreview++;});
   $('#restore-dialog').addEventListener('cancel',()=>{restoreTarget=null;restorePreview++;});
-  $('#restore-form').addEventListener('submit',event=>{
-    event.preventDefault();if(!restoreTarget)return;const target=restoreTarget;
-    (async()=>{const button=$('#restore-submit');button.disabled=true;$('#restore-error').hidden=true;try{
-      if(!$('#restore-confirm').checked)throw new Error('请先勾选目标槽位确认');
-      const phrase={restore:'恢复槽位',undo:'撤回槽位',remove:'移出备份'}[target.operation];
-      await post('/api/backups',{action:target.operation,slot:target.slot,id:target.id,context:target.context,expected_current:target.expected_current,confirm:`${phrase} ${target.slot}`});
-      if(restoreTarget!==target)return;
-      $('#restore-dialog').close();restoreTarget=null;await loadBackups();toast(backupState.notice);
-    }catch(error){if(restoreTarget===target){$('#restore-confirm').checked=false;$('#restore-error').hidden=false;$('#restore-error').textContent=error.message+'。操作未完成，请核对后重试。';}}finally{if(restoreTarget===target||restoreTarget===null)button.disabled=false;}})();
+  $('#restore-form').addEventListener('submit',async event=>{
+    event.preventDefault();if(!restoreTarget)return;
+    const target=restoreTarget,preview=restorePreview,button=$('#restore-submit');
+    if(button.disabled)return;
+    if(!$('#restore-confirm').checked){$('#restore-error').hidden=false;$('#restore-error').textContent='请先勾选目标槽位确认';return;}
+    const phrase={restore:'恢复槽位',undo:'撤回槽位',remove:'移出备份'}[target.operation];
+    const submitted=freezeBackupReceipt({action:target.operation,root:target.root,context:target.context,
+      scope:{root:target.root,context:target.context},slot:target.slot,id:target.id,
+      expected_current:target.expected_current,confirm:`${phrase} ${target.slot}`,label:target.label||''});
+    const ticket=Object.freeze({...backupFlowTicket(),context:submitted.context,root:submitted.root});
+    const current=()=>restoreTarget===target&&restorePreview===preview&&backupFlowCurrent(ticket);
+    button.disabled=true;$('#restore-error').hidden=true;
+    let result;
+    try{
+      result=await post('/api/backups',{action:submitted.action,slot:submitted.slot,id:submitted.id,
+        context:submitted.context,expected_current:submitted.expected_current,confirm:submitted.confirm});
+    }catch(error){
+      const message=error.status?error.message+'。请求返回失败；请核对原目录与错误后重新预览。':error.message+'。结果尚未确认，请先返回原目录核对进度，不要直接重复操作。';
+      recordBackupReceipt(submitted.action,ticket,{ok:false,outcome:error.status?'failed':'unknown',
+        results:[{...submitted,ok:false,error:message}],message},submitted,!current());
+      if(current()){$('#restore-confirm').checked=false;$('#restore-error').hidden=false;$('#restore-error').textContent=message;button.disabled=false;}
+      return;
+    }
+    // Completion belongs to the immutable submission even after close/Esc/repreview/reconnect.
+    recordBackupReceipt(submitted.action,ticket,{...result,
+      results:(result?.results||[{ok:true}]).map(row=>({...submitted,...row}))},submitted,!current());
+    if(current()){$('#restore-dialog').close();restoreTarget=null;restorePreview++;toast(result?.message||'操作已完成，结果已保留在提交回执。');}
+    try{await refreshBackupReceiptScope(ticket);}catch(error){if(backupFlowCurrent(ticket))toast('操作回执已保留，历史刷新失败：'+error.message,true);}
   });
   const closeManage=()=>{rememberBackupMetadataDraft();manageTarget=null;manageEditRevision++;renderBackupMetadataDrafts();};
   $('#close-manage').addEventListener('click',()=>{closeManage();$('#manage-dialog').close();});

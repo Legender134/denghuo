@@ -348,15 +348,21 @@ class KnowledgeWorkspace:
             value['favorites'] = list(dict.fromkeys([*value['favorites'],*incoming['favorites']]))
             if len(value['favorites'])>MAX_FAVORITES:
                 raise ValueError('合并后收藏超过64项，请先减少收藏；已有资料保持不变')
-            added,duplicated = 0,0
+            added,duplicated,skipped = 0,0,0
             for imported in incoming['plans']:
                 same = next((row for row in value['plans'] if row['id']==imported['id']),None)
                 if same==imported:
+                    skipped += 1
                     continue
                 row = copy.deepcopy(imported)
                 if same is not None:
-                    row['id'] = uuid.uuid4().hex
                     row['name'] = text(row['name'][:74]+'（导入）','方案名称')
+                    # Recognize complete imported copies even when an older import
+                    # assigned a different ID, before charging another plan slot.
+                    if any({**item,'id':row['id']}==row for item in value['plans']):
+                        skipped += 1
+                        continue
+                    row['id'] = uuid.uuid4().hex
                     duplicated += 1
                 if len(value['plans'])>=MAX_PLANS:
                     raise ValueError('合并后方案超过200项，请先减少方案；已有资料保持不变')
@@ -365,7 +371,7 @@ class KnowledgeWorkspace:
             # Imported visits never become this installation's recent usage history.
             self._write(value,stamp)
             return {'favorites_added':len(value['favorites'])-old_favorites,
-                    'plans_added':added,'conflicting_plans_kept_as_copies':duplicated}
+                    'plans_added':added,'plans_skipped':skipped,'conflicting_plans_kept_as_copies':duplicated}
 
     def _recovery_bytes(self):
         with self.path.open('rb') as stream:

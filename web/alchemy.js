@@ -1,7 +1,7 @@
 'use strict';
 // Original strings are retained until an explicit calculation builds typed parameters.
 let alchemyRecipes=[],alchemyFamilies=[],alchemyCatalog={items:[]},alchemyInitialized=false;
-let alchemyDirty=false,alchemyUnsaved=false,alchemyPending=false,alchemyRequest=0,alchemyGeneration=0,alchemyPendingRequest=0;
+let alchemyDirty=false,alchemyUnsaved=false,alchemyPending=false,alchemyRequest=0,alchemyGeneration=0,alchemyPendingRequest=0,alchemyOpenRequest=0;
 let alchemyResult=null,alchemySavedPlan=null,alchemySource={mode:'example',snapshot_at:null,slot:null},alchemyUndo=null,alchemyRuleChanged=false;
 let alchemyDiscovery=null,alchemyDiscoveryGeneration=-1,alchemyDiscoveryRequest=0,alchemyDiscoveryPendingRequest=0,alchemySerial=0,alchemyControls=[],alchemyProducerButtons=[];
 let alchemyRaw={format:2,recipe_version:'4.0.2',targets:[],resources:[],energy:'0',energy_reserve:'0',energy_origin:'manual',reference_version:null,chains:{}};
@@ -166,7 +166,21 @@ function renderAlchemyDiscovery(){
   const root=$('#alchemy-discovery-list'),status=$('#alchemy-discovery-status');if(!root)return;root.replaceChildren();if(!alchemyDiscovery){status.textContent='明确预览后显示候选。这里不穷尽所有材料组合；可在目标中手动选择其他合格材料。';return;}const stale=alchemyDiscoveryGeneration!==alchemyGeneration,labels={immediate:'当前预算可制作', 'with-prerequisites':'需要先制作前置材料','needs-condition':'状态 / 选择待确认','needs-energy':'能量不足','needs-material':'材料不足','random-outcome':'预算内有随机结果'};status.textContent=(stale?'条件已变化，以下是旧库存的候选，重新预览后才能加入。':'')+(alchemyDiscovery.message||'每项独立预览；加入多个目标后必须重算共享账本。');
   for(const row of alchemyDiscovery.recipes||[]){const card=alchemyNode('details');card.append(alchemyNode('summary',row.name+' · '+(labels[row.availability]||row.availability)),alchemyNode('p','请求产出 '+row.target.quantity+' 件；'+alchemyChoiceText(row.target.choices)));for(const step of row.steps||[])card.append(alchemyNode('p',alchemyStepText(step),'muted'));for(const shortage of row.shortages||[])card.append(alchemyNode('p',alchemyShortageText(shortage),'rule-warning'));for(const pending of row.pending_conditions||[])card.append(alchemyNode('p','待确认：'+pending.condition,'rule-warning'));for(const boundary of row.outcome_boundaries||[])card.append(alchemyNode('p','结果边界：'+boundary.message,'rule-warning'));const button=alchemyButton('以这些明确选择加入目标',()=>{if(alchemyDiscoveryGeneration!==alchemyGeneration)throw new Error('候选条件已过时，请重新预览');addAlchemyTarget(row.target.recipe,String(row.target.quantity),row.target.choices);toast('已加入目标；请重算共同库存与能量。');});button.disabled=stale;card.append(button);root.append(card);}
 }
-async function openAlchemyPlan(plan,result,rulesChanged){await loadAlchemy();const raw=rawAlchemyParams(plan.params);validateAlchemyRaw(raw);applyAlchemyRaw(raw);alchemySavedPlan=alchemyClone(plan);alchemySource=cleanStoredOrigin(plan.origin);alchemyResult=alchemyClone(result);alchemyDirty=false;alchemyUnsaved=false;alchemyUndo=null;alchemyRuleChanged=!!rulesChanged||plan.params.recipe_version!=='4.0.2';alchemyDiscovery=null;alchemyGeneration++;alchemyRequest++;alchemyDiscoveryRequest++;renderAlchemyResult();renderAlchemyDiscovery();renderAlchemyOrigin();$('#alchemy-targets').focus();}
+async function openAlchemyPlan(plan,result,rulesChanged){
+  const request=++alchemyOpenRequest,generation=alchemyGeneration,nav=navigationSerial;
+  await loadAlchemy();
+  if(request!==alchemyOpenRequest||generation!==alchemyGeneration||nav!==navigationSerial||webEditingFrozen){
+    if(nav===navigationSerial&&!webEditingFrozen&&request===alchemyOpenRequest)inlineError($('#alchemy-error'),'读取期间炼金表单已有新编辑；当前原始输入仍保留，请核对后重新打开方案。');
+    return false;
+  }
+  if(!alchemyInitialized){inlineError($('#alchemy-error'),'炼金资料暂未就绪；当前输入仍保留，请重试读取后再打开方案。');return false;}
+  const raw=rawAlchemyParams(plan.params);validateAlchemyRaw(raw);applyAlchemyRaw(raw);
+  alchemySavedPlan=alchemyClone(plan);alchemySource=cleanStoredOrigin(plan.origin);alchemyResult=alchemyClone(result);
+  alchemyDirty=false;alchemyUnsaved=false;alchemyUndo=null;alchemyRuleChanged=!!rulesChanged||plan.params.recipe_version!=='4.0.2';alchemyDiscovery=null;
+  alchemyGeneration++;alchemyRequest++;alchemyDiscoveryRequest++;alchemyPending=false;alchemyPendingRequest=0;alchemyDiscoveryPendingRequest=0;
+  $('#alchemy-calculate').disabled=false;$('#alchemy-discover').disabled=false;
+  renderAlchemyResult();renderAlchemyDiscovery();renderAlchemyOrigin();$('#alchemy-targets').focus();return true;
+}
 function alchemyPlanSaved(plan,payload){const matches=alchemyResult&&JSON.stringify(alchemyResult.params)===JSON.stringify(payload.params)&&JSON.stringify(cleanStoredOrigin(alchemySource))===JSON.stringify(cleanStoredOrigin(payload.source));if(matches){alchemySavedPlan=alchemyClone(plan);alchemyUnsaved=alchemyDirty;renderAlchemyOrigin();}}
 function saveAlchemyPlan(){if(!alchemyResult||alchemyDirty||alchemyPending){inlineError($('#alchemy-error'),'请先重新计算当前原始输入，再命名保存');return;}const name=alchemyResult.format===2?(alchemyFamily(alchemyResult.targets[0]?.recipe)?.name||'多目标炼金')+'规划':alchemyResult.recipe.name+'规划';openPlanSave({kind:'alchemy',entry:null,params:alchemyClone(alchemyResult.params),source:alchemyClone(alchemySource),note:alchemySavedPlan?.note||''},alchemySavedPlan?alchemyClone(alchemySavedPlan):null,name);}
 function alchemyDraftLabel(){return alchemyDirty||alchemyUnsaved?'炼金规划':null;}

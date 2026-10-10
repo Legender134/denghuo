@@ -1014,6 +1014,59 @@ class BackupContextTests(unittest.TestCase):
                           for p in (self.a/'game1').rglob('*') if p.is_file()},original)
 
 
+    def test_completed_restore_undo_remove_receipts_keep_original_scope(self):
+        session=self.session;context=session.backup_context
+        expected_root=str(self.a.resolve())
+        self.write(self.a,5)
+        payload={**self.row,'context':context,'action':'restore','confirm':'恢复槽位 1'}
+        preview=session.backup_transfer('preview',payload)
+        restored=session.backup_action({**payload,'expected_current':preview['expected_current']})
+        self.assertEqual(read_slot(self.a,1)[0]['hero']['HP'],20)
+        undo=session.backup_status()['undo'][0]
+        undo_preview=session.backup_transfer('undo-preview',{**undo,'context':context})
+        undone=session.backup_action({'action':'undo','slot':1,'id':undo['id'],'context':context,
+            'expected_current':undo_preview['expected_current'],'confirm':'撤回槽位 1'})
+        self.assertEqual(read_slot(self.a,1)[0]['hero']['HP'],5)
+        removed=session.backup_action({**self.row,'context':context,'action':'remove','confirm':'移出备份 1'})
+        self.assertFalse(any(row['id']==self.row['id'] for row in session.backup_status()['history']))
+        self.assertTrue(session.backup_status()['retained'])
+        for receipt,action,identity in ((restored,'restore',self.row['id']),(undone,'undo',undo['id']),(removed,'remove',self.row['id'])):
+            with self.subTest(action=action):
+                self.assertIsInstance(receipt,dict)
+                self.assertTrue(receipt['ok']);self.assertEqual(receipt['action'],action)
+                self.assertEqual(receipt['scope'],{'root':expected_root,'context':context})
+                self.assertEqual(receipt['root'],expected_root);self.assertEqual(receipt['save_root'],expected_root)
+                self.assertEqual(receipt['context'],context);self.assertEqual(receipt['slot'],1)
+                self.assertEqual(receipt['id'],identity);self.assertTrue(receipt['results'][0]['ok'])
+                self.assertIn(receipt['message'],('已恢复槽位 1。回档前进度已完整保留，可点击「撤回上次回档」恢复。',
+                    '已撤回槽位 1 的上次回档；撤回前进度也已完整保留。',
+                    '备份已移出活动库；可在下方保留副本中校验并重新加入，原名称会保留。没有删除文件。'))
+        frozen=json.loads(json.dumps([restored,undone,removed]))
+        session.update_settings({'save_root':str(self.b)})
+        self.assertEqual(session.backup_status()['notice'],'')
+        session.update_settings({'save_root':str(self.a)})
+        self.assertNotEqual(session.backup_context,context)
+        self.assertEqual(session.backup_status()['notice'],'')
+        self.assertEqual([restored,undone,removed],frozen)
+
+    def test_restore_notice_does_not_cross_root_or_connection_context(self):
+        session=self.session;context=session.backup_context
+        self.write(self.a,5)
+        payload={**self.row,'context':context,'action':'restore','confirm':'恢复槽位 1'}
+        preview=session.backup_transfer('preview',payload)
+        session.backup_action({**payload,'expected_current':preview['expected_current']})
+        self.assertIn('已恢复槽位 1',session.backup_status()['notice'])
+        self.assertEqual(session.backups.snapshot(self.b)['notice'],'')
+        # Failure-state snapshots must not expose another root's success either.
+        scope=session.backups.scope(self.b);scope.mkdir(parents=True,exist_ok=True)
+        (scope/'timeline.json').write_text('broken timeline',encoding='utf-8')
+        self.assertEqual(session.backups.snapshot(self.b)['notice'],'')
+        session.update_settings({'save_root':str(self.b)})
+        self.assertEqual(session.backup_status()['notice'],'')
+        session.update_settings({'save_root':str(self.a)})
+        self.assertEqual(session.backup_status()['notice'],'')
+
+
 class ConnectionSettingsTests(unittest.TestCase):
     def test_stale_forms_cannot_revert_connection_and_reload_preserves_independent_changes(self):
         with tempfile.TemporaryDirectory(prefix='denghuo-settings-cas-') as name:

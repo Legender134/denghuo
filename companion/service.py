@@ -481,6 +481,12 @@ class Session:
                 receipt = {'ok': True, 'context': self.backup_context, 'repair': result}
             else:
                 raise ValueError("不支持的备份操作")
+            if payload.get('action') in ('restore', 'undo', 'remove'):
+                scope = {'root': root, 'context': self.backup_context}
+                operation = {'action': payload['action'], 'scope': scope, 'root': root,
+                             'context': self.backup_context, 'slot': payload.get('slot'), 'id': payload.get('id')}
+                receipt = {'ok': True, **operation, 'save_root': root,
+                           'message': self.backups.notice_for(root), 'results': [{'ok': True, **operation}]}
             if payload.get('action') in ('restore', 'undo'):
                 self._fingerprint = None
                 self.active_slot = None
@@ -611,6 +617,7 @@ class Session:
                 self._history_state = None
             if updated['save_root'] != self.settings['save_root'] or self.config_error:
                 self.backup_context = uuid.uuid4().hex
+                self.backups.clear_notice()  # Old connection completion stays in its submitted receipt.
             self.settings = updated
             self.settings_revision = uuid.uuid4().hex
             revision = self.settings_revision

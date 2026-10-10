@@ -324,6 +324,62 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(len(plans), 2)
         self.assertEqual(next(row for row in plans if row['id'] == self.plan['id'])['note'], '本机独有备注')
 
+    def test_edited_import_copy_is_preserved_and_original_can_be_reimported_once(self):
+        raw = self.bundle(['plan:' + self.plan['id']])
+        store = self.target.knowledge
+        value, stamp = store._read()
+        local = {key: item for key, item in self.plan.items() if key != 'record_revision'}
+        local['note'] = '本机独有备注'
+        value['plans'].append(local)
+        store._write(value, stamp)
+        self.apply(raw)
+        copied = next(row for row in store.status()['plans'] if row['id'] != self.plan['id'])
+        copied = store.reopen(copied['id'])['plan']
+        edited = store.save(copied['name'], copied['kind'], copied['entry'], copied['params'], copied['origin'],
+            record_id=copied['id'], expected_record_revision=copied['record_revision'], note='继续修改的导入副本')
+        try:
+            preview = migration.import_preview(self.target, raw)
+        except ValueError as exc:
+            self.fail('编辑导入副本后仍应允许预览并保留双方：' + str(exc))
+        self.assertIn('保留双方', preview['rows'][0]['detail'])
+        result = self.apply(raw)
+        self.assertEqual((result['success_count'], result['failure_count']), (1, 0))
+        self.assertEqual(store.reopen(edited['id'])['plan'], edited)
+        self.assertEqual(next(row for row in store._read()[0]['plans'] if row['id'] == self.plan['id']), local)
+        prior = store.path.read_bytes()
+        self.assertIn('不再重复', migration.import_preview(self.target, raw)['rows'][0]['detail'])
+        self.apply(raw)
+        self.assertEqual(store.path.read_bytes(), prior)
+        self.assertEqual(len(store.status()['plans']), 3)
+        self.assertEqual(self.game_bytes(self.target), self.original_game)
+
+    def test_legacy_json_and_zip_conflict_retries_recognize_each_others_copies(self):
+        raw = self.bundle(['plan:' + self.plan['id']])
+        shared = json.loads(self.source.knowledge.export())
+        shared['favorites'] = []  # Match the plan-only ZIP selection.
+        shared = json.dumps(shared, ensure_ascii=False).encode('utf-8')
+        for first in ('json', 'zip'):
+            with self.subTest(first=first):
+                self.target = self.session('target-' + first)
+                store = self.target.knowledge
+                value, stamp = store._read()
+                local = {key: item for key, item in self.plan.items() if key != 'record_revision'}
+                local['note'] = '本机独有备注'
+                value['plans'].append(local)
+                store._write(value, stamp)
+                if first == 'json':
+                    store.import_records(shared)
+                else:
+                    self.apply(raw)
+                before = store.path.read_bytes()
+                if first == 'json':
+                    self.apply(raw)
+                else:
+                    receipt = store.import_records(shared)
+                    self.assertEqual((receipt['plans_added'], receipt.get('plans_skipped', -1)), (0, 1))
+                self.assertEqual(store.path.read_bytes(), before)
+                self.assertEqual(len(store.status()['plans']), 2)
+
     def test_export_cas_preview_cancel_empty_and_target_rebinding_are_checked(self):
         selected = ['preference:font_scale']
         preview = migration.export_preview(self.source, {'selected': selected})

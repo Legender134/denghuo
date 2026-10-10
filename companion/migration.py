@@ -323,11 +323,15 @@ def _merged_plan(value, row):
     if original is not None:
         result['id'] = checksum(encode(row))[:32]
         result['name'] = row['name'][:74] + '（导入）'
-        copied = next((item for item in value['plans'] if item['id'] == result['id']), None)
-        if copied == result:
+        if any({**item, 'id': result['id']} == result for item in value['plans']):
             return None, '相同冲突副本已存在，不再重复'
-        if copied is not None:
-            raise ValueError('冲突副本ID已被其他记录使用，请先处理本机资料')
+        # An imported copy can be edited normally. Preserve it and use a free,
+        # deterministic ID so preview and application still describe one copy.
+        occupied = {item['id'] for item in value['plans']}
+        attempt = 0
+        while result['id'] in occupied:
+            attempt += 1
+            result['id'] = checksum(encode([row, attempt]))[:32]
         action = '同ID不同内容，保留双方并新增副本'
     return result, action
 

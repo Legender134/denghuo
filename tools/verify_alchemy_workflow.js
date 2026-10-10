@@ -11,7 +11,7 @@ const stock=(id,quantity=1,key='s1',state={},origin='manual',reserve=0)=>({key,i
 const target=(recipe,quantity=1,choices={},key='g1')=>({key,recipe,quantity,choices});
 const plan=(targets,resources=[],energy=100,chains={})=>({format:2,recipe_version:'4.0.2',targets,resources,energy,energy_reserve:0,energy_origin:'manual',reference_version:null,chains});
 function deferred(){let resolve;return {promise:new Promise(done=>resolve=done),resolve};}
-function harness(){
+function harness(initialize=true){
   const elements=new Map();let body;
   class Node{
     constructor(tag){this.tagName=tag.toUpperCase();this.nodeType=tag==='#text'?3:1;this.children=[];this.parentNode=null;this.dataset={};this.listeners={};this.attributes={};this.value='';this.hidden=false;this.disabled=false;this.checked=false;this._text='';}
@@ -44,11 +44,11 @@ function harness(){
   for(const [id,tag,value] of [['alchemy-recipe','select',''],['alchemy-batches','input','1'],['alchemy-formula','p',''],['alchemy-source-link','a',''],['alchemy-materials','div',''],['alchemy-energy','input','0'],['alchemy-energy-reserve','input','0'],['alchemy-energy-origin','p',''],['alchemy-status','p',''],['alchemy-calculate','button',''],['alchemy-use-resources','button',''],['alchemy-undo','button',''],['alchemy-reload-saved','button','']]){const row=new Node(tag);row.id=id;row.value=value;if(tag==='input'||tag==='select'){const label=new Node('label');if(id==='alchemy-batches')label.append(document.createTextNode('新增目标产出数量（件）'));label.append(row);form.append(label);}else form.append(row);}
   for(const id of ['alchemy-error','alchemy-result','alchemy-save','alchemy-copy','alchemy-copy-text','alchemy-copy-status','alchemy-pending-meta','plan-name','plan-note']){const row=new Node('div');row.id=id;section.append(row);}
   const messages=[],saved=[];const context=vm.createContext({console,URLSearchParams,Map,Set,Promise,Date,JSON,Number,String,Math,document,$:get,$$:selector=>walk(body).filter(row=>matches(row,selector)),
-    state:{modified:'snapshot-a',active_slot:1},workspaceState:{alchemy:metadata},loadWorkspace:async()=>{},
+    navigationSerial:0,webEditingFrozen:false,state:{modified:'snapshot-a',active_slot:1},workspaceState:{alchemy:metadata},loadWorkspace:async()=>{},
     inlineError:(node,text)=>{node.textContent=text;node.hidden=!text;},escapeHTML:value=>String(value).replaceAll('<','&lt;'),fmtTime:String,
     cleanStoredOrigin:value=>({mode:value?.mode||'example',snapshot_at:value?.snapshot_at??null,slot:value?.slot??null}),
     toast:message=>messages.push(message),openPlanSave:(...args)=>saved.push(plain(args)),planDraftKey:(payload,existing)=>existing?.id||payload.kind+':draft',planMetaOriginals:new Map(),confirmReloadSavedPlan(){},navigator:{clipboard:{writeText:async()=>{}}},getJSON:async()=>({}),post:async(url,payload)=>payload.action==='alchemy-discover'?discover(payload.params):{result:calculate(payload.params)}});
-  const run=source=>vm.runInContext(source,context);run(fs.readFileSync(path.join(root,'web/alchemy.js'),'utf8'));context.metadata=metadata;run('initializeAlchemy(metadata)');
+  const run=source=>vm.runInContext(source,context);run(fs.readFileSync(path.join(root,'web/alchemy.js'),'utf8'));context.metadata=metadata;if(initialize)run('initializeAlchemy(metadata)');
   const field=(container,label,index=0)=>walk(get(container)).filter(row=>['INPUT','SELECT'].includes(row.tagName)&&row.parentNode?.tagName==='LABEL'&&row.parentNode._text===label)[index];
   const button=(container,text)=>walk(get(container)).find(row=>row.tagName==='BUTTON'&&row.textContent===text);
   const apply=params=>{context.params=plain(params);run('applyAlchemyRaw(rawAlchemyParams(params))');};
@@ -108,5 +108,25 @@ function harness(){
   h.context.getJSON=async()=>{throw new Error('original removed');};h.context.draft=badDraft;await h.run('restoreAlchemyDraft(draft)');assert.equal(h.run('captureAlchemyDraft().saved_revision'),'a'.repeat(64));assert.equal(h.run('captureAlchemyDraft().saved_name'),'原始名字');checks++;
   const missileState={cursed:false,is_upgradable:true,level:0,tier:1,default_quantity:3,durability:100},extra=plan([target('recipe-telekineticgrab',8)],[stock('items.weapon.missiles.throwingstone',3,'s1',missileState),stock('items.weapon.missiles.throwingstone',3,'s2',missileState)],13);h.apply(extra);h.context.post=async(url,payload)=>({result:calculate(payload.params)});await h.run('calculateAlchemy()');const chooser=h.walk(h.get('#alchemy-result')).find(row=>row.tagName==='SELECT');assert(chooser,'multiple source paths are exposed');chooser.value='1';const choosing=h.button('#alchemy-result','明确采用此路径并重算');assert(choosing);await choosing.fire('click');assert(h.run('Object.keys(alchemyRaw.chains).length>0'));assert.equal(h.run('alchemyResult.complete'),true,h.get('#alchemy-error').textContent+' '+JSON.stringify(plain(h.run('alchemyResult.shortages'))));assert(h.get('#alchemy-copy-text').textContent.includes('明确前置路径'));checks++;
   await h.run('openAlchemyPlan(planLegacy,resultLegacy,false)');assert(h.get('#alchemy-batches').closest('label').textContent.includes('旧方案制作批次'));h.run('convertAlchemyLegacy()');assert(h.get('#alchemy-batches').closest('label').textContent.includes('新增目标产出数量'));assert(!h.get('#alchemy-recipe').required);checks++;
+  // Saved plans must not replace work entered while their initial catalog is loading.
+  function openingAlchemy(){
+    const editor=harness(false),reads=[];
+    editor.context.loadWorkspace=()=>{const pending=deferred();reads.push(pending);return pending.promise;};
+    editor.context.saved={id:'saved-energy11',name:'stored energy',kind:'alchemy',origin:{mode:'example'},params:plan([target('potion-healing')],[],11)};
+    return {editor,reads,open:()=>editor.run('openAlchemyPlan(saved,null,false)')};
+  }
+  for(const action of ['input','navigation','freeze']){
+    const t=openingAlchemy(),opening=t.open();
+    if(action==='input'){t.editor.get('#alchemy-energy').value='17';await t.editor.get('#alchemy-energy').fire('input');}
+    else if(action==='navigation')t.editor.context.navigationSerial++;
+    else t.editor.context.webEditingFrozen=true;
+    t.reads[0].resolve();assert.equal(await opening,false);assert.equal(t.editor.run('alchemySavedPlan'),null);
+    if(action==='input'){assert.equal(t.editor.get('#alchemy-energy').value,'17');assert(t.editor.run('alchemyDirty&&alchemyUnsaved'));}checks++;
+  }
+  const readyPlan=openingAlchemy(),normalOpen=readyPlan.open();readyPlan.reads[0].resolve();assert.equal(await normalOpen,true);assert.equal(readyPlan.editor.get('#alchemy-energy').value,'11');assert(!readyPlan.editor.run('alchemyDirty||alchemyUnsaved'));checks++;
+  const superseded=openingAlchemy(),older=superseded.open();superseded.editor.context.saved={...superseded.editor.context.saved,id:'newer',params:plan([target('potion-healing')],[],19)};const latestAlchemyOpening=superseded.open();superseded.reads[1].resolve();assert.equal(await latestAlchemyOpening,true);superseded.reads[0].resolve();assert.equal(await older,false);assert.equal(superseded.editor.run('alchemySavedPlan.id'),'newer');assert.equal(superseded.editor.get('#alchemy-energy').value,'19');checks++;
+  const unavailable=openingAlchemy();unavailable.editor.context.workspaceState={alchemy:{available:false,error:'controlled failure'}};const unavailableOpen=unavailable.open();unavailable.reads[0].resolve();assert.equal(await unavailableOpen,false);assert.equal(unavailable.editor.get('#alchemy-energy').value,'0');assert(unavailable.editor.get('#alchemy-error').textContent.includes('暂未就绪'));checks++;
+  const interrupted=openingAlchemy();interrupted.editor.run('initializeAlchemy(metadata)');let failObsolete;
+  interrupted.editor.context.post=()=>new Promise((resolve,reject)=>{failObsolete=reject;});const obsoleteCalculation=interrupted.editor.run('calculateAlchemy()');assert(interrupted.editor.run('alchemyPending'));assert.equal(await interrupted.open(),true);assert(!interrupted.editor.run('alchemyPending'));assert(!interrupted.editor.get('#alchemy-calculate').disabled);failObsolete(new Error('obsolete failure'));await obsoleteCalculation;assert.equal(interrupted.editor.get('#alchemy-error').textContent,'');checks++;
   console.log(JSON.stringify({passed:true,focused_component_cases:checks,registered_families:39,selectable_recipes:metadata.families.length,scope:'actual alchemy JS DOM and VM, real pinned backend metadata/calculations, deferred async responses; browser/native acceptance separate'}));
 })().catch(error=>{console.error(error);process.exitCode=1;});

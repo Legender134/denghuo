@@ -94,6 +94,7 @@ class BackupManager:
         self.last_tick = 0
         self.error = ""
         self.notice = ""
+        self._notice_scope = None
         self.enabled = True
         self.archive_health = {}
         self.scanned = set()
@@ -123,6 +124,22 @@ class BackupManager:
             return unlinked(self.directory / root.key)
         key = hashlib.sha256(str(unlinked(Path(root)).resolve()).casefold().encode()).hexdigest()[:24]
         return unlinked(self.directory / key)
+
+    def _set_notice(self, root, message):
+        self._notice_scope = str(self.scope(root))
+        self.notice = message
+
+    def notice_for(self, root):
+        try:
+            scope = str(self.scope(root))
+        except (OSError, ValueError):
+            return ''
+        return self.notice if self._notice_scope == scope else ''
+
+    def clear_notice(self):
+        with self.lock:
+            self.notice = ''
+            self._notice_scope = None
 
     def events(self, root):
         path = self.scope(root) / "timeline.json"
@@ -220,7 +237,10 @@ class BackupManager:
                 raise ValueError()
         except (ValueError, AttributeError, RecursionError) as exc:
             raise ValueError('保留备份的名称记录损坏，请通过导入功能校验原ZIP') from exc
-        return {k:row[k] for k in ('id','slot','label','first_seen')}
+        last_seen = row.get('last_seen', row['first_seen'])
+        if not valid_time(last_seen) or last_seen < row['first_seen']:
+            raise ValueError('保留备份的观察时间记录损坏，原件仍保留，请通过导入功能校验原ZIP')
+        return {**{k:row[k] for k in ('id','slot','label','first_seen')}, 'last_seen':last_seen}
 
     def rejoin(self, root, payload):
         name = payload.get('file')
@@ -233,7 +253,7 @@ class BackupManager:
             metadata = self.retained_metadata(path)
             self.import_archive(root, path.read_bytes(), retained=metadata)
             self._storage_cache = None
-            self.notice = '已将保留备份重新加入活动库，尚未恢复游戏；保留副本仍在。'
+            self._set_notice(root, '已将保留备份重新加入活动库，尚未恢复游戏；保留副本仍在。')
 
     def checked_archive(self, root, identity, slot=None):
         if not isinstance(identity, str) or not IDENTITY.fullmatch(identity):
@@ -340,6 +360,8 @@ class BackupManager:
         if retained:
             target = existing if existing is not None else rows[-1]
             target['time'] = min(target['time'], retained['first_seen'])
+            recovered = target.pop('recovered_at', None)
+            target['last_seen'] = retained['last_seen'] if existing is None or recovered is not None else max(target['last_seen'], retained['last_seen'])
             if not target.get('label'):
                 target['label'] = retained['label']
         if len(rows) > MAX_HISTORY:
@@ -378,7 +400,7 @@ class BackupManager:
             target['metadata_generation'] = uuid.uuid4().hex
             target['metadata_revision'] = backup_metadata_revision(target)
             atomic_json(self.scope(root) / 'history.json', rows)
-            self.notice = '备份名称与保留设置已保存'
+            self._set_notice(root, '备份名称与保留设置已保存')
             return {key: target[key] for key in ('id', 'slot', 'label', 'locked', 'metadata_revision')}
 
     def validate(self, root):
@@ -395,9 +417,9 @@ class BackupManager:
                     errors.append(f"槽位 {row['slot']}：{exc}")
             if changed:
                 atomic_json(self.scope(root) / 'history.json', rows)
-            self.notice = f'已检查{len(rows)}份备份，{len(errors)}份不可用。'
+            self._set_notice(root, f'已检查{len(rows)}份备份，{len(errors)}份不可用。')
             if errors:
-                self.notice += ' 自动备份会在相同有效进度再次出现时重建损坏副本。'
+                self._set_notice(root, self.notice + ' 自动备份会在相同有效进度再次出现时重建损坏副本。')
             return errors
 
     def export(self, root, payload):
@@ -452,7 +474,7 @@ class BackupManager:
                     self.checked_archive(root, identity, metadata['slot'])
                 row = {**player_summary(game, metadata['saved']), 'id': identity, 'slot': metadata['slot'], 'time': self.clock()}
                 row = self.register(root, row, retained=retained, transfer=metadata.get('transfer'), imported=True)
-                self.notice = f"已导入槽位 {metadata['slot']} 的备份，尚未恢复游戏存档。"
+                self._set_notice(root, f"已导入槽位 {metadata['slot']} 的备份，尚未恢复游戏存档。")
                 return row
             finally:
                 if incoming.exists():
@@ -500,7 +522,7 @@ class BackupManager:
             self.error = ''
             self._storage_cache = None
             self.scanned.discard(str(scope))
-            self.notice = '备份已移出活动库；可在下方保留副本中校验并重新加入，原名称会保留。没有删除文件。'
+            self._set_notice(root, '备份已移出活动库；可在下方保留副本中校验并重新加入，原名称会保留。没有删除文件。')
             self.last_tick = self.clock()  # Do not immediately recreate the same current state.
 
     def capture(self, root, slot, *, deadline=None):
@@ -564,7 +586,7 @@ class BackupManager:
                     'sha256':hashlib.sha256(original).hexdigest() if len(original)<=MAX_TOTAL else None,
                     'summary':player_summary(game, modified), 'reason':'应用校验失败后隔离原件'})
                 target.replace(isolated)
-                self.notice = '发现损坏备份，已单独保留原文件并重新备份当前有效进度。'
+                self._set_notice(root, '发现损坏备份，已单独保留原文件并重新备份当前有效进度。')
         if not target.exists():
             used = self.storage()
             if used + total > MAX_STORAGE:
@@ -763,7 +785,7 @@ class BackupManager:
                            for r in sorted(history, key=lambda r: r['last_seen'], reverse=True)]
                 latest_time = max((r['time'] for r in rows), default=0)
                 health = self.health_status(root)
-                notice = '；'.join(value for value in (self.notice, self.history_notices.get(str(scope), '')) if value)
+                notice = '；'.join(value for value in (self.notice_for(root), self.history_notices.get(str(scope), '')) if value)
                 return {"enabled": self.enabled, "error": health['error'], "notice": notice,
                         "slots": sorted(slots, key=lambda s: s['slot']), "directory": str(self.directory), "interval": 10,
                         'history': history, 'storage_bytes': self.storage(), 'storage_limit': MAX_STORAGE,
@@ -776,7 +798,7 @@ class BackupManager:
                 available, reason = self._timeline_repair_status(root)
                 history_available, history_reason = self._history_repair_status(root)
                 reason = history_reason if history_available else reason
-                result = {"enabled": self.enabled, "error": str(exc) + ('；' + reason if reason else ''), "slots": [], "notice": self.notice,
+                result = {"enabled": self.enabled, "error": str(exc) + ('；' + reason if reason else ''), "slots": [], "notice": self.notice_for(root),
                         "directory": str(self.directory), "interval": 10, 'history': [],
                         'health': 'paused' if not self.enabled else 'blocked',
                         'last_success': self.health_status(root)['last_success'], 'undo': [], 'storage_limit': MAX_STORAGE,
@@ -963,8 +985,8 @@ class BackupManager:
             self.scanned.add(str(scope)); self._storage_cache = None; self.last_tick = 0
             if self.health_root == str(Path(root)):
                 self.tick_failure = self.error = ''
-            self.notice = (f"已校验恢复 {preview['valid_archives']} 份有效备份，{len(preview['unavailable'])} 项不可用。"
-                f'原名称和固定状态无法确认，恢复记录已全部固定；可逐份核对后修改。原记录位于 {recovery}。')
+            self._set_notice(root, (f"已校验恢复 {preview['valid_archives']} 份有效备份，{len(preview['unavailable'])} 项不可用。"
+                f'原名称和固定状态无法确认，恢复记录已全部固定；可逐份核对后修改。原记录位于 {recovery}。'))
             return {**manifest, 'recovery_directory': str(recovery)}
 
     @staticmethod
@@ -1111,8 +1133,8 @@ class BackupManager:
                 self.last_success = self.last_saved = 0
                 self.slot_health = {}
                 self.tick_failure = self.error = ''
-            self.notice = (f'已完整校验 {len(verified)} 份有效备份，{len(failures)} 项不可用；'
-                           f'名称、固定与撤回记录仍保留，过去的时间节点将重新积累。原记录位于 {recovery}。')
+            self._set_notice(root, (f'已完整校验 {len(verified)} 份有效备份，{len(failures)} 项不可用；'
+                           f'名称、固定与撤回记录仍保留，过去的时间节点将重新积累。原记录位于 {recovery}。'))
             return {**manifest, 'recovery_directory': str(recovery), **self._storage_report(root)}
 
     def restore(self, root, payload):
@@ -1323,7 +1345,7 @@ class BackupManager:
                     preserved.replace(folder)
                 raise
             self.last_tick = 0
-            self.notice = f'已撤回槽位 {slot} 的上次回档；撤回前进度也已完整保留。'
+            self._set_notice(root, f'已撤回槽位 {slot} 的上次回档；撤回前进度也已完整保留。')
             self.slot_health.pop(slot, None)
             return self.notice
 
@@ -1396,7 +1418,7 @@ class BackupManager:
                 if existed and not folder.exists():
                     original.replace(folder)
                 raise
-            self.notice = f'已恢复槽位 {slot}。回档前进度已完整保留，可点击「撤回上次回档」恢复。'
+            self._set_notice(root, f'已恢复槽位 {slot}。回档前进度已完整保留，可点击「撤回上次回档」恢复。')
             self.last_tick = 0
             self.slot_health.pop(slot, None)
             return self.notice
