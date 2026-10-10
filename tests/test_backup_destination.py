@@ -17,7 +17,7 @@ class BackupDestinationTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='denghuo-destination-')
         self.addCleanup(self.temporary.cleanup)
-        self.base = Path(self.temporary.name)
+        self.base = Path(self.temporary.name).resolve()
         self.saves = self.base / 'game'
         self.saves.mkdir()
         self.config = self.base / 'assistant' / 'settings.json'

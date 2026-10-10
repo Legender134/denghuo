@@ -459,7 +459,7 @@ class WorkspaceTests(unittest.TestCase):
             self.assertTrue(request('/api/workspace')[1]['available'])
             destination = request('/api/backup-destination')[1]
             self.assertEqual(destination['backup_root'], '')
-            target = self.directory / '独立备份位置'
+            target = (self.directory / '独立备份位置').resolve()
             target.mkdir()
             payload = {'action': 'preview', 'backup_root': str(target),
                        'expected_settings_revision': destination['settings_revision'], 'context': destination['context']}
