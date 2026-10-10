@@ -559,6 +559,7 @@ class BackupManager:
 
     def capture(self, root, slot, *, deadline=None):
         check_capture_deadline(deadline)
+        self._recovery_guard(root, slot)
         root = unlinked(Path(root)).resolve()
         folder = unlinked(root / f"game{slot}")
         game, level, modified, warning = read_slot(root, slot)
@@ -652,6 +653,10 @@ class BackupManager:
                 return {'ok': True, 'state': 'paused', 'captured': [], 'error': '',
                         'notice': '自动备份已由用户暂停，结束时没有重新开启。'}
             self.ensure_storage()
+            recovery = self.recovery_status(root)
+            if not recovery['available']:
+                raise ValueError(recovery['error'] or '有未完成的回档或撤回，请先核对恢复关联；最后备份未执行')
+            blocked = set(recovery['blocked_slots'])
             if not Path(root).is_dir():
                 if (allow_missing_default is True and not Path(root).exists()
                         and not self.has_protected_progress(root)):
@@ -661,8 +666,14 @@ class BackupManager:
                         'error': '最后一次备份未完成：存档目录暂时不可用；已有备份与原件仍保留。'}
             check_capture_deadline(deadline)
             slots = list_slots(Path(root))
-            pending, problems = [], {}
+            pending = []
+            problems = {slot: '有未完成的回档或撤回，最后备份已跳过此槽；请先核对恢复关联'
+                        for slot in blocked}
+            for slot, problem in problems.items():
+                self.slot_health.setdefault(slot, {})['error'] = problem
             for slot in slots:
+                if slot['id'] in blocked:
+                    continue
                 if slot['valid']:
                     pending.append(slot['id'])
                 elif slot.get('error') and not slot['error'].startswith('空存档'):
@@ -698,7 +709,7 @@ class BackupManager:
                     raise ValueError('备份时间记录已满，最后进度已保存在历史中；请打开存档历史检查')
                 atomic_json(self.scope(root) / 'timeline.json', rows)
             failures = []
-            for slot in pending:
+            for slot in sorted(set(pending) | blocked):
                 problem = problems.get(slot, '结束前未形成稳定存档')
                 for suffix in ('，稍后自动重试', '，稍后重试', '，下一次重试'):
                     problem = problem.removesuffix(suffix)
@@ -724,6 +735,7 @@ class BackupManager:
             scope = self.scope(root)
             return (bool(self.history(root, discover=False)) or bool(self.events(root))
                     or bool(self.journals(root)) or any(scope.glob('*.zip'))
+                    or bool(self.recovery_status(root)['blocked_slots'])
                     or bool(self.retained_status(root)))
 
     def tick(self, root, force=False):
@@ -744,10 +756,19 @@ class BackupManager:
             self.slot_health = {}
             try:
                 rows = self.events(root)
-                errors = []
+                recovery = self.recovery_status(root)
+                blocked = recovery['blocked_slots']
+                errors = [recovery['error']] if recovery['error'] else []
+                for slot in blocked:
+                    message = f'槽位 {slot} 有未完成的回档或撤回，请先预览恢复关联；自动备份暂停此槽'
+                    self.slot_health[slot] = {'error': recovery['error'] or message, 'saved': 0, 'last_success': 0}
+                    if not recovery['error']:
+                        errors.append(message)
                 captured = 0
                 captured_saved = []
                 for slot in list_slots(Path(root)):
+                    if slot['id'] in blocked:
+                        continue
                     if not slot["valid"]:
                         if slot.get('error') and not slot['error'].startswith('空存档'):
                             errors.append(f"槽位 {slot['id']}：{slot['error']}")
@@ -850,7 +871,7 @@ class BackupManager:
                         'storage_breakdown': self.storage_breakdown(root), 'retained': self.retained_status(root),
                         'health': health['state'], 'last_success': max(health['last_success'], latest_time),
                         'last_save_protected': health['last_save_protected'],
-                        'undo': undo, 'records_available': True, 'repair_timeline_available': False,
+                        'undo': undo, 'recovery': self.recovery_status(root), 'records_available': True, 'repair_timeline_available': False,
                         'repair_timeline_reason': '', 'repair_history_available': False, 'repair_history_reason': ''}
             except (OSError, ValueError) as exc:
                 available, reason = self._timeline_repair_status(root)
@@ -864,6 +885,7 @@ class BackupManager:
                         'repair_timeline_reason': reason, 'repair_history_available': history_available,
                         'repair_history_reason': history_reason}
                 result.update(self._storage_report(root))
+                result['recovery'] = self.recovery_status(root)
                 return result
 
     def _storage_report(self, root):
@@ -1195,6 +1217,25 @@ class BackupManager:
                            f'名称、固定与撤回记录仍保留，过去的时间节点将重新积累。原记录位于 {recovery}。'))
             return {**manifest, 'recovery_directory': str(recovery), **self._storage_report(root)}
 
+    def recovery_status(self, root):
+        from .backup_recovery import status
+        with self.lock:
+            return status(self, root)
+
+    def recovery_preview(self, root, payload):
+        from .backup_recovery import preview
+        with self.lock:
+            return preview(self, root, payload)
+
+    def recovery_execute(self, root, payload):
+        from .backup_recovery import execute
+        with self.lock:
+            return execute(self, root, payload)
+
+    def _recovery_guard(self, root, slot):
+        from .backup_recovery import guard
+        guard(self, root, slot)
+
     def restore(self, root, payload):
         with self.lock:
             self._stage_attempt = None
@@ -1310,6 +1351,7 @@ class BackupManager:
 
     def preview(self, root, payload):
         with self.lock:
+            self._recovery_guard(root, payload.get('slot'))
             row = self.selected(root, payload)
             metadata, _, game, _ = self.checked_archive(root, row['id'], row['slot'])
             target = player_summary(game, metadata['saved'])
@@ -1324,14 +1366,16 @@ class BackupManager:
 
     def undo_status(self, root):
         rows = self.journals(root)
+        blocked = self.recovery_status(root)['blocked_slots']
         return [{k: row.get(k) for k in ('id', 'slot', 'time', 'before', 'after')}
-                for row in rows if row['active']]
+                for row in rows if row['active'] and row['slot'] not in blocked]
 
     def undo_preview(self, root, payload):
         with self.lock:
             slot = payload.get('slot')
             if type(slot) is not int or slot not in range(1, 7):
                 raise ValueError('槽位不正确')
+            self._recovery_guard(root, slot)
             row = next((r for r in self.journals(root)
                         if r['id'] == payload.get('id') and r['slot'] == slot and r['active']), None)
             if row is None:
@@ -1358,6 +1402,7 @@ class BackupManager:
             slot = payload.get('slot')
             if type(slot) is not int or slot not in range(1, 7) or payload.get('confirm') != f'撤回槽位 {slot}':
                 raise ValueError('请明确确认撤回的槽位')
+            self._recovery_guard(root, slot)
             rows = self.journals(root)
             row = next((r for r in rows if r['id'] == payload.get('id') and r['slot'] == slot and r['active']), None)
             if row is None:
@@ -1383,25 +1428,18 @@ class BackupManager:
                 raise ValueError('回档前副本已变化，无法安全撤回；当前存档未改变')
             if before != self._slot_state(folder):
                 raise ValueError('当前槽位在撤回期间变化，尚未撤回')
-            if existed_now:
-                folder.replace(preserved)
-            moved = False
-            try:
-                if row['existed']:
-                    original.replace(folder)
-                    moved = True
-                row['active'] = False
-                if existed_now:
-                    rows.append({'id':uuid.uuid4().hex, 'slot':slot, 'time':self.clock(),
-                                 'original':preserved.name, 'existed':True, 'digest':before[2],
-                                 'active':False, 'before':current, 'after':current})
-                atomic_json(self.scope(root) / 'restores.json', rows)
-            except Exception:
-                if moved:
-                    folder.replace(original)
-                if existed_now:
-                    preserved.replace(folder)
-                raise
+            from . import backup_recovery
+            active_tree = backup_recovery.tree(folder)
+            target_tree = backup_recovery.tree(original)
+            if not row['existed'] and target_tree['exists']:
+                raise ValueError('原空槽位的保留路径出现新内容，尚未撤回')
+            if before != self._slot_state(folder):
+                raise ValueError('当前槽位在撤回期间变化，尚未撤回')
+            pending = backup_recovery.begin(self, root, kind='undo', slot=slot, incoming=original,
+                preserved=preserved, before=active_tree, target=target_tree, journals=rows,
+                before_summary=current, target_summary=row.get('before') or {'empty': True},
+                legacy_before=before[2], target_backup=row.get('target_backup'), undo_id=row['id'])
+            backup_recovery.run(self, root, pending)
             self.last_tick = 0
             self._set_notice(root, f'已撤回槽位 {slot} 的上次回档；撤回前进度也已完整保留。')
             self.slot_health.pop(slot, None)
@@ -1412,6 +1450,7 @@ class BackupManager:
             slot, identity = payload.get("slot"), payload.get("id")
             if type(slot) is not int or slot not in range(1, 7) or payload.get("confirm") != f"恢复槽位 {slot}":
                 raise ValueError("请明确确认恢复的槽位")
+            self._recovery_guard(root, slot)
             if 'expected_current' in payload:
                 expected = payload['expected_current']
                 if expected is not None and (not isinstance(expected, str) or not re.fullmatch(r'[0-9a-fA-F]{64}', expected)):
@@ -1457,25 +1496,15 @@ class BackupManager:
             self.closed_check()  # Recheck immediately before the directory swap.
             if current_state != self._slot_state(folder):
                 raise ValueError('原槽位在恢复期间变化，尚未回档')
-            if existed:
-                if not folder.is_dir():
-                    raise ValueError("槽位路径不是目录，尚未回档")
-                folder.replace(original)
-            try:
-                staging.replace(folder)
-                for row in journals:
-                    if row['slot'] == slot:
-                        row['active'] = False
-                journals.append({'id': uuid.uuid4().hex, 'slot': slot, 'time': self.clock(),
-                                 'original': original.name, 'existed': existed, 'digest': digest,
-                                 'active': True, 'target_backup': identity, 'before': before, 'after': player_summary(game, metadata['saved'])})
-                atomic_json(self.scope(root) / 'restores.json', journals)
-            except Exception:
-                if folder.exists():
-                    folder.replace(staging)
-                if existed and not folder.exists():
-                    original.replace(folder)
-                raise
+            from . import backup_recovery
+            active_tree, target_tree = backup_recovery.tree(folder), backup_recovery.tree(staging)
+            if current_state != self._slot_state(folder):
+                raise ValueError('原槽位在恢复期间变化，尚未回档')
+            pending = backup_recovery.begin(self, root, kind='restore', slot=slot, incoming=staging,
+                preserved=original, before=active_tree, target=target_tree, journals=journals,
+                before_summary=before, target_summary=player_summary(game, metadata['saved']),
+                legacy_before=digest, target_backup=identity)
+            backup_recovery.run(self, root, pending)
             self._set_notice(root, f'已恢复槽位 {slot}。回档前进度已完整保留，可点击「撤回上次回档」恢复。')
             self.last_tick = 0
             self.slot_health.pop(slot, None)

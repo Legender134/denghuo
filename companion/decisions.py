@@ -60,6 +60,9 @@ def source(snapshot):
 
 def context_actions(session,snapshot):
     provenance = source(snapshot)
+    stamp = [snapshot.get('started'), snapshot['settings'].get('save_root'),
+             snapshot['settings']['mode'], snapshot.get('active_slot'),
+             snapshot.get('revision'), snapshot.get('modified')]
     data = snapshot.get('data')
     if not data or snapshot.get('error'):
         return {'state':'no-current-state','source':provenance,'risks':[],'options':[],
@@ -88,6 +91,7 @@ def context_actions(session,snapshot):
                        for buff in data.get('buffs', [])}
             identities = tuple(entry for entry in identities if entry in present)
         references = [{'entry':entry,'name':entries[entry]['name'],'params':dict(common_params),
+                       'source':provenance,'stamp':stamp,
                        'level_origin':'example',
                        'source_label':'资料参考 · 实际资源与行动条件请另行核对'} for entry in identities if entry in entries]
         if tip['id'] in ('strength_主武器', 'strength_副武器', 'strength_护甲'):
@@ -115,7 +119,7 @@ def context_actions(session,snapshot):
         if entry not in entries:
             continue
         option = {'entry':entry,'name':item['name'],'quantity':item['quantity'], 'purpose':purpose,
-                  'source':provenance,'params':dict(common_params),'values':[],
+                  'source':provenance,'stamp':stamp,'params':dict(common_params),'values':[],
                   'restriction':'生命值为0；普通行动建议暂停，先核对复活或狂暴状态' if hero['hp']<=0 else
                                 '当前状态限制主动行动；解除后再核对是否能使用' if blocked else '',
                   'calculation_missing':'', 'note':'所记资源需按当前游戏画面核对；资料入口不会替你操作游戏'}
@@ -165,14 +169,27 @@ def explain_comparison(result):
     for marker,choice in zip(('A','B'),result['choices']):
         current,upgraded = choice['current'],choice['upgraded']
         deficit = int(current.get('力量缺口','0'))
-        next_deficit = int(upgraded.get('力量缺口','0'))
+        branches = choice.get('upgrade_branches') or [{'metrics': upgraded}]
+        outcomes = [branch['metrics'] for branch in branches]
+        deficits = [int(row.get('力量缺口', '0')) for row in outcomes]
+        least, most = min(deficits), max(deficits)
         strength = ('按所填有效力量，目前差 '+str(deficit)+' 点。' if deficit else '按所填有效力量，当前达到力量需求。')
-        if deficit and not next_deficit:
-            threshold = '升级一次可跨过力量门槛。'
-        elif next_deficit<deficit:
-            threshold = f'升级一次后力量缺口降到 {next_deficit} 点，仍需核对惩罚。'
-        elif current.get('力量需求')==upgraded.get('力量需求'):
+        if deficit and not most:
+            threshold = '升级一次的所有可达结果均可跨过力量门槛。'
+        elif not deficit and most:
+            threshold = f'升级一次可能使力量需求升高，部分结果会出现 {most} 点力量缺口。'
+        elif deficit and not least:
+            threshold = f'升级一次的部分结果可跨过力量门槛，其他结果仍差 {most} 点；不能保证跨过门槛。'
+        elif least != most:
+            threshold = f'升级一次后力量缺口为 {least}–{most} 点，取决于实际结果；仍需核对惩罚。'
+        elif most < deficit:
+            threshold = f'升级一次后力量缺口降到 {most} 点，仍需核对惩罚。'
+        elif most > deficit:
+            threshold = f'升级一次后力量缺口增至 {most} 点，仍需核对惩罚。'
+        elif all(current.get('力量需求') == row.get('力量需求') for row in outcomes):
             threshold = '升级一次不会降低力量需求。'
+        elif len({row.get('力量需求') for row in outcomes}) > 1:
+            threshold = '升级后的力量需求取决于实际结果，不能保证降低；具体分支见下列数值。'
         else:
             threshold = '升级一次降低力量需求；具体增益见下列变化。'
         effects = []
@@ -181,8 +198,11 @@ def explain_comparison(result):
                 effects.append(f'{label} {current[label]} → {upgraded[label]}')
         from .values_investment import phase_changes
         gains = [row for row in phase_changes(choice['current_metrics'],choice['upgraded_metrics']) if row['before'] != row['after']]
+        timing = '；'.join(effects)
+        if any(row != upgraded for row in outcomes):
+            timing = '以下变化仅按' + branches[0]['condition'] + '：' + timing
         explanations.append({'choice':marker,'name':choice['name'],'summary':strength+threshold,
-                             'timing_and_accuracy':'；'.join(effects),'upgrade_changes':gains})
+                             'timing_and_accuracy':timing,'upgrade_changes':gains})
     a,b=result['choices']
     deficit_a=int(a['current'].get('力量缺口','0'));deficit_b=int(b['current'].get('力量缺口','0'))
     tradeoff='两件均达到所填力量需求；请结合伤害范围、防御、耗时和实际特殊效果取舍。'

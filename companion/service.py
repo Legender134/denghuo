@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 import json
 import hashlib
@@ -12,6 +13,7 @@ from queue import Queue
 import threading
 import time
 import uuid
+from types import SimpleNamespace
 
 from .engine import Catalog, CLASSES, analyze, number
 from .saves import SaveError, default_root, list_slots, read_slot
@@ -131,12 +133,24 @@ class Session:
         self._play_preferences = None
         self.config_path = config_path or data_directory() / 'settings.json'
         self.lock = threading.RLock()
+        # Long operations share this gate; published state never waits on it.
+        self._backup_io_lock = threading.RLock()
+        self._backup_busy = 0
+        self._backup_health_cache = None
+        self._refresh_serial = 0
+        self._refresh_pending = False
+        self._shutdown_requested = threading.Event()
         self.stop = threading.Event()
         self._shutdown_lock = threading.RLock()
         self._shutdown_done = threading.Event()
         self._shutdown_thread = None
         self._shutdown_deadline = None
         self._shutdown_result = None
+        self._shutdown_capture_result = None
+        self._shutdown_backup_result = None
+        self._shutdown_receipt_thread = None
+        self._shutdown_receipt_done = threading.Event()
+        self._shutdown_receipt_error = ''
         self._shutdown_captured = []
         self._backup_shutdown_started = False
         self._consumed_stop_at = None
@@ -342,59 +356,90 @@ class Session:
 
     def _record_shutdown_capture(self, row):
         with self._shutdown_lock:
-            if self._shutdown_result is None:
+            if self._shutdown_backup_result is None and time.monotonic() < self._shutdown_deadline:
                 self._shutdown_captured.append(copy.deepcopy(row))
 
-    def _capture_for_shutdown(self, root, deadline, config_error, manager):
+    def _capture_for_shutdown(self, deadline):
+        result = None
         try:
-            with self.lock:
-                allow_missing_default = self._default_save_wait_is_new(root)
-            result = ({'ok': False, 'state': 'configuration-error', 'captured': [],
-                       'error': '最后一次备份未完成：连接设置尚未修复；已有原件仍保留。'}
-                      if config_error else manager.final_capture(root, deadline,
-                          allow_missing_default=allow_missing_default,
-                          on_capture=self._record_shutdown_capture))
+            if not self._backup_io_lock.acquire(timeout=max(0, deadline - time.monotonic())):
+                return
+            try:
+                if not self.lock.acquire(timeout=max(0, deadline - time.monotonic())):
+                    return
+                try:
+                    root, config_error, manager = self.settings['save_root'], self.config_error, self.backups
+                    state = SimpleNamespace(settings=dict(self.settings), active_slot=self.active_slot,
+                        _observed_progress_roots=set(self._observed_progress_roots))
+                finally:
+                    self.lock.release()
+                allow_missing_default = Session._default_save_wait_is_new(state, root)
+                result = ({'ok': False, 'state': 'configuration-error', 'captured': [],
+                           'error': '最后一次备份未完成：连接设置尚未修复；已有原件仍保留。'}
+                          if config_error else manager.final_capture(root, deadline,
+                              allow_missing_default=allow_missing_default,
+                              on_capture=self._record_shutdown_capture))
+            finally:
+                self._backup_io_lock.release()
         except Exception:
             logging.exception('Final backup capture failed')
             with self._shutdown_lock:
                 captured = copy.deepcopy(self._shutdown_captured)
             result = {'ok': False, 'state': 'partial' if captured else 'failed', 'captured': captured,
                       'error': '最后一次备份未完成；已有备份与活动存档原件仍保留。'}
-        with self._shutdown_lock:
-            if self._shutdown_result is None:
-                self._shutdown_result = result
-        self._shutdown_done.set()
+        finally:
+            with self._shutdown_lock:
+                if result is not None and self._shutdown_backup_result is None and time.monotonic() < deadline:
+                    self._shutdown_capture_result = result
+            self._shutdown_done.set()
+
+    def _write_shutdown_receipt(self, result):
+        from .backups import atomic_json, unlinked
+        try:
+            unlinked(self.config_path.parent).mkdir(parents=True, exist_ok=True)
+            atomic_json(self.config_path.parent / 'last-exit.json',
+                        {'format': 1, 'finished': time.time(), 'backup': result})
+        except (OSError, ValueError):
+            with self._shutdown_lock:
+                self._shutdown_receipt_error = '退出检查记录无法写入；请查看本次运行日志。'
+            logging.exception('Could not record last exit backup result')
+        finally:
+            self._shutdown_receipt_done.set()
 
     def prepare_shutdown(self, timeout=3):
         """Bound the waiting time even if a filesystem call cannot return promptly."""
-        from .backups import atomic_json, unlinked
+        deadline = time.monotonic() + min(3, max(0, timeout))
+        self._shutdown_requested.set()
+        self._backup_shutdown_started = True
         with self._shutdown_lock:
             if self._shutdown_thread is None:
-                with self.lock:
-                    root, config_error = self.settings['save_root'], self.config_error
-                    self._backup_shutdown_started = True
-                    manager = self.backups
-                self._shutdown_deadline = time.monotonic() + min(3, max(0, timeout))
+                self._shutdown_deadline = deadline
                 self._shutdown_thread = threading.Thread(target=self._capture_for_shutdown,
-                    args=(root, self._shutdown_deadline, config_error, manager), name='last-save-capture', daemon=True)
+                    args=(deadline,), name='last-save-capture', daemon=True)
                 self._shutdown_thread.start()
-            deadline = self._shutdown_deadline
+            deadline = min(deadline, self._shutdown_deadline)
+            if self._shutdown_result is not None:
+                return copy.deepcopy(self._shutdown_result)
         self._shutdown_done.wait(max(0, deadline - time.monotonic()))
         with self._shutdown_lock:
-            if self._shutdown_result is None:
+            if self._shutdown_backup_result is None:
                 captured = copy.deepcopy(self._shutdown_captured)
-                self._shutdown_result = {'ok': False, 'state': 'partial' if captured else 'timeout', 'captured': captured,
+                self._shutdown_backup_result = self._shutdown_capture_result or {'ok': False, 'state': 'partial' if captured else 'timeout', 'captured': captured,
                     'error': '最后一次备份检查未能在结束前完成；其余槽位的结果尚未确认。已有备份与活动存档原件仍保留；下次启动助手后，请检查存档历史与备份状态。'}
-            result = copy.deepcopy(self._shutdown_result)
-        try:
-            unlinked(self.config_path.parent).mkdir(parents=True, exist_ok=True)
-            atomic_json(self.config_path.parent / 'last-exit.json', {'format': 1, 'finished': time.time(), 'backup': result})
-        except (OSError, ValueError):
-            logging.exception('Could not record last exit backup result')
-            result = {**result, 'receipt_error': '退出检查记录无法写入；请查看本次运行日志。'}
-        if not result['ok']:
-            logging.warning('%s', result['error'])
-        return result
+            if self._shutdown_receipt_thread is None:
+                self._shutdown_receipt_thread = threading.Thread(target=self._write_shutdown_receipt,
+                    args=(copy.deepcopy(self._shutdown_backup_result),), name='last-exit-receipt', daemon=True)
+                self._shutdown_receipt_thread.start()
+        self._shutdown_receipt_done.wait(max(0, deadline - time.monotonic()))
+        with self._shutdown_lock:
+            if self._shutdown_result is None:
+                result = copy.deepcopy(self._shutdown_backup_result)
+                if not self._shutdown_receipt_done.is_set():
+                    result['receipt_error'] = '退出检查记录尚未确认写入；已有原件仍保留，请在下次启动后核对备份状态。'
+                elif self._shutdown_receipt_error:
+                    result['receipt_error'] = self._shutdown_receipt_error
+                self._shutdown_result = result
+            return copy.deepcopy(self._shutdown_result)
 
     def _exit_finished(self, result):
         # Give live surfaces time to show the result; persisted receipt covers the next launch.
@@ -413,9 +458,14 @@ class Session:
     def play_preferences(self):
         from .play_state import PlayPreferences
         with self.lock:
-            if self._play_preferences is None:
-                self._play_preferences = PlayPreferences(self.config_path.parent)
-            return self._play_preferences
+            preferences = self._play_preferences
+        if preferences is None:
+            candidate = PlayPreferences(self.config_path.parent)
+            with self.lock:
+                if self._play_preferences is None:
+                    self._play_preferences = candidate
+                preferences = self._play_preferences
+        return preferences
 
     def workspace_status(self):
         from .workspace_service import workspace_status
@@ -423,9 +473,14 @@ class Session:
 
     def migration_status(self):
         from .migration import status
-        return status(self)
+        with self._backup_io():
+            return status(self)
 
     def migration_action(self, action, payload=None, raw=None):
+        with self._backup_io():
+            return self._migration_action(action, payload, raw)
+
+    def _migration_action(self, action, payload=None, raw=None):
         from . import migration
         if action == 'status':
             return migration.status(self)
@@ -464,19 +519,184 @@ class Session:
         return update_play(self, payload)
 
     def backup_health(self):
-        health = self.backups.health_status(self.settings['save_root'], self.active_slot)
-        if self.waiting_for_save and health['state'] in ('blocked', 'protected', 'waiting') and not health['error']:
+        with self._backup_operation() as context:
+            health = context.backups.health_status(context.settings['save_root'], context.active_slot)
+            with self.lock:
+                if self._context_current(context):
+                    self._backup_health_cache = (self._health_key(context), time.time(), copy.deepcopy(health))
+                    return self._waiting_health(health, context.waiting_for_save)
+                return self._cached_backup_health()
+
+    @staticmethod
+    def _waiting_health(health, waiting):
+        health = copy.deepcopy(health)
+        if waiting and health['state'] in ('blocked', 'protected', 'waiting') and not health['error']:
             health['state'] = 'waiting'
             health['saved'] = 0
             health['last_save_protected'] = False
         return health
 
+    def _backup_context_state(self):
+        return SimpleNamespace(config_path=self.config_path, settings=dict(self.settings),
+            settings_revision=self.settings_revision, backup_context=self.backup_context,
+            backups=self.backups, active_slot=self.active_slot, waiting_for_save=self.waiting_for_save,
+            backup_enabled=self.backups.enabled, config_error=self.config_error)
+
+    def _context_current(self, context):
+        return (self.settings_revision == context.settings_revision and self.backups is context.backups
+                and self.backup_context == context.backup_context
+                and self.config_error == context.config_error
+                and not self._shutdown_requested.is_set() and not self.stop.is_set())
+
+    @staticmethod
+    def _health_key(context):
+        return (context.backups, context.settings['save_root'], context.backup_context, context.active_slot)
+
+    def _cached_backup_health(self):
+        context = self._backup_context_state()
+        cached = self._backup_health_cache
+        health = (copy.deepcopy(cached[2]) if cached and cached[0] == self._health_key(context) else
+            {'state': 'unknown', 'error': '', 'last_success': 0, 'saved': 0, 'slot': self.active_slot,
+             'last_save_protected': False, 'other_errors': ''})
+        # These memory-only flags can retract protection, never establish it.
+        enabled, health_root, error = self.backups.enabled, self.backups.health_root, self.backups.error
+        if not enabled:
+            health['state'], health['last_save_protected'] = 'paused', False
+        elif error and health_root in (None, str(self.settings['save_root'])):
+            health['state'], health['error'], health['last_save_protected'] = 'blocked', error, False
+        elif health['state'] == 'unknown' and self.waiting_for_save:
+            health['state'] = 'waiting'
+        health = self._waiting_health(health, self.waiting_for_save)
+        health['checked_at'] = cached[1] if cached and cached[0] == self._health_key(context) else None
+        health['pending'] = bool(self._backup_busy or self._refresh_pending or self._shutdown_requested.is_set()
+            or health['checked_at'] is not None and time.time() - health['checked_at'] > 15)
+        if health['pending']:
+            health['state'] = 'working'
+            health['last_save_protected'] = False
+        return health
+
+    @contextmanager
+    def _backup_io(self):
+        # Never acquire this gate or a manager while holding the published-state lock.
+        with self._backup_io_lock:
+            with self.lock:
+                self._backup_busy += 1
+            try:
+                yield
+            finally:
+                with self.lock:
+                    self._backup_busy -= 1
+
+    @contextmanager
+    def _backup_operation(self, *, mutating=False):
+        with self._backup_io():
+            with self.lock:
+                if mutating and (self._shutdown_requested.is_set() or self.stop.is_set()):
+                    raise ValueError('助手正在结束，不能再修改设置或存档备份')
+                context = self._backup_context_state()
+            with context.backups.lock:
+                context.backup_enabled = context.backups.enabled
+                yield context
+
+    def _check_settings_commit(self, context):
+        with self.lock:
+            if self._shutdown_requested.is_set() or self.stop.is_set():
+                raise ValueError('助手正在结束，尚未发布本次设置或备份目的地切换')
+            if not self._context_current(context):
+                raise SettingsConflict('连接设置已变化，请重新载入已保存设置后预览')
+
+    def _configuration_write_uncertain(self):
+        message = '设置文件在提交或回滚期间被其他程序更改，或回滚尚未完成；未强制覆盖新字节，请重新载入连接设置并核对保留副本。'
+        with self.lock:
+            self.config_error = self.error = message
+            self.data = None
+            self._fingerprint = None
+            self._backup_health_cache = None
+            self._refresh_serial += 1
+            self._refresh_pending = False
+        return message
+
+    def _persist_settings(self, updated, context, publish, *, recovery=False):
+        """Prepare outside the state lock and roll back only bytes owned by this write."""
+        from .backups import unlinked
+        def read():
+            try:
+                with unlinked(self.config_path).open('rb') as stream:
+                    raw = stream.read() if recovery else stream.read(65537)
+                if not recovery and len(raw) > 65536:
+                    raise SettingsConflict('设置文件过大或在保存期间变化，原件仍保留')
+                return raw
+            except FileNotFoundError:
+                return None
+        def retain(raw, kind):
+            if raw is not None:
+                target = self.config_path.with_name(f'{self.config_path.stem}.{kind}-{uuid.uuid4().hex}.json')
+                with unlinked(target).open('xb') as stream:
+                    stream.write(raw)
+                return target
+        def digest(raw):
+            return hashlib.sha256(raw).digest() if raw is not None else None
+        self._check_settings_commit(context)
+        unlinked(self.config_path.parent).mkdir(exist_ok=True, parents=True)
+        original = read()
+        submitted = json.dumps(updated, ensure_ascii=False, indent=2).encode('utf-8')
+        temporary = self.config_path.with_name(f'{self.config_path.name}.{uuid.uuid4().hex}.pending')
+        with unlinked(temporary).open('xb') as stream:
+            stream.write(submitted)
+        try:
+            backup = retain(original, 'recovery') if recovery else None
+        except OSError as exc:
+            raise ValueError('原配置备份失败，尚未覆盖。请检查设置目录的访问权限。') from exc
+        self._check_settings_commit(context)
+        if digest(read()) != digest(original):
+            raise SettingsConflict('设置文件已被其他程序更改，尚未覆盖；请重新载入并核对原件')
+        self._check_settings_commit(context)
+        try:
+            temporary.replace(self.config_path)
+            if digest(read()) != digest(submitted):
+                raise SettingsConflict('设置文件在提交期间被其他程序更改，尚未发布；原件仍保留')
+            with self.lock:
+                self._check_settings_commit(context)
+                publish(backup)
+        except Exception as exc:
+            try:
+                current = read()
+                if digest(current) != digest(original) and digest(current) == digest(submitted):
+                    retain(submitted, 'cancelled')
+                    if original is None:
+                        # This exact file was created by this cancelled operation.
+                        if digest(read()) == digest(submitted):
+                            unlinked(self.config_path).unlink()
+                    else:
+                        rollback = retain(original, 'rollback')
+                        if digest(read()) == digest(submitted):
+                            rollback.replace(self.config_path)
+                uncertain = digest(read()) != digest(original)
+                if uncertain:
+                    retain(original, 'prior')
+                    retain(submitted, 'cancelled')
+            except (OSError, ValueError) as rollback_error:
+                try:
+                    retain(original, 'prior')
+                    retain(submitted, 'cancelled')
+                except (OSError, ValueError):
+                    logging.exception('Could not preserve configuration transaction copies')
+                raise SettingsConflict(self._configuration_write_uncertain()) from rollback_error
+            if uncertain:
+                raise SettingsConflict(self._configuration_write_uncertain()) from exc
+            raise
+
     @property
     def rules(self):
         with self.lock:
-            if self._rules is None:
-                self._rules = NumericRules(self.catalog)
-            return self._rules
+            rules = self._rules
+        if rules is None:
+            candidate = NumericRules(self.catalog)
+            with self.lock:
+                if self._rules is None:
+                    self._rules = candidate
+                rules = self._rules
+        return rules
 
     @property
     def values(self):
@@ -489,8 +709,8 @@ class Session:
 
     def backup_destination_status(self):
         from .backup_destination import status
-        with self.lock:
-            return status(self)
+        with self._backup_operation() as context:
+            return status(context)
 
     def backup_destination_action(self, payload):
         from . import backup_destination
@@ -502,7 +722,7 @@ class Session:
         if (set(payload) - (allowed | {'start_new'}) or not allowed.issubset(payload)
                 or type(payload.get('start_new', False)) is not bool):
             raise ValueError('备份目的地请求格式不正确')
-        with self.lock:
+        with self._backup_operation(mutating=payload['action'] == 'apply') as context:
             self.check_backup_context(payload['context'])
             if payload['expected_settings_revision'] != self.settings_revision:
                 raise SettingsConflict('连接设置已变化，请重新载入已保存设置并预览备份目录')
@@ -510,34 +730,33 @@ class Session:
                 raise ValueError('请先修复连接设置，再更换自动备份目的地')
             if self._backup_shutdown_started or self.stop.is_set():
                 raise ValueError('助手正在结束，不能再切换备份目的地')
-            with self.backups.lock:
+            with context.backups.lock:
                 if payload['action'] == 'preview':
-                    return backup_destination.plan(self, payload['backup_root'], start_new=payload.get('start_new', False))[0]
+                    return backup_destination.plan(context, payload['backup_root'], start_new=payload.get('start_new', False))[0]
                 if payload['confirmed'] is not True:
                     raise ValueError('请明确确认复制历史并切换自动备份目的地')
                 def persist(root, manager):
-                    updated = {**self.settings, 'backup_root': root}
-                    self.config_path.parent.mkdir(parents=True, exist_ok=True)
-                    temporary = self.config_path.with_suffix('.tmp')
-                    temporary.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding='utf-8')
-                    temporary.replace(self.config_path)
-                    self.settings = updated
-                    self.backups = manager
-                    self.settings_revision = uuid.uuid4().hex
-                    self.backup_context = uuid.uuid4().hex
-                result = backup_destination.apply(self, payload['backup_root'], payload['expected'], persist,
-                                                   start_new=payload.get('start_new', False))
+                    updated = {**context.settings, 'backup_root': root}
+                    def publish(_):
+                        self.settings = updated
+                        self.backups = manager
+                        self.settings_revision = uuid.uuid4().hex
+                        self.backup_context = uuid.uuid4().hex
+                        self._backup_health_cache = None
+                    self._persist_settings(updated, context, publish)
+                result = backup_destination.apply(context, payload['backup_root'], payload['expected'], persist,
+                    start_new=payload.get('start_new', False), check_current=lambda: self._check_settings_commit(context))
                 return {**result, 'settings': dict(self.settings), 'settings_revision': self.settings_revision,
                         'context': self.backup_context, 'directory': str(self.backups.directory)}
 
     def backup_status(self, expected_context=None):
-        with self.lock:
+        with self._backup_operation() as context:
             if expected_context is not None:
                 self.check_backup_context(expected_context)
             status = self.backups.snapshot(self.settings["save_root"])
             status.update(context=self.backup_context, save_root=self.settings['save_root'])
             if self.waiting_for_save and status['health'] in ('blocked', 'protected', 'waiting') and not status['error']:
-                status['health'] = self.backup_health()['state']
+                status['health'] = 'waiting'
                 status['last_save_protected'] = False
             return status
 
@@ -545,17 +764,28 @@ class Session:
         if not isinstance(payload, dict):
             raise ValueError("备份请求格式不正确")
         receipt = None
-        with self.lock:
+        with self._backup_operation(mutating=payload.get('action') not in ('repair_history_preview', 'recovery_preview')) as context:
             if self.config_error:
                 raise ValueError("请先恢复连接设置，再操作存档备份")
             root = self.settings["save_root"]
             if payload.get('action') not in ('enable', 'capture'):
                 self.check_backup_context(payload.get('context'))
+            if payload.get('action') in ('recovery_preview', 'recovery_execute'):
+                if payload.get('expected_settings_revision') != context.settings_revision:
+                    raise SettingsConflict('连接设置已变化，请重新读取恢复关联并预览')
+                binding = {'context': context.backup_context, 'save_root': root,
+                           'settings_revision': context.settings_revision}
+                if payload['action'] == 'recovery_preview':
+                    return {'ok': True, **binding, 'preview': context.backups.recovery_preview(root, payload)}
+                recovered = context.backups.recovery_execute(root, payload)
+                receipt = {'ok': True, **binding, 'recovery': recovered, 'message': recovered['message']}
             if payload.get('action') in ('restore', 'undo') and 'expected_current' not in payload:
                 phrase = '恢复' if payload['action'] == 'restore' else '撤回'
                 raise ValueError(f'请先重新预览当前进度，再确认{phrase}')
             self.backups._storage_cache = None
-            if payload.get("action") == "enable":
+            if payload.get('action') == 'recovery_execute':
+                pass  # The exact preview and explicit choice were checked above.
+            elif payload.get("action") == "enable":
                 self.backups.set_enabled(payload.get("enabled"))
             elif payload.get("action") == "capture":
                 self.backups.tick(root, force=True)
@@ -574,13 +804,17 @@ class Session:
                 self.backups.remove(root, payload)
             elif payload.get('action') == 'repair_timeline':
                 self.backups.repair_timeline(root, payload)
-                self.backup_context = uuid.uuid4().hex
+                with self.lock:
+                    if self._context_current(context):
+                        self.backup_context = uuid.uuid4().hex
             elif payload.get('action') == 'repair_history_preview':
                 return {'ok': True, 'context': self.backup_context,
                         'preview': self.backups.history_repair_preview(root)}
             elif payload.get('action') == 'repair_history':
                 result = self.backups.repair_history(root, payload)
-                self.backup_context = uuid.uuid4().hex
+                with self.lock:
+                    if self._context_current(context):
+                        self.backup_context = uuid.uuid4().hex
                 receipt = {'ok': True, 'context': self.backup_context, 'repair': result}
             else:
                 raise ValueError("不支持的备份操作")
@@ -590,18 +824,21 @@ class Session:
                              'context': self.backup_context, 'slot': payload.get('slot'), 'id': payload.get('id')}
                 receipt = {'ok': True, **operation, 'save_root': root,
                            'message': self.backups.notice_for(root), 'results': [{'ok': True, **operation}]}
-            if payload.get('action') in ('restore', 'undo'):
-                self._fingerprint = None
-                self.active_slot = None
-                self.last_valid_time = 0
-                self._history_state = None
-                self._run_identity = None
-                self.history = []
+            if payload.get('action') in ('restore', 'undo', 'recovery_execute'):
+                with self.lock:
+                    if self._context_current(context):
+                        self._refresh_serial += 1
+                        self._fingerprint = None
+                        self.active_slot = None
+                        self.last_valid_time = 0
+                        self._history_state = None
+                        self._run_identity = None
+                        self.history = []
         self.refresh()
         return receipt
 
     def backup_transfer(self, action, payload, *, context=None):
-        with self.lock:
+        with self._backup_operation(mutating=action == 'import'):
             if self.config_error:
                 raise ValueError('请先恢复连接设置，再操作存档备份')
             root = self.settings['save_root']
@@ -619,7 +856,7 @@ class Session:
 
     def backup_library_status(self, identity=None, expected_context=None):
         from . import backup_libraries
-        with self.lock:
+        with self._backup_operation():
             self.check_backup_context(expected_context)
             self.backups.ensure_storage()
             result = (backup_libraries.details(self.backups, identity, self.settings['save_root']) if identity
@@ -630,7 +867,7 @@ class Session:
         from . import backup_libraries
         if not isinstance(payload, dict) or not isinstance(payload.get('action'), str):
             raise ValueError('备份库请求格式不正确')
-        with self.lock:
+        with self._backup_operation(mutating=True):
             self.check_backup_context(payload.get('context'))
             self.backups.ensure_storage()
             action = payload['action']
@@ -644,7 +881,7 @@ class Session:
         payload = {} if payload is None else payload
         if not isinstance(payload, dict):
             raise ValueError('备份工作流请求格式不正确')
-        with self.lock:
+        with self._backup_operation(mutating=action in ('stage-retry', 'batch-import', 'archive-retention', 'reclaim-execute')):
             if self.config_error:
                 raise ValueError('请先恢复连接设置，再操作存档备份')
             self.check_backup_context(context if context is not None else payload.get('context'))
@@ -690,6 +927,12 @@ class Session:
 
     def update_settings(self, patch, *, expected_revision=None, return_receipt=False):
         clean = validate_settings(patch)
+        with self._backup_io():
+            receipt = self._update_settings(clean, expected_revision=expected_revision)
+        self.refresh()
+        return receipt if return_receipt else receipt['settings_revision']
+
+    def _update_settings(self, clean, *, expected_revision=None, manual=None):
         with self.lock:
             if expected_revision is not None and expected_revision != self.settings_revision:
                 raise SettingsConflict('连接设置已在其他位置更新。草稿仍保留，请点击「重新载入已保存设置」后重新应用需要的修改。')
@@ -697,22 +940,12 @@ class Session:
                 raise ValueError('请先预览备份目的地，再明确确认复制历史并切换')
             if self.config_error and not {"save_root", "slot"}.issubset(clean):
                 raise ValueError("请先在「连接设置」中确认存档目录和槽位，再保存设置。")
-            updated = {**self.settings, **clean}
-            self.config_path.parent.mkdir(exist_ok=True, parents=True)
-            temp = self.config_path.with_suffix(".tmp")
-            temp.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
-            backup = None
-            if self.config_error and self.config_path.exists():
-                backup = self.config_path.with_name(f"{self.config_path.stem}.recovery-{time.time_ns()}.json")
-                try:
-                    # Keep the exact original bytes before the user's confirmed replacement.
-                    with self.config_path.open("rb") as source, backup.open("xb") as target:
-                        while chunk := source.read(65536):
-                            target.write(chunk)
-                except OSError as exc:
-                    raise ValueError("原配置备份失败，尚未覆盖。请检查设置目录的访问权限。") from exc
-            temp.replace(self.config_path)
-            if any(updated[k] != self.settings[k] for k in ("save_root", "slot", "mode")):
+            context = self._backup_context_state()
+            recovery = bool(self.config_error)
+            updated = {**context.settings, **clean}
+        changed_root = updated['save_root'] != context.settings['save_root'] or recovery
+        def publish(backup):
+            if any(updated[k] != context.settings[k] for k in ('save_root', 'slot', 'mode')):
                 self.active_slot = None
                 self.last_valid_time = 0
                 self._missing_active_since = None
@@ -722,147 +955,180 @@ class Session:
                 self._run_identity = None
                 self._run_duration = None
                 self._history_state = None
-            if updated['save_root'] != self.settings['save_root'] or self.config_error:
+            if changed_root:
                 self.backup_context = uuid.uuid4().hex
-                self.backups.clear_notice()  # Old connection completion stays in its submitted receipt.
             self.settings = updated
             self.settings_revision = uuid.uuid4().hex
-            revision = self.settings_revision
-            receipt = {'ok': True, 'settings_revision': revision, 'settings': dict(updated)}
-            self.config_error = ""
+            self._backup_health_cache = None
+            self.config_error = ''
             if backup is not None:
-                self.configuration_notice = f"原配置已保留为 {backup.name}。"
+                self.configuration_notice = f'原配置已保留为 {backup.name}。'
             self._fingerprint = None
-        self.refresh()
-        return receipt if return_receipt else revision
+            if manual is not None:
+                self._manual, self._manual_modified = manual, time.time()
+        self._persist_settings(updated, context, publish, recovery=recovery)
+        if changed_root:
+            # Notice clearing takes the manager lock, after releasing the state lock.
+            context.backups.clear_notice()
+        with self.lock:
+            return {'ok': True, 'settings_revision': self.settings_revision, 'settings': dict(self.settings)}
 
     def update_manual(self, payload):
         game = manual_game(payload)
-        with self.lock:
-            previous = self._manual, self._manual_modified
-            self._manual = game
-            self._manual_modified = time.time()
-            try:
-                self.update_settings({"mode": "manual"})
-            except (ValueError, OSError):
-                # A rejected save must not silently apply on the next poll.
-                self._manual, self._manual_modified = previous
-                raise
+        with self._backup_io():
+            self._update_settings({'mode': 'manual'}, manual=game)
+        self.refresh()
+
+    _REFRESH_FIELDS = ('waiting_for_save', 'data', 'slots', 'error', 'warning', 'modified',
+        'active_slot', 'last_valid_time', '_missing_active_since', 'revision', '_fingerprint',
+        '_run_identity', '_run_generation', '_run_duration', '_history_state', 'history',
+        '_observed_progress_roots')
 
     def refresh(self):
         with self.lock:
-            self.waiting_for_save = False
-            stop_at = self.settings["stop_at"]
-            if stop_at and stop_at != self._consumed_stop_at and time.time() >= datetime.fromisoformat(stop_at).timestamp():
-                # Consume this deadline once; cancelling the request must resume
-                # the session instead of reopening the same prompt on every poll.
+            if self._shutdown_requested.is_set() or self.stop.is_set():
+                return
+            stop_at = self.settings['stop_at']
+            expired = bool(stop_at and stop_at != self._consumed_stop_at
+                and time.time() >= datetime.fromisoformat(stop_at).timestamp())
+            if expired:
                 self._consumed_stop_at = stop_at
-                self.request_exit("deadline", "已到达用户设置的结束时间")
-                return
-            if self.config_error:
-                self.data = None
-                self.slots = []
-                self.warning = ""
-                self.error = self.config_error
-                return
-            if self.settings["mode"] == "manual":
-                self.error = "" if self._manual else "填写当前局势后，点击「生成建议」"
-                self.warning = ""
-                fingerprint = ("manual", self._manual_modified)
-                if fingerprint != self._fingerprint:
-                    self.data = analyze(self._manual, self.catalog) if self._manual else None
-                    self.modified = self._manual_modified
-                    self._fingerprint = fingerprint
-                    self.revision += 1
-                return
-            root = Path(self.settings["save_root"])
-            if not root.is_dir():
-                self.slots = []
-                self.data = None
-                self._fingerprint = None
-                self.warning = ""
-                try:
-                    protected = self.backups.has_protected_progress(root)
-                except (OSError, ValueError):
-                    protected = True
-                if self._default_save_wait_is_new(root) and not protected:
-                    self.waiting_for_save = True
-                    self.error = ""
-                else:
-                    self.error = f"存档目录暂时不可用：{root}。请恢复该目录或在连接设置中重新选择。"
-                return
-            self.slots = list_slots(root)
-            valid = [row for row in self.slots if row["valid"]]
-            if valid:
-                self._observed_progress_roots.add(str(root.resolve()))
-            requested = self.settings["slot"]
-            if requested != "auto":
-                self.active_slot = requested
-                self._missing_active_since = None
-            elif self.active_slot is not None and not any(row['id'] == self.active_slot for row in self.slots):
-                # The game briefly deletes game.dat before moving the completed save into place.
-                # Avoid following an older run during that gap; a genuinely removed run releases auto mode.
-                now = time.monotonic()
-                if self._missing_active_since is None:
-                    self._missing_active_since = now
-                if now-self._missing_active_since < 2:
-                    self.data = None
-                    self._fingerprint = None
-                    self.warning = self.error = ''
-                    self.waiting_for_save = True
-                    return
-                self.active_slot = None
-                self.last_valid_time = 0
-                self._missing_active_since = None
             else:
-                self._missing_active_since = None
-            if requested == 'auto' and valid:
-                newest = max(valid, key=lambda row: row["modified"])
-                if self.active_slot is None or newest["modified"] > self.last_valid_time:
-                    self.active_slot = newest["id"]
-            if self.active_slot is None:
-                self.data = None
-                self._fingerprint = None
-                self.warning = ""
-                if self.slots:
-                    latest = max(self.slots, key=lambda row: row["modified"])
-                    self.error = (f"没有可读取的存档。最近更新的槽位 {latest['id']}：{latest['error']}。"
-                                  "请在游戏中保存，助手会自动重试。")
-                else:
-                    self.waiting_for_save = True
-                    self.error = ""
-                return
+                self._refresh_serial += 1
+                serial = self._refresh_serial
+                self._refresh_pending = True
+                state = self._backup_context_state()
+                for key in self._REFRESH_FIELDS:
+                    setattr(state, key, copy.copy(getattr(self, key)))
+                state.waiting_for_save = False
+                state.catalog, state.config_error = self.catalog, self.config_error
+                state._manual, state._manual_modified = self._manual, self._manual_modified
+        if expired:
+            self.request_exit('deadline', '已到达用户设置的结束时间')
+            return
+        try:
+            self._read_refresh(state)
+        except Exception:
+            with self.lock:
+                if serial == self._refresh_serial:
+                    self._refresh_pending = False
+                    if self._context_current(state):
+                        self.data = None
+                        self._fingerprint = None
+                        self.error = '读取遇到异常，将自动重试。可在「帮助与排查」查看本次运行日志和排查摘要。'
+            raise
+        with self.lock:
+            if serial == self._refresh_serial:
+                self._refresh_pending = False
+                if self._context_current(state) and state._manual_modified == self._manual_modified:
+                    for key in self._REFRESH_FIELDS:
+                        setattr(self, key, getattr(state, key))
+
+    def _read_refresh(self, state):
+        if state.config_error:
+            state.data = None
+            state.slots = []
+            state.warning = ""
+            state.error = state.config_error
+            return
+        if state.settings["mode"] == "manual":
+            state.error = "" if state._manual else "填写当前局势后，点击「生成建议」"
+            state.warning = ""
+            fingerprint = ("manual", state._manual_modified)
+            if fingerprint != state._fingerprint:
+                state.data = analyze(state._manual, state.catalog) if state._manual else None
+                state.modified = state._manual_modified
+                state._fingerprint = fingerprint
+                state.revision += 1
+            return
+        root = Path(state.settings["save_root"])
+        if not root.is_dir():
+            state.slots = []
+            state.data = None
+            state._fingerprint = None
+            state.warning = ""
             try:
-                game, level, modified, warning = read_slot(root, self.active_slot)
-                # A game's hero file and depth file are written consecutively.
-                # Hash both files: cloud copies can preserve timestamps, and a map
-                # can arrive after the hero file without its timestamp changing.
-                content_hash = hashlib.sha256(json.dumps([game, level], sort_keys=True).encode()).digest()
-                fingerprint = (self.active_slot, modified, warning, content_hash, self.settings["reveal"])
-                self.error, self.warning = "", warning
-                if self._fingerprint != fingerprint:
-                    self.data = analyze(game, self.catalog, level, self.settings["reveal"])
-                    self.modified = modified
-                    self.last_valid_time = modified
-                    self._fingerprint = fingerprint
-                    self.revision += 1
-                    identity = (str(root.resolve()), self.active_slot, game.get("seed"), game["hero"].get("class"))
-                    duration = number(game.get("duration"), None)
-                    # A slot can hold a new run, including a replay of the same seed.
-                    restarted = duration is not None and self._run_duration is not None and duration < self._run_duration
-                    if identity != self._run_identity or restarted:
-                        self._run_generation += 1
-                        self.history = []
-                        self._history_state = None
-                    self._record(self._history_state, self.data)
-                    self._history_state = self.data
-                    self._run_identity, self._run_duration = identity, duration
-                self.warning = " ".join(text for text in (warning, self.data["compatibility_warning"]) if text)
-            except (SaveError, OSError, TypeError, ValueError, KeyError, OverflowError, RecursionError) as exc:
-                self.data = None
-                self._fingerprint = None
-                self.warning = ""
-                self.error = f"槽位 {self.active_slot}：{exc}"
+                protected = state.backups.has_protected_progress(root)
+            except (OSError, ValueError):
+                protected = True
+            if Session._default_save_wait_is_new(state, root) and not protected:
+                state.waiting_for_save = True
+                state.error = ""
+            else:
+                state.error = f"存档目录暂时不可用：{root}。请恢复该目录或在连接设置中重新选择。"
+            return
+        state.slots = list_slots(root)
+        valid = [row for row in state.slots if row["valid"]]
+        if valid:
+            state._observed_progress_roots.add(str(root.resolve()))
+        requested = state.settings["slot"]
+        if requested != "auto":
+            state.active_slot = requested
+            state._missing_active_since = None
+        elif state.active_slot is not None and not any(row['id'] == state.active_slot for row in state.slots):
+            # The game briefly deletes game.dat before moving the completed save into place.
+            # Avoid following an older run during that gap; a genuinely removed run releases auto mode.
+            now = time.monotonic()
+            if state._missing_active_since is None:
+                state._missing_active_since = now
+            if now-state._missing_active_since < 2:
+                state.data = None
+                state._fingerprint = None
+                state.warning = state.error = ''
+                state.waiting_for_save = True
+                return
+            state.active_slot = None
+            state.last_valid_time = 0
+            state._missing_active_since = None
+        else:
+            state._missing_active_since = None
+        if requested == 'auto' and valid:
+            newest = max(valid, key=lambda row: row["modified"])
+            if state.active_slot is None or newest["modified"] > state.last_valid_time:
+                state.active_slot = newest["id"]
+        if state.active_slot is None:
+            state.data = None
+            state._fingerprint = None
+            state.warning = ""
+            if state.slots:
+                latest = max(state.slots, key=lambda row: row["modified"])
+                state.error = (f"没有可读取的存档。最近更新的槽位 {latest['id']}：{latest['error']}。"
+                              "请在游戏中保存，助手会自动重试。")
+            else:
+                state.waiting_for_save = True
+                state.error = ""
+            return
+        try:
+            game, level, modified, warning = read_slot(root, state.active_slot)
+            # A game's hero file and depth file are written consecutively.
+            # Hash both files: cloud copies can preserve timestamps, and a map
+            # can arrive after the hero file without its timestamp changing.
+            content_hash = hashlib.sha256(json.dumps([game, level], sort_keys=True).encode()).digest()
+            fingerprint = (state.active_slot, modified, warning, content_hash, state.settings["reveal"])
+            state.error, state.warning = "", warning
+            if state._fingerprint != fingerprint:
+                state.data = analyze(game, state.catalog, level, state.settings["reveal"])
+                state.modified = modified
+                state.last_valid_time = modified
+                state._fingerprint = fingerprint
+                state.revision += 1
+                identity = (str(root.resolve()), state.active_slot, game.get("seed"), game["hero"].get("class"))
+                duration = number(game.get("duration"), None)
+                # A slot can hold a new run, including a replay of the same seed.
+                restarted = duration is not None and state._run_duration is not None and duration < state._run_duration
+                if identity != state._run_identity or restarted:
+                    state._run_generation += 1
+                    state.history = []
+                    state._history_state = None
+                Session._record(state, state._history_state, state.data)
+                state._history_state = state.data
+                state._run_identity, state._run_duration = identity, duration
+            state.warning = " ".join(text for text in (warning, state.data["compatibility_warning"]) if text)
+        except (SaveError, OSError, TypeError, ValueError, KeyError, OverflowError, RecursionError) as exc:
+            state.data = None
+            state._fingerprint = None
+            state.warning = ""
+            state.error = f"槽位 {state.active_slot}：{exc}"
 
     def _record(self, previous, current):
         events = []
@@ -881,6 +1147,7 @@ class Session:
         self.history = self.history[:40]
 
     def snapshot(self):
+        exit_state = self.exit_status()
         with self.lock:
             age = max(0, time.time() - self.modified) if self.modified else None
             return copy.deepcopy({"data": self.data, "slots": self.slots, "settings": self.settings,
@@ -889,7 +1156,8 @@ class Session:
                                   "waiting_for_save": self.waiting_for_save,
                                   "configuration_notice": self.configuration_notice,
                                   "draft_recovery_notice": self.draft_recovery_notice,
-                                  "age_seconds": age, "stale": age is None or age > 60,
+                                  "age_seconds": age, "stale": age is None or age > 60 or self._refresh_pending,
+                                  'refresh_pending': self._refresh_pending,
                                   "active_slot": self.active_slot, "revision": self.revision,
                                   "run_id": (hashlib.sha256(repr((self.start_time, self._run_generation,
                                                 self._run_identity)).encode('utf-8')).hexdigest()[:24]
@@ -901,9 +1169,9 @@ class Session:
                                   'workspace_revision': self._knowledge.generation if self._knowledge is not None else 0,
                                   'play_revision': self._play_preferences.generation if self._play_preferences is not None else 0,
                                   'ui_capabilities': self.ui_capabilities,
-                                  'backup_health': self.backup_health(),
+                                  'backup_health': self._cached_backup_health(),
                                   'backup_context': self.backup_context,
-                                  "exit": self.exit_status(),
+                                  "exit": exit_state,
                                   "stopped": self.stop.is_set()})
 
     def run(self):
@@ -913,14 +1181,21 @@ class Session:
             except Exception:
                 logging.exception("Panel opening failed; save monitoring continues")
             try:
-                self.refresh()
                 with self.lock:
-                    if not self.config_error:
-                        self.backups.tick(self.settings["save_root"])
+                    poll_context = self._backup_context_state()
+                self.refresh()
+                with self._backup_operation() as context:
+                    if not self.config_error and not self._shutdown_requested.is_set():
+                        context.backups.tick(context.settings['save_root'])
+                        health = context.backups.health_status(context.settings['save_root'], context.active_slot)
+                        with self.lock:
+                            if self._context_current(context):
+                                self._backup_health_cache = (self._health_key(context), time.time(), health)
             except Exception:
                 logging.exception("Save polling failed")
                 with self.lock:
-                    self.data = None
-                    self._fingerprint = None
-                    self.error = "读取遇到异常，将自动重试。可在「帮助与排查」查看本次运行日志和排查摘要。"
+                    if self._context_current(poll_context):
+                        self.data = None
+                        self._fingerprint = None
+                        self.error = "读取遇到异常，将自动重试。可在「帮助与排查」查看本次运行日志和排查摘要。"
             self.stop.wait(2)

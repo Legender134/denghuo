@@ -19,12 +19,12 @@ async function loadWorkspace(){
   try{const result=await getJSON('/api/workspace');if(seq!==workspaceRequest)return;workspaceState=result;workspaceSeenRevision=result.revision;workspaceSeenContext=context;renderWorkspace();}
   catch(error){if(seq!==workspaceRequest)return;inlineError($('#workspace-error'),error.message);inlineError($('#library-home-error'),error.message);}
 }
-function workspaceContextKey(){return JSON.stringify([state?.started,state?.revision,state?.modified,state?.settings?.mode,state?.active_slot,state?.error]);}
+function workspaceContextKey(){return JSON.stringify([state?.started,state?.settings?.save_root,state?.revision,state?.modified,state?.settings?.mode,state?.active_slot,state?.error]);}
 function lookupCalculationOptions(context){
   const params=context.params||{},fieldOrigins={};
-  for(const key of ['dew_volume','vial','current_shield'])if(key in params)fieldOrigins[key]=(context.source?.mode||calculationStamp()?.mode)==='manual'?'手动局势记录':'快照记录 · '+(key==='dew_volume'?'水袋露珠量':key==='current_shield'?'公开当前护盾':'凝血试管条件');
   const stamp=context.stamp,source=context.source;
-  const sourceStamp=Array.isArray(stamp)?{started:stamp[0],mode:stamp[2],slot:stamp[3],revision:stamp[4],modified:stamp[5]}:source?{...calculationStamp(),mode:source.mode,slot:source.slot,modified:source.snapshot_at}:undefined;
+  const sourceStamp=Array.isArray(stamp)&&stamp.length===6?{started:stamp[0],save_root:stamp[1],mode:stamp[2],slot:stamp[3],revision:stamp[4],modified:stamp[5]}:source?null:undefined;
+  for(const key of ['dew_volume','vial','current_shield'])if(key in params)fieldOrigins[key]=sourceStamp===null?'参考来源未确认':(sourceStamp?.mode||calculationStamp()?.mode)==='manual'?'手动局势记录':'快照记录 · '+(key==='dew_volume'?'水袋露珠量':key==='current_shield'?'公开当前护盾':'凝血试管条件');
   return {fieldOrigins,sourceStamp};
 }
 function referenceList(target,rows,empty){
@@ -192,8 +192,8 @@ async function openBuffReference(buff){
 function openDecisionReference(ref,kind='reference'){
   showDetail(ref.name,kind==='resource'?(ref.note||'核对当前游戏画面中的资源与条件；阅读不会执行游戏行动。'):'参考相关游戏机制；资源是否可用需要另行核对。','当前局势的资料入口',ref.source_label||'资料参考');
   showDetailContext([ref.restriction?'主动行动限制：'+ref.restriction:'',ref.calculation_missing?'未确认条件：'+ref.calculation_missing:'',kind==='resource'?'以下是资料与所填条件的参考计算，阅读入口不会确认此刻可用或执行游戏行动。':''].filter(Boolean).join('；'));
-  if(typeof showRelatedReferences==='function')showRelatedReferences(ref.related,{params:ref.params,source:ref.source,level_origin:ref.level_origin||'not_applicable'});
-  setDetailEntry(ref.entry);loadNumericalDetail(ref.entry,ref.params||{},ref.level_origin||'example',{ignoreDrafts:true,...lookupCalculationOptions(ref)});
+  if(typeof showRelatedReferences==='function')showRelatedReferences(ref.related,{params:ref.params,source:ref.source,stamp:ref.stamp,level_origin:ref.level_origin||'not_applicable'});
+  setDetailEntry(ref.entry);loadNumericalDetail(ref.entry,ref.params||{},ref.level_origin||'example',{ignoreDrafts:true,capturedContext:true,...lookupCalculationOptions(ref)});
 }
 function refreshWorkspaceViews(){
   if((view==='workspace'||view==='library')&&(state?.workspace_revision!==workspaceSeenRevision||view==='library'&&workspaceSeenContext!==workspaceContextKey()))loadWorkspace();

@@ -3,6 +3,7 @@ let backupState, backupLoading=false, restoreTarget=null, backupHistoryLimit=20,
 let backupContext=null,manageTarget=null,repairTarget=null,historyRepairTarget=null,restorePreview=0;
 const backupViewKeys=new Map(),backupMetadataDrafts=new Map();
 let manageEditRevision=0;
+let backupRecoveryTarget=null,backupRecoveryRequest=0,backupRecoveryEdit=0;
 const nodeLabel=seconds=>seconds>=60?`${seconds/60} 分钟前`:`${seconds} 秒前`;
 const classNames={WARRIOR:'战士',MAGE:'法师',ROGUE:'盗贼',HUNTRESS:'女猎手',DUELIST:'决斗家',CLERIC:'牧师'};
 const healthNames={paused:'自动备份已暂停',blocked:'自动备份受阻',waiting:'等待新的游戏保存',protected:'最近保存已备份'};
@@ -19,6 +20,8 @@ function syncBackupContext(context){
   rememberBackupMetadataDraft();
   const changed=!!backupContext;
   backupContext=context;backupState=null;manageTarget=null;repairTarget=null;historyRepairTarget=null;restorePreview++;backupViewKeys.clear();
+  invalidateBackupRecovery('存档连接已变化；确认草稿保留，请返回原目录并重新预览。');
+  $('#backup-recovery').textContent=context?'正在读取未完成的回档操作…':'服务未连接，未完成操作暂不可确认。';
   $('#backup-status').textContent=context?'正在读取当前存档目录的备份状态…':'服务未连接，备份状态暂不可确认。';
   if(typeof resetBackupWorkflows==='function')resetBackupWorkflows(context);
   if(typeof resetBackupLibraries==='function')resetBackupLibraries(context);
@@ -63,7 +66,7 @@ async function loadBackups(){
     renderBackups();
     if(typeof renderBackupWorkflows==='function')renderBackupWorkflows();
   }catch(error){if(context===state?.backup_context){$('#backup-status').textContent=error.message;$('#backup-nodes').textContent='备份信息不可用，请恢复连接后重试。';backupViewKeys.delete('#backup-nodes');}}
-  finally{backupLoading=false;}
+  finally{backupLoading=false;if(typeof renderWebExitReceipt==='function')renderWebExitReceipt();}
 }
 function backupCard(row, labels='', mode='history'){
   const invalid=row.integrity?.valid===false;
@@ -83,6 +86,7 @@ function setBackupContent(selector,key,html){
 function renderBackups(){
   const context=backupState?.context;
   if(!backupState||context!==state?.backup_context)return;
+  renderBackupRecovery();
   const recordsUnavailable=backupState.records_available===false;
   const previousFocus=document.activeElement;
   const focusHolder=previousFocus&&['#backup-nodes','#backup-history','#backup-retained','#backup-undo'].map(selector=>$(selector)).find(holder=>holder.contains(previousFocus));
@@ -272,6 +276,7 @@ async function showLatestBackupMetadata(target){
   $('#manage-form').append(panel);
 }
 function initializeBackups(){
+  initializeBackupRecovery();
   $('#repair-history').addEventListener('click',async()=>{
     const context=backupState?.context;if(!context||context!==state?.backup_context)return;
     const target=historyRepairTarget={context};
@@ -389,4 +394,101 @@ function initializeBackups(){
     }catch(error){if(manageTarget===target){$('#manage-error').hidden=false;$('#manage-error').textContent=error.message+'。原编辑保留；请先核对最新名称与保护状态。';try{await showLatestBackupMetadata(target);}catch(readError){if(manageTarget===target)$('#manage-error').textContent+=' 最新信息读取失败：'+readError.message;}}}
     finally{if(manageTarget?.context===state?.backup_context)$('#manage-submit').disabled=false;}})();
   });
+}
+
+function recoveryError(message){const el=$('#backup-recovery-error');el.hidden=!message;el.textContent=message;}
+function recoveryScopeCurrent(target){return target.context===state?.backup_context&&target.root===(backupState?.save_root||state?.settings?.save_root||'')&&target.settings_revision===state?.settings_revision;}
+function invalidateBackupRecovery(message){
+  backupRecoveryRequest++;
+  if(backupRecoveryTarget){backupRecoveryTarget.preview=null;recoveryError(message);renderBackupRecoveryControls();}
+}
+function renderBackupRecovery(){
+  const holder=$('#backup-recovery'),recovery=backupState?.recovery;
+  if(!recovery){backupViewKeys.delete('#backup-recovery');holder.textContent='未完成回档状态暂不可确认；请重新读取备份状态。';return;}
+  const rows=recovery.pending||[];
+  if(recovery.available!==true){backupViewKeys.delete('#backup-recovery');holder.innerHTML=`<h3>回档恢复记录无法核对</h3><p class="rule-warning" role="alert">${escapeHTML(recovery.error||'恢复记录不可读取，已暂停存档交换。')} 全部相关原件保留，请保留恢复记录和副本。</p>`;invalidateBackupRecovery('恢复记录无法核对；确认草稿与全部原件保留。');return;}
+  const key=JSON.stringify(recovery);
+  if(setBackupContent('#backup-recovery',key,rows.length?`<h3>有未完成的回档操作</h3><p>相关槽位暂缓备份和回档。先核对保留的两份进度，再明确选择；所有副本保留。</p>`+rows.map(row=>`<article class="panel"><h4>槽位 ${row.slot} · ${row.kind==='undo'?'中断的撤回':'中断的回档'}</h4><p>开始 ${fmtTime(row.time)}</p><button class="secondary" type="button" data-recovery="${escapeHTML(row.id)}">预览保留进度与恢复选择</button></article>`).join(''):'<p class="muted">没有待处理的回档操作。</p>')){
+    holder.querySelectorAll('[data-recovery]').forEach(button=>button.addEventListener('click',()=>openBackupRecovery(rows.find(row=>row.id===button.dataset.recovery))));
+  }
+  if(backupRecoveryTarget&&!recoveryScopeCurrent(backupRecoveryTarget))invalidateBackupRecovery('连接或设置已变化；确认草稿保留，请重新预览。');
+  else if(backupRecoveryTarget&&!rows.some(row=>row.id===backupRecoveryTarget.id&&row.slot===backupRecoveryTarget.slot))invalidateBackupRecovery('这份恢复关联已结束或变化；确认草稿保留，请重新读取原目录状态。');
+}
+function renderBackupRecoveryControls(){
+  const target=backupRecoveryTarget,choice=target?.preview?.choices.find(row=>row.choice===$('#backup-recovery-choice').value);
+  const checked=$('#backup-recovery-confirm').checked;
+  const confirmed=!!target?.preview&&target.confirmation?.expected===target.preview.expected&&target.confirmation?.settings_revision===target.settings_revision;
+  $('#backup-recovery-phrase').textContent=(choice?`请原样输入：${choice.confirm_phrase}`:'先选择本次操作，再输入对应确认短语。')+(checked&&target?.preview&&!confirmed?' 当前预览已变化，请取消勾选并重新勾选确认当前进度。':'');
+  $('#backup-recovery-submit').disabled=!target?.preview||target.busy||!recoveryScopeCurrent(target)||!choice||!checked||!confirmed||$('#backup-recovery-text').value!==choice.confirm_phrase;
+  $('#backup-recovery-repreview').disabled=!target||!!target.busy;
+}
+async function openBackupRecovery(row){
+  if(!row)return;
+  backupRecoveryRequest++;backupRecoveryEdit++;
+  backupRecoveryTarget={id:row.id,slot:row.slot,context:backupState.context,root:backupState.save_root,settings_revision:state?.settings_revision,preview:null,confirmation:null,busy:false};
+  $('#backup-recovery-choice').innerHTML='<option value="">请先预览并选择</option>';$('#backup-recovery-choice').value='';
+  $('#backup-recovery-text').value='';$('#backup-recovery-confirm').checked=false;
+  $('#backup-recovery-description').textContent='正在核对恢复关联和实际目录…';recoveryError('');renderBackupRecoveryControls();
+  $('#backup-recovery-dialog').showModal();await previewBackupRecovery();
+}
+async function previewBackupRecovery(){
+  const target=backupRecoveryTarget;if(!target||target.busy)return;
+  const root=backupState?.save_root||state?.settings?.save_root||'';
+  if(target.context!==state?.backup_context||target.root!==root){invalidateBackupRecovery('这份确认草稿属于原存档目录；请返回原目录后重新预览。');return;}
+  const request=++backupRecoveryRequest,edit=backupRecoveryEdit,revision=state?.settings_revision;
+  const selected=$('#backup-recovery-choice').value;
+  target.preview=null;target.settings_revision=revision;renderBackupRecoveryControls();recoveryError('正在校验保留副本…');
+  try{
+    const result=await post('/api/backups',{action:'recovery_preview',id:target.id,slot:target.slot,context:target.context,expected_settings_revision:revision});
+    if(target!==backupRecoveryTarget||request!==backupRecoveryRequest)return;
+    if(edit!==backupRecoveryEdit){recoveryError('预览期间有新输入；确认草稿保留，请重新预览。');return;}
+    const view=result.preview;
+    if(result.context!==target.context||result.save_root!==target.root||result.settings_revision!==revision||revision!==state?.settings_revision||target.context!==state?.backup_context||!view||view.id!==target.id||view.slot!==target.slot||!['restore','undo'].includes(view.kind)||! /^[a-f0-9]{64}$/.test(view.expected)||view.originals_retained!==true||!Array.isArray(view.copies)||!Array.isArray(view.choices)||!view.choices.length||view.choices.some(row=>!['continue','cancel','finish'].includes(row.choice)||typeof row.label!=='string'||typeof row.confirm_phrase!=='string'))throw new Error('恢复预览与当前连接无法核对；草稿与原件保留。');
+    target.settings_revision=revision;target.preview=freezeBackupReceipt(view);
+    const priorUnavailable=selected&&!view.choices.some(row=>row.choice===selected);
+    $('#backup-recovery-choice').innerHTML='<option value="">请明确选择本次操作</option>'+(priorUnavailable?`<option value="${escapeHTML(selected)}" disabled>原选择现已不可执行；请重新选择</option>`:'')+view.choices.map(row=>`<option value="${row.choice}">${escapeHTML(row.label)}</option>`).join('');
+    $('#backup-recovery-choice').value=selected;
+    const layouts={ready:'尚未交换',gap:'原进度已保留，目标尚未放入槽位',target:'目标已放入槽位，提交尚待确认',committed:'提交已确认，等待结束记录'};
+    $('#backup-recovery-description').innerHTML=`<p>存档目录：${escapeHTML(target.root)}<br>槽位 ${view.slot} · ${escapeHTML(layouts[view.layout]||view.layout)}</p><p>${escapeHTML(view.message)}</p>${view.current_changed?'<p class="rule-warning">当前进度后来发生变化。只结束记录不会移动目录或覆盖当前保存。</p>':''}<h3>操作开始前的进度</h3>${backupSummary(view.before)}<h3>原计划目标</h3>${backupSummary(view.target)}<h3>当前槽位</h3>${backupSummary(view.current)}<h3>所保留的副本</h3><ul>${view.copies.map(row=>`<li>${row.role==='incoming'?'准备目标':'操作前原件'}：${escapeHTML(row.file)} · ${row.exists?'已核对并保留':'该路径当前无目录'}</li>`).join('')}</ul><p>${view.journal_state==='after'?'本次只结束已提交记录，当前保存不会修改，也不会重复添加撤回关系。':'继续或恢复原进度会交换目录；请先完全退出游戏。外部变化会拒绝操作并保留副本。'}</p>`;
+    recoveryError('');
+  }catch(error){if(target===backupRecoveryTarget&&request===backupRecoveryRequest){target.preview=null;recoveryError(error.message+' 请保留原件；当前确认输入保持。');}}
+  finally{if(target===backupRecoveryTarget&&request===backupRecoveryRequest)renderBackupRecoveryControls();}
+}
+async function executeBackupRecovery(event){
+  event.preventDefault();const target=backupRecoveryTarget,button=$('#backup-recovery-submit');
+  renderBackupRecoveryControls();if(!target||button.disabled)return;
+  const choice=target.preview.choices.find(row=>row.choice===$('#backup-recovery-choice').value),edit=backupRecoveryEdit;
+  const submitted=freezeBackupReceipt({action:'recovery_execute',id:target.id,slot:target.slot,context:target.context,root:target.root,expected_settings_revision:target.settings_revision,expected:target.preview.expected,choice:choice.choice,confirmed:true,confirm:$('#backup-recovery-text').value});
+  const ticket=Object.freeze({...backupFlowTicket(),context:target.context,root:target.root}),request=backupRecoveryRequest;
+  const current=()=>target===backupRecoveryTarget&&request===backupRecoveryRequest&&edit===backupRecoveryEdit&&recoveryScopeCurrent(target);
+  target.busy=true;renderBackupRecoveryControls();recoveryError('');
+  try{
+    const {root,...payload}=submitted,result=await post('/api/backups',payload),row=result.recovery;
+    if(result.context!==submitted.context||result.save_root!==submitted.root||result.settings_revision!==submitted.expected_settings_revision||!row||row.ok!==true||row.id!==submitted.id||row.slot!==submitted.slot||row.choice!==submitted.choice||row.originals_retained!==true)throw new Error('完成回执无法核对；结果尚未确认，请重新读取原目录的恢复状态，勿直接重复提交。');
+    recordBackupReceipt('回档中断恢复',ticket,{...result,results:[{...submitted,...row}]},submitted,!current());
+    if(current()){$('#backup-recovery-dialog').close();backupRecoveryTarget=null;backupRecoveryRequest++;toast(result.message||row.message);}
+    else if(target===backupRecoveryTarget){target.preview=null;recoveryError('本次提交已完成，回执已保留；之后的新输入保持，请重新读取恢复状态。');}
+  }catch(error){
+    const message=error.message+(error.status?'。请求返回失败；请核对后重新预览。':'。结果尚未确认；请先重新读取原目录的恢复状态，勿直接重复提交。');
+    recordBackupReceipt('回档中断恢复',ticket,{ok:false,outcome:error.status?'failed':'unknown',message,results:[{...submitted,ok:false,error:message}]},submitted,!current());
+    if(target===backupRecoveryTarget){target.preview=null;recoveryError(message+' 当前确认草稿保持。');}
+  }finally{
+    target.busy=false;if(target===backupRecoveryTarget)renderBackupRecoveryControls();
+    try{await refreshBackupReceiptScope(ticket);}catch(error){toast('提交回执已保留，恢复状态刷新失败：'+error.message,true);}
+  }
+}
+function initializeBackupRecovery(){
+  $('#backup-recovery-repreview').addEventListener('click',previewBackupRecovery);
+  $('#backup-recovery-form').addEventListener('submit',executeBackupRecovery);
+  for(const [selector,event] of [['#backup-recovery-choice','change'],['#backup-recovery-text','input'],['#backup-recovery-confirm','change']])$(selector).addEventListener(event,()=>{
+    backupRecoveryEdit++;
+    if(selector==='#backup-recovery-confirm'&&backupRecoveryTarget){
+      const target=backupRecoveryTarget;
+      target.confirmation=$('#backup-recovery-confirm').checked&&target.preview&&recoveryScopeCurrent(target)?{expected:target.preview.expected,settings_revision:target.settings_revision}:null;
+    }
+    renderBackupRecoveryControls();
+  });
+  const close=()=>{backupRecoveryTarget=null;backupRecoveryRequest++;};
+  $('#close-backup-recovery').addEventListener('click',()=>{close();$('#backup-recovery-dialog').close();});
+  $('#backup-recovery-dialog').addEventListener('cancel',close);
 }

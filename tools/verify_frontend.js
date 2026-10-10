@@ -1013,6 +1013,28 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert.equal(fixed.run('numericalDetail.context.level'),-1);assert.equal(fixed.run('numericalDetail.context.hp'),7);
   assert(!fixed.run("'strength' in numericalDetail.context"),'captured item links must not borrow newer live fields under the older snapshot stamp');
 
+  // A delayed risk link keeps its captured hero and full connection identity.
+  const handoff=harness();handoff.context.state=stamp();handoff.context.state.settings.save_root='/original-game';handoff.load('rules.js');
+  const workspaceSource=fs.readFileSync(path.join(root,'web/workspace.js'),'utf8');
+  handoff.run(workspaceSource.slice(workspaceSource.indexOf('function lookupCalculationOptions('),workspaceSource.indexOf('function referenceList(')));
+  handoff.run(workspaceSource.slice(workspaceSource.indexOf('function openDecisionReference('),workspaceSource.indexOf('function refreshWorkspaceViews(')));
+  let relatedContext;
+  Object.assign(handoff.context,{showDetail(){},showDetailContext(){},setDetailEntry(){},showRelatedReferences:(rows,context)=>{relatedContext=context;},
+    fetch:async()=>({ok:true,json:async()=>({status:'current',blocks:[],inputs:[{key:'hp',value:4,label:'生命',min:0,max:100}]})}),
+    oldReference:{entry:'items.potions.potionofhealing',params:{hp:4},source:{mode:'save',slot:1,snapshot_at:100},stamp:[90,'/original-game','save',1,1,100]}});
+  handoff.context.state.data.hero.hp=20;handoff.context.state.revision=2;
+  handoff.run('openDecisionReference(oldReference)');await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(handoff.run('numericalDetail.context.hp'),4);assert(!handoff.run("'strength' in numericalDetail.context"));
+  assert.equal(handoff.run('numericalDetail.source.revision'),1);assert.equal(handoff.run('numericalDetail.source.save_root'),'/original-game');
+  assert.deepEqual(Array.from(relatedContext.stamp),Array.from(handoff.context.oldReference.stamp));
+  assert(handoff.get('#values-freshness').textContent.includes('快照已经变化'));
+  handoff.context.state.revision=1;handoff.context.state.settings.save_root='/different-game';handoff.run('refreshNumericalOrigin()');
+  assert(handoff.get('#values-freshness').textContent.includes('快照已经变化'),'a different connection cannot masquerade as the captured source');
+  handoff.run('delete oldReference.stamp;openDecisionReference(oldReference)');await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(handoff.run('numericalDetail.source'),null);assert(handoff.get('#values-freshness').textContent.includes('来源未确认'));
+  handoff.run('cancelNumericalDetail()');await handoff.run("loadNumericalDetail('plain-library')");
+  assert.equal(handoff.run('numericalDetail.context.hp'),20,'ordinary library opening still intentionally seeds visible hero fields');
+
   // Restoring a saved equipment plan preserves its exact independent conditions across polling.
   const savedComparison=await freshComparison(firstSave);
   savedComparison.load('rules.js');

@@ -1,6 +1,7 @@
 """Bounded local JSON-lines bridge to the standard Windows controls helper."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -13,6 +14,12 @@ import uuid
 from .paths import ROOT
 
 VERSION, MAX_LINE = 1, 512 * 1024
+
+
+def binding_token(value):
+    """Bind a control event to the semantic payload actually shown."""
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
 
 class Value:

@@ -191,6 +191,9 @@ def _verify(base, tree):
                 manager.journals(reference)
             elif name == 'stages.json':
                 manager.stage_records(reference)
+            elif name == 'restores-pending.json':
+                from .backup_recovery import records
+                records(manager, reference)
     return count
 
 
@@ -237,6 +240,14 @@ def _index_merge(relative, source, target):
             if key in value and value[key] != row:
                 raise ValueError('目标暂存来源冲突，尚未复制；原件仍保留')
             value[key] = row
+    elif name == 'restores-pending.json':
+        from .backup_recovery import records
+        value = records(b, reference)
+        for key, row in records(a, reference).items():
+            if key in value and value[key] != row:
+                raise ValueError('目标存在另一条未完成的回档恢复关联，尚未复制；全部副本保留')
+            value[key] = row
+        value = {'format': 1, 'operations': value}
     else:
         raise ValueError(f'目标已有不同内容：{relative}；尚未覆盖')
     raw = json.dumps(value, ensure_ascii=True, indent=2).encode()
@@ -280,7 +291,8 @@ def plan(session, backup_root, *, start_new=False):
     if source != target:
         _verify(target, target_tree)
     merged = {}
-    preferences = json.dumps({'enabled': session.backups.enabled}, indent=2).encode()
+    enabled = getattr(session, 'backup_enabled', session.backups.enabled)
+    preferences = json.dumps({'enabled': enabled}, indent=2).encode()
     if source != target:
         for relative in source_tree['files'].keys() & target_tree['files'].keys():
             if relative == 'backups/preferences.json':
@@ -291,7 +303,7 @@ def plan(session, backup_root, *, start_new=False):
     binding = {'source': str(source), 'target': str(target), 'backup_root': backup_root,
                'source_tree': source_tree, 'target_tree': target_tree, 'marker': identity,
                'settings_revision': session.settings_revision, 'context': session.backup_context,
-               'save_root': session.settings['save_root'], 'enabled': session.backups.enabled,
+               'save_root': session.settings['save_root'], 'enabled': enabled,
                'start_new': start_new, 'source_error': source_error,
                'target_identity': [target.stat().st_dev, target.stat().st_ino],
                'marker_bytes': _hash(target / MARKER)['sha256'] if identity else None,
@@ -352,8 +364,8 @@ def _write_file(path, raw):
         os.fsync(stream.fileno())
 
 
-def apply(session, backup_root, expected, persist, *, start_new=False):
-    """Caller holds session + manager locks; persist is the final configuration CAS."""
+def apply(session, backup_root, expected, persist, *, start_new=False, check_current=None):
+    """Caller serializes the frozen manager; persist performs the final session CAS."""
     view, binding, merged, preferences = plan(session, backup_root, start_new=start_new)
     if not isinstance(expected, str) or expected != view['expected']:
         raise ValueError('备份目录或内容已变化，请重新预览并确认')
@@ -396,6 +408,8 @@ def apply(session, backup_root, expected, persist, *, start_new=False):
                 raise ValueError('复制期间目标磁盘身份记录已变化，尚未切换')
             if [target.stat().st_dev, target.stat().st_ino] != binding['target_identity']:
                 raise ValueError('复制期间目标目录已变化，尚未切换')
+            if check_current is not None:
+                check_current()
             preserved = unlinked(target / ('.denghuo-destination-original-' + uuid.uuid4().hex))
             preserved.mkdir()
             for name in CONTAINERS:
@@ -406,6 +420,8 @@ def apply(session, backup_root, expected, persist, *, start_new=False):
                 if copied.exists():
                     copied.rename(original)
                     published.append(name)
+        if check_current is not None:
+            check_current()
         if binding['backup_root']:
             if [target.stat().st_dev, target.stat().st_ino] != binding['target_identity']:
                 raise ValueError('目标目录已变化，尚未切换；请重新预览')
@@ -423,7 +439,9 @@ def apply(session, backup_root, expected, persist, *, start_new=False):
             atomic_json(session.config_path.parent / REGISTRY, roots)
         manager = manager_for(session.config_path, binding['backup_root'],
                               clock=session.backups.clock, closed_check=session.backups.closed_check)
-        manager.enabled = session.backups.enabled
+        manager.enabled = binding['enabled']
+        if check_current is not None:
+            check_current()
         persist(binding['backup_root'], manager)
     except Exception:
         # Rename only our published copies; keep both failed stage and target originals.
