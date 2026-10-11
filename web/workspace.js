@@ -89,8 +89,15 @@ function renderDetailTools(){
   for(const recipe of alchemy){const button=document.createElement('button');button.className='secondary';button.type='button';button.textContent='规划炼金：'+recipe.name;button.addEventListener('click',async()=>{await loadAlchemy();addAlchemyTarget(recipe.id);$('#detail-dialog').close();navigate('alchemy');$('#alchemy-targets')?.focus();});target.append(button);}
 }
 function actualNumericalParams(detail){return Object.fromEntries(detail.inputs.map(input=>[input.key,input.value]));}
-function openPlanSave(payload,existing=null,name=''){
+function manualSaveSignature(params=manualPayload()){
+  const ordered=value=>Array.isArray(value)?value.map(ordered):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,ordered(value[key])])):value;
+  return JSON.stringify(ordered({raw:captureNamedForm('#manual-form'),params}));
+}
+function openPlanSave(payload,existing=null,name='',owner=null){
   planDialogSerial++;planDraft={payload:JSON.parse(JSON.stringify(payload)),existing};
+  if(owner==='manual'&&payload.kind==='manual'&&manualSaveSignature(payload.params)===manualSaveSignature()){
+    planDraft.manualSignature=manualSaveSignature();planDraft.manualGeneration=manualFormGeneration;
+  }
   if(payload.kind==='numeric'&&numericalDetail?.identity===payload.entry&&sameNumericalParams(actualNumericalParams(numericalDetail),payload.params)){
     planDraft.numericOwner=numericalDetail;planDraft.numericSignature=numericalSaveSignature(numericalDetail);
   }
@@ -108,7 +115,7 @@ async function savePlan(update=false){
     const priorId=draft.existing?.id;
     if(draft.payload.kind==='numeric'&&draft.numericOwner&&numericalDetail===draft.numericOwner&&(!priorId||numericalDetail.savedPlan?.id===priorId))associateNumericalPlan(numericalDetail,result.plan,draft.payload.params,draft.numericSignature);
     if(draft.payload.kind==='equipment'&&(!priorId||compareSavedPlan?.id===priorId)&&comparisonGeneration===compareEditGeneration&&JSON.stringify(draft.payload.params)===JSON.stringify(compareResultArgs)){compareSavedPlan=result.plan;compareSessionUnsaved=compareDirty;updateComparisonSavedNote();}
-    if(draft.payload.kind==='manual'&&(!priorId||manualSavedPlan?.id===priorId)){manualSavedPlan=result.plan;manualUnsaved=false;manualAppliedRaw=captureNamedForm('#manual-form');}
+    if(draft.payload.kind==='manual'&&draft.manualSignature&&draft.manualGeneration===manualFormGeneration&&draft.manualSignature===manualSaveSignature()&&(!priorId||manualSavedPlan?.id===priorId)){manualSavedPlan=result.plan;manualUnsaved=false;manualAppliedRaw=captureNamedForm('#manual-form');}
     if(draft.payload.kind==='character'&&typeof characterPlanSaved==='function')characterPlanSaved(result.plan,draft.payload);
     if(draft.payload.kind==='alchemy'&&typeof alchemyPlanSaved==='function')alchemyPlanSaved(result.plan,draft.payload);
     if($('#plan-name').value!==name||$('#plan-note').value!==note){const oldKey=planDraftKey(draft.payload,draft.existing);draft.existing=result.plan;const newKey=planDraftKey(draft.payload,draft.existing);if(oldKey!==newKey){planNameDrafts.delete(oldKey);planNoteDrafts.delete(oldKey);planMetaOriginals.delete(oldKey);}planNameDrafts.set(newKey,$('#plan-name').value);planNoteDrafts.set(newKey,$('#plan-note').value);planMetaOriginals.set(newKey,{name:result.plan.name,note:result.plan.note||''});if(draft.payload.kind==='alchemy'){clearAlchemyPlanMetadata(oldKey);rememberAlchemyPlanMetadata(draft,$('#plan-name').value,$('#plan-note').value);}$('#plan-update').hidden=false;$('#plan-reload').hidden=false;inlineError($('#plan-error'),'已保存提交时的内容；新修改的名称或备注仍是本地草稿。');await loadWorkspace();return;}
@@ -207,7 +214,7 @@ $('#workspace-reset').addEventListener('click',()=>{$('#workspace-search').value
 $('#workspace-search').addEventListener('keydown',event=>{if(event.key==='ArrowDown'){event.preventDefault();$('#workspace-plans button')?.focus();}});
 $('#plan-reload').addEventListener('click',()=>{if(planDraft?.existing){planNameDrafts.set(planDraft.existing.id,$('#plan-name').value);confirmReloadSavedPlan(planDraft.existing.id);}});
 $('#plan-form').addEventListener('submit',event=>{event.preventDefault();savePlan();});$('#plan-update').addEventListener('click',()=>savePlan(true));$('#plan-close').addEventListener('click',()=>$('#plan-dialog').close());$('#plan-dialog').addEventListener('close',()=>{if(planDraft){const key=planDraftKey(planDraft.payload,planDraft.existing);planNameDrafts.set(key,$('#plan-name').value);planNoteDrafts.set(key,$('#plan-note').value);if(typeof rememberAlchemyPlanMetadata==='function')rememberAlchemyPlanMetadata(planDraft,$('#plan-name').value,$('#plan-note').value);}planDialogSerial++;planDraft=null;});
-$('#manual-save').addEventListener('click',()=>{if(!validRawNumericForm($('#manual-form')))return;openPlanSave({kind:'manual',entry:null,params:manualPayload(),source:manualSavedPlan?cleanStoredOrigin(manualSavedPlan.origin):{mode:'manual',snapshot_at:null,slot:null}},manualSavedPlan,'手动局势');});
+$('#manual-save').addEventListener('click',()=>{if(!validRawNumericForm($('#manual-form')))return;openPlanSave({kind:'manual',entry:null,params:manualPayload(),source:manualSavedPlan?cleanStoredOrigin(manualSavedPlan.origin):{mode:'manual',snapshot_at:null,slot:null}},manualSavedPlan,'手动局势','manual');});
 $('#manual-form').addEventListener('input',()=>{manualUnsaved=true;$('#manual-draft-status').textContent='局势草稿已修改，尚未提交；切换页面、错误或重连后仍保留。';});
 async function loadDecisions(force=false){
   if(view!=='overview'||!state)return;
@@ -368,7 +375,7 @@ function collectWebDraft(){
     alchemy_plan_meta:typeof captureAlchemyPlanMetadata==='function'?captureAlchemyPlanMetadata():[],
     migration:typeof captureMigrationDraft==='function'?captureMigrationDraft():null,
     plan_meta:Array.from(planNameDrafts,([key,name])=>({key,name,note:planNoteDrafts.get(key)||'',original:planMetaOriginals.get(key)||null})),
-    open_plan:planDraft?{payload:planDraft.payload,existing_id:planDraft.existing?.id||null,existing_revision:planDraft.existing?.record_revision||null,existing_name:planDraft.existing?.name||null,existing_note:planDraft.existing?.note||'',existing_origin:planDraft.existing?.origin||null,name:$('#plan-name').value,note:$('#plan-note').value}:null};
+    open_plan:planDraft?{payload:planDraft.payload,existing_id:planDraft.existing?.id||null,existing_revision:planDraft.existing?.record_revision||null,existing_name:planDraft.existing?.name||null,existing_note:planDraft.existing?.note||'',existing_origin:planDraft.existing?.origin||null,manual_signature:planDraft.manualSignature||null,name:$('#plan-name').value,note:$('#plan-note').value}:null};
   return {draft,dirty:labels.length>0,labels};
 }
 function currentWebDraft(){const captured=collectWebDraft(),fingerprint=JSON.stringify(captured.draft);if(fingerprint!==webDraftFingerprint){webDraftFingerprint=fingerprint;webDraftRevision++;}return {...captured,revision:webDraftRevision};}
@@ -592,7 +599,7 @@ async function loadUnfinishedDraft(id){
     else if(draft.character)navigate('workspace');else if(draft.alchemy||draft.alchemy_plan_meta?.length)navigate('alchemy');else if(draft.migration)navigate('migration');else if(draft.manual)navigate('manual');else if(draft.comparison)navigate('inventory');else if(draft.settings)navigate('settings');else if(draft.backup_destination||draft.play)navigate('play-settings');else if(draft.backup_metadata?.length)navigate('backups');
     // Navigation above belongs to this recovery, before awaiting naming metadata.
     navForRecovery=navigationSerial;
-    if(draft.open_plan){const old=draft.open_plan;let existing=null,conflict=false;if(old.existing_revision!=null&&!/^[a-f0-9]{64}$/.test(old.existing_revision))throw new Error('命名草稿关联版本格式不正确；原始副本仍保留');if(old.existing_id){try{const latest=(await getJSON('/api/workspace/plan?'+new URLSearchParams({id:old.existing_id}))).plan;if(latest.kind!==old.payload.kind)throw new Error('关联方案类型已经变化');conflict=latest.record_revision!==old.existing_revision;existing={...latest,record_revision:old.existing_revision||'',name:old.existing_name||old.name||latest.name,note:old.existing_note??old.note??'',origin:old.existing_origin||old.payload.source||latest.origin};}catch(error){conflict=true;/* Keep as a new independent draft. */}}checkRecovery();openPlanSave(old.payload,existing,old.name);$('#plan-name').value=old.name;$('#plan-note').value=old.note||'';if(conflict)inlineError($('#plan-error'),'关联方案已变化；原始条件、名称和备注按旧版本保留。可另存副本，或明确重新读取最新方案；旧草稿不能覆盖新内容。');}
+    if(draft.open_plan){const old=draft.open_plan;let existing=null,conflict=false;if(old.existing_revision!=null&&!/^[a-f0-9]{64}$/.test(old.existing_revision))throw new Error('命名草稿关联版本格式不正确；原始副本仍保留');if(old.existing_id){try{const latest=(await getJSON('/api/workspace/plan?'+new URLSearchParams({id:old.existing_id}))).plan;if(latest.kind!==old.payload.kind)throw new Error('关联方案类型已经变化');conflict=latest.record_revision!==old.existing_revision;existing={...latest,record_revision:old.existing_revision||'',name:old.existing_name||old.name||latest.name,note:old.existing_note??old.note??'',origin:old.existing_origin||old.payload.source||latest.origin};}catch(error){conflict=true;/* Keep as a new independent draft. */}}checkRecovery();const manualOwner=old.payload.kind==='manual'&&old.manual_signature&&old.manual_signature===manualSaveSignature()?'manual':null;openPlanSave(old.payload,existing,old.name,manualOwner);$('#plan-name').value=old.name;$('#plan-note').value=old.note||'';if(conflict)inlineError($('#plan-error'),'关联方案已变化；原始条件、名称和备注按旧版本保留。可另存副本，或明确重新读取最新方案；旧草稿不能覆盖新内容。');}
     // Navigation performed by this recovery is intentional; editing generations still guard pending IO.
     navForRecovery=navigationSerial;
     await Promise.all([verifySettingsRecovery(settingsRecovery),verifySettingsRecovery(playRecovery)]);

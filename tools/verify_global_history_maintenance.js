@@ -8,8 +8,9 @@ function node(id=''){
   const value={id,value:'',textContent:'',dataset:{},listeners:{},children:[],disabled:false,checked:false,open:false,hidden:false,
     addEventListener(type,fn){this.listeners[type]=fn;},showModal(){this.open=true;},close(){this.open=false;},
     append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;this._html='';},
-    querySelector(selector){return selector==='button'?this.children.find(child=>child.tag==='button'):null;},click(){return this.listeners.click?.({target:this});}};
-  Object.defineProperty(value,'innerHTML',{get(){return this._html||'';},set(text){
+    contains(child){return flatten(this).includes(child);},querySelectorAll(selector){return selector==='button'?flatten(this).filter(child=>child.tag==='button'):[];},
+    querySelector(selector){return this.querySelectorAll(selector)[0]||null;},click(){return this.listeners.click?.({target:this});}};
+  Object.defineProperty(value,'innerHTML',{configurable:true,get(){return this._html||'';},set(text){
     this._html=text;this.children=[...text.matchAll(/<(input|button|option)\b([^>]*)>/g)].map(match=>{
       const child=node();child.tag=match[1];const attrs=match[2];
       for(const attr of attrs.matchAll(/\b([\w-]+)="([^"]*)"/g)){if(attr[1].startsWith('data-'))child.dataset[attr[1].slice(5).replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase())]=attr[2];else child[attr[1]]=attr[2];}
@@ -20,6 +21,14 @@ function node(id=''){
 const flatten=value=>[value,...value.children.flatMap(flatten)],plain=value=>JSON.parse(JSON.stringify(value));
 function harness(){
   const nodes=new Map(ids.map(id=>[id,node(id)])),reads=[],writes=[],downloads=[],navigations=[];
+  const document={activeElement:null,createElement:()=>{const created=node();created.click=function(){downloads.push(this.download);};return created;}};
+  const attachFocus=value=>{value.focus=()=>{document.activeElement=value;};value.children.forEach(attachFocus);};
+  for(const value of nodes.values()){
+    const descriptor=Object.getOwnPropertyDescriptor(value,'innerHTML');
+    Object.defineProperty(value,'innerHTML',{...descriptor,set(text){if(this.contains(document.activeElement))document.activeElement=null;descriptor.set.call(this,text);attachFocus(this);}});
+    attachFocus(value);
+  }
+  for(const id of ['global-history-file-filter','global-history-health-filter'])nodes.get(id).value='all';
   const get=selector=>{const value=nodes.get(selector.replace(/^#/,''));assert(value,'production selector missing from HTML: '+selector);return value;};
   const query=selector=>[...new Set([...nodes.values()].flatMap(flatten))].filter(value=>selector.split(',').some(part=>{
     const match=part.trim().match(/^\[data-([\w-]+)\]$/);return match&&Object.hasOwn(value.dataset,match[1].replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase()));
@@ -27,7 +36,7 @@ function harness(){
   const context=vm.createContext({console,URLSearchParams,Map,Set,Number,String,Math,Promise,JSON,Date,
     state:{backup_context:'context-1'},token:'synthetic-token',view:'other',$:get,$$:query,
     escapeHTML:value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])),fmtTime:String,
-    document:{createElement:()=>{const created=node();created.click=function(){downloads.push(this.download);};return created;}},URL:{createObjectURL:()=> 'blob:synthetic',revokeObjectURL(){}},setTimeout:callback=>callback(),
+    document,URL:{createObjectURL:()=> 'blob:synthetic',revokeObjectURL(){}},setTimeout:callback=>callback(),
     inlineError:(target,text)=>target.textContent=text,navigate:page=>navigations.push(page),poll:async()=>{},sourceURL:()=>null,names:{backups:'存档时光机'},
     getJSON:url=>new Promise((resolve,reject)=>reads.push({url,resolve,reject})),post:(url,payload)=>new Promise((resolve,reject)=>writes.push({url,payload:plain(payload),resolve,reject})),
     fetch:async(url,options)=>{writes.push({url,payload:JSON.parse(options.body)});return {ok:true,blob:async()=>({synthetic:true})};}});
@@ -130,4 +139,39 @@ async function verifyHelp(){
     const next=h.get('#help-next');assert(!next.innerHTML.includes('当前没有发现'));assert.equal(next.children.length,1);await next.children[0].querySelector('button').click();assert.equal(h.navigations.at(-1),'backups');
   }
 }
-(async()=>{await verifyMaintenance();await verifyIndependentArchiveFiles();await verifyRecoveryAndDamagedArchives();await verifyHelp();console.log('PASS: global history maintenance/explicit recovery, independent healthy files/archive discovery, stale context receipts, and private help diagnostics (production JS VM only)');})().catch(error=>{console.error(error);process.exitCode=1;});
+async function verifyHistorySelectionAndFocus(){
+  const h=harness();h.load('global-history.js');
+  const history=Array.from({length:512},(_,index)=>({...row,id:index.toString(16).padStart(64,'0'),time:1791288000+index*86400,files:{'rankings.dat':{valid:true,integrity:'verified',summary:{total:index,won:0,records:0,daily_history:0}}}}));
+  history[511]={...history[511],files:{'badges.dat':{valid:false,integrity:'damaged',error:'目标原件损坏'},'rankings.dat':{valid:true,integrity:'verified',summary:{total:511,won:0,records:0,daily_history:0}}}};
+  const raw={...row,id:'f'.repeat(64),files:{'badges.dat':{valid:false,integrity:'verified',summary:null}}};
+  const value={...saved,history:[...history,raw]};await read(h,value);
+  assert.equal(h.query('[data-global-history-export]').length,20);assert(!h.get('#global-history-more').hidden);
+  h.get('#global-history-search').value=history[511].id;h.get('#global-history-search').listeners.input();
+  assert.equal(h.query('[data-global-history-export]').length,1);assert.equal(h.query('[data-global-history-export]')[0].dataset.globalHistoryExport,history[511].id);
+  assert(h.get('#global-history-more').hidden);assert.match(h.get('#global-history-count').textContent,/共 514 份，符合条件 1 份，已显示 1 份/);
+  await read(h,value);assert.equal(h.get('#global-history-search').value,history[511].id,'poll preserves a whole-collection query');
+  h.get('#global-history-file-filter').value='badges.dat';h.get('#global-history-health-filter').value='restorable';h.get('#global-history-health-filter').listeners.change();
+  assert.equal(h.query('[data-global-history-export]').length,0,'a healthy ranking must not make damaged badges match');assert.match(h.get('#global-history-list').innerHTML,/没有符合条件/);
+  h.get('#global-history-health-filter').value='damaged';h.get('#global-history-health-filter').listeners.change();assert.equal(h.query('[data-global-history-export]').length,1);
+  h.click('global-history-filter-reset');h.get('#global-history-health-filter').value='raw-only';h.get('#global-history-health-filter').listeners.change();
+  assert.equal(h.query('[data-global-history-export]').length,1);assert.equal(h.query('[data-global-history-export]')[0].dataset.globalHistoryExport,raw.id);
+  h.click('global-history-filter-reset');h.get('#global-history-search').value=new Date(history[511].time*1000).toISOString().slice(0,10);h.get('#global-history-search').listeners.input();
+  assert.equal(h.query('[data-global-history-export]').length,1,'ISO dates search beyond the first page');
+  h.click('global-history-filter-reset');h.get('#global-history-search').value='目标 原件损坏';h.get('#global-history-search').listeners.input();assert.equal(h.query('[data-global-history-export]').length,1);
+  h.click('global-history-filter-reset');h.get('#global-history-health-filter').value='damaged';h.get('#global-history-health-filter').listeners.change();
+  assert.equal(h.query('[data-global-damaged-export]').length,1);h.get('#global-history-file-filter').value='badges.dat';h.get('#global-history-file-filter').listeners.change();
+  assert.equal(h.query('[data-global-damaged-export]').length,0,'damaged manifests do not claim known files');
+  h.click('global-history-filter-reset');await read(h,{...saved,history:[{...row,files:{...row.files,'badges.dat':{valid:true,summary:{badges:3}}}}]});
+  for(const selector of ['[data-global-history-preview]','[data-global-history-export]','[data-global-history-file]','[data-global-history-portable]','[data-global-damaged-export]']){
+    for(const identity of h.query(selector).map(button=>plain(button.dataset))){
+      const original=h.query(selector).find(button=>JSON.stringify(button.dataset)===JSON.stringify(identity));original.focus();await read(h,{...saved,history:[{...row,files:{...row.files,'badges.dat':{valid:true,summary:{badges:3}}}}]});
+      assert.notEqual(h.context.document.activeElement,original,'focus follows the replacement node');assert.deepEqual(plain(h.context.document.activeElement.dataset),identity);
+    }
+  }
+  h.get('#global-history-search').focus();await read(h,saved);assert.equal(h.context.document.activeElement,h.get('#global-history-search'),'outside focus is not stolen');
+  h.query('[data-global-history-preview]')[0].focus();await read(h,{...saved,history:[]});assert.equal(h.context.document.activeElement,h.get('#global-history-search'),'missing action returns to the search');
+  await read(h,saved);h.query('[data-global-history-preview]')[0].focus();await read(h,{...saved,archive});assert.equal(h.context.document.activeElement,h.get('#global-history-search'),'identical IDs in another archive do not inherit action focus');
+  h.query('[data-global-history-preview]')[0].focus();await read(h,{...saved,archive,history:[{...row,files:{'badges.dat':{valid:false,integrity:'damaged'}}}]});assert.equal(h.context.document.activeElement,h.get('#global-history-search'),'a disabled action is not refocused');
+  assert.equal(h.writes.length,0,'querying and focus restoration do not write or restore files');
+}
+(async()=>{await verifyMaintenance();await verifyIndependentArchiveFiles();await verifyRecoveryAndDamagedArchives();await verifyHelp();await verifyHistorySelectionAndFocus();console.log('PASS: global history maintenance/recovery, independent archive files, full-collection search/file/health filters, poll focus, stale receipts, and private help diagnostics (production JS VM only)');})().catch(error=>{console.error(error);process.exitCode=1;});

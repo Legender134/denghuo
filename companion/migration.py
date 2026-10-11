@@ -42,12 +42,51 @@ def read_json(raw):
     return json.loads(raw, parse_constant=lambda _: (_ for _ in ()).throw(ValueError('无效数值')))
 
 
+def _portable_secret_end(text, start, name):
+    tail = text[start:]
+    if tail.startswith(('"', '{', '[')):
+        try:
+            _, used = json.JSONDecoder().raw_decode(tail)
+            return start + used, json.dumps('[已省略]', ensure_ascii=False)
+        except ValueError:
+            pass
+    if tail.startswith("'"):
+        quoted = re.match(r"'(?:\\.|[^'\\\r\n])*'", tail)
+        if quoted:
+            return start + quoted.end(), "'[已省略]'"
+    # Cookie pairs share semicolons. An unterminated structured value is also
+    # ambiguous, so conservatively omit the rest of that line in the copy.
+    delimiter = r'[\r\n]' if name.lower() == 'cookie' or tail.startswith(('"', "'", '{', '[')) else r'[;\r\n]'
+    stop = re.search(delimiter, tail)
+    return start + (stop.start() if stop else len(tail)), '[已省略]'
+
+
 def portable_text(value):
-    # Names, notes and provenance labels can contain pasted machine paths.
-    value = re.sub(r'(?i)(?:[a-z]:[\\/]|\\\\)[^\s\u3000<>"|]+', '[本机路径已省略]', value)
-    value = re.sub(r'(?<![\w:])/(?:Users|home|mnt|tmp|var|private|media|Volumes)/[^\s\u3000<>"|]+', '[本机路径已省略]', value)
-    value = re.sub(r'(?i)\b(authorization)\s*[:=]\s*(?:bearer\s+)?[^\s,;]+', r'\1=[已省略]', value)
-    return re.sub(r'(?i)\b(token|password|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|cookie|credentials)\s*[:=]\s*[^\s,;]+', r'\1=[已省略]', value)
+    # Operate on migration copies only; the preview shows the resulting text.
+    fields = r'''(?ix)\b(authorization|token|password|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|cookie|credentials)(["']?)\s*[:=]\s*'''
+    parts, used = [], 0
+    for match in re.finditer(fields, value):
+        if match.start() < used:
+            continue
+        end, replacement = _portable_secret_end(value, match.end(), match[1])
+        parts.extend((value[used:match.end()], replacement))
+        used = end
+    value = ''.join(parts) + value[used:]
+    # A drive prefix must not match the final letter in https:/ or http:/.
+    paths = r'''(?ix)(["']?)(?:(?<![a-z0-9_])[a-z]:[\\/]|\\\\|(?<![\w:])/(?:Users|home|mnt|tmp|var|private|media|Volumes)/)'''
+    parts, used = [], 0
+    for match in re.finditer(paths, value):
+        if match.start() < used:
+            continue
+        quote = match[1]
+        delimiter = re.escape(quote) + r'|[\r\n]' if quote else r'[;\r\n<>"|]'
+        stop = re.search(delimiter, value[match.end():])
+        end = match.end() + stop.start() if stop else len(value)
+        if quote and stop and value[end] == quote:
+            end += 1
+        parts.extend((value[used:match.start()], '[本机路径已省略]'))
+        used = end
+    return ''.join(parts) + value[used:]
 
 
 def portable_record(row):

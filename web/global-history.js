@@ -1,6 +1,7 @@
 'use strict';
 let globalHistoryState=null,globalHistoryPreview=null,globalHistoryBusy=false,globalHistoryRestoring=false,globalHistoryLoading=false;
 let globalHistoryRequest=0,globalHistoryPreviewRequest=0,globalHistoryLoadedAt=0,globalHistoryLimit=20;
+let globalHistoryRenderedSource=null;
 let globalHistoryPortable=null,globalHistoryExporting=false;
 let globalHistoryMaintenance=null,globalHistoryMaintenanceRequest=0,globalHistoryMaintaining=false,globalHistoryOperation=0;
 const globalFileNames={'badges.dat':'成就记录','rankings.dat':'排行榜与每日记录'};
@@ -19,6 +20,22 @@ function globalHistoryCurrent(context){return !state?.backup_context||state.back
 function globalHistoryScopeCurrent(value){return !!value&&globalHistoryCurrent(value.context)&&(!$('#global-history-library').value||$('#global-history-library').value===value.library)&&($('#global-history-archive').value||null)===(value.archive||null);}
 function globalHistoryBytes(value){return `${Number(value||0).toLocaleString()} 字节（${(Number(value||0)/1048576).toFixed(2)} MiB）`;}
 function globalHistorySource(value){return {context:value.context,library:value.library,...value.archive?{archive:value.archive}:{}};}
+function filterGlobalHistory(value,query='',file='all',health='all'){
+  const terms=query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const matches=text=>terms.every(term=>text.toLocaleLowerCase().includes(term));
+  const history=value.history.filter(row=>{
+    const entries=Object.entries(row.files).filter(([name])=>file==='all'||name===file);
+    if(!entries.length)return false;
+    if(health==='restorable'&&!entries.some(([,item])=>item.valid))return false;
+    if(health==='damaged'&&!entries.some(([,item])=>item.integrity==='damaged'))return false;
+    if(health==='raw-only'&&!entries.every(([,item])=>item.integrity==='verified'&&!item.valid))return false;
+    const date=new Date(row.time*1000);
+    return matches([row.id,fmtTime(row.time),Number.isNaN(date.getTime())?'':date.toISOString(),...entries.map(([name,item])=>`${name} ${globalFileNames[name]} ${globalHistoryFileSummary(name,item)} ${item.error||''}`)].join(' '));
+  });
+  // A damaged manifest cannot prove which files it contains.
+  const damaged=(value.damaged_rows||[]).filter(row=>file==='all'&&(health==='all'||health==='damaged')&&matches(`${row.id} ${row.error||''} 损坏历史清单`));
+  return {history,damaged,total:value.history.length+(value.damaged_rows||[]).length};
+}
 function invalidateGlobalHistoryDialogs(){
   const message='存档连接已变化或所选历史库已变化，请重新读取并预览；原选择仍保留。';
   if(globalHistoryPreview&&!globalHistoryScopeCurrent(globalHistoryPreview)){$('#global-history-confirm').checked=false;inlineError($('#global-history-restore-error'),message);}
@@ -51,6 +68,10 @@ function renderGlobalHistoryControls(){
 }
 function renderGlobalHistory(){
   const value=globalHistoryState;if(!value)return;
+  const holders=['#global-history-list','#global-history-damaged'].map(selector=>$(selector)),active=document.activeElement;
+  const action=active&&holders.some(holder=>holder.contains(active))&&Object.entries(active.dataset).find(([name])=>['globalHistoryExport','globalHistoryPreview','globalHistoryPortable','globalHistoryFile','globalDamagedExport'].includes(name));
+  const source=JSON.stringify(globalHistorySource(value)),sameSource=source===globalHistoryRenderedSource;
+  const filtered=filterGlobalHistory(value,$('#global-history-search').value,$('#global-history-file-filter').value,$('#global-history-health-filter').value);
   $('#global-history-health').textContent=globalProgressLabel(value.health);
   const selectedArchive=(value.archives||[]).find(row=>row.id===value.archive),selectedCount=value.archive?selectedArchive?.count??value.history.length+(value.damaged_rows||[]).length:value.storage.active_count??value.history.length;
   $('#global-history-storage').textContent=`${value.archive?'所选归档':'活动库'} ${selectedCount} 份历史，占用 ${globalHistoryBytes(value.storage.bytes)}。活动额度 ${value.storage.active_count??value.history.length} / ${value.snapshot_limit} 份、${globalHistoryBytes(value.storage.active_bytes??value.storage.bytes)} / ${(value.storage.limit/1048576).toFixed(0)} MiB。内容不变时不重复保存，达到活动容量后停止新增。普通导出不会释放活动额度。`+(value.storage.pending_originals?` 另有 ${value.storage.pending_originals} 份中断暂存原件保留，未计作已保护快照。`:'')+(value.storage.total_local_bytes!=null?` 本地活动库与保留归档${value.storage.inventory_complete===false?'已核对至少 ': '合计 '}${globalHistoryBytes(value.storage.total_local_bytes)}。`:'')+(value.storage.inventory_complete===false?` 另有 ${value.storage.unaccounted_containers||1} 处保留原件未能核对、未计入上述下限；其字节数未知。`:'')+(value.archives||[]).filter(row=>row.state!=='completed').map(row=>` 保留归档 ${row.id.slice(0,12)} 尚不可核对，数量/字节未知（未完整核验），原件保留：${row.error||'需要核对维护状态'}。`).join('');
@@ -60,18 +81,21 @@ function renderGlobalHistory(){
   $('#global-history-archive').value=value.archive||'';
   $('#global-history-archive-export').hidden=!value.archive;
   $('#global-history-maintenance-pending').hidden=!value.pending_maintenance;
-  $('#global-history-damaged').innerHTML=(value.damaged_rows||[]).map(row=>`<article class="backup-card"><h3>隔离的损坏历史清单 · ${escapeHTML(row.id.slice(0,12))}</h3><p>${escapeHTML(row.error)} · ${row.bytes==null?'字节数暂不可核对':globalHistoryBytes(row.bytes)}</p><p class="muted">该清单不能作为恢复依据；其他独立健康历史与健康文件仍可使用。${row.available===false?'此原件目前不可读取，未自动覆盖或移除。':'原始字节仍保留。'}</p><button type="button" class="secondary" data-global-damaged-export="${escapeHTML(row.id)}" data-invalid="${row.available===false}" ${row.available===false?'disabled':''}>导出损坏清单原件</button></article>`).join('');
-  $('#global-history-list').innerHTML=value.history.slice(0,globalHistoryLimit).map(row=>{
+  $('#global-history-damaged').innerHTML=filtered.damaged.map(row=>`<article class="backup-card"><h3>隔离的损坏历史清单 · ${escapeHTML(row.id.slice(0,12))}</h3><p>${escapeHTML(row.error)} · ${row.bytes==null?'字节数暂不可核对':globalHistoryBytes(row.bytes)}</p><p class="muted">该清单不能作为恢复依据；其他独立健康历史与健康文件仍可使用。${row.available===false?'此原件目前不可读取，未自动覆盖或移除。':'原始字节仍保留。'}</p><button type="button" class="secondary" data-global-damaged-export="${escapeHTML(row.id)}" data-invalid="${row.available===false}" ${row.available===false?'disabled':''}>导出损坏清单原件</button></article>`).join('');
+  $('#global-history-list').innerHTML=filtered.history.slice(0,globalHistoryLimit).map(row=>{
     const entries=Object.entries(row.files),valid=entries.some(([,item])=>item.valid);
     return `<article class="backup-card"><h3>${escapeHTML(fmtTime(row.time))}</h3>${entries.map(([name,item])=>`<p>${escapeHTML(globalFileNames[name])} · ${escapeHTML(globalHistoryFileSummary(name,item))}${item.error?' · '+escapeHTML(item.error):''}${!item.valid?' · 此文件不可恢复，其他健康文件可独立使用':''}</p>`).join('')}<div class="form-actions"><button type="button" class="secondary" data-global-history-export="${escapeHTML(row.id)}">导出原始副本</button>${entries.filter(([,item])=>item.valid).map(([name])=>`<button type="button" class="secondary" data-global-history-file="${escapeHTML(row.id)}" data-file="${escapeHTML(name)}">仅导出${escapeHTML(globalFileNames[name])}原始副本</button>`).join('')}<button type="button" class="secondary" data-global-history-portable="${escapeHTML(row.id)}" data-invalid="${!valid}" ${valid?'':'disabled'}>选择文件导出搬机迁移包</button><button type="button" class="secondary" data-global-history-preview="${escapeHTML(row.id)}" data-invalid="${!valid}" ${valid?'':'disabled'}>预览健康文件恢复</button></div></article>`;
-  }).join('')||'<p class="muted">游戏产生全局文件后，灯火会自动保留历史。现有局内存档历史仍在下方。</p>';
-  $('#global-history-more').hidden=value.history.length<=globalHistoryLimit;
+  }).join('')||(filtered.damaged.length?'':filtered.total?'<p class="muted">没有符合条件的历史。可修改搜索、筛选或清除条件；原历史仍保留。</p>':'<p class="muted">游戏产生全局文件后，灯火会自动保留历史。现有局内存档历史仍在下方。</p>');
+  $('#global-history-count').textContent=`当前库共 ${filtered.total} 份，符合条件 ${filtered.history.length+filtered.damaged.length} 份，已显示 ${Math.min(filtered.history.length,globalHistoryLimit)+filtered.damaged.length} 份。搜索与筛选覆盖当前所选库或归档的全部历史。`;
+  $('#global-history-more').hidden=filtered.history.length<=globalHistoryLimit;
   for(const button of $$('[data-global-history-export]'))button.addEventListener('click',()=>exportGlobalHistory(button.dataset.globalHistoryExport));
   for(const button of $$('[data-global-history-preview]'))button.addEventListener('click',()=>previewGlobalHistory(button.dataset.globalHistoryPreview));
   for(const button of $$('[data-global-history-portable]'))button.addEventListener('click',()=>openGlobalHistoryPortable(button.dataset.globalHistoryPortable));
   for(const button of $$('[data-global-history-file]'))button.addEventListener('click',()=>exportGlobalHistory(button.dataset.globalHistoryFile,null,[button.dataset.file]));
   for(const button of $$('[data-global-damaged-export]'))button.addEventListener('click',()=>exportGlobalHistory(button.dataset.globalDamagedExport,null,null,'damaged-export'));
   renderGlobalHistoryControls();
+  globalHistoryRenderedSource=source;
+  if(action){const [name,id]=action;const next=sameSource&&holders.flatMap(holder=>[...holder.querySelectorAll('button')]).find(button=>button.dataset[name]===id&&button.dataset.file===active.dataset.file&&!button.disabled);(next||$('#global-history-search')).focus({preventScroll:true});}
 }
 async function loadGlobalHistory(force=false){
   if(globalHistoryState&&!globalHistoryCurrent(globalHistoryState.context)){
@@ -208,6 +232,10 @@ function globalHistoryScopeChanged(){globalHistoryLimit=20;globalHistoryPreviewR
 $('#global-history-library').addEventListener('change',()=>{$('#global-history-archive').value='';globalHistoryScopeChanged();});
 $('#global-history-archive').addEventListener('change',globalHistoryScopeChanged);
 $('#global-history-more').addEventListener('click',()=>{globalHistoryLimit+=20;renderGlobalHistory();});
+function globalHistoryFilterChanged(){globalHistoryLimit=20;renderGlobalHistory();}
+$('#global-history-search').addEventListener('input',globalHistoryFilterChanged);
+for(const id of ['global-history-file-filter','global-history-health-filter'])$('#'+id).addEventListener('change',globalHistoryFilterChanged);
+$('#global-history-filter-reset').addEventListener('click',()=>{$('#global-history-search').value='';$('#global-history-file-filter').value='all';$('#global-history-health-filter').value='all';globalHistoryFilterChanged();});
 $('#global-history-version').addEventListener('change',renderGlobalHistoryControls);
 $('#global-history-confirm').addEventListener('change',renderGlobalHistoryControls);
 $('#global-history-close').addEventListener('click',()=>{if(!globalHistoryRestoring){globalHistoryPreview=null;globalHistoryPreviewRequest++;$('#global-history-dialog').close();}});

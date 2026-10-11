@@ -20,6 +20,10 @@ class SaveError(ValueError):
     pass
 
 
+class EndedRun(SaveError):
+    """Stable game.dat bytes match Dungeon.deleteGame's byte-one marker."""
+
+
 def file_stamp(stat):
     return stat.st_mtime_ns, stat.st_size, stat.st_ino
 
@@ -164,7 +168,7 @@ def read_bundle(path: Path) -> dict:
     """No repair, rename, write, or fallback to a different save ever occurs here."""
     try:
         before = path.stat()
-        if before.st_size <= 1:
+        if before.st_size == 0:
             raise SaveError("空存档（此槽位可能已结束）")
         if before.st_size > MAX_BYTES:
             raise SaveError("存档过大，未读取")
@@ -183,6 +187,8 @@ def read_bundle(path: Path) -> dict:
 def read_bundle_data(raw: bytes) -> dict:
     """Apply the same bounded decoder to a verified archive member."""
     try:
+        if raw == b'\x01':
+            raise EndedRun("游戏已标记此槽位的本局结束；新局保存后会自动读取")
         if len(raw) <= 1:
             raise SaveError("空存档（此槽位可能已结束）")
         if len(raw) > MAX_BYTES:

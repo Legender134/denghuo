@@ -19,7 +19,55 @@ function recoveryHarness(){
   return {get,hp,context,run,messages,pending,input(value){hp.value=value;const event={target:hp};for(const fn of events.get('input')||[])fn(event);get('#manual-form').listeners.input(event);}};
 }
 function savedManualDraft(value='8'){return {draft:{draft_kind:'web-session',draft:{format:2,schema:'denghuo-web-session',manual:{hp:[{value,checked:false}]},numeric:[]}}};}
+async function verifyManualSaveOwnership(){
+  let checked=0;
+  for(const scenario of ['history-copy','current-save','inflight-edit','edited-before-submit','wrong-params']){
+    const h=recoveryHarness();h.get('#plan-form').reportValidity=()=>true;
+    h.context.FormData=class {get(key){return key==='hp'?h.hp.value:({class:'WARRIOR',ht:'20',depth:'1',branch:'0',level:'1',strength:'10',healing:'0',hunger:'unknown'}[key]);}getAll(){return [];}};
+    h.run('loadWorkspace=async()=>{};manualUnsaved=true');
+    const params=JSON.parse(h.run('JSON.stringify(manualPayload())'));
+    if(scenario==='history-copy'||scenario==='wrong-params')h.input('-');
+    h.context.savePayload={kind:'manual',entry:null,params,source:{mode:'manual',snapshot_at:null,slot:null}};
+    h.run(`openPlanSave(savePayload,null,'合成方案',${scenario==='history-copy'?'null':"'manual'"})`);
+    const originalSignature=h.run('planDraft.manualSignature||null');
+    if(scenario==='edited-before-submit'){h.input('-');h.run('manualFormGeneration++');}
+    const saving=h.run('savePlan(false)');
+    if(scenario==='inflight-edit'){h.input('-');h.run('manualFormGeneration++');}
+    h.pending.at(-1)({plan:{id:'e'.repeat(32),record_revision:'f'.repeat(64),kind:'manual',params,name:'合成方案',origin:savePayloadOrigin()}});
+    await saving;
+    const captured=JSON.parse(h.run('JSON.stringify(collectWebDraft())'));
+    if(scenario==='current-save'){
+      assert.equal(captured.dirty,false);assert.equal(captured.draft.manual,null);assert.equal(h.run('manualSavedPlan.id'),'e'.repeat(32));assert(originalSignature);
+    }else{
+      assert(captured.dirty,scenario);assert.equal(captured.draft.manual.hp[0].value,'-',scenario);assert.equal(h.run('manualSavedPlan'),null,scenario);
+    }
+    if(scenario==='history-copy'||scenario==='wrong-params')assert.equal(originalSignature,null,scenario);
+    checked++;
+  }
+  return checked;
+}
+function savePayloadOrigin(){return {mode:'manual',snapshot_at:null,slot:null};}
+async function verifyRecoveredManualSaveOwnership(){
+  let checked=0;
+  for(const scenario of ['matching-owner','different-raw','legacy-owner','different-payload']){
+    const setup=()=>{const h=recoveryHarness();h.get('#plan-form').reportValidity=()=>true;h.context.FormData=class {get(key){return key==='hp'?h.hp.value:({class:'WARRIOR',ht:'20',depth:'1',branch:'0',level:'1',strength:'10',healing:'0',hunger:'unknown'}[key]);}getAll(){return [];}};h.run('loadWorkspace=async()=>{}');return h;};
+    const original=setup();original.run("manualUnsaved=true;openPlanSave({kind:'manual',entry:null,params:manualPayload(),source:{mode:'manual',snapshot_at:null,slot:null}},null,'恢复命名','manual')");
+    const draft=JSON.parse(original.run('JSON.stringify(collectWebDraft().draft)'));
+    if(scenario==='different-raw')draft.manual.hp[0].value='19';
+    if(scenario==='legacy-owner')delete draft.open_plan.manual_signature;
+    if(scenario==='different-payload')draft.open_plan.payload.params.hp=18;
+    const h=setup(),loading=h.run('loadUnfinishedDraft("original")');h.pending[0]({draft:{draft_kind:'web-session',draft}});await loading;
+    assert.equal(h.hp.value,scenario==='different-raw'?'19':'20');
+    assert.equal(!!h.run('planDraft.manualSignature'),scenario==='matching-owner',scenario);
+    const saving=h.run('savePlan(false)');h.pending.at(-1)({plan:{id:'a'.repeat(32),record_revision:'b'.repeat(64),kind:'manual',params:draft.open_plan.payload.params,name:'恢复命名',origin:savePayloadOrigin()}});await saving;
+    assert.equal(h.run('manualUnsaved'),scenario!=='matching-owner',scenario);
+    assert.equal(h.run('collectWebDraft().draft.manual!==null'),scenario!=='matching-owner',scenario);checked++;
+  }
+  return checked;
+}
 (async()=>{
+  const manualOwnershipCases=await verifyManualSaveOwnership();
+  const recoveredOwnershipCases=await verifyRecoveredManualSaveOwnership();
   const context=vm.createContext({});vm.runInContext(extract('filterWorkspacePlans'),context);
   const rows=[{id:'a',name:'Alpha',kind:'numeric',updated:20,note:'蛇层备选\nTARGET Beta'},
     {id:'b',name:'Beta',kind:'alchemy',updated:30,note:'蛇层备选'},{id:'c',name:'Gamma',kind:'numeric',updated:10}];
@@ -120,5 +168,5 @@ function savedManualDraft(value='8'){return {draft:{draft_kind:'web-session',dra
   retry.run('initializeCharacterScene({});initializeCharacterScene({})');await retry.run('loadCharacterCatalog()');assert.equal(catalogRequests.length,2);assert.equal(retry.get('#character-ring-0').options.length,2);
   const otherError=characterHarness();let attempts=0;otherError.context.getJSON=async()=>{if(!attempts++)throw new Error('offline');return {entries:[]};};
   assert.equal(await otherError.run('loadCharacterCatalog()'),false);otherError.get('#character-error').textContent='基础力量需要核对';assert.equal(await otherError.run('loadCharacterCatalog()'),true);assert.equal(otherError.get('#character-error').textContent,'基础力量需要核对');
-  console.log(JSON.stringify({passed:true,original_and_legacy_naming_cases:checked,note_search_cases:4,recovery_race_cases:recoveryCases,character_catalog_recovery:true,scope:'actual components with deferred IO; browser E2E recorded separately'}));
+  console.log(JSON.stringify({passed:true,manual_save_ownership_cases:manualOwnershipCases,recovered_manual_ownership_cases:recoveredOwnershipCases,original_and_legacy_naming_cases:checked,note_search_cases:4,recovery_race_cases:recoveryCases,character_catalog_recovery:true,scope:'actual components with deferred IO; browser E2E recorded separately'}));
 })().catch(error=>{console.error(error);process.exitCode=1;});

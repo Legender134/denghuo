@@ -806,6 +806,41 @@ class SaveTests(unittest.TestCase):
         self.assertIn('生命 -13',session.history[0]['text'])
         self.assertEqual(len(session.history),2)
 
+    def test_ended_slot_retires_history_before_same_seed_later_retry(self):
+        for slot in ('auto', 1):
+            with self.subTest(slot=slot):
+                path=self.write(game(seed=11,duration=200));session=self.session()
+                session.update_settings({'slot':slot})
+                previous_run=session.snapshot()['run_id']
+                path.write_bytes(b'\x01');session.refresh()
+                self.assertIsNone(session.snapshot()['run_id'])
+                self.assertEqual(session.history,[])
+                self.assertIn('本局结束',session.error)
+                generation=session._run_generation
+                session.refresh();self.assertEqual(session._run_generation,generation)
+                new=game(seed=11,duration=201);new['hero']['HP']=7
+                self.write(new);session.refresh()
+                self.assertNotEqual(session.snapshot()['run_id'],previous_run)
+                self.assertEqual(len(session.history),1)
+                self.assertNotIn('生命',str(session.history))
+
+    def test_empty_partial_and_level_marker_do_not_retire_a_live_run(self):
+        for raw in (b'',b'{',b'\x00',b'\x1f\x8b\x00partial'):
+            with self.subTest(raw=raw):
+                path=self.write(game(seed=11,duration=200));session=self.session()
+                previous_run=session.snapshot()['run_id']
+                path.write_bytes(raw);session.refresh()
+                self.assertEqual(session.snapshot()['run_id'],previous_run)
+                new=game(seed=11,duration=201);new['hero']['HP']=7
+                self.write(new);session.refresh()
+                self.assertEqual(session.snapshot()['run_id'],previous_run)
+                self.assertIn('生命 -13',session.history[0]['text'])
+        path=self.write(game(seed=11,duration=202));session.refresh()
+        previous_run=session.snapshot()['run_id']
+        (path.parent/'depth4.dat').write_bytes(b'\x01');session.refresh()
+        self.assertIsNotNone(session.data)
+        self.assertEqual(session.snapshot()['run_id'],previous_run)
+
     def test_source_change_clears_history_and_manual_does_not_inherit(self):
         self.write(game());session=self.session()
         self.assertEqual(len(session.history),1)
