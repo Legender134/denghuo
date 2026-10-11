@@ -201,6 +201,117 @@ class BackupWorkflowTests(unittest.TestCase):
         self.assertEqual({str(path):path.read_bytes() for path in self.manager.directory.rglob('*.zip')},original)
         self.assertEqual(list((self.base/'backup-recycle').rglob('*.zip')),[])
 
+    def interrupted_automatic(self, landing='move', validation_warning=False):
+        class Crash(BaseException):pass
+        from companion.backups import atomic_json
+        rows=[self.capture(hp) for hp in (29,28,27,26)]
+        scope=self.manager.scope(self.root)
+        if validation_warning:
+            history=self.manager.history(self.root,discover=False);history[1]['repair_error']='previous warning'
+            atomic_json(scope/'history.json',history)
+        self.enable_automatic()
+        originals={row['id']:(scope/(row['id']+'.zip')).read_bytes() for row in rows}
+        replace,unlink=Path.replace,Path.unlink
+        def moved(path,target):
+            result=replace(path,target)
+            if landing=='move' and path.suffix=='.zip' and Path(target).parent.parent.name=='backup-recycle':raise Crash()
+            return result
+        def written(path,value):
+            atomic_json(path,value)
+            if landing in ('history','timeline') and path==scope/(landing+'.json'):raise Crash()
+        def finished(path,*args,**kwargs):
+            if landing=='finish' and path.name=='automatic-retention-pending.json':raise Crash()
+            return unlink(path,*args,**kwargs)
+        with patch.object(flows,'AUTOMATIC_KEEP',1),patch('companion.backups.MAX_HISTORY',4),patch.object(Path,'replace',moved),patch('companion.backups.atomic_json',written),patch.object(Path,'unlink',finished):
+            with self.assertRaises(Crash):self.capture(25)
+        self.manager=BackupManager(self.manager.directory,clock=lambda:self.clock,closed_check=lambda:None)
+        self.assertTrue((scope/'automatic-retention-pending.json').exists())
+        return rows,originals
+
+    def test_ordinary_writes_recover_pending_before_preserving_new_user_changes(self):
+        from companion.backups import BackupLibrary
+        cases=[(landing,'rename') for landing in ('move','history','timeline','finish')]
+        cases += [('move',operation) for operation in ('pin','validate','import','remove','discover','old-library')]
+        for index,(landing,operation) in enumerate(cases):
+            with self.subTest(landing=landing,operation=operation):
+                self.root=self.base/str(index)/'saves';self.root.mkdir(parents=True)
+                self.manager=BackupManager(self.base/str(index)/'backups',clock=lambda:self.clock,closed_check=lambda:None)
+                rows,originals=self.interrupted_automatic(landing,validation_warning=operation=='validate')
+                scope=self.manager.scope(self.root)
+                reference=BackupLibrary(scope.name) if operation=='old-library' else self.root
+                if operation in ('rename','pin','old-library'):
+                    selected=self.manager.selected(reference,rows[1])
+                    self.manager.manage(reference,{**self.selected(rows[1:2])[0],
+                        'label':'After interruption','locked':operation=='pin',
+                        'expected_metadata_revision':selected['metadata_revision']})
+                elif operation=='validate':self.manager.validate(self.root)
+                elif operation=='import':self.manager.import_archive(self.root,originals[rows[1]['id']])
+                elif operation=='remove':self.manager.remove(self.root,{**self.selected(rows[1:2])[0],'confirm':'移出备份 1'})
+                else:self.manager.history(self.root)
+                self.assertFalse((scope/'automatic-retention-pending.json').exists())
+                self.assertEqual((scope/(rows[0]['id']+'.zip')).read_bytes(),originals[rows[0]['id']])
+                active=self.manager.history(self.root,discover=False)
+                if operation in ('rename','pin','old-library'):
+                    self.assertEqual(next(row for row in active if row['id']==rows[1]['id'])['label'],'After interruption')
+                if operation=='validate':self.assertNotIn('repair_error',next(row for row in active if row['id']==rows[1]['id']))
+                with patch.object(flows,'AUTOMATIC_KEEP',1),patch('companion.backups.MAX_HISTORY',4):self.capture(24)
+                for identity,raw in originals.items():
+                    copies=[scope/(identity+'.zip'),*list((scope.parent.parent/'backup-recycle'/scope.name).glob(identity+'-*.zip'))]
+                    self.assertTrue(any(path.is_file() and path.read_bytes()==raw for path in copies))
+
+    def test_disabled_throttled_read_only_and_expired_capture_do_not_recover_pending(self):
+        import time
+        from companion.backups import BackupLibrary
+        self.interrupted_automatic()
+        def contents():return {str(path):path.read_bytes() for path in self.base.rglob('*') if path.is_file()}
+        original=contents();self.manager.enabled=False;self.manager.tick(self.root)
+        self.manager.enabled=True;self.manager.last_tick=self.clock;self.manager.tick(self.root)
+        self.manager.history(self.root,discover=False)
+        self.manager.history(BackupLibrary(self.manager.scope(self.root).name))
+        self.assertEqual(contents(),original)
+        with self.assertRaises(TimeoutError):self.manager.capture(self.root,1,deadline=time.monotonic()-1)
+        self.assertEqual(contents(),original)
+        self.manager.last_tick=0;self.manager.tick(self.root,force=True)
+        self.assertFalse((self.manager.scope(self.root)/'automatic-retention-pending.json').exists())
+
+    def test_conflicting_pending_blocks_writes_without_overwriting_newer_index(self):
+        self.interrupted_automatic()
+        path=self.manager.scope(self.root)/'history.json';path.write_bytes(path.read_bytes()+b'\n')
+        before={str(file):file.read_bytes() for file in self.base.rglob('*') if file.is_file()}
+        with self.assertRaisesRegex(ValueError,'中断后索引已被其他操作修改'):
+            self.manager.manage(self.root,{'slot':1,'id':'0'*64,'label':'new'})
+        self.assertEqual({str(file):file.read_bytes() for file in self.base.rglob('*') if file.is_file()},before)
+
+    def test_bad_automatic_policy_rebuild_requires_fresh_confirmation_and_keeps_full_original(self):
+        self.capture(29);scope=self.manager.scope(self.root);path=scope/'retention-policy.json'
+        archives={file.name:file.read_bytes() for file in scope.glob('*.zip')}
+        for original in (b'{"enabled":tru',b'{"enabled":true,"enabled":false}',b'x'*9000):
+            path.write_bytes(original)
+            self.assertTrue(flows.automatic_status(self.manager,self.root)['repairable'])
+            preview=flows.automatic_repair_preview(self.manager,self.root)
+            self.assertEqual(preview['sha256'],hashlib.sha256(original).hexdigest())
+            with self.assertRaisesRegex(ValueError,'确认'):
+                flows.automatic_repair(self.manager,self.root,{'expected':preview['expected'],'confirmed':False})
+            path.write_bytes(original+b' ')
+            with self.assertRaisesRegex(ValueError,'变化'):
+                flows.automatic_repair(self.manager,self.root,{'expected':preview['expected'],'confirmed':True})
+            path.write_bytes(original)
+            result=flows.automatic_repair(self.manager,self.root,{'expected':preview['expected'],'confirmed':True})
+            self.assertEqual(Path(result['preserved_path']).read_bytes(),original)
+            self.assertFalse(result['policy']['enabled']);self.assertTrue(result['policy']['writable'])
+            with self.assertRaisesRegex(ValueError,'预览'):
+                flows.automatic_save(self.manager,self.root,{'expected_policy':result['policy']['expected'],'confirmed':True},enabled=True)
+            self.enable_automatic()
+        self.assertEqual({file.name:file.read_bytes() for file in scope.glob('*.zip')},archives)
+
+    def test_bad_policy_failed_rebuild_keeps_original_and_preserved_copy(self):
+        self.capture(29);path=self.manager.scope(self.root)/'retention-policy.json';original=b'{bad-policy'
+        path.write_bytes(original);preview=flows.automatic_repair_preview(self.manager,self.root)
+        with patch('companion.backups.atomic_json',side_effect=OSError('controlled write failure')):
+            with self.assertRaises(OSError):flows.automatic_repair(self.manager,self.root,{'expected':preview['expected'],'confirmed':True})
+        self.assertEqual(path.read_bytes(),original)
+        self.assertEqual(next(path.parent.glob('retention-policy.preserved-*.json')).read_bytes(),original)
+
     def test_automatic_tick_does_not_restore_removed_timeline_observations(self):
         for hp in (29,28,27,26):
             self.capture(hp)

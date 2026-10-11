@@ -9,11 +9,69 @@ from pathlib import Path
 from queue import Queue, Empty, Full
 import subprocess
 import threading
+import sys
+import time
 import uuid
 
 from .paths import ROOT
 
 VERSION, MAX_LINE = 1, 512 * 1024
+_directory_picker_lock = threading.Lock()
+
+
+def choose_directory(payload, cancelled):
+    """A dedicated standard Windows dialog returns a draft path only."""
+    if (not isinstance(payload,dict) or set(payload)!={'kind','initial'}
+            or payload['kind'] not in ('save','backup') or not isinstance(payload['initial'],str)
+            or len(payload['initial'])>1000 or '\0' in payload['initial']):
+        raise ValueError('文件夹选择请求格式不正确')
+    if sys.platform!='win32':raise ValueError('文件夹选择需要 Windows 桌面；当前仍可手填完整路径')
+    if not _directory_picker_lock.acquire(blocking=False):raise ValueError('已有文件夹选择窗口，请先完成或取消')
+    process=None
+    try:
+        if cancelled():raise ValueError('助手正在结束，目录草稿保持')
+        helper=Path(os.environ.get('LAMP_NATIVE_HELPER',str(ROOT/'native'/'NativeCompanion.exe')))
+        if not helper.is_file():raise ValueError('文件夹选择控件缺失，请使用完整桌面版本；当前仍可手填路径')
+        process=subprocess.Popen([str(helper),'--choose-directory',payload['kind'],payload['initial']],
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+            creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        deadline=time.monotonic()+300
+        while process.poll() is None:
+            if cancelled():raise ValueError('助手正在结束，目录草稿保持')
+            if time.monotonic()>=deadline:raise ValueError('文件夹选择已超时，原输入保留，请重新选择')
+            time.sleep(.1)
+        raw=process.stdout.read(8193)
+        if process.returncode or len(raw)>8192:raise ValueError('文件夹选择未完成，原输入保留，请重新选择')
+        result=json.loads(raw)
+        if isinstance(result,dict) and isinstance(result.get('error'),str):raise ValueError('文件夹选择未完成：'+result['error'])
+        if (not isinstance(result,dict) or set(result)!={'cancelled','path'} or type(result['cancelled']) is not bool
+                or not isinstance(result['path'],str) or len(result['path'])>1000):
+            raise ValueError('文件夹选择结果无法核验，原输入保留')
+        if cancelled():raise ValueError('助手正在结束，目录草稿保持')
+        if result['cancelled']:return {'cancelled':True,'path':''}
+        path=Path(result['path'])
+        if not path.is_absolute() or not path.is_dir():raise ValueError('所选文件夹已不可用，原输入保留')
+        if payload['kind']=='backup':
+            from .backup_destination import normalize_root
+            result['path']=normalize_root(result['path'])
+        return result
+    except (OSError,UnicodeError,json.JSONDecodeError) as exc:
+        raise ValueError('文件夹选择未完成，原输入保留：'+str(exc)) from exc
+    finally:
+        try:
+            if process is not None:
+                # EOF closes only our dedicated picker, including a cancelled exit.
+                try:process.stdin.close()
+                except OSError:pass
+                try:process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    process.terminate();process.wait(timeout=1)
+        finally:
+            if process is not None:
+                for stream in (process.stdout,process.stderr):
+                    try:stream.close()
+                    except OSError:pass
+            _directory_picker_lock.release()
 
 
 def binding_token(value):

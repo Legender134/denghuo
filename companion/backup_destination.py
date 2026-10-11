@@ -1,6 +1,7 @@
 """Explicit, byte-bound copies between local automatic backup destinations."""
 from __future__ import annotations
 
+from contextlib import ExitStack
 import hashlib
 from itertools import islice
 import json
@@ -270,6 +271,28 @@ def _index_merge(relative, source, target):
     return raw
 
 
+def _automatic_recoveries(session, source, target, source_tree, target_tree, *, start_new):
+    from .backup_workflows import automatic_recovery_plan
+    rows=[]
+    locations=[] if start_new else [(source,source_tree)]
+    if start_new or source!=target:locations.append((target,target_tree))
+    for base,tree in locations:
+        manager=session.backups if base==source else BackupManager(base/'backups')
+        for relative in sorted(tree['files']):
+            parts=Path(relative).parts
+            if len(parts)!=3 or parts[0]!='backups' or parts[2]!='automatic-retention-pending.json':continue
+            reference=BackupLibrary(parts[1])
+            try:prepared=automatic_recovery_plan(manager,reference)
+            except (OSError,ValueError) as exc:
+                raise ValueError(f'中断自动整理暂不可核验：{base / relative}；{exc}；全部原件保留，请先核对该目录') from exc
+            if prepared is None:raise ValueError('中断整理记录在读取期间变化，请重新预览')
+            rows.append({'base':str(base),'library':reference.key,'id':prepared['id'],
+                         'directory':str(prepared['scope']),'from':str(prepared['available']),
+                         'to':str(prepared['source']),'bytes':prepared['bytes'],
+                         'pending_sha256':prepared['pending_sha256']})
+    return rows
+
+
 def plan(session, backup_root, *, start_new=False):
     from .backup_destination_recovery import guard_target
     if type(start_new) is not bool:
@@ -303,6 +326,26 @@ def plan(session, backup_root, *, start_new=False):
     # Explicit offline recovery never scans the now-unmounted source path.
     source_tree = {'files': {}, 'directories': [], 'bytes': 0} if start_new else _tree(source)
     target_tree = source_tree if source == target else _tree(target)
+    recoveries=_automatic_recoveries(session,source,target,source_tree,target_tree,start_new=start_new)
+    if recoveries:
+        identity=_marker(target) if backup_root else None
+        source_marker=_marker(source) if not start_new and session.settings.get('backup_root') else None
+        binding={'source':str(source),'target':str(target),'backup_root':backup_root,
+                 'source_tree':source_tree,'target_tree':target_tree,'marker':identity,
+                 'target_identity':[target.stat().st_dev,target.stat().st_ino],
+                 'source_identity':None if start_new else [source.stat().st_dev,source.stat().st_ino],
+                 'marker_bytes':_hash(target/MARKER)['sha256'] if identity else None,
+                 'source_marker_bytes':_hash(source/MARKER)['sha256'] if source_marker else None,
+                 'settings_revision':session.settings_revision,'context':session.backup_context,
+                 'save_root':session.settings['save_root'],'start_new':start_new,
+                 'source_error':source_error,'retention_recovery':recoveries}
+        view={'backup_root':backup_root,'source_directory':str(source/'backups'),
+              'target_directory':str(target/'backups'),'retention_recovery':recoveries,
+              'same_directory':source==target,'start_new':start_new,'source_error':source_error,
+              'source_unavailable':bool(source_error),'settings_revision':session.settings_revision,
+              'context':session.backup_context,'expected':_digest(binding),'originals_retained':True,
+              'message':f'发现 {len(recoveries)} 项中断自动整理。确认后仅将完整原 ZIP 和原索引退回活动库；当前位置保持。完成后须重新预览复制，不会在本次切换目录。'}
+        return view,binding,{},b''
     verified = 0 if start_new else _verify(source, source_tree)
     if source != target:
         _verify(target, target_tree)
@@ -402,11 +445,44 @@ def _register_destination(config_path, target, backup_root, expected_identity, d
     atomic_json(config_path.parent / REGISTRY, roots)
 
 
+def _recover_automatic(session, view, binding, *, check_current):
+    from .backup_workflows import _automatic_lock, automatic_recover
+    source,target=Path(binding['source']),Path(binding['target'])
+    managers={str(target):session.backups if target==source else BackupManager(target/'backups')}
+    if not binding['start_new']:managers[str(source)]=session.backups
+    with ExitStack() as stack:
+        for name,manager in sorted(managers.items()):
+            stack.enter_context(_automatic_lock(manager,BackupLibrary(binding['retention_recovery'][0]['library']),create_directory=False))
+        if check_current is not None:check_current()
+        fresh,_,_,_=plan(session,binding['backup_root'],start_new=binding['start_new'])
+        if fresh['expected']!=view['expected']:
+            raise ValueError('备份目录、身份或中断原件已变化，请重新预览；尚未恢复')
+        results=[];halted=False
+        for row in binding['retention_recovery']:
+            result={**row,'ok':False,'error':''}
+            if halted:result['error']='前项未完成，已停止；原件保留，请重新预览'
+            else:
+                try:
+                    if check_current is not None:check_current()
+                    automatic_recover(managers[row['base']],BackupLibrary(row['library']))
+                    result['ok']=True
+                except (OSError,ValueError) as exc:
+                    result['error']=str(exc);halted=True
+            results.append(result)
+    success=sum(row['ok'] for row in results);failure=len(results)-success
+    details='\n'.join(('已恢复：' if row['ok'] else '未完成：')+row['directory']+('；'+row['error'] if row['error'] else '') for row in results)
+    return {**view,'ok':True,'copied':False,'recovery_complete':not failure,
+            'recovery_results':results,'success_count':success,'failure_count':failure,
+            'message':f'中断自动整理已恢复 {success} 项，未完成 {failure} 项。当前位置保持，未复制或切换。\n{details}\n请重新预览剩余恢复或历史复制。'}
+
+
 def apply(session, backup_root, expected, persist, *, start_new=False, check_current=None):
     """Caller serializes the frozen manager; persist performs the final session CAS."""
     view, binding, merged, preferences = plan(session, backup_root, start_new=start_new)
     if not isinstance(expected, str) or expected != view['expected']:
         raise ValueError('备份目录或内容已变化，请重新预览并确认')
+    if view.get('retention_recovery'):
+        return _recover_automatic(session,view,binding,check_current=check_current)
     source, target = Path(binding['source']), Path(binding['target'])
     stage = preserved = None
     journal, committed = None, False

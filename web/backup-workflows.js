@@ -4,7 +4,7 @@ const backupFlow={context:null,epoch:0,selection:new Map(),exportRevision:0,expo
   policyRevision:0,retentionDraft:null,importRevision:0,importDraft:null,importFile:null,
   importSelection:new Set(),importSelectionRevision:0,importResults:[],storageRequest:0,storageKey:'',storageSeen:false,storageDirty:true,historyKey:'',busy:new Set()};
 Object.assign(backupFlow,{reclaimSelection:new Map(),reclaimRevision:0,reclaimDraft:null,stageRevision:0,stageDraft:null,receipts:[],receiptFiles:new Map(),operationSequence:0,lastImportReceipt:null});
-Object.assign(backupFlow,{automaticStatus:null,automaticDraft:null,automaticRequest:0});
+Object.assign(backupFlow,{automaticStatus:null,automaticDraft:null,automaticRequest:0,automaticRepairDraft:null});
 const flowSize=bytes=>`${Number(bytes||0).toLocaleString('zh-CN')} 字节（${(Number(bytes||0)/1048576).toFixed(2)} MiB）`;
 const flowKey=row=>`${row.slot}:${row.id}`;
 const flowRowName=row=>`${row.label||'未命名进度'} · 槽位 ${row.slot??'未知'}`;
@@ -24,6 +24,10 @@ function ensureBackupWorkflows(){
       <p class="muted">默认全部保留。启用后每槽至少保留最近20份，以及固定、最新、撤回和中断关联记录；活动额度不足时，仅把本库更旧记录移入可重新加入的保留目录，向384 MiB活动目标整理。其他库不处理，物理磁盘空间不会因此释放。</p>
       <button id="backup-automatic-preview" class="secondary" type="button" disabled>预览并启用本库策略</button>
       <button id="backup-automatic-disable" class="quiet" type="button" disabled>关闭本库自动整理</button>
+      <button id="backup-automatic-repair-preview" class="secondary" type="button" hidden>保留损坏策略并重建…</button>
+      <div id="backup-automatic-repair-review" hidden><p id="backup-automatic-repair-summary" class="rule-path" role="status"></p>
+        <label class="check"><input id="backup-automatic-repair-confirm" type="checkbox">我确认完整保留这份损坏原件，并重建为关闭状态；之后需要重新授权。</label>
+        <button id="backup-automatic-repair" class="secondary" type="button" disabled>保留原件，重建关闭策略</button></div>
       <p id="backup-automatic-error" class="rule-warning" role="alert" hidden></p>
       <div id="backup-automatic-review" hidden><p id="backup-automatic-summary"></p><div id="backup-automatic-rows"></div>
         <label class="check"><input id="backup-automatic-confirm" type="checkbox">我确认持续授权此存档目录和备份位置按上述规则整理，所有原ZIP保留，之后可以关闭。</label>
@@ -117,11 +121,14 @@ function ensureBackupWorkflows(){
   $('#backup-automatic-preview').addEventListener('click',()=>previewAutomaticRetention());
   $('#backup-automatic-enable').addEventListener('click',()=>saveAutomaticRetention(true));
   $('#backup-automatic-disable').addEventListener('click',()=>saveAutomaticRetention(false));
+  $('#backup-automatic-repair-preview').addEventListener('click',()=>previewAutomaticRepair());
+  $('#backup-automatic-repair').addEventListener('click',()=>repairAutomaticRetention());
+  $('#backup-automatic-repair-confirm').addEventListener('change',()=>$('#backup-automatic-repair').disabled=!$('#backup-automatic-repair-confirm').checked||!backupFlow.automaticRepairDraft);
   $('#backup-automatic-confirm').addEventListener('change',()=>$('#backup-automatic-enable').disabled=!$('#backup-automatic-confirm').checked||!backupFlow.automaticDraft);
 }
 function resetBackupWorkflows(context){
   ensureBackupWorkflows();
-  backupFlow.automaticRequest++;backupFlow.automaticDraft=null;backupFlow.automaticStatus=null;$('#backup-automatic-review').hidden=true;$('#backup-automatic-confirm').checked=false;renderAutomaticRetention(null);
+  backupFlow.automaticRequest++;backupFlow.automaticDraft=null;backupFlow.automaticStatus=null;backupFlow.automaticRepairDraft=null;$('#backup-automatic-repair-review').hidden=true;$('#backup-automatic-repair-confirm').checked=false;$('#backup-automatic-review').hidden=true;$('#backup-automatic-confirm').checked=false;renderAutomaticRetention(null);
   backupFlow.stageRevision++;backupFlow.stageDraft=null;$('#backup-stage-review').hidden=true;
   backupFlow.reclaimSelection.clear();invalidateBackupReclaim();$('#backup-reclaim-path').value='';$('#backup-reclaim-results').replaceChildren();$('#backup-reclaim-result').textContent='';backupFlow.context=context;backupFlow.epoch++;backupFlow.storageRequest++;
   backupFlow.selection.clear();backupFlow.storageKey='';backupFlow.storageSeen=false;backupFlow.storageDirty=true;backupFlow.historyKey='';invalidateBackupExport();
@@ -303,11 +310,34 @@ function backupRetentionPolicy(){
 }
 function renderAutomaticRetention(policy){
   backupFlow.automaticStatus=policy;
+  if(backupFlow.automaticRepairDraft&&(!policy?.repairable||policy.expected!==backupFlow.automaticRepairDraft.policy_expected)){backupFlow.automaticRepairDraft=null;$('#backup-automatic-repair-review').hidden=true;$('#backup-automatic-repair-confirm').checked=false;}
+  $('#backup-automatic-repair-preview').hidden=!policy?.repairable;
+  $('#backup-automatic-repair').disabled=!backupFlow.automaticRepairDraft||!$('#backup-automatic-repair-confirm').checked;
   if(backupFlow.automaticDraft&&policy?.expected!==backupFlow.automaticDraft.policy.expected){backupFlow.automaticDraft=null;$('#backup-automatic-review').hidden=true;$('#backup-automatic-confirm').checked=false;}
   $('#backup-automatic-status').textContent=!policy?'当前库策略尚未核对，请读取空间清单。':policy.enabled?'本库自动保留已启用；容量不足时才整理，原 ZIP 完整保留。':policy.error||'本库自动整理未启用，继续全部保留。';
   $('#backup-automatic-preview').disabled=!policy?.writable||!!policy.enabled;
   $('#backup-automatic-disable').disabled=!policy?.enabled;
   $('#backup-automatic-enable').disabled=!backupFlow.automaticDraft||!$('#backup-automatic-confirm').checked;
+}
+async function previewAutomaticRepair(){
+  return backupFlowRun('automatic-repair-preview','backup-automatic-error',async ticket=>{
+    const request=++backupFlow.automaticRequest;backupFlow.automaticRepairDraft=null;$('#backup-automatic-repair-review').hidden=true;$('#backup-automatic-repair-confirm').checked=false;$('#backup-automatic-repair').disabled=true;
+    const policyExpected=backupFlow.automaticStatus?.expected,result=await post('/api/backups/workflow',{action:'automatic-repair-preview',context:ticket.context});
+    if(!backupFlowCurrent(ticket)||request!==backupFlow.automaticRequest||result.context!==ticket.context||policyExpected!==backupFlow.automaticStatus?.expected)return;
+    backupFlow.automaticRepairDraft=freezeBackupReceipt({...result,policy_expected:policyExpected});
+    $('#backup-automatic-repair-summary').textContent=`${result.message}\n原件：${result.path}\n${flowSize(result.bytes)}\nSHA-256：${result.sha256}`;$('#backup-automatic-repair-review').hidden=false;
+  });
+}
+async function repairAutomaticRetention(){
+  const submitted=backupFlow.automaticRepairDraft;if(!submitted||!$('#backup-automatic-repair-confirm').checked)return;
+  return backupFlowRun('automatic-repair','backup-automatic-error',async ticket=>{
+    const result=await post('/api/backups/workflow',{action:'automatic-repair',context:ticket.context,expected:submitted.expected,confirmed:true});
+    const current=backupFlowCurrent(ticket)&&result.context===ticket.context;
+    recordBackupReceipt('automatic',ticket,result,{repair:true,expected:submitted.expected},!current);
+    if(!current)return;
+    backupFlow.automaticRepairDraft=null;$('#backup-automatic-repair-review').hidden=true;$('#backup-automatic-repair-confirm').checked=false;
+    renderAutomaticRetention(result.policy);toast(result.message);backupFlow.storageDirty=true;
+  });
 }
 async function previewAutomaticRetention(){
   return backupFlowRun('automatic-preview','backup-automatic-error',async ticket=>{

@@ -823,6 +823,10 @@ class Session:
         with self._backup_operation() as context:
             return status(context)
 
+    def choose_directory(self, payload):
+        from .native_host import choose_directory
+        return choose_directory(payload,lambda:self.stop.is_set() or self._shutdown_requested.is_set())
+
     def backup_destination_action(self, payload):
         from . import backup_destination
         from . import backup_destination_recovery
@@ -1009,7 +1013,7 @@ class Session:
         payload = {} if payload is None else payload
         if not isinstance(payload, dict):
             raise ValueError('备份工作流请求格式不正确')
-        with self._backup_operation(mutating=action in ('stage-retry', 'batch-import', 'archive-retention', 'reclaim-execute', 'automatic-enable', 'automatic-disable')):
+        with self._backup_operation(mutating=action in ('stage-retry', 'batch-import', 'archive-retention', 'reclaim-execute', 'automatic-enable', 'automatic-disable', 'automatic-repair')):
             if self.config_error:
                 raise ValueError('请先恢复连接设置，再操作存档备份')
             self.check_backup_context(context if context is not None else payload.get('context'))
@@ -1039,6 +1043,10 @@ class Session:
                 result = flows.retention_preview(manager, root, payload)
             elif action == 'automatic-preview':
                 result = flows.automatic_preview(manager, root)
+            elif action == 'automatic-repair-preview':
+                result = flows.automatic_repair_preview(manager,root)
+            elif action == 'automatic-repair':
+                result = flows.automatic_repair(manager,root,payload)
             elif action in ('automatic-enable', 'automatic-disable'):
                 result = flows.automatic_save(manager, root, payload, enabled=action=='automatic-enable')
             elif action == 'archive-retention':

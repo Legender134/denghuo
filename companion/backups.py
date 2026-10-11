@@ -48,10 +48,16 @@ def library_write(function):
     def coordinated(self, root, *args, **kwargs):
         if function.__name__=='history' and (kwargs.get('discover') is False or isinstance(root,BackupLibrary)):
             with self.lock:return function(self,root,*args,**kwargs)
-        from .backup_workflows import _automatic_lock
+        from .backup_workflows import _automatic_lock, automatic_recover
         try:
-            with self.lock, _automatic_lock(self,root):
-                return function(self,root,*args,**kwargs)
+            with self.lock:
+                nested = getattr(self,'_library_write_owner',None)==threading.get_ident()
+                with _automatic_lock(self,root):
+                    # Never roll back a live move made by this outer operation.
+                    # Tick performs this after its disabled/throttled early return.
+                    if not nested and function.__name__!='tick':
+                        automatic_recover(self,root,deadline=kwargs.get('deadline'))
+                    return function(self,root,*args,**kwargs)
         except (OSError,ValueError) as exc:
             if function.__name__=='tick' and not kwargs.get('force',args[0] if args else False):
                 self.error = self.tick_failure = str(exc)
@@ -593,8 +599,6 @@ class BackupManager:
 
     @library_write
     def capture(self, root, slot, *, deadline=None):
-        from .backup_workflows import automatic_recover
-        automatic_recover(self,root,deadline=deadline)
         check_capture_deadline(deadline)
         self._recovery_guard(root, slot)
         root = unlinked(Path(root)).resolve()
@@ -838,6 +842,13 @@ class BackupManager:
                     raise
                 return
             if not force and (not self.enabled or now - self.last_tick < 10):
+                return
+            from .backup_workflows import automatic_recover
+            try:
+                automatic_recover(self,root)
+            except (OSError,ValueError) as exc:
+                self.error = self.tick_failure = str(exc)
+                if force:raise
                 return
             self.last_tick = now
             self.health_root = str(Path(root))

@@ -59,9 +59,9 @@ $('#backup-destination-form').addEventListener('submit',async event=>{
       expected_settings_revision:backupDestinationState.settings_revision,context:backupDestinationState.context});
     if(generation!==backupDestinationGeneration)return;
     backupDestinationPreview={...result,backup_root:result.backup_root??submitted,start_new:result.start_new??startNew};$('#backup-destination-confirm').checked=false;
-    $('#backup-destination-confirm-text').textContent=result.start_new?'我已知晓旧历史本次无法复制，确认保留旧历史并在新位置继续备份':'我已核对位置，确认复制历史并切换后续备份';
-    $('#backup-destination-apply').textContent=result.start_new?'保留离线旧历史，在新位置继续':'保留原件，复制并切换';
-    $('#backup-destination-summary').textContent=result.start_new?`原备份位置暂不可用：${result.source_directory}\n新位置：${result.target_directory}\n旧历史本次未读取、未复制；旧目的地和原件仍保留。\n${result.message}`:`从 ${result.source_directory}\n复制到 ${result.target_directory}\n${result.file_count} 个文件，共 ${result.bytes} 字节；${result.library_count} 个存档库，${result.verified_archives} 份已校验备份。\n${result.message||'保留原件；确认后才复制历史并切换后续备份。'}`;
+    $('#backup-destination-confirm-text').textContent=result.retention_recovery?'我已核对原件位置，确认先恢复中断整理，当前位置保持；之后重新预览复制':result.start_new?'我已知晓旧历史本次无法复制，确认保留旧历史并在新位置继续备份':'我已核对位置，确认复制历史并切换后续备份';
+    $('#backup-destination-apply').textContent=result.retention_recovery?'先恢复中断整理，保持当前位置':result.start_new?'保留离线旧历史，在新位置继续':'保留原件，复制并切换';
+    $('#backup-destination-summary').textContent=result.retention_recovery?`${result.message}\n${result.retention_recovery.map(row=>`${row.directory}\n原 ZIP：${row.from}\n退回：${row.to} · ${row.bytes} 字节`).join('\n')}`:result.start_new?`原备份位置暂不可用：${result.source_directory}\n新位置：${result.target_directory}\n旧历史本次未读取、未复制；旧目的地和原件仍保留。\n${result.message}`:`从 ${result.source_directory}\n复制到 ${result.target_directory}\n${result.file_count} 个文件，共 ${result.bytes} 字节；${result.library_count} 个存档库，${result.verified_archives} 份已校验备份。\n${result.message||'保留原件；确认后才复制历史并切换后续备份。'}`;
     $('#backup-destination-preview').hidden=false;inlineError($('#backup-destination-error'),'');
   }catch(error){inlineError($('#backup-destination-error'),error.message);}
   finally{backupDestinationBusy=false;renderBackupDestinationControls();}
@@ -99,11 +99,11 @@ $('#backup-destination-apply').addEventListener('click',async()=>{
     backupDestinationBaseline=result.settings.backup_root;
     backupDestinationState={backup_root:result.settings.backup_root,directory:result.directory,
       settings_revision:result.settings_revision,context:result.context};
-    if(generation===backupDestinationGeneration){$('#backup-destination-root').value=result.settings.backup_root;$('#backup-destination-start-new').checked=false;backupDestinationPreview=null;
+    if(generation===backupDestinationGeneration){if(!result.retention_recovery){$('#backup-destination-root').value=result.settings.backup_root;$('#backup-destination-start-new').checked=false;}backupDestinationPreview=null;
       $('#backup-destination-preview').hidden=true;$('#backup-destination-confirm').checked=false;}
     $('#backup-destination-current').textContent='当前备份目录：'+result.directory;
     $('#backup-destination-message').textContent=(result.message||'历史已复制，后续备份使用新位置；原件保留。')+(backupDestinationDirty()?' 新的位置修改仍是未应用草稿。':'');
-    inlineError($('#backup-destination-error'),'');await poll();
+    inlineError($('#backup-destination-error'),result.failure_count?result.message:'');await poll();
   }catch(error){inlineError($('#backup-destination-error'),error.message);}
   finally{backupDestinationBusy=false;renderBackupDestinationControls();}
 });

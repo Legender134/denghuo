@@ -28,7 +28,7 @@ AUTOMATIC_TARGET = 384 * 1048576
 
 
 @contextmanager
-def _automatic_lock(manager, root):
+def _automatic_lock(manager, root, *, create_directory=True):
     # Capture, metadata edits and policy consent share this destination lock.
     # Reentrant calls on one manager stay under its existing thread lock.
     with manager.lock:
@@ -36,7 +36,8 @@ def _automatic_lock(manager, root):
             yield
             return
         manager.ensure_storage()
-        directory = unlinked(manager.directory); directory.mkdir(parents=True,exist_ok=True)
+        directory = unlinked(manager.directory)
+        if create_directory:directory.mkdir(parents=True,exist_ok=True)
         stream = unlinked(directory.parent/'.backup-library-write.lock').open('a+b')
     with stream:
         try:
@@ -83,7 +84,7 @@ def automatic_status(manager, root):
     binding = {'scope':scope.name, 'root':str(Path(root).resolve()).casefold(),
                'destination':str(manager.directory.resolve()).casefold()}
     result = {**binding, 'enabled':False, 'available':True, 'writable':True, 'expected':None,
-              'revision':None, 'error':'', 'keep_per_slot':AUTOMATIC_KEEP, 'target_bytes':AUTOMATIC_TARGET,
+              'revision':None, 'error':'', 'repairable':False, 'keep_per_slot':AUTOMATIC_KEEP, 'target_bytes':AUTOMATIC_TARGET,
               'note':'默认全部保留。明确启用后，仅活动额度不足时将本库较旧记录移入可重新加入的保留目录；不释放物理磁盘空间。'}
     try:
         path = unlinked(scope/'retention-policy.json')
@@ -93,7 +94,7 @@ def automatic_status(manager, root):
     result['expected'] = hashlib.sha256(raw).hexdigest()
     try:value = _automatic_policy(raw)
     except (ValueError,TypeError,KeyError,RecursionError) as exc:
-        return {**result,'available':False,'writable':False,'error':'自动保留设置无法核验，原件保留，自动整理关闭：'+str(exc)}
+        return {**result,'available':False,'writable':False,'repairable':True,'error':'自动保留设置无法核验，原件保留，自动整理关闭：'+str(exc)}
     result['revision'] = value['revision']
     if any(value[key]!=binding[key] for key in binding):
         return {**result,'available':False,'error':'这是其他存档目录或备份位置的授权副本；自动整理关闭，请在当前位置重新预览启用。'}
@@ -156,6 +157,41 @@ def automatic_save(manager, root, payload, *, enabled):
                 'message':'已启用本库自动保留策略，容量不足时才整理；原 ZIP 始终保留。' if enabled else '已关闭自动整理，继续保留全部活动记录。'}
 
 
+def automatic_repair_preview(manager, root):
+    with manager.lock:
+        policy=automatic_status(manager,root)
+        if not policy['repairable']:raise ValueError('当前策略无需重建或暂不可读取，请重新核对；原件保留')
+        path=unlinked(manager.scope(root)/'retention-policy.json')
+        raw=manager._index_bytes(path)
+        if raw is None:raise ValueError('自动保留设置已变化，请重新读取')
+        signature=hashlib.sha256(raw).hexdigest()
+        binding={key:policy[key] for key in ('scope','root','destination')}
+        return {**binding,'path':str(path),'bytes':len(raw),'sha256':signature,
+                'expected':digest({**binding,'sha256':signature,'bytes':len(raw)}),
+                'message':'确认后完整保留损坏策略原件，再重建为关闭状态。不会整理备份；启用须重新预览并授权。'}
+
+
+def automatic_repair(manager, root, payload):
+    from .backups import atomic_json
+    with manager.lock,_automatic_lock(manager,root):
+        preview=automatic_repair_preview(manager,root)
+        if payload.get('expected')!=preview['expected'] or payload.get('confirmed') is not True:
+            raise ValueError('损坏策略或确认已变化，请重新预览；尚未重建')
+        path=unlinked(Path(preview['path']));raw=manager._index_bytes(path)
+        if raw is None or hashlib.sha256(raw).hexdigest()!=preview['sha256']:
+            raise ValueError('损坏策略在读取期间变化，请重新预览；原件保留')
+        preserved=unlinked(path.with_name('retention-policy.preserved-'+uuid.uuid4().hex+'.json'))
+        with preserved.open('xb') as stream:
+            stream.write(raw);stream.flush();os.fsync(stream.fileno())
+        if manager._index_bytes(preserved)!=raw or manager._index_bytes(path)!=raw:
+            raise ValueError('损坏策略在保留期间变化，尚未重建；保留副本仍在原目录')
+        atomic_json(path,{'format':1,**{key:preview[key] for key in ('scope','root','destination')},
+                          'enabled':False,'revision':uuid.uuid4().hex})
+        return {'policy':automatic_status(manager,root),'preserved_path':str(preserved),
+                'preserved_sha256':preview['sha256'],'preserved_bytes':len(raw),'archived':0,'deleted':0,
+                'message':'已完整保留损坏策略：'+str(preserved)+'；策略已重建为关闭状态。需要自动整理时，请重新预览并启用。'}
+
+
 def automatic_remove_intent(manager, root, source, target, indexes, identity, after_indexes):
     """Keep enough exact evidence to roll back one interrupted automatic move."""
     from .backups import atomic_json
@@ -177,8 +213,9 @@ def automatic_remove_intent(manager, root, source, target, indexes, identity, af
     return path
 
 
-def automatic_recover(manager, root, *, deadline=None):
-    from .backups import atomic_json, check_capture_deadline
+def automatic_recovery_plan(manager, root, *, deadline=None):
+    """Read-only exact evidence validation, also used before destination copying."""
+    from .backups import check_capture_deadline
     scope = manager.scope(root); path = unlinked(scope/'automatic-retention-pending.json')
     if not path.exists():return
     check_capture_deadline(deadline)
@@ -217,9 +254,18 @@ def automatic_recover(manager, root, *, deadline=None):
     if len(archive)>MAX_TOTAL or hashlib.sha256(archive).hexdigest()!=value['sha256']:
         raise ValueError('自动整理保留原件已变化，未自动覆盖')
     check_capture_deadline(deadline)
-    if available==target:target.replace(source)
-    for name,original in restored.items():manager._restore_index_bytes(scope/name,original)
-    path.unlink()
+    return {'scope':scope,'path':path,'source':source,'target':target,'available':available,
+            'restored':restored,'id':value['id'],'bytes':len(archive),
+            'pending_sha256':hashlib.sha256(raw).hexdigest()}
+
+
+def automatic_recover(manager, root, *, deadline=None):
+    plan = automatic_recovery_plan(manager,root,deadline=deadline)
+    if plan is None:return
+    if plan['available']==plan['target']:plan['target'].replace(plan['source'])
+    for name,original in plan['restored'].items():manager._restore_index_bytes(plan['scope']/name,original)
+    plan['path'].unlink()
+    scope=plan['scope']
     manager.scanned.discard(str(scope));manager._storage_cache=None
     manager._set_notice(root,'已将中断的自动整理退回活动库，完整原 ZIP 和原记录保留；接下来重新核对容量。')
 
