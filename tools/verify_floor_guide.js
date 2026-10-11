@@ -4,21 +4,22 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
 const source=fs.readFileSync(path.join(__dirname,'../web/floor-guide.js'),'utf8');
 const scoutingSource=fs.readFileSync(path.join(__dirname,'../web/scouting.js'),'utf8');
 function harness(){
-  const nodes=new Map(),writes=[],reads=[];
+  const nodes=new Map(),writes=[],reads=[],references=[];
   function node(tag='div'){return {tagName:tag.toUpperCase(),children:[],listeners:{},open:false,hidden:false,disabled:false,textContent:'',innerHTML:'',
-    append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;this.innerHTML='';this.textContent='';},addEventListener(name,handler){this.listeners[name]=handler;},getContext(){return {fillRect(){},strokeRect(){}};}};}
+    append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;this.innerHTML='';this.textContent='';},addEventListener(name,handler){this.listeners[name]=handler;},contains(item){return this===item||this.children.some(child=>child.contains?.(item));},focus(){context.document.activeElement=this;},getContext(){return {fillRect(){},strokeRect(){}};}};}
   const get=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
   const state={started:1,revision:1,settings_revision:'s1',active_slot:1,run_id:'run1',error:'',stale:false,
     settings:{mode:'save',save_root:'synthetic-only'},data:{depth:4,branch:0,version:922,hero:{level:5}}};
   const context=vm.createContext({console,JSON,String,Number,Object,Map,Set,URLSearchParams,state,$:get,view:'overview',
     document:{createElement:node},snapshotViewOwner:()=>JSON.stringify([state.started,state.settings.save_root,state.active_slot,state.run_id,state.settings.mode]),
     inlineError:(target,text)=>{target.textContent=text;target.hidden=!text;},fmtTime:String,
+    escapeHTML:value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])),
     post:(url,payload)=>new Promise((resolve,reject)=>writes.push({url,payload,resolve,reject})),
     fetch:url=>new Promise((resolve,reject)=>reads.push({url,resolve,reject})),exampleHTML:block=>`<section>${block.title}</section>`,
-    scoutCoordinate:row=>`(${row.x}, ${row.y})`,scoutingCards:()=>{},showScoutedItem:()=>{},showReference:()=>{}});
+    scoutCoordinate:row=>`(${row.x}, ${row.y})`,scoutingCards:()=>{},showScoutedItem:()=>{},showReference:(...args)=>references.push(args)});
   const run=code=>vm.runInContext(code,context);run(scoutingSource);
   context.navigate=view=>{context.view=view;run('loadScouting()');};
-  run(source);return {context,state,get,writes,reads,run};
+  run(source);return {context,state,get,writes,reads,references,run};
 }
 function catalog(){return {source:{slot:1,depth:4,branch:0,version:922,modified:100,expected:'a'.repeat(64),hero_level:5},supported:true,
   floors:[{depth:4,branch:0,current:true,available:true}],encounters:{note:'常规生成参考，不是本局实例',rows:[{id:'actors.mobs.crab',name:'螃蟹',hp:'15',damage:'1–7',dr:'0–4',condition:'每轮名额',group:'普通轮换'}]}};}
@@ -32,7 +33,9 @@ const deadline=setTimeout(()=>{console.error('FAIL: floor guide verification did
   const card=h.get('#floor-monsters-list').children[0];assert.equal(card.tagName,'DETAILS');assert.equal(card.open,false);assert.match(card.children[0].children[1].textContent,/生命 15.*普攻 1–7/);
   card.open=true;card.listeners.toggle();assert.equal(h.reads.length,1);const params=new URL(h.reads[0].url,'http://synthetic').searchParams;
   assert.equal(params.get('hero_level'),'5');assert.equal(params.get('loot_count'),'0');assert.equal(params.get('depth'),'4');
-  h.reads[0].resolve({ok:true,json:async()=>({blocks:[{title:'掉落物、数量与概率'}]})});await settle();assert.match(card.children[2].innerHTML,/掉落物、数量与概率/);
+  h.reads[0].resolve({ok:true,json:async()=>({inputs:[{key:'target_hp',label:'分裂前生命',value:40},{key:'damage',label:'输入伤害',value:20}],blocks:[{title:'掉落物、数量与概率'}]})});await settle();assert.match(card.children[2].innerHTML,/掉落物、数量与概率/);
+  assert.match(card.children[2].innerHTML,/本次参考参数：分裂前生命：40；输入伤害：20/);
+  assert.match(card.children[2].innerHTML,/未读取敌人的当前状态/);
   card.open=false;card.listeners.toggle();card.open=true;card.listeners.toggle();assert.equal(h.reads.length,1);
   const reveal=h.run('revealFloorContents()');assert.equal(h.writes.length,2);assert.equal(h.writes[1].payload.reveal,true);assert.equal(h.writes[1].payload.expected,'a'.repeat(64));
   h.writes[1].resolve({depth:4,branch:0,source:{slot:1,floor_modified:100},map:{width:1,height:1,tiles:[1],hero:null},item_count:0,note:'已保存事实',features:[{terrain:16,name:'隐藏门',x:2,y:1,hidden:true}],traps:[{name:'毒镖陷阱',x:2,y:2,visible:false,active:true}],heaps:[],mobs:[]});await reveal;
@@ -65,5 +68,42 @@ const deadline=setTimeout(()=>{console.error('FAIL: floor guide verification did
   grouped.state.revision++;grouped.run('refreshFloorGuide()');grouped.writes.at(-1).resolve(groupedCatalog);await settle();
   assert.equal(grouped.get('#floor-monsters-list').children[1],group,'same-floor refresh retains group and nested expansion');
   assert.equal(group.open,true);assert.equal(nested.open,true);
+  nested.children[2].children.at(-1).focus();
+  grouped.state.data.hero.level=6;grouped.state.revision++;grouped.run('refreshFloorGuide()');
+  assert.match(nested.children[2].textContent,/角色等级已变化/);
+  assert.equal(nested.children[2].children.length,0,'retire old full-reference button before the new catalog arrives');
+  const upgraded=JSON.parse(JSON.stringify(groupedCatalog));upgraded.source.hero_level=6;
+  grouped.writes.at(-1).resolve(upgraded);await settle();
+  const rebuiltGroup=grouped.get('#floor-monsters-list').children[1],rebuiltNested=rebuiltGroup.children[1].children[0];
+  assert.notEqual(rebuiltGroup,group);assert.equal(rebuiltGroup.open,true);assert.equal(rebuiltNested.open,true);
+  assert.equal(grouped.context.document.activeElement,rebuiltNested.children[0],'level-up restores identifiable focus to the same monster summary');
+  assert.equal(grouped.reads.length,2,'open card refreshes its numeric conditions after level-up');
+  assert.equal(new URL(grouped.reads[1].url,'http://synthetic').searchParams.get('hero_level'),'6');
+  grouped.reads[1].resolve({ok:true,json:async()=>({blocks:[{title:'新等级掉落条件'}]})});await settle();
+  assert.match(rebuiltNested.children[2].innerHTML,/新等级掉落条件/);
+  grouped.state.data.depth=5;grouped.state.revision++;grouped.run('refreshFloorGuide()');
+  upgraded.source.depth=5;grouped.writes.at(-1).resolve(upgraded);await settle();
+  assert.equal(grouped.get('#floor-monsters-list').children[1].open,false,'different floor does not inherit expansion');
+  const lateLevel=harness();await load(lateLevel);
+  const lateCard=lateLevel.get('#floor-monsters-list').children[0];lateCard.open=true;lateCard.listeners.toggle();
+  lateLevel.state.data.hero.level=6;lateLevel.state.revision++;lateLevel.run('refreshFloorGuide()');
+  lateLevel.reads[0].resolve({ok:true,json:async()=>({blocks:[{title:'旧等级迟到结果'}]})});await settle();
+  assert(!lateCard.children[2].innerHTML.includes('旧等级迟到结果'));
+  const lateCatalog=catalog();lateCatalog.source.hero_level=6;lateLevel.writes.at(-1).resolve(lateCatalog);await settle();
+  assert.equal(lateLevel.get('#floor-monsters-list').children[0].open,true);
+  assert.equal(new URL(lateLevel.reads[1].url,'http://synthetic').searchParams.get('hero_level'),'6');
+  const spectral=harness();spectral.state.data.depth=8;spectral.run('refreshFloorGuide()');
+  const spectralCatalog=catalog();spectralCatalog.source.depth=8;spectralCatalog.floors[0].depth=8;
+  spectralCatalog.encounters.rows=[{id:'actors.mobs.wraith',name:'怨灵',hp:'1',damage:'5–10',dr:'0',group:'特殊房间',condition:'本层房间'},
+    {id:'actors.mobs.wraith',reference_key:'actors.mobs.wraith@spectral-summon',reference_depth:4,name:'怨灵（招魂法师召唤）',hp:'1',damage:'3–6',dr:'0',group:'任务房间',condition:'固定按等效第4层'}];
+  spectral.writes.at(-1).resolve(spectralCatalog);await settle();
+  const variants=spectral.get('#floor-monsters-list').children;assert.equal(variants.length,2);
+  for(const variant of variants){variant.open=true;variant.listeners.toggle();}
+  assert.equal(new URL(spectral.reads[0].url,'http://synthetic').searchParams.get('depth'),'8');
+  assert.equal(new URL(spectral.reads[1].url,'http://synthetic').searchParams.get('depth'),'4');
+  spectral.reads[1].resolve({ok:true,json:async()=>({blocks:[{title:'常规战斗数值'}]})});await settle();
+  variants[1].children[2].children.at(-1).listeners.click();
+  const captured=spectral.references[0][0];assert.equal(captured.id,'actors.mobs.wraith');
+  assert.equal(captured.lookup_context.params.depth,4);assert.match(captured.lookup_context.conditions,/固定按等效第4层/);
   console.log(JSON.stringify({public_only_automatic:true,collapsed_lazy_numeric_and_loot:true,same_floor_expansion_preserved:true,explicit_hidden_opt_in:true,save_slot_error_and_late_response_invalidation:true,retry:true,conditional_groups_collapsed_and_lazy:true}));
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>clearTimeout(deadline));

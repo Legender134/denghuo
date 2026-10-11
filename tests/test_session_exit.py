@@ -387,17 +387,29 @@ class FinalCaptureTests(unittest.TestCase):
 
     def test_unstable_first_attempt_retries_and_never_uses_a_mixed_snapshot(self):
         actual = self.manager.capture
-        calls = []
+        calls, clock = [], [1000.0]
         def interleaved(root, slot, *, deadline=None):
             calls.append(True)
+            self.assertLessEqual(len(calls), 2)
+            self.assertEqual(deadline, 1001.0)
             if len(calls) == 1:
                 self.write(34)
                 raise ValueError('游戏正在保存，下一次重试')
             return actual(root, slot, deadline=deadline)
-        with patch.object(self.manager, 'capture', side_effect=interleaved):
-            result = self.manager.final_capture(self.root, time.monotonic() + 1)
-        self.assertTrue(result['ok'])
+        def retry_wait(seconds):
+            self.assertGreater(seconds, 0)
+            self.assertLessEqual(seconds, .1)
+            clock[0] += seconds
+        # Exercise real archive I/O and exact snapshot bytes without making the
+        # retry contract depend on a shared Windows runner finishing it in 1s.
+        # Separate deadline tests cover exhausted budgets and late workers.
+        with (patch('companion.backups.time.monotonic', side_effect=lambda: clock[0]),
+              patch('companion.backups.time.sleep', side_effect=retry_wait),
+              patch.object(self.manager, 'capture', side_effect=interleaved)):
+            result = self.manager.final_capture(self.root, 1001.0)
+        self.assertTrue(result['ok'], result)
         self.assertEqual(len(calls), 2)
+        self.assertAlmostEqual(clock[0], 1000.1)
         _, payloads, game, identity = self.manager.checked_archive(self.root, result['captured'][0]['id'], 1)
         self.assertEqual(payloads['game.dat'], (self.folder / 'game.dat').read_bytes())
 

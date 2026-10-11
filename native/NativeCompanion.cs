@@ -455,7 +455,7 @@ namespace Denghuo.Native {
             var inspector = UI.Table(1); inspector.Dock = DockStyle.Fill; inspector.RowCount = 4;
             inspector.RowStyles.Add(new RowStyle(SizeType.AutoSize)); inspector.RowStyles.Add(new RowStyle(SizeType.AutoSize)); inspector.RowStyles.Add(new RowStyle(SizeType.Percent, 65)); inspector.RowStyles.Add(new RowStyle(SizeType.Percent, 35));
             revealFloor = UI.Button("揭示本层隐藏内容", delegate { Host.Send("reveal_floor", "token", floorToken); });
-            var adjustFloor = UI.Button("调整所选怪物条件…", delegate { AdjustFloorReference(); });
+            var adjustFloor = UI.Button("查看所选资料数值…", delegate { AdjustFloorReference(); });
             inspector.Controls.Add(floorCaption, 0, 0); inspector.Controls.Add(UI.Buttons(revealFloor, adjustFloor), 0, 1); inspector.Controls.Add(floor, 0, 2); inspector.Controls.Add(floorDetail, 0, 3);
             floor.AfterSelect += delegate { if (floor.SelectedNode != null) UI.ReplaceText(floorDetail, Convert.ToString(floor.SelectedNode.Tag)); };
             table.Controls.Add(inspector, 0, 2); table.Controls.Add(summary, 0, 3); table.Controls.Add(references, 0, 4); table.Controls.Add(Status, 0, 5);
@@ -471,7 +471,11 @@ namespace Denghuo.Native {
                 if (node.Name.StartsWith("/monsters/") && (id.StartsWith("actors.mobs.") || id.StartsWith("levels.") || id.StartsWith("items.quest."))) {
                     Host.Send("floor_reference", "id", id, "token", floorToken); return;
                 }
+                if (node.Name.StartsWith("/hidden/") && id.StartsWith("item-floor-")) {
+                    Host.Send("floor_item_reference", "id", id, "token", floorToken); return;
+                }
             }
+            UI.ReplaceText(floorDetail, "请先选择本层可能出现的怪物，或主动揭示后选择具体物品，再查看数值。");
         }
         void RememberFloor(TreeNodeCollection nodes, HashSet<string> expanded, HashSet<string> known) { foreach (TreeNode node in nodes) { if (node.Nodes.Count > 0) known.Add(node.Name); if (node.IsExpanded) expanded.Add(node.Name); RememberFloor(node.Nodes, expanded, known); } }
         void AddFloor(TreeNodeCollection nodes, object[] rows, string parent, HashSet<string> expanded, HashSet<string> known, string selected, ref TreeNode chosen) {

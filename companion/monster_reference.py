@@ -88,6 +88,12 @@ def _slime_damage(damage):
     return int(value)
 
 
+def _soiled_fist_damage(damage, grass_cells):
+    """SoiledFist.damage's integer product, float division, and Math.round."""
+    if grass_cells == 0: return damage
+    return math.floor(float32(float32(damage * (6-grass_cells)) / float32(6)) + .5)
+
+
 def defense_block(values, identity, row):
     """Intrinsic class/property rules; conditional defenses stay conditional."""
     profile = row['defenses']
@@ -142,6 +148,17 @@ def defense_block(values, identity, row):
         rows.append(['所有伤害','无敌','战斗尚未开始，或任意古神之拳仍存活时'])
     elif name.startswith('yogfist$'):
         rows.append(['所有伤害','无敌','距古神基座4格以内；按游戏八方向距离判断'])
+        if name=='yogfist$soiledfist':
+            rows.extend([
+                ['进入承伤分支的整数伤害','输入×（6−草丛格数）÷6，四舍五入','自身及周围8格中的高草、茂草计数0–9；0格时保留原值。6格时为0，负值被普通承伤处理拒绝；其他抗性等随后结算，不是最终扣血'],
+                ['燃烧状态造成的伤害','不扣血','仍可被点燃，火焰也能烧毁周围草丛；此规则不等于免疫所有火焰相关来源'],
+            ])
+        elif name=='yogfist$rottingfist':
+            rows.append(['非流血来源的伤害','转为流血强度参数','须不处于无敌，且此拳自身没有镰刀收割标记；先乘来源抗性并四舍五入，再把结果×0.6传给流血。原输入不立即扣血，已有流血与后续每跳分别结算'])
+        elif name=='yogfist$rustedfist':
+            rows.append(['非延迟伤害状态来源的伤害','加入延迟伤害池','须不处于无敌；先乘来源抗性并四舍五入，非负结果加入粘稠的延迟伤害状态。原输入不立即扣血，延迟状态自己的伤害不再次入池'])
+        elif name in ('yogfist$brightfist','yogfist$darkfist'):
+            rows.append(['首次跨过半血且仍存活的伤害','生命设回最大生命的一半','本次承伤前高于半血、承伤后不超过半血；正常最大生命300时设回150，随后传送。若本次直接致死则走死亡分支，不保证半血锁血'])
     elif name=='gnollgeomancer':
         rows.extend([
             ['所有伤害','无敌','该地卜师所连接的豺狼人爆破手仍存活时'],
@@ -154,6 +171,8 @@ def defense_block(values, identity, row):
         rows.append(['来自生物的伤害','有条件无敌','倒地恢复期间；角色和水晶尖塔来源例外，不能推定所有来源均无效'])
     elif name=='gnollguard':
         rows.append(['进入承伤分支的伤害','输入伤害 ÷4，整数截断','该守卫所连接的豺狼爆破手仍存活时；普通抗性等随后结算'])
+    elif name=='demonspawner':
+        rows.append(['进入承伤分支的整数伤害','20点起压缩，非固定上限','20／40／85点输入变为20／25／30；同时按压缩后的输入推进召唤冷却，再结算普通抗性等，不是最终扣血'])
     elif name in ('monk','senior'):
         rows.append(['需要命中检定的攻击','无限闪避','有专注状态、未麻痹且未睡眠时；无限命中仍不能绕过此分支，不表示所有伤害来源均免疫'])
     elif name in ('slime','causticslime'):
@@ -219,6 +238,21 @@ def _wealth_applies(identity, row):
     # These four Vault overrides return 1 without calling Mob.lootChance.
     return row['base_loot_chance']>0 and _family(identity) not in (
         'quest.vault.vaultdm200','quest.vault.vaultgolem','quest.vault.vaultshaman','quest.vault.vaultskeleton')
+
+
+def _exotic_loot_target(identity):
+    # Only these reviewed classes reach Mob.createLoot's Class<?> branch.
+    # Acidic and the category-pool overrides bypass that branch entirely.
+    name=_family(identity)
+    if name in ('bat','necromancer','spectralnecromancer','swarm','demonspawner'):
+        return 'items.potions.exotic.potionofshielding'
+    return {
+        'elemental$fireelemental':'items.potions.exotic.potionofdragonsbreath',
+        'elemental$newbornfireelemental':'items.potions.exotic.potionofdragonsbreath',
+        'elemental$frostelemental':'items.potions.exotic.potionofsnapfreeze',
+        'elemental$shockelemental':'items.scrolls.exotic.scrollofmysticalenergy',
+        'elemental$chaoselemental':'items.scrolls.exotic.scrollofmetamorphosis',
+    }.get(name)
 
 
 def loot_rows(values, identity, row, p):
@@ -296,6 +330,15 @@ def loot_rows(values, identity, row, p):
         quantity = 2 if name == 'greatcrab' else span(30+10*depth,60+20*depth) if expr == 'Gold.class' else 1
         rows = [_item(values,targets[expr],chance,quantity)]
         if expr == 'Gold.class': condition += '；金币数量在范围内按整数等概率生成'
+    exotic=_exotic_loot_target(identity)
+    if exotic:
+        level=p.get('exotic_crystals',-1)
+        conversion=0 if level==-1 else float32(float32(.2)+float32(float32(.2)*level))
+        original=rows[0]
+        rows=[{**original,'probability':original['probability']*(1-conversion)}]
+        if conversion:
+            rows.append(_item(values,exotic,original['probability']*conversion,original['quantity']))
+        condition+=f'；异晶生效等级 {level}（−1为无效果），普通掉落成功后按 {display(100*conversion)}% 转换为对应合剂／秘卷；两行互斥，不额外增加掉落次数'
     for item in rows:
         item['condition'] = condition + ('；'+item['condition'] if item.get('condition') else '')
     extras = {
@@ -303,6 +346,7 @@ def loot_rows(values, identity, row, p):
         'spectralnecromancer':('items.scrolls.scrollofremovecurse',1,1),
         'rotheart':('plants.rotberry$seed',1,1), 'tengu':('items.tengusmask',1,1),
         'dwarfking':('items.kingscrown',1,1),
+        'elemental$newbornfireelemental':('items.quest.embers',1,1),
     }
     if name in extras:
         item, probability, quantity = extras[name]
@@ -311,6 +355,8 @@ def loot_rows(values, identity, row, p):
                           (f'角色等级不超过 {limit} 级；' if gated else '')+'固定奖励，与普通随机掉落分别结算'))
         if name == 'rotheart':
             rows[-1]['condition'] = '正常死亡时的固定奖励；燃烧伤害会直接摧毁腐莓核心，绕过死亡掉落，无法获得此种子'
+        elif name == 'elemental$newbornfireelemental':
+            rows[-1]['condition'] = '敌对新生火焰元素死亡时独立掉落1份余烬；不受普通掉落等级上限、财富或异晶转换影响；友方召唤体不提供此任务奖励'
     if name == 'rotlasher':
         for item in rows:
             item['condition'] += '；燃烧直接摧毁时绕过正常死亡掉落'
@@ -338,13 +384,14 @@ def add_monster_values(values, identity, p, result, requested):
     depth, hero = p['depth'],p['hero_level']
     requested.add('hero_level')
     name = _family(identity)
+    if _exotic_loot_target(identity):requested.add('exotic_crystals')
     if _wealth_applies(identity,row): requested.add('wealth_bonus')
     uses_depth = bool(row['dynamic']) or row['loot_expression'] in ('Gold.class','Generator.Category.ARMOR','Generator.Category.WEAPON','Generator.Category.MISSILE') or name in ('dm200','dm201','golem','hermitcrab','thief','bandit','tormentedspirit','gnollexile')
     if uses_depth: requested.add('depth')
     counts = ('skeleton','necromancer$necroskeleton','guard','shaman','thief','bandit','dm200','dm201','golem','slime','causticslime','bat','necromancer','spectralnecromancer','swarm','warlock')
     if name in counts: requested.add('loot_count')
     if name == 'swarm': requested.add('swarm_generation')
-    if name in ('causticslime','fetidrat','goo','acidic'): requested.add('depth')
+    if name in ('causticslime','fetidrat','goo','acidic','yogfist$rottingfist'): requested.add('depth')
     stats = normal_stats(row,identity,depth)
     max_level = stats['maxLvl']
     exp = stats['EXP'] if max_level >= 1 else 0
@@ -370,7 +417,7 @@ def add_monster_values(values, identity, p, result, requested):
     if name in ('crystalspire','fungalcore','demonspawner','necromancer','spectralnecromancer','yogdzewa','rotheart'): note += ' 此类敌人的主要作用来自特殊能力或召唤，普通攻击值不表示它会使用普通攻击。'
     result.insert(0,{'title':'常规战斗数值','values':stat_rows,'note':note})
     loot = loot_rows(values,identity,row,p)
-    loot_note=('按所填角色等级、本局累计掉落次数和财富有效加成计算；默认加成0。财富倍率仅用于普通掉落，固定额外奖励另列。'
+    loot_note=('按所填角色等级、本局累计掉落次数和财富有效加成计算；默认财富加成0，适用的异晶默认−1（无效果）。财富倍率仅用于普通掉落，固定额外奖励另列。'
                '财富有效加成不是戒指等级：无戒指或魔法免疫填0，单枚正常+0戒指填1，正常戒指按生效等级＋1合计；诅咒戒指按min(0, 生效等级−2)合计。'
                '额外形态和临时增益须计入生效加成后手填；未从存档推定。普通掉率按实际判定最高100%，物品池表已乘普通掉率，不代表本次一定掉落。'
                '本表不计算财富额外战利品、赏金猎人、遗忘碎片或幸运附魔；神器池使用初始可用池参考，实际已生成神器会改变分布。')
@@ -395,6 +442,66 @@ def add_monster_values(values, identity, p, result, requested):
                      _metric('淤泥初始持续参数',20,'回合','水中可洗掉，伤害另按楼层和状态行动结算'),
                      _metric('受攻击时播种恶臭气体体积',20,'体积','每次进入防御效果处理时在自身格播种；不要求攻击最终扣血，不是1/3概率或20点伤害'),
                      _metric('恶臭气体效果','延长麻痹','','气体更新时作用于当前所在格的非免疫生物；气体体积不能当作麻痹持续时间')]
+    elif name in ('golem','quest.vault.vaultgolem'):
+        abilities = [_metric('拉回目标后冷却',20,'次自身行动','每次自身行动开始减1；目标须可见、不能普通攻击、非不可移动且绕障路径可达，不是每20次角色操作保证发动'),
+                     _metric('拉回目标行动耗时',1,'回合','从自身周围8格选择可通行空位；目标魔法免疫或无落点时也会消耗此行动并设置冷却'),
+                     _metric('能正常追近时的拉回选择','1 / ⌊100÷距敌距离⌋','','只在距离至少1、目标可见且不能普通攻击时；追近失败后还有不经这次随机检定的拉回尝试，其他条件仍须满足')]
+        if name == 'quest.vault.vaultgolem':
+            abilities.append(_metric('自身传送','不使用','','宝库潜行行为替换游荡状态，不能进入普通魔像的自身传送准备；仍保留追击中的拉回目标能力'))
+        else:
+            abilities += [_metric('自身传送准备耗时',2,'回合','游荡且无法追近目标、非首领层、自身传送冷却结束时；不等于追击中每2回合传送'),
+                          _metric('自身传送落点处理耗时',1,'回合','下一次自身行动处理；落点须无人且有大型生物空间，否则改选目标'),
+                          _metric('自身成功传送后冷却',30,'次自身行动','每次自身行动开始减1；只有成功传送才设置30，目标不可用时不设此冷却')]
+    elif name == 'guard':
+        abilities = [_metric('正常铁链最大敌人距离',4,'格','八方向距离小于5；目标可见、不能普通攻击、未魅惑守卫且非不可移动，投射路径和落点仍须可用'),
+                     _metric('每只守卫成功使用铁链次数',1,'次','只在找到落点并实际进入拉拽分支时标记已用；失败尝试不消耗该次数'),
+                     _metric('拉拽后残废基础持续',4,'回合','落点是铁链路径上最靠近守卫的可用格；不是残废状态通用的10回合，抗性等另计')]
+    elif name in ('necromancer','spectralnecromancer'):
+        spectral = name == 'spectralnecromancer'
+        abilities = [_metric('准备召唤的最大敌人距离',4,'格','敌人可见且有视野内可通行的敌人邻格；绕障寻路可达，不能穿过实墙'),
+                     _metric('首次召唤准备耗时',1,'回合','准备之后在后续自身行动尝试召唤；落点被占、无法推出占位者时会延后'),
+                     _metric('后续召唤准备耗时',2,'回合','首次召唤完成后；不是两回合必定出现一个生物'),
+                     _metric('占位且无法推开时的基础伤害','2–10','HP','召唤落点上的敌对阵营占位者；对同阵营占位者不造成这段伤害，每次阻塞再等待1回合')]
+        if spectral:
+            abilities += [_metric('召唤怨灵的固定等效层数',4,'层','直接指定普通怨灵种类；不是按当前楼层缩放，也不进行默认稀有变种替换'),
+                          _metric('该召唤怨灵的基础数值','生命1 · 普攻3–6 · 命中14 · 闪避70','','与本层通用怨灵参考不同，抗性和临时状态仍另计'),
+                          _metric('召唤物数量','可同时多个','','招魂法师不建立普通死灵法师的唯一骷髅连接；死亡时清除所记录且仍同阵营的怨灵')]
+        else:
+            abilities += [_metric('普通召唤骷髅初始生命',20,'HP','初始最大生命25；只维持自己的同阵营骷髅连接，不能套用普通骷髅经验或掉落'),
+                          _metric('骷髅未满血时每次恢复','最大生命÷5向下取整','HP','正常最大生命25时恢复5，且不超过缺失生命；支援行动默认耗时1回合'),
+                          _metric('骷髅满血时肾上腺素基础持续',3,'回合','只有该骷髅当前没有肾上腺素状态时施加；不是状态通用的10回合持续'),
+                          _metric('骷髅回收传送条件','不在视野或绕路过长','','骷髅不能攻击目标，且无路径，或路径长度同时大于敌人距离的2倍且至少4格时，会尝试移到目标邻格；不保证有可用落点')]
+    elif name in ('thief','bandit'):
+        abilities = [_metric('偷窃尝试','命中角色后','','须为敌对阵营且未持有被盗物品；从背包顶层均匀抽1个条目，唯一物品或等级至少+1时失败，不重抽。嵌套袋内物品不在此随机列表'),
+                     _metric('一次成功偷窃数量',1,'件','堆叠物品取1件；未堆叠物品整件取走。蜂蜜罐等物品还按自身特殊规则处理'),
+                     _metric('逃跑中进入防御效果处理撒金币',1,'金币','每次在自己所在格掉落；不要求此次攻击最终造成正伤害，和击杀普通掉落分别结算'),
+                     _metric('丢弃被盗物品的逃脱最小距离',6,'格','进入逃脱分支时，自身还须在玩家视野外；之后尝试转移位置并清空被盗物品，不保证一定成功转移')]
+        if name == 'bandit':
+            abilities += [_metric('成功偷窃后失明基础持续',5,'回合','普通失明10回合的一半；仅偷窃成功后，已有状态及抗性另计'),
+                          _metric('成功偷窃后残废基础持续',5,'回合','普通残废10回合的一半；仅偷窃成功后'),
+                          _metric('成功偷窃后中毒剩余参数','5–6','回合','等概率整数；已有更长中毒不缩短，不是5–6点总伤害'),
+                          _metric('新中毒首次基础伤害','2–3','HP','仅新中毒，按剩余参数÷3向下取整再加1；已有状态、抗性和提前解除另计')]
+    elif name == 'demonspawner':
+        requested.update(('depth','damage'))
+        damage=p['damage']
+        reduced=damage if damage<20 else 19+math.floor(math.sqrt(8*(damage-19)+1)-1)//2
+        interval=float32(60-min(20,(depth-21)*6.67)) if depth>21 else 60
+        abilities = [_metric('所填输入经血巢压缩后',reduced,'HP','20点起先压缩，再进入普通抗性、屏障等处理；不是保证扣血或固定20点上限'),
+                     _metric('该输入推进召唤冷却',reduced,'计数','使用压缩后、进入普通承伤处理前的数值；不以最终实际扣血倒推'),
+                     _metric('成功召唤后基础添加冷却',interval,'时间计数',f'所填主地牢层数{depth}；第21／22／23／24层分别添加60／53.33／46.66／40。保留原冷却余量，每次自身行动先减1，不是固定角色操作间隔'),
+                     _metric('初始召唤冷却',0,'计数','首次自身行动已有可用邻格时即可尝试召唤，不能假定要先等完整60回合'),
+                     _metric('堵塞时保留的最低冷却',-20,'计数','冷却到期但周围8格没有可通行空位时不召唤；下一次到期检查把低于−20的余量截到−20，不能堆存多个同时召唤'),
+                     _metric('新恶魔加入行动队列的延迟',1,'回合','每次成功在周围8格的随机可用格生成1只跳跃恶魔，进入追击状态')]
+    elif name == 'swarm':
+        requested.update(('target_hp','damage'))
+        splits=p['target_hp']>=p['damage']+2
+        clone=(p['target_hp']-p['damage'])//2 if splits else 0
+        abilities = [_metric('所填条件是否允许分裂','满足生命条件' if splits else '不满足生命条件','','进入防御效果处理时当前生命至少为伤害＋2，还须有上下左右可用空位；不是斜向8格，也不保证最终发生'),
+                     _metric('若成功分裂，新个体初始生命',clone,'HP','按（当前生命−所填伤害）÷2向下取整；未满足生命条件时所列0表示不生成，不是零生命生成物'),
+                     _metric('原个体分裂后、最终承伤前生命',p['target_hp']-clone,'HP','仅生命条件与落点均满足时减去新个体生命，之后才继续处理本次伤害；不是保证剩余生命'),
+                     _metric('新个体开始行动延迟',1,'回合'),
+                     _metric('新个体分裂代数',p['swarm_generation']+1,'代','正代数分裂体不提供经验，治疗药剂概率按各自分裂代数另算'),
+                     _metric('继承中毒时重新设置参数',2,'回合','原个体有中毒才给新个体设置；燃烧重新点燃，其他可随复活保留状态按各自规则复制')]
     elif name == 'bat':
         abilities = [_metric('命中后的吸血恢复','max(0, min(攻击处理后的伤害−4, 缺失生命))','HP','使用普通攻击效果处理返回的伤害；目标护甲已影响此输入，不按基础伤害范围直接回血'),
                      _metric('正常基础攻击可提供的恢复额度','1–14','HP','基础伤害5–18且无减伤或其他修正时；生命已满则恢复0，实际恢复不超过缺失生命')]
@@ -477,14 +584,14 @@ def add_monster_values(values, identity, p, result, requested):
                      _metric('发射后冷却计数','4–6','次自身行动','每次自身行动开始减1；不是固定的角色回合数'),
                      _metric('魔法命中掷骰倍率',2,'倍','基础命中30的随机掷骰乘2，再与目标闪避掷骰比较；不是必中或最终命中概率'),
                      _metric('蓄力时所填伤害缩减后',p['damage']//4,'HP','进入邪眼承伤分支的伤害先除4并向下取整，之后仍受抗性等处理影响')]
-    elif name == 'dm100':
+    elif name in ('dm100','quest.vault.vaultdm100'):
         abilities = [_metric('远程电击基础伤害','3–10','HP','目标非相邻，且魔法弹道可达目标时；相邻或弹道被阻挡时使用普通攻击'),
                      _metric('远程电击耗时',1,'回合','不扣普通护甲，抗性等另计'),
-                     _metric('魔法命中掷骰倍率',2,'倍','基础命中11的随机掷骰乘2，再与目标闪避掷骰比较；不是必中或最终命中概率')]
-    elif name == 'dm200':
-        abilities=[_metric('排气行动耗时',1,'回合','敌人可见、不能普通攻击，且通过距离随机检定与可排气路径检查时'),
+                     _metric('魔法命中掷骰倍率',2,'倍',f'基础命中{stats["attackSkill"]}的随机掷骰乘2，再与目标闪避掷骰比较；不是必中或最终命中概率')]
+    elif name in ('dm200','quest.vault.vaultdm200'):
+        abilities=[_metric('排气行动耗时',1,'回合','敌人可见、不能普通攻击，且通过距离随机检定或追近失败后尝试；冷却与绕障可排气路径检查仍须通过'),
                    _metric('排气后冷却计数',30,'次自身行动','每次自身行动开始减1；初始0，不是固定角色回合数'),
-                   _metric('排气选择检定','1 / ⌊100÷距敌距离⌋','','仅距离至少1且仍不能普通攻击时；通过检定不保证能排气，路径与冷却仍需满足'),
+                   _metric('排气选择检定','1 / ⌊100÷距敌距离⌋','','仅距离至少1且仍不能普通攻击时；追近失败后另有不经此随机检定的尝试，路径与冷却仍需满足'),
                    _metric('弹道路径每格播种毒气体积',20,'体积','沿排气弹道计算的各格；体积不是伤害或固定持续时间'),
                    _metric('弹道终点另播种毒气体积',100,'体积','在路径播种之后添加；扩散、叠加、抗性与中毒伤害分别结算')]
     elif name == 'dm201':
@@ -511,7 +618,7 @@ def add_monster_values(values, identity, p, result, requested):
                      _metric('魔法命中掷骰倍率',2,'倍','命中随机掷骰乘2；不是最终命中概率'),
                      _metric('命中角色后施加降级概率',50,'%','只对角色；目标抗性和免疫另计'),
                      _metric('降级基础持续',30,'回合','已有更长状态不缩短；抗性及其他状态修正另计')]
-    elif name in ('skeleton','necromancer$necroskeleton'):
+    elif name in ('skeleton','necromancer$necroskeleton','quest.vault.vaultskeleton'):
         abilities = [_metric('死亡碎骨爆炸基础伤害','6–12','HP','非坠落死亡时，对周围8格的存活角色分别结算；不进行命中检定'),
                      _metric('碎骨爆炸护甲减伤掷骰',2,'次','将目标两次独立减伤掷骰之和扣除，最低伤害0；不是同一次掷骰简单翻倍，其他防护另计')]
     elif name in ('brute','armoredbrute'):
@@ -530,10 +637,103 @@ def add_monster_values(values, identity, p, result, requested):
         if name=='acidic':
             abilities += [_metric('攻击命中后施加淤泥概率',100,'%','先尝试施加淤泥，再处理继承的普通攻击效果和50%残废；此分支不额外要求最终伤害大于0，目标免疫等另计'),
                           _metric('相邻攻击者触发淤泥概率',100,'%','进入防御效果处理且攻击者八方向相邻时，施加给攻击者；不要求酸液蝎最终扣血')]
-    elif name == 'shaman':
+    elif name in ('shaman','quest.vault.vaultshaman'):
         names=[values.catalog.messages['actors.buffs.'+buff+'.name'] for buff in ('weakness','vulnerable','hex')]
-        abilities = [_metric('远程土弹伤害','6–15','HP','魔法命中检定；每次攻击耗时1回合'),
-                     _metric('命中后附加负面状态概率',50,'%',f'红色{names[0]}、蓝色{names[1]}、紫色{names[2]}')]
+        abilities = [_metric('远程土弹伤害','6–15','HP','目标非相邻且魔法弹道可达时；不扣普通护甲，抗性等另计，相邻或弹道受阻时使用普通攻击'),
+                     _metric('远程土弹耗时',1,'回合'),
+                     _metric('魔法命中掷骰倍率',2,'倍',f'基础命中{stats["attackSkill"]}的随机掷骰乘2，再与目标闪避掷骰比较；不是必中或最终命中概率'),
+                     _metric('命中后附加负面状态概率',50,'%','仅远程魔法命中后、土弹伤害结算前尝试；目标抗性和免疫另计'+
+                             (f'；红色{names[0]}、蓝色{names[1]}、紫色{names[2]}' if name=='shaman' else '；按此只宝库萨满生成时固定的类型施加'))]
+        if name == 'quest.vault.vaultshaman':
+            abilities += [_metric(f'生成时选择{buff}类型概率',chance,'',
+                                  f'生成时均匀抽取0–4并固定类型；远程命中且50%附加状态判定触发后施加{buff}，每次攻击不重抽类型；未读取本局类型')
+                          for buff,chance in zip(names,('2/5','2/5','1/5'))]
+    elif name in ('elemental$fireelemental','elemental$frostelemental','elemental$shockelemental',
+                  'elemental$chaoselemental','elemental$newbornfireelemental',
+                  'quest.vault.vaultelemental$fire','quest.vault.vaultelemental$frost','quest.vault.vaultelemental$shock'):
+        newborn=name=='elemental$newbornfireelemental'
+        abilities=[_metric('远程攻击后重设冷却参数','3–5','自身追击行动',
+                           '初始也从此范围抽取；只有追击状态每次行动先减1，普通远程可攻击判定要求小于0，不是固定玩家回合数'),
+                   _metric('远程施放行动耗时',1,'回合','冷却外，普通元素还要求非相邻且魔法弹道到达目标；蓄力火球另有准备阶段')]
+        if newborn:
+            abilities += [_metric('普通敌对形态近战点燃概率',0,'%','不继承普通火元素的50%近战点燃；盟友召唤形态另计'),
+                          _metric('火球准备耗时范围','1–3','回合','正常攻击耗时1时：将玩家剩余行动耗时向上取整后限制在1至3之间；瞄准目标邻格中可达的一格，下一次自身追击行动向保存落点施放'),
+                          _metric('火球影响范围','落点及八个邻格','','实墙格排除；落点不跟随玩家后续移动，离开追击状态取消准备'),
+                          _metric('火球播种火焰体积：干燥／水格','8／2','体积','不是直接扣血量或固定燃烧总伤害；范围内除自身外的角色均尝试点燃，不做普通命中检定'),
+                          _metric('火球点燃基础持续参数',8,'回合','已有更长燃烧不缩短；目标免疫等另计，火焰地形也会继续变化')]
+        elif name.endswith(('$fireelemental','$fire')):
+            abilities += [_metric('近战命中后点燃概率',50,'%','目标所在格无水时；普通攻击已进入命中效果处理，不要求最终扣血大于0，免疫等另计'),
+                          _metric('近战点燃基础持续参数',8,'回合','已有更长燃烧不缩短，不是8点伤害或保证8次伤害'),
+                          _metric('远程命中后点燃概率',100,'%','先进行魔法命中检定，目标所在格无水时尝试点燃；远程分支不直接使用20–25近战伤害'),
+                          _metric('远程点燃基础持续参数',4,'回合','已有更长燃烧不缩短；目标免疫等另计')]
+        elif name.endswith(('$frostelemental','$frost')):
+            abilities += [_metric('近战命中后冻结处理概率：干燥／水格','33.3333%／100%','','普通攻击已进入命中效果处理；水格不检查目标是否飞行，冻结免疫另计'),
+                          _metric('远程命中后冻结处理概率',100,'%','先进行魔法命中检定；不直接使用20–25近战伤害'),
+                          _metric('一次冻结处理添加冻伤：干燥／水格','3／5','回合','目标尚未冻结时；已存在冻伤以10回合上限限制本次添加，再计状态抗性'),
+                          _metric('冻伤达到上限后的冻结基础持续',10,'回合','本次处理前已有冻伤，且添加后达到10，目标不免疫冻结时；不是首次命中必定冻结'),
+                          _metric('已冻结目标再次冻结处理的参数',2,'回合','由Buff.affect处理；不是无条件额外叠加2回合')]
+        elif name.endswith(('$shockelemental','$shock')):
+            requested.add('damage')
+            arc=math.floor(float32(float32(p['damage'])*float32(.4))+.5)
+            abilities += [_metric('近战电弧基础倍率',40,'%','进入近战命中效果处理后的伤害参数乘0.4，再四舍五入；各受击者的抗性等另计'),
+                          _metric('所填近战伤害的每个电弧基础伤害',arc,'HP','不是敌人普攻总伤害；目标格无水时，原近战目标从电弧受击名单移除，其他连锁角色仍可能受击'),
+                          _metric('电弧首次搜索距离',2,'可通行路径格','沿非实墙路径查找角色，可递归连锁；后续角色站水中且不飞行时搜索2格，否则1格。排除施法者及已命中的角色，不区分阵营'),
+                          _metric('远程命中后失明基础持续',5,'回合','先进行魔法命中检定；不直接使用20–25近战伤害，状态抗性和免疫另计')]
+        else:
+            abilities += [_metric('混沌远程普通命中检定','跳过','','直接触发诅咒法杖效果；不是固定伤害，也不意味着每种效果都能绕过免疫'),
+                          _metric('混沌近战命中效果','随机有效诅咒法杖效果','','先完成普通近战命中效果处理，再选择效果；具体伤害和状态按被选效果分别结算')]
+    elif name.startswith('yogfist$'):
+        light_dark=name in ('yogfist$brightfist','yogfist$darkfist')
+        abilities=[_metric('初始远程冷却',0,'计数','远程可用时须魔法弹道首先碰到目标；生物和实心地形会阻挡'),
+                   _metric('远程施放耗时',1,'回合','光明／黑暗之拳仅非相邻时使用远程；其他四种可在相邻且冷却结束时使用远程'),
+                   _metric('远程施放后添加冷却',0 if light_dark else '8–12','计数',
+                           '此种远程没有额外冷却；相邻时改用普通近战' if light_dark else
+                           '范围内抽取浮点值，非等概率；保留原冷却余量。未麻痹时每次自身行动开始减1，冷却大于0只可普通近战，不是固定玩家回合数')]
+        if name=='yogfist$burningfist':
+            requested.add('depth')
+            abilities += [_metric('远程目标格有水时','蒸干该格，不直接点燃','','不进行普通命中检定；这次仍会在符合条件的目标邻格补充火焰'),
+                          _metric('远程点燃基础持续参数',8,'回合','目标格无水时尝试点燃，不进行普通命中检定；已有更长燃烧不缩短，免疫等另计，不是8点总伤害'),
+                          _metric('所填层数的燃烧单次基础伤害',span(1,3+depth//4),'HP',f'按当前主地牢等效层数{depth}，每次燃烧状态行动随机结算；不是远程施放的直接伤害或保证总量'),
+                          _metric('周围火焰补充后的最低体积',4,'体积','每次自身行动对自身及周围8格、远程施放对目标及周围8格处理；仅非水、非实心且现有火焰体积小于4的格补足，不是4点伤害'),
+                          _metric('每次自身行动蒸干水格的尝试','自身格＋1–2次邻格抽取','','自身站水中先蒸干；邻格抽取次数为1的概率1/3、为2的概率2/3，可重复抽到同一格，不能保证蒸干对应数量的水格')]
+        elif name=='yogfist$soiledfist':
+            requested.update(('damage','grass_cells'))
+            abilities += [_metric('远程扎根基础持续参数',3,'回合','先进行魔法命中检定，命中掷骰倍率×2，不是必中；飞行目标不能扎根，状态抗性和免疫另计，不直接造成普通攻击伤害'),
+                          _metric('远程播草范围','目标格及周围8格','','不论扎根是否命中都会播草；仅距基座超过4格、非实心且当前不是高草／茂草的格可改写'),
+                          _metric('远程每个可播草格变为茂草概率',20,'%','其余80%变为普通草；不能据此保证出现固定数量的茂草'),
+                          _metric('每次自身行动培育茂草的尝试','1–2次自身或邻格抽取','','次数为1的概率2/3、为2的概率1/3，可重复；只有抽到普通草才改成茂草，随后在自身及周围8格的可播草格铺普通草'),
+                          _metric('所填草丛减伤后的输入',_soiled_fist_damage(p['damage'],p['grass_cells']),'HP输入',f'自身及周围8格有{p["grass_cells"]}格高草／茂草；输入先乘（6−格数）÷6并四舍五入，再结算来源抗性等。0或负结果不造成普通扣血，不是最终HP损失'),
+                          _metric('燃烧状态伤害','不扣血','','仍可被点燃，火焰可烧毁草丛；不表示所有火焰来源免疫')]
+        elif name=='yogfist$rottingfist':
+            requested.add('damage')
+            bleed=float32(float32(p['damage'])*float32(.6))
+            first_low=float32(bleed/float32(2))
+            abilities += [_metric('受伤转流血','原输入不立即扣血','','非无敌、来源不是流血且此拳自身无镰刀收割标记时；来源抗性结算并四舍五入后再转换，流血来源等例外走普通承伤处理'),
+                          _metric('所填伤害传给流血的强度参数',bleed,'强度参数','所填值已经过来源抗性并四舍五入；再乘0.6，不是直接扣血、固定持续时间或总伤害'),
+                          _metric('新流血首次强度范围',span(first_low,bleed),'强度','流血在传入强度的1/2至全值之间随机抽取，非等概率；已有流血取更强值，不相加'),
+                          _metric('新流血首跳基础伤害',span(math.floor(first_low+.5),math.floor(bleed+.5)),'HP','仅新流血的首次状态行动，将首次强度四舍五入后进入普通承伤处理；后续每跳重新随机衰减，不能乘持续回合估算总量'),
+                          _metric('正常水中每次自身行动恢复',6,'HP','当前生命未满且自身格有水时；按最大生命300÷50向下取整，恢复不超过缺失生命，临时最大生命改变时另算'),
+                          _metric('远程播种毒气体积',100,'体积','在目标格播种，不进行普通命中检定；100不是伤害或持续回合，气体扩散与目标停留决定实际受击'),
+                          _metric('所填层数的毒气单次基础伤害',1+depth//5,'HP',f'气体更新时位于有毒气格的非免疫生物；按当前主地牢等效层数{depth}计算，普通护甲不抵挡，抗性等另计'),
+                          _metric('近战命中后施加淤泥概率',50,'%','普通攻击效果处理后尝试施加，不额外要求最终伤害大于0；目标免疫等另计')]
+        elif name=='yogfist$rustedfist':
+            abilities += [_metric('远程残废基础持续参数',4,'回合','不进行普通命中检定；状态抗性和免疫另计，不直接造成22–44近战伤害'),
+                          _metric('承伤转为延迟池的额度','来源抗性取整后的伤害','伤害池参数','非无敌且来源不是延迟伤害状态时；非负结果全部加入已有池，原输入不立即扣血'),
+                          _metric('新延迟池首次伤害前等待',1,'回合','池原本为0时设置；已有非零池再追加不重新等待'),
+                          _metric('延迟池每次基础伤害','max(1, ⌊当前池×0.1⌋)','HP输入','每次延迟状态行动先按此量尝试伤害，再从池扣除同量；实际HP损失受后续承伤处理影响'),
+                          _metric('延迟状态后续行动间隔',1,'回合','池扣至0或更低后移除；不是固定10回合结清，也不能把池值保证为最终总扣血')]
+        elif light_dark:
+            bright=name=='yogfist$brightfist'
+            abilities += [_metric('远程光束基础伤害' if bright else '远程暗影弹基础伤害','10–20','HP','先进行魔法命中检定，命中掷骰倍率×2，不是必中；不使用18–36近战范围，来源抗性、魔法防护等另计'),
+                          _metric('半血传送触发线',150,'HP','普通最大生命300；本次承伤前高于150、承伤后仍存活且不超过150才触发，生命设回150并传到玩家视野外可达空位，随后游荡'),
+                          _metric('远程命中后失明基础持续' if bright else '远程命中后削减光亮持续',5 if bright else 50,'回合',
+                                  '先完成光束伤害，再延长失明；已有更长失明不缩短，状态抗性和免疫另计' if bright else
+                                  '先完成暗影弹伤害；仅目标已有光亮状态时缩短其剩余时间，不是50点HP伤害或直接减少50格视野')]
+            if bright:
+                abilities += [_metric('半血传送时失明基础持续',15,'回合','施加给玩家；已有更长失明不缩短，状态抗性和免疫另计'),
+                              _metric('死亡时失明基础持续',30,'回合','施加给玩家；本次直接致死也走此分支，不触发半血传送')]
+            else:
+                abilities += [_metric('半血传送或死亡时的光亮','移除玩家光亮状态','','玩家有光亮才移除；不是施加失明状态，直接致死不触发半血传送')]
     elif name == 'pylon':
         requested.add('damage')
         damage=p['damage']
@@ -547,7 +747,7 @@ def add_monster_values(values, identity, p, result, requested):
     elif name == 'npcs.vaultlaser':
         abilities = [_metric('激光伤害','10–20','HP','路径上的友方目标；不进行命中检定，实墙阻挡光束'),
                      _metric('连续射击间隔',1,'回合','同一轮尚未发射完时；轮次间隔、方向及射击次数由房间配置')]
-    if name in ('causticslime','fetidrat','goo','acidic'):
+    if name in ('causticslime','fetidrat','goo','acidic','yogfist$rottingfist'):
         ooze_damage=1+depth//5 if depth>5 else '1（剩余持续参数为偶数时）' if depth<5 else 1
         abilities=[metric for metric in abilities if metric['label']!='淤泥初始持续参数']
         abilities += [_metric('淤泥初始持续参数',20,'回合','重新施加会重置持续参数和首次行动标记；状态行动与玩家操作不一一对应，不表示总伤害'),

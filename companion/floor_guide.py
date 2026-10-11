@@ -11,29 +11,36 @@ from .monster_reference import monster_record, normal_stats, reference
 def floor_encounters(game, catalog):
     depth, branch, version = game.get('depth'), game.get('branch', 0), game.get('version')
     result = {'depth':depth,'branch':branch,'version':'4.0.2','rows':[],
-              'note':'普通轮换、房间和任务条件参考；不是本局已出现的怪物清单。携带物品召唤、挑战与临时变化另查对应资料。'}
+              'note':'普通轮换、房间、任务与饰品生成条件参考；不是本局已出现的怪物清单。携带物品主动召唤、挑战与临时变化另查对应资料。'}
     if version!=922 or type(depth) is not int or not 1<=depth<=26 or type(branch) is not int:
         result['note']='当前保存版本或楼层尚未核对常规生成规则；可在手册查询4.0.2独立参考。'
         return result
     data = reference()
     result['sources']=[{'path':path,'sha256':digest,'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{data["commit"]}/{path}'}
         for path,digest in data['verified_source_files'].items() if path in data['encounters'].get('condition_sources',()) or path.endswith(('/MobSpawner.java','/Shaman.java','/Elemental.java','/Dungeon.java','/MiningLevel.java','/VaultLevel.java'))]
-    def add(identity, condition, group):
-        existing=next((r for r in result['rows'] if r['id']==identity),None)
+    def add(identity, condition, group, *, reference_depth=None, profile=None):
+        existing=next((r for r in result['rows'] if r['id']==identity and r.get('reference_depth')==reference_depth),None)
         if existing:
             existing['condition']+='；另可出现：'+condition
             return
         row = monster_record(catalog, identity)
         if not row: raise ValueError('楼层怪物参考不完整，请核对资料版本。')
-        stats = normal_stats(row,identity,depth)
-        result['rows'].append({'id':identity,'name':row['name'],'condition':condition,'group':group,
-            'hp':str(stats['HT']),'damage':str(stats['damageRoll']),'dr':str(stats['drRoll'])})
+        stats = normal_stats(row,identity,depth if reference_depth is None else reference_depth)
+        health=str(stats['HP'])+('/'+str(stats['HT']) if stats['HP']!=stats['HT'] else '')
+        item={'id':identity,'name':row['name'],'condition':condition,'group':group,
+            'hp':health,'damage':str(stats['damageRoll']),'dr':str(stats['drRoll'])}
+        if reference_depth is not None:item['reference_depth']=reference_depth
+        if profile:
+            item['reference_key']=identity+'@'+profile
+            item['name']+='（招魂法师召唤）'
+        result['rows'].append(item)
     def finish():
         for row in result['rows']:
             group=row['group']
             if group in ('稀有替换','罕见跨区','罕见跨区变种'): row['fold_group']='稀有与罕见变种'
             elif group in ('特殊房间','任务房间'): row['fold_group']='房间与任务条件'
             elif group=='首领支援': row['fold_group']='首领支援与召唤'
+            elif group=='饰品条件': row['fold_group']='饰品生成条件'
         return result
     if branch:
         if branch==1 and 11<=depth<=14:
@@ -97,6 +104,7 @@ def floor_encounters(game, catalog):
             add(rules['alternatives'][rare['class']],'先满足2.5%整轮额外加入，再按默认2%替换；鼠头骨可改变替换概率','罕见跨区变种')
     priority={'普通轮换':0,'稀有替换':1,'罕见跨区':2,'罕见跨区变种':3}
     result['rows'].sort(key=lambda row:priority.get(row['group'],4))
+    add('actors.mobs.ebonymimic','仅普通主地牢非首领层生成物品时，宝箱怪之牙生效且分支命中才可能出现；生效等级0／1／2／3对应分支概率12.5%／25%／37.5%／50%，无效果为0。伪装为普通地面物品、出口或门；不是每个宝箱的概率，未读取本局饰品或实际生成结果','饰品条件')
     for identity,condition in (('piranha','水池宝藏房间生成3只食人鱼，每个名额默认2%替换为幻影食人鱼；鼠头骨可改变替换概率'),
         ('phantompiranha','水池房间的食人鱼名额默认2%替换；这不是房间生成概率'),
         ('statue','石像房间生成1座石像，默认10%改为装甲石像；鼠头骨可改变替换概率'),
@@ -125,5 +133,6 @@ def floor_encounters(game, catalog):
     if any(r['id']=='actors.mobs.necromancer' for r in result['rows']):
         add('actors.mobs.necromancer$necroskeleton','死灵法师发动召唤且有可用位置时；不能套用普通骷髅的经验或掉落','任务房间')
     if any(r['id']=='actors.mobs.spectralnecromancer' for r in result['rows']):
-        add('actors.mobs.wraith','招魂法师发动召唤且有可用位置时','任务房间')
+        add('actors.mobs.wraith','招魂法师发动召唤且有可用位置时；直接生成普通怨灵，固定按等效第4层调整数值，不使用当前层数或稀有替换',
+            '任务房间',reference_depth=4,profile='spectral-summon')
     return finish()

@@ -31,7 +31,7 @@ class FloorGuideTests(unittest.TestCase):
         self.assertNotIn('actors.mobs.slime',third)
 
     def test_rare_additions_are_per_rotation_and_boss_floor_is_not_rotation(self):
-        groups=[r['group'] for r in self.guide(4)['rows'] if r['group'] not in ('特殊房间','任务房间')]
+        groups=[r['group'] for r in self.guide(4)['rows'] if r['group'] in ('普通轮换','稀有替换','罕见跨区','罕见跨区变种')]
         self.assertEqual(groups,sorted(groups,key={'普通轮换':0,'稀有替换':1,'罕见跨区':2,'罕见跨区变种':3}.get))
         fourth={r['id']:r for r in self.guide(4)['rows']}
         self.assertIn('不是每次刷新2.5%',fourth['actors.mobs.thief']['condition'])
@@ -95,7 +95,7 @@ class FloorGuideTests(unittest.TestCase):
         for branch,depths in ((0,range(1,27)),(1,range(11,20))):
             for depth in depths:
                 rows=self.guide(depth,branch)['rows']
-                self.assertEqual(len({r['id'] for r in rows}),len(rows),(depth,branch))
+                self.assertEqual(len({r.get('reference_key',r['id']) for r in rows}),len(rows),(depth,branch))
         first={r['id']:r for r in self.guide(1)['rows']}
         self.assertIn('默认10%',first['actors.mobs.armoredstatue']['condition'])
         self.assertIn('不是房间生成概率',first['actors.mobs.phantompiranha']['condition'])
@@ -110,13 +110,37 @@ class FloorGuideTests(unittest.TestCase):
         for branch,depths in ((0,range(1,27)),(1,range(11,20))):
             for depth in depths:
                 for row in self.guide(depth,branch)['rows']:
-                    result=values.detail(row['id'],{'depth':depth,'hero_level':5,'loot_count':0})
+                    result=values.detail(row['id'],{'depth':row.get('reference_depth',depth),'hero_level':5,'loot_count':0})
                     blocks={block['title']:block for block in result['blocks']}
                     self.assertIn('常规战斗数值',blocks)
                     self.assertIn('掉落物、数量与概率',blocks)
                     self.assertEqual(len(blocks['常规战斗数值']['values']),10)
                     identities.add(row['id'])
         self.assertGreater(len(identities),40)
+
+    def test_spectral_summon_has_fixed_depth_and_distinct_room_profile(self):
+        rows=[row for row in self.guide(8)['rows'] if row['id']=='actors.mobs.wraith']
+        self.assertEqual(len(rows),2)
+        room,summon=rows
+        self.assertEqual(room['damage'],'5–10')
+        self.assertEqual(summon['damage'],'3–6')
+        self.assertEqual(summon['reference_depth'],4)
+        self.assertNotEqual(room.get('reference_key',room['id']),summon['reference_key'])
+        self.assertIn('不使用当前层数或稀有替换',summon['condition'])
+        skeleton=next(row for row in self.guide(8)['rows'] if row['id']=='actors.mobs.necromancer$necroskeleton')
+        self.assertEqual(skeleton['hp'],'20/25')
+
+    def test_ebony_mimic_is_conditional_reference_only_on_regular_main_floors(self):
+        for depth in range(1,27):
+            rows=[r for r in self.guide(depth)['rows'] if r['id']=='actors.mobs.ebonymimic']
+            if depth in (5,10,15,20,25,26):self.assertEqual(rows,[])
+            else:
+                self.assertEqual(len(rows),1)
+                self.assertEqual(rows[0]['fold_group'],'饰品生成条件')
+                for condition in ('宝箱怪之牙','12.5%／25%／37.5%／50%','无效果为0','未读取本局饰品'):
+                    self.assertIn(condition,rows[0]['condition'])
+        for depth in (12,17):
+            self.assertFalse(any(r['id']=='actors.mobs.ebonymimic' for r in self.guide(depth,1)['rows']))
 
 
 class NativeFloorGuideTests(unittest.TestCase):
@@ -165,6 +189,50 @@ class NativeFloorGuideTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'已更新'):
             self.ui.reveal_floor({'token':old['token']})
 
+    def test_native_revealed_floor_item_opens_exact_level_without_character_assumptions(self):
+        before=self.tree();snap=self.session.snapshot()
+        public=self.ui.floor_state(snap)
+        self.ui.reveal_floor({'token':public['token']})
+        work,finish=self.jobs.pop();finish(work(),None)
+        revealed=self.ui.floor_state(snap)
+        heap=next(row for row in revealed['nodes'][0]['children'] if row['id']=='heaps-0')
+        selected=heap['children'][0]
+        self.assertIn('item-floor-',selected['id'])
+        calls=[];self.ui.manager.open_reference=lambda *args:calls.append(args)
+        self.ui.frozen=False
+        self.ui.dispatch({'action':'floor_item_reference','token':revealed['token'],'id':selected['id']})
+        self.assertEqual(len(calls),1)
+        reference,source,note=calls[0]
+        self.assertEqual(reference['entry'],'items.weapon.melee.sword')
+        self.assertEqual(reference['params'],{'level':3,'tier':3})
+        self.assertEqual(reference['level_origin'],'revealed')
+        self.assertEqual(reference['source'],{'mode':'example'})
+        self.assertNotIn('stamp',reference)
+        self.assertIn('未合并当前角色',reference['conditions'])
+        self.assertIn('槽位 1',reference['field_origins']['level'])
+        self.assertTrue(any('保存生命 22 / 36' in row['text'] for row in revealed['nodes'][0]['children']))
+        self.assertEqual(self.tree(),before)
+        self.assertFalse(self.session.settings['reveal'])
+
+    def test_native_hidden_item_reference_retires_on_hide_or_snapshot_change(self):
+        # This controller fixture has no native child; record the normal error
+        # presentation while exercising dispatch and its freshness checks.
+        self.ui.error=lambda message:setattr(self.ui.manager,'action_error',message)
+        snap=self.session.snapshot();public=self.ui.floor_state(snap)
+        self.ui.reveal_floor({'token':public['token']})
+        work,finish=self.jobs.pop();finish(work(),None)
+        revealed=self.ui.floor_state(snap)
+        selected=next(row for row in revealed['nodes'][0]['children'] if row['id']=='heaps-0')['children'][0]
+        calls=[];self.ui.manager.open_reference=lambda *args:calls.append(args);self.ui.frozen=False
+        self.ui.reveal_floor({'token':revealed['token']})
+        self.ui.dispatch({'action':'floor_item_reference','token':revealed['token'],'id':selected['id']})
+        self.assertEqual(calls,[])
+        self.assertIn('主动揭示',self.ui.manager.action_error)
+        self.game['hero']['HP']=21;self.save();self.session.refresh()
+        self.ui.dispatch({'action':'floor_item_reference','token':revealed['token'],'id':selected['id']})
+        self.assertEqual(calls,[])
+        self.assertIn('已更新',self.ui.manager.action_error)
+
     def test_native_floor_reference_uses_lookup_contract_and_current_conditions(self):
         snap=self.session.snapshot();public=self.ui.floor_state(snap)
         calls=[];self.ui.manager.open_reference=lambda *args:calls.append(args)
@@ -181,6 +249,30 @@ class NativeFloorGuideTests(unittest.TestCase):
         self.assertIn('未读取本局计数',reference['conditions'])
         self.assertIsNone(source)
         self.assertEqual(self.ui.manager.action_error,'')
+
+    def test_native_public_mechanism_preview_discloses_its_example_inputs(self):
+        public=self.ui.floor_state(self.session.snapshot())
+        swarm=next(row for row in public['nodes'][1]['children'] if row['id']=='actors.mobs.swarm')
+        mechanics=next(row for row in swarm['children'] if row['text']=='特殊攻击与机制')
+        parameters=mechanics['children'][0]
+        self.assertEqual(parameters['id'],'reference-params')
+        self.assertIn('当前生命：40',parameters['text'])
+        self.assertIn('整数伤害：20',parameters['text'])
+        self.assertIn('未读取敌人',parameters['detail'])
+
+    def test_native_spectral_reference_keeps_fixed_summon_depth(self):
+        snap=self.session.snapshot();snap['data']['depth']=8
+        self.session.snapshot=lambda:snap
+        public=self.ui.floor_state(snap)
+        calls=[];self.ui.manager.open_reference=lambda *args:calls.append(args)
+        self.ui.frozen=False
+        self.ui.dispatch({'action':'floor_reference','token':public['token'],'id':'actors.mobs.wraith@spectral-summon'})
+        reference=calls[0][0]
+        self.assertEqual(reference['entry'],'actors.mobs.wraith')
+        self.assertEqual(reference['params']['depth'],4)
+        self.assertIn('固定等效层数',reference['field_origins']['depth'])
+        self.ui.dispatch({'action':'floor_reference','token':public['token'],'id':'actors.mobs.wraith'})
+        self.assertEqual(calls[1][0]['params']['depth'],8)
 
     def test_native_condition_groups_are_collapsed_and_nested_references_still_open(self):
         public=self.ui.floor_state(self.session.snapshot())
