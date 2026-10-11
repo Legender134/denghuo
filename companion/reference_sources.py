@@ -21,6 +21,13 @@ def provenance(values,identity,owner):
             related.append('com.shatteredpixel.shatteredpixeldungeon.actors.buffs.hunger')
         if identity=='items.artifacts.sandalsofnature':
             related.append('com.shatteredpixel.shatteredpixeldungeon.levels.features.highgrass')
+        extras={
+            'items.armor.glyphs.camouflage':('levels.features.highgrass','actors.hero.hero','actors.char'),
+            'actors.mobs.dm200':('actors.blobs.toxicgas',),
+            'actors.mobs.dm201':('actors.blobs.corrosivegas','actors.buffs.corrosion'),
+            'actors.mobs.gnolltrickster':('actors.buffs.poison','actors.buffs.burning','actors.blobs.fire'),
+        }
+        related.extend('com.shatteredpixel.shatteredpixeldungeon.'+tail for tail in extras.get(identity,()))
         if identity in ('actors.mobs.warlock','actors.mobs.dwarfking$dkwarlock','actors.mobs.scorpio','actors.mobs.spinner'):
             buff='degrade' if 'warlock' in identity else 'cripple' if identity.endswith('scorpio') else 'poison'
             related.append('com.shatteredpixel.shatteredpixeldungeon.actors.buffs.'+buff)

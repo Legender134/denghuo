@@ -354,6 +354,95 @@ class NativeManager:
         return self.queue_io('正在保存游玩显示设置', lambda: preferences.update(submitted,
             expected_generation=generation, check_current=self.check_io_current), complete)
 
+    @staticmethod
+    def floor_token(snap):
+        return binding_token([snap.get(key) for key in ('started','settings_revision','revision','active_slot','run_id','error')]
+            + [snap.get('settings',{}).get(key) for key in ('save_root','mode')])
+
+    def floor_state(self, snap):
+        from .floor_guide import floor_encounters
+        data = snap.get('data') or {}
+        token = self.floor_token(snap)
+        available = bool(type(data.get('depth')) is int and not snap.get('error') and snap['settings']['mode']=='save')
+        hidden = getattr(self, '_floor_hidden', None)
+        if not hidden or hidden['token']!=token:
+            hidden = None
+            self._floor_hidden = None
+        owner=binding_token([snap.get(k) for k in ('started','active_slot','run_id')]+
+            [snap.get('settings',{}).get(k) for k in ('save_root','mode')]+[data.get(k) for k in ('depth','branch','version')])
+        result = {'token':token,'owner':owner,'enabled':available and not self.io_busy,'revealed':bool(hidden),
+                  'caption':'连接有效存档后显示本层资料。','nodes':[]}
+        if not available: return result
+        result['caption']=f"第 {data['depth']} 层"+(f" · 支线 {data['branch']}" if data.get('branch') else '')+' · 最近存档，非实时视野'
+        hero=data.get('hero',{})
+        result['caption']+=f"\n生命 {hero.get('hp','未确认')} / {hero.get('ht','未确认')} · 等级 {hero.get('level','未确认')}"
+        key = binding_token([data.get(k) for k in ('depth','branch','version')]+[data.get('hero',{}).get('level')])
+        if key!=getattr(self,'_floor_public_key',None):
+            guide = floor_encounters({'depth':data['depth'],'branch':data.get('branch',0),'version':data.get('version')},self.session.catalog)
+            rows=[]
+            def leaf(identity,text,detail=''): return {'id':identity,'text':text,'detail':detail or text}
+            hero = data.get('hero',{}).get('level')
+            hero = hero if type(hero) is int and 1<=hero<=30 else 1
+            for row in guide['rows']:
+                detail=self.session.values.detail(row['id'],{'depth':data['depth'],'hero_level':hero,'loot_count':0})
+                blocks=[]
+                for i,block in enumerate(detail['blocks']):
+                    children=[]
+                    for j,value in enumerate(block.get('values',[])):
+                        title=f"{value['label']}：{value['value']} {value.get('unit','')}".strip()
+                        children.append(leaf(f'v-{i}-{j}',title,'\n'.join(filter(None,[title,value.get('condition'),block.get('note')]))))
+                    for j,cells in enumerate(block.get('rows',[])):
+                        text=' · '.join(str(c) for c in cells[:3])
+                        full='\n'.join(f'{label}：{cell}' for label,cell in zip(block['columns'],cells))
+                        children.append(leaf(f'r-{i}-{j}',text,full+'\n'+block.get('note','')))
+                    blocks.append({'id':'b-'+str(i),'text':block['title'],'detail':block.get('note',''),'children':children})
+                name=row['name']+('' if row['group']=='普通轮换' else ' · '+row['group'])
+                rows.append({'id':row['id'],'text':f"{name} · 生命 {row['hp']} · 伤害 {row['damage']} · 减伤 {row['dr']}",
+                    'detail':row['condition']+f'\n正常基础状态；角色等级 {hero}；累计成功掉落示例0次。实际财富、掉落次数、临时状态另查完整数值。',
+                    'children':blocks})
+            self._floor_public_key,self._floor_public_nodes=key,{'id':'monsters','text':f'本层可能出现的怪物 · {len(rows)} 种',
+                'detail':guide['note'],'children':rows,'expanded':True}
+        contents=[]
+        if hidden:
+            floor=hidden['result']
+            for row in floor['features']:
+                if row['hidden'] and row['terrain']==16:
+                    contents.append({'id':'door-'+str(row['pos']),'text':f"({row['x']}, {row['y']}) {row['name']}"})
+            for row in floor['traps']:
+                if not row['visible']:
+                    contents.append({'id':'trap-'+str(row['pos']),'text':f"({row['x']}, {row['y']}) {row['name']}"})
+            for kind in ('heaps','mobs'):
+                for i,row in enumerate(floor[kind]):
+                    contents.append({'id':f'{kind}-{i}','text':f"{row['name']} ({row['x']}, {row['y']})",'detail':floor['note'],
+                        'children':[{'id':f'item-{j}','text':f"{item['name']} ×{item['quantity']}"+(' · 诅咒' if item.get('cursed') is True else ''),
+                                     'detail':item['description']+'\n'+item.get('location','')} for j,item in enumerate(row['items'])]})
+        result['nodes']=[{'id':'hidden','text':'本层隐藏内容 · '+('已主动揭示' if hidden else '尚未揭示'),
+            'detail':hidden['result']['note'] if hidden else '点击“揭示本层隐藏内容”后只读查看；保存快照更新后自动收起。',
+            'children':contents,'expanded':bool(hidden)},self._floor_public_nodes]
+        return result
+
+    def reveal_floor(self, item):
+        from .scouting import inspect_saved
+        snap=self.session.snapshot();token=self.floor_token(snap)
+        if item.get('token')!=token: raise ValueError('本层存档已更新，请核对后重新揭示。')
+        if getattr(self,'_floor_hidden',None) and self._floor_hidden['token']==token:
+            self._floor_hidden=None
+            return
+        def work():
+            if self.floor_token(self.session.snapshot())!=token: raise ValueError('本层连接已变化，尚未揭示。')
+            catalog=inspect_saved(self.session,{'action':'catalog'});source=catalog['source']
+            data=snap.get('data') or {}
+            if (source['depth'],source['branch'])!=(data.get('depth'),data.get('branch',0)):
+                raise ValueError('角色正在换层，请等待保存完成后刷新。')
+            return inspect_saved(self.session,{'action':'floor','depth':source['depth'],'branch':source['branch'],
+                'expected':source['expected'],'reveal':True})
+        def complete(result,error):
+            if token!=self.floor_token(self.session.snapshot()): return
+            self.manager.action_error=error or ''
+            self.manager.action_error_until=time.monotonic()+20
+            if not error: self._floor_hidden={'token':token,'result':result}
+        self.queue_io('正在只读揭示本层隐藏内容',work,complete)
+
     def dispatch(self, item):
         action = item.get('action')
         try:
@@ -393,6 +482,26 @@ class NativeManager:
                 self.change_connection({'always_on_top': bool(item.get('checked'))})
             elif action == 'refresh':
                 self.queue_io('正在读取存档', self.session.refresh)
+            elif action == 'reveal_floor':
+                self.reveal_floor(item)
+            elif action == 'floor_reference':
+                snap=self.session.snapshot()
+                if item.get('token')!=self.floor_token(snap): raise ValueError('楼层参考已更新，请重新选择。')
+                identity=item.get('id')
+                current=self.floor_state(snap)
+                rows=current['nodes'][1]['children'] if len(current['nodes'])>1 else []
+                if identity not in {r['id'] for r in rows}:
+                    raise ValueError('请从本层可能出现的怪物选择。')
+                hero=snap['data'].get('hero',{}).get('level')
+                hero=hero if type(hero) is int and 1<=hero<=30 else 1
+                from .native_workspace import NumericLookup
+                name=next(r['text'].split(' · ')[0] for r in rows if r['id']==identity)
+                row={'entry':identity,'source':{'mode':snap['settings']['mode']},
+                    'stamp':NumericLookup.source_stamp(snap),
+                    'source_label':name+' · 本层正常敌人参考 · 角色等级来自所选存档；掉落次数为0次示例',
+                    'params':{'depth':snap['data']['depth'],'hero_level':hero,'loot_count':0},
+                    'conditions':'本层正常敌人参考；累计成功掉落示例0次，未读取本局计数或敌人临时状态。'}
+                self.manager.open_reference(row,None,'')
             elif action == 'capture':
                 self.manager.commands.put(('capture', None))
             elif action == 'reference':
@@ -521,6 +630,7 @@ class NativeManager:
         if snap.get('draft_recovery_notice'):
             texts.append(snap['draft_recovery_notice'])
         state = {'text': '\n\n'.join(filter(None, texts)), 'slot': 0 if snap['settings']['slot'] == 'auto' else snap['settings']['slot'],
+            'floor_guide': self.floor_state(snap),
             'io_busy': self.io_busy,
             'topmost': snap['settings']['always_on_top'], 'references': reference_texts,
             'reference_tokens': [binding_token(row) for row in references],

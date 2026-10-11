@@ -33,6 +33,19 @@ def statements(body):
             start = offset+1
 
 
+def comma_terms(text):
+    """Split the pinned enum's constructor arguments, retaining nested calls."""
+    start = depth = 0
+    for offset, char in enumerate(text):
+        if char == '(': depth += 1
+        elif char == ')': depth -= 1
+        elif char == ',' and depth == 0:
+            yield text[start:offset].strip()
+            start = offset+1
+    if depth != 0: raise ValueError('Unbalanced defense declaration')
+    yield text[start:].strip()
+
+
 def build(index, catalog, upstream):
     classes = index['classes']
     expected = {row['path']: row['sha256'] for row in index['coverage']['files']}
@@ -81,6 +94,7 @@ def build(index, catalog, upstream):
             if not rule: continue
             # Char.drRoll is only additional barkskin; normal unbuffed DR is 0.
             if row['name'] == 'Char' and name == 'drRoll': return 0
+            if row['name'] == 'Mob' and name == 'attackDelay': return 1
             match = re.fullmatch(r'return\s+([^;]+);', rule['body'].strip(), re.S)
             if not match: raise UnknownFormula()
             variables = {**fields(key), 'level': 1, **{param['name']: value for param, value in zip(rule['params'], arguments)}}
@@ -107,6 +121,77 @@ def build(index, catalog, upstream):
         if key.startswith('actors.mobs.') and '.npcs.' not in key and any(row['name'] == 'Mob' for row in chain(PREFIX+key, verify=False)):
             selected.add(key)
     names = {key: row['name'] for key, row in entries.items()}
+
+    def effect_id(raw, member):
+        root, *nested = raw.split('.')
+        if root in member['imports']:
+            fullname = member['imports'][root]
+        else:
+            current = member
+            while current:
+                fullname = current['fullname']+'$'+root
+                if fullname.lower() in classes: break
+                current = classes.get(current.get('parent'))
+            else:
+                fullname = member['package']+'.'+root
+        key = (fullname+''.join('$'+name for name in nested)).lower()
+        if key not in classes: raise ValueError('Unresolved defense effect: '+raw)
+        return key.removeprefix(PREFIX)
+
+    property_owner = classes[PREFIX+'actors.char$property']
+    source(property_owner['path'])
+    declaration = next(rule['body'] for rule in property_owner['rules'] if rule['kind']=='field' and rule['body'].startswith('BOSS ('))
+    property_effects = {}
+    for term in comma_terms(declaration.rstrip(';')):
+        match = re.fullmatch(r'(\w+)\s*(?:\((.*)\))?', term, re.S)
+        if not match: raise ValueError('Unreviewed character property: '+term)
+        effects = {'resistances':set(), 'immunities':set()}
+        if match[2] is not None:
+            args = list(comma_terms(match[2]))
+            if len(args) != 2: raise ValueError('Unreviewed property effects: '+term)
+            for kind, arg in zip(effects, args):
+                group = re.fullmatch(r'new\s+HashSet<Class>\(\s*(?:Arrays\.asList\((.*?)\))?\s*\)',arg,re.S)
+                if not group: raise ValueError('Unreviewed property set: '+arg)
+                for raw in re.findall(r'([\w.]+)\.class',group[1] or ''):
+                    effects[kind].add(effect_id(raw,property_owner))
+        property_effects[match[1]] = effects
+    if len(property_effects) != 14: raise ValueError('Character property roster changed')
+
+    def defenses(key):
+        properties = set()
+        effects = {'resistances':set(), 'immunities':set()}
+        extra_sources = []
+        for member in reversed(list(chain(key))):
+            for rule in member['rules']:
+                if rule['kind'] not in ('initializer','field') and rule['name'] != member['name']: continue
+                for body, straight in statements(rule['body']):
+                    additions = re.findall(r'\b(properties|resistances|immunities)\.add\(\s*([\w.$]+)\s*\)',body)
+                    if not additions: continue
+                    if not straight:
+                        # Piranha copies this exact environmental set, except electricity/freezing.
+                        if member['name'] != 'Piranha' or re.sub(r'\s+','',body) != 'for(Classc:newBlobImmunity().immunities()){if(c!=Electricity.class&&c!=Freezing.class){immunities.add(c);}}':
+                            raise ValueError('Unreviewed conditional defense: '+key+' '+body)
+                        blob = classes[PREFIX+'actors.buffs.blobimmunity']
+                        source(blob['path'])
+                        extra_sources.append({'path':blob['path'],'line':blob['line'],'sha256':verified[blob['path']]})
+                        for part in blob['rules']:
+                            if part['kind'] == 'initializer':
+                                for raw in re.findall(r'\bimmunities\.add\(\s*([\w.]+)\.class\s*\)',part['body']):
+                                    if raw not in ('Electricity','Freezing'):
+                                        effects['immunities'].add(effect_id(raw,blob))
+                        continue
+                    for kind, raw in additions:
+                        if kind == 'properties':
+                            name = raw.rsplit('.',1)[-1]
+                            if name not in property_effects: raise ValueError('Unknown defense property: '+raw)
+                            properties.add(name)
+                        elif raw.endswith('.class'):
+                            effects[kind].add(effect_id(raw.removesuffix('.class'),member))
+                        else: raise ValueError('Unreviewed defense effect: '+raw)
+        for prop in properties:
+            for kind in effects: effects[kind].update(property_effects[prop][kind])
+        return {'properties':sorted(properties), **{kind:sorted(ids) for kind,ids in effects.items()},'sources':extra_sources}
+
     extra_entries = []
     monsters = {}
     for identity in sorted(selected):
@@ -116,7 +201,7 @@ def build(index, catalog, upstream):
         name = identity.removeprefix('actors.mobs.')
         inherited = fields(key)
         stats = {field: inherited.get(field) for field in STAT_FIELDS}
-        for field, args in [('damageRoll', []), ('attackSkill', [None]), ('drRoll', [])]:
+        for field, args in [('damageRoll', []), ('attackSkill', [None]), ('drRoll', []), ('attackDelay', [])]:
             try: stats[field] = display(method(key, field, args))
             except (UnknownFormula, KeyError): stats[field] = None
         dynamic = None
@@ -126,6 +211,7 @@ def build(index, catalog, upstream):
         elif name in ('wraith', 'tormentedspirit') or identity == 'items.quest.corpsedust$dustwraith': dynamic = 'wraith'
         elif name == 'bee': dynamic = 'bee'
         elif identity == 'levels.rooms.special.sentryroom$sentry': dynamic = 'sentry'
+        if dynamic=='statue': stats['attackDelay']='所持武器的攻击耗时倍率'
         if dynamic:
             for field in ('HP', 'HT', 'defenseSkill', 'damageRoll', 'attackSkill', 'drRoll'):
                 stats.pop(field, None)
@@ -144,6 +230,8 @@ def build(index, catalog, upstream):
             stats['maxLvl'] = -2
         if name in ('pylon', 'crystalspire', 'fungalcore', 'demonspawner', 'necromancer', 'spectralnecromancer', 'yogdzewa'):
             stats['damageRoll'] = '不使用普通攻击'
+        if stats.get('damageRoll')=='不使用普通攻击' or dynamic=='sentry':
+            stats['attackDelay']='不使用普通攻击'
         if any(value is None for value in stats.values()):
             raise ValueError('Unreviewed enemy values: '+identity+' '+str(stats))
         loot = None
@@ -169,6 +257,7 @@ def build(index, catalog, upstream):
             extra_entries.append({'id': identity, 'name': localized, 'description': description, 'category': '敌人与角色', 'hint': '', 'monster_reference': True})
         chance = stats.pop('lootChance')
         monsters[identity] = {'name': localized, 'stats': stats, 'dynamic': dynamic, 'loot_expression': loot, 'base_loot_chance': chance,
+                             'defenses': defenses(key),
                              'bestiary_alias': conversions.get(identity), 'sources': [{'path': row['path'], 'line': row['line'], 'sha256': verified[row['path']]} for row in lineage]}
 
     generator_path = GAME_PATH+'items/Generator.java'
@@ -199,10 +288,55 @@ def build(index, catalog, upstream):
             if not localized or '%' in localized: raise ValueError('Missing item localization: '+identity)
             items.append({'id': identity, 'name': localized, 'weight': weight, 'quantity': 2 if identity.endswith('.darts.dart') else 3 if identity.startswith('items.weapon.missiles.') else 1})
         categories[category] = items
+    # Rotation slots are not independent spawn probabilities. Preserve the
+    # original ordered slots, optional additions and conditional replacements.
+    spawner = classes[PREFIX+'actors.mobs.mobspawner']
+    source(spawner['path'])
+    def spawner_method(name):
+        return next(r['body'] for r in spawner['rules'] if r['kind']=='method' and r['name']==name)
+    def mob_id(name):
+        identity = 'actors.mobs.'+name.replace('.', '$').lower()
+        if identity not in monsters: raise ValueError('Unknown rotation enemy: '+name)
+        return identity
+    rotations = {}
+    for match in re.finditer(r'((?:(?:case\s+\d+|default)\s*:\s*)+)return new ArrayList<>\(Arrays.asList\((.*?)\)\);', spawner_method('standardMobRotation'), re.S):
+        slots = [part.strip() for part in match[2].split(',')]
+        if any(not re.fullmatch(r'\w+\.(?:class|random\(\))', part) for part in slots):
+            raise ValueError('Unreviewed rotation expression')
+        for depth in re.findall(r'case\s+(\d+)', match[1]):
+            rotations[depth] = [part.removesuffix('.class') if part.endswith('.class') else part for part in slots]
+    if set(rotations) != {str(n) for n in range(1,27)}: raise ValueError('Incomplete official rotations')
+    rare = {depth: {'class':mob_id(name), 'chance':float(chance)} for depth,chance,name in re.findall(
+        r'case\s+(\d+):\s*if \(Random.Float\(\) < ([\d.]+)f\) rotation.add\((\w+)\.class\);', spawner_method('addRareMobs'))}
+    if len(rare)!=4: raise ValueError('Unreviewed rare additions')
+    spawner_text = source(spawner['path'])
+    alternative_pairs = re.findall(r'RARE_ALTS.put\((\w+)\.class,\s*([\w.]+)\.class\)',spawner_text)
+    if ('Elemental','Elemental.ChaosElemental') not in alternative_pairs: raise ValueError('Unreviewed elemental alias')
+    alternatives = {mob_id(a):mob_id(b) for a,b in alternative_pairs if a!='Elemental'}
+    if len(alternatives)!=10 or '1 / 50f * RatSkull.exoticChanceMultiplier()' not in spawner_method('swapMobAlts'):
+        raise ValueError('Unreviewed alternative chance')
+    selectors = {}
+    for owner, choices in (('Shaman',('RedShaman','BlueShaman','PurpleShaman')),
+                           ('Elemental',('FireElemental','FrostElemental','ShockElemental'))):
+        cls = classes[PREFIX+'actors.mobs.'+owner.lower()];source(cls['path'])
+        body = next(r['body'] for r in cls['rules'] if r['kind']=='method' and r['name']=='random')
+        if not re.search(r'roll < 0\.4f', body) or not re.search(r'roll < 0\.8f', body):
+            raise ValueError('Unreviewed selector weights')
+        if any('return '+name+'.class;' not in body for name in choices): raise ValueError('Unreviewed selector members')
+        selectors[owner+'.random()'] = [{'id':mob_id(owner+'.'+name),'chance':chance} for name,chance in zip(choices,(.4,.4,.2))]
+        if owner=='Elemental':
+            if '1/50f * RatSkull.exoticChanceMultiplier()' not in body: raise ValueError('Unreviewed elemental alternative')
+            selectors[owner+'.random()'].append({'id':mob_id('Elemental.ChaosElemental'),'alternative':True,'chance':.02})
+    rotations = {depth:[slot if slot in selectors else mob_id(slot) for slot in slots] for depth,slots in rotations.items()}
+    source(GAME_PATH+'Dungeon.java')
+    source(GAME_PATH+'levels/MiningLevel.java')
+    source(GAME_PATH+'levels/VaultLevel.java')
     return {'format': 1, 'version': catalog['version'], 'commit': catalog['commit'], 'license': 'GPL-3.0-or-later',
             'scope': 'normal enemy reference without challenges, ascension, champions, equipment or status modifiers',
             'bestiary_groups': groups, 'bestiary_conversions': conversions, 'extra_catalog_entries': extra_entries,
             'monsters': monsters, 'categories': categories, 'category_weights': category_weights,
+            'property_defenses':{prop:{kind:sorted(ids) for kind,ids in groups.items()} for prop,groups in property_effects.items()},
+            'encounters':{'rotations':rotations,'rare_additions':rare,'alternatives':alternatives,'selectors':selectors},
             'tier_weights': [[0,75,20,4,1], [0,25,50,20,5], [0,0,40,50,10], [0,0,20,40,40], [0,0,0,20,80]],
             'verified_source_files': dict(sorted(verified.items()))}
 

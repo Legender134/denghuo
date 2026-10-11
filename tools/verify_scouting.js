@@ -3,10 +3,10 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const source=fs.readFileSync(path.join(__dirname,'../web/scouting.js'),'utf8');
 function harness(){
-  const nodes=new Map(),writes=[],details=[],calculations=[];
+  const nodes=new Map(),writes=[],details=[],calculations=[],fills=[];
   function node(tag='div'){return {tagName:tag.toUpperCase(),value:'',textContent:'',checked:false,disabled:false,hidden:false,children:[],listeners:{},
     append(...values){this.children.push(...values);},replaceChildren(){this.children=[];},addEventListener(event,fn){this.listeners[event]=fn;},
-    getContext(){return {fillRect(){},strokeRect(){}};}};}
+    getContext(){return {fillStyle:'',fillRect(){fills.push(this.fillStyle);},strokeRect(){}};}};}
   const get=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
   get('#scout-result').hidden=true;
   const context=vm.createContext({console,JSON,Number,String,Object,Map,Set,$:get,document:{createElement:node},
@@ -17,7 +17,7 @@ function harness(){
     loadNumericalDetail:(...args)=>calculations.push(args),visibleCalculationContext:()=>{throw new Error('floor items must not import current hero conditions');}});
   const run=code=>vm.runInContext(code,context);
   run(source);
-  return {context,run,get,writes,details,calculations};
+  return {context,run,get,writes,details,calculations,fills};
 }
 const catalog=()=>({source:{slot:1,depth:4,branch:0,version:922,version_name:'4.0.2',modified:100,expected:'a'.repeat(64)},supported:true,note:'只列已生成楼层',floors:[{depth:3,branch:0,available:true,current:false},{depth:4,branch:0,available:true,current:true},{depth:4,branch:1,available:false,current:false}]});
 const item={key:'items.rings.ringofmight',name:'根骨之戒 +3 <保留原文本>',description:'具体说明',location:'上锁宝箱',quantity:1,level:3,level_applicable:true,revealed:true,known:false,game_level_known:false,cursed:true,tier:null,volume:null,available:false};
@@ -48,5 +48,13 @@ function enable(h){h.get('#scout-reveal').checked=true;h.get('#scout-reveal').li
   await load(h);enable(h);const failing=h.run('revealScoutingFloor()');h.writes.at(-1).reject(new Error('存档已变化'));await failing;assert(h.get('#scout-result').hidden);assert.match(h.get('#scout-error').textContent,/已变化/);
   const unsupported=h.run('loadScouting()');h.writes.at(-1).resolve({...catalog(),supported:false});await unsupported;assert(h.get('#scout-reveal').disabled);assert(h.get('#scout-open').disabled);assert.match(h.get('#scout-status').textContent,/版本尚未支持/);
   h.context.state=null;h.run('refreshScoutingContext()');assert(h.get('#scout-result').hidden);assert(h.get('#scout-open').disabled);
+  const terrain=harness(),map=result();map.map={width:9,height:1,tiles:[1,13,25,27,35,39,4,29,255],hero:null};
+  terrain.context.testResult=map;terrain.run('renderScouting(testResult)');
+  assert.equal(terrain.get('#scout-map-text').textContent,'  1 .XXXXX#~U');
+  assert(terrain.fills.slice(1,6).every(color=>color!==terrain.fills[0]));
+  assert.notEqual(terrain.fills[8],terrain.fills[0]);
+  map.mobs=[{name:'螃蟹',x:2,y:1,hp:15,ht:15,items:[],reference:{id:'actors.mobs.crab'}}];terrain.run('renderScouting(testResult)');
+  const mob=terrain.get('#scout-mobs').children[0];assert.equal(mob.tagName,'DETAILS');assert.equal(mob.children[0].tagName,'SUMMARY');
+  terrain.context.testCatalog=catalog();terrain.run('renderScoutingCatalog(testCatalog)');assert.match(terrain.get('#scout-source').textContent,/槽位 1.*第 4 层.*4.0.2/);
   console.log('PASS: saved-floor opt-in, exact request context, coordinates and text-only labels, captured item values, cancellation, floor/slot/revision races, failure, unsupported version and disconnect');
 })().catch(error=>{console.error(error);process.exitCode=1;});

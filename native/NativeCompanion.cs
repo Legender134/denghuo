@@ -436,26 +436,55 @@ namespace Denghuo.Native {
         readonly Panel options = new Panel { Dock = DockStyle.Fill, AutoSize = true, Visible = false };
         readonly List<Control> connectionControls = new List<Control>();
         readonly Button compact;
+        readonly TreeView floor = UI.Name(new TreeView { Dock = DockStyle.Fill, HideSelection = false }, "本层隐藏内容与可折叠怪物数值及掉落资料");
+        readonly RichTextBox floorDetail = UI.Read("所选楼层资料的完整条件与说明");
+        readonly Label floorCaption = UI.Label("当前楼层");
+        readonly Button revealFloor;
+        string floorToken = "", floorSignature = "", floorOwner = "";
         bool rendering, isCompact;
         public ManagerForm(Helper host) : base(host, "manager", "灯火 · 地牢助手", 550, 650) {
-            var table = UI.Table(1); table.Dock = DockStyle.Fill; Editable = table; table.RowCount = 6;
-            table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); table.RowStyles.Add(new RowStyle(SizeType.Absolute, 84)); table.RowStyles.Add(new RowStyle(SizeType.Absolute, 80)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            compact = UI.Button("收起", delegate { isCompact = !isCompact; references.Visible = !isCompact; summary.Visible = true; compact.Text = isCompact ? "展开" : "收起"; });
+            var table = UI.Table(1); table.Dock = DockStyle.Fill; Editable = table; table.RowCount = 7;
+            table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.RowStyles.Add(new RowStyle(SizeType.Percent, 75)); table.RowStyles.Add(new RowStyle(SizeType.Percent, 25)); table.RowStyles.Add(new RowStyle(SizeType.Absolute, 50)); table.RowStyles.Add(new RowStyle(SizeType.Absolute, 40)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            compact = UI.Button("收起", delegate { isCompact = !isCompact; references.Visible = !isCompact; table.RowStyles[4].Height = isCompact ? 0 : 50; summary.Visible = true; compact.Text = isCompact ? "展开" : "收起"; });
             table.Controls.Add(UI.Buttons(compact, UI.Button("设置", delegate { options.Visible = !options.Visible; }), UI.Button("退出", delegate { Host.Send("exit"); })), 0, 0);
             var settings = UI.Table(2); settings.Dock = DockStyle.Top; settings.Controls.Add(UI.Label("存档槽位"), 0, 0); settings.Controls.Add(slot, 1, 0); settings.Controls.Add(top, 0, 1);
             var refresh = UI.Button("刷新", delegate { Host.Send("refresh"); }); settings.Controls.Add(refresh, 1, 1);
             var directory = UI.Button("选择存档目录…", delegate { using (var picker = new FolderBrowserDialog { Description = "选择包含 game1、game2 等文件夹的存档目录", ShowNewFolderButton = false }) { if (picker.ShowDialog(this) == DialogResult.OK) Host.Send("directory", "path", picker.SelectedPath); } }); settings.Controls.Add(directory, 0, 2);
             connectionControls.AddRange(new Control[] { slot, top, refresh, directory });
             settings.Controls.Add(UI.Button("游玩显示与快捷键", delegate { Host.Send("show_settings"); }), 1, 2); options.Controls.Add(settings); table.Controls.Add(options, 0, 1);
-            table.Controls.Add(summary, 0, 2); table.Controls.Add(references, 0, 3); table.Controls.Add(Status, 0, 4);
-            table.Controls.Add(UI.Buttons(UI.Button("查数值", delegate { Host.Send("show_lookup"); }), UI.Button("存档历史", delegate { Host.Send("panel", "page", "backups"); }), UI.Button("完整面板", delegate { Host.Send("panel", "page", "overview"); }), UI.Button("立即备份", delegate { Host.Send("capture"); }), UI.Button("载入未完成草稿", delegate { Host.Send("list_drafts"); })), 0, 5); Controls.Add(table);
+            var inspector = UI.Table(1); inspector.Dock = DockStyle.Fill; inspector.RowCount = 4;
+            inspector.RowStyles.Add(new RowStyle(SizeType.AutoSize)); inspector.RowStyles.Add(new RowStyle(SizeType.AutoSize)); inspector.RowStyles.Add(new RowStyle(SizeType.Percent, 65)); inspector.RowStyles.Add(new RowStyle(SizeType.Percent, 35));
+            revealFloor = UI.Button("揭示本层隐藏内容", delegate { Host.Send("reveal_floor", "token", floorToken); });
+            var adjustFloor = UI.Button("调整所选怪物条件…", delegate { if (floor.SelectedNode == null) return; string[] parts = floor.SelectedNode.Name.Split('/'); if (parts.Length > 2 && parts[1] == "monsters") Host.Send("floor_reference", "id", parts[2], "token", floorToken); });
+            inspector.Controls.Add(floorCaption, 0, 0); inspector.Controls.Add(UI.Buttons(revealFloor, adjustFloor), 0, 1); inspector.Controls.Add(floor, 0, 2); inspector.Controls.Add(floorDetail, 0, 3);
+            floor.AfterSelect += delegate { if (floor.SelectedNode != null) UI.ReplaceText(floorDetail, Convert.ToString(floor.SelectedNode.Tag)); };
+            table.Controls.Add(inspector, 0, 2); table.Controls.Add(summary, 0, 3); table.Controls.Add(references, 0, 4); table.Controls.Add(Status, 0, 5);
+            table.Controls.Add(UI.Buttons(UI.Button("查数值", delegate { Host.Send("show_lookup"); }), UI.Button("存档历史", delegate { Host.Send("panel", "page", "backups"); }), UI.Button("完整面板", delegate { Host.Send("panel", "page", "overview"); }), UI.Button("立即备份", delegate { Host.Send("capture"); }), UI.Button("载入未完成草稿", delegate { Host.Send("list_drafts"); })), 0, 6); Controls.Add(table);
             slot.SelectedIndexChanged += delegate { if (!rendering) Host.Send("slot", "index", slot.SelectedIndex); };
             top.CheckedChanged += delegate { if (!rendering) Host.Send("pin_manager", "checked", top.Checked); };
             references.DoubleClick += delegate { Reference(); }; references.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.Enter) { Reference(); e.SuppressKeyPress = true; } };
         }
         void Reference() { int index = references.SelectedIndex; if (index >= 0 && index < referenceTokens.Count) Host.Send("reference", "index", index, "token", referenceTokens[index]); }
+        void RememberFloor(TreeNodeCollection nodes, HashSet<string> expanded) { foreach (TreeNode node in nodes) { if (node.IsExpanded) expanded.Add(node.Name); RememberFloor(node.Nodes, expanded); } }
+        void AddFloor(TreeNodeCollection nodes, object[] rows, string parent, HashSet<string> expanded, string selected, ref TreeNode chosen) {
+            foreach (object raw in rows) {
+                var row = raw as Dictionary<string, object>; if (row == null) continue;
+                string name = parent + "/" + Data.Text(row, "id", ""); var node = new TreeNode(Data.Text(row, "text", "")) { Name = name, Tag = Data.Text(row, "detail", Data.Text(row, "text", "")) };
+                node.ToolTipText = Convert.ToString(node.Tag); nodes.Add(node); AddFloor(node.Nodes, Data.Array(row, "children"), name, expanded, selected, ref chosen);
+                if (expanded.Contains(name) || Data.Flag(row, "expanded")) node.Expand(); if (name == selected) chosen = node;
+            }
+        }
+        void RenderFloor(Dictionary<string, object> d) {
+            floorToken = Data.Text(d, "token", ""); floorCaption.Text = Data.Text(d, "caption", "当前楼层"); revealFloor.Enabled = Data.Flag(d, "enabled");
+            revealFloor.Text = Data.Flag(d, "revealed") ? "收起本层隐藏内容" : "揭示本层隐藏内容";
+            string owner = Data.Text(d, "owner", ""); bool same = owner == floorOwner; floorOwner = owner;
+            object[] rows = Data.Array(d, "nodes"); string signature = owner + new JavaScriptSerializer { MaxJsonLength = 524288 }.Serialize(rows); if (signature == floorSignature) return;
+            var expanded = new HashSet<string>(); if (same) RememberFloor(floor.Nodes, expanded); string selected = !same || floor.SelectedNode == null ? "" : floor.SelectedNode.Name;
+            TreeNode chosen = null; floor.BeginUpdate(); try { floor.Nodes.Clear(); AddFloor(floor.Nodes, rows, "", expanded, selected, ref chosen); floor.SelectedNode = chosen; if (chosen == null) UI.ReplaceText(floorDetail, "展开怪物后查看战斗数值、掉落物与概率；选择条目可读完整条件。隐藏资料需主动揭示。"); } finally { floor.EndUpdate(); }
+            floorSignature = signature;
+        }
         public void Render(Dictionary<string, object> d) {
-            rendering = true; try { foreach (Control control in connectionControls) control.Enabled = !Data.Flag(d, "io_busy"); UI.ReplaceText(summary, Data.Text(d, "text", "")); UI.ReplaceText(Status, Data.Text(d, "error", "") + "\n" + Data.Text(d, "capabilities", "")); slot.SelectedIndex = (int)Math.Max(0, Math.Min(6, Data.Number(d, "slot"))); top.Checked = Data.Flag(d, "topmost"); if (TopMost != top.Checked) TopMost = top.Checked;
+            rendering = true; try { foreach (Control control in connectionControls) control.Enabled = !Data.Flag(d, "io_busy"); RenderFloor(Data.Object(d, "floor_guide")); UI.ReplaceText(summary, Data.Text(d, "text", "")); UI.ReplaceText(Status, Data.Text(d, "error", "") + "\n" + Data.Text(d, "capabilities", "")); slot.SelectedIndex = (int)Math.Max(0, Math.Min(6, Data.Number(d, "slot"))); top.Checked = Data.Flag(d, "topmost"); if (TopMost != top.Checked) TopMost = top.Checked;
                 var items = new List<string>(); foreach (object raw in Data.Array(d, "references")) items.Add(Convert.ToString(raw)); var old = new List<string>(); foreach (object raw in references.Items) old.Add(Convert.ToString(raw));
                 var tokens = new List<string>(); foreach (object raw in Data.Array(d, "reference_tokens")) tokens.Add(Convert.ToString(raw));
                 if (String.Join("\n", items.ToArray()) != String.Join("\n", old.ToArray()) || String.Join("|", tokens.ToArray()) != String.Join("|", referenceTokens.ToArray())) { int selected = references.SelectedIndex; string previous = selected >= 0 && selected < referenceTokens.Count ? referenceTokens[selected] : ""; references.BeginUpdate(); references.Items.Clear(); references.Items.AddRange(items.ToArray()); referenceTokens.Clear(); referenceTokens.AddRange(tokens); references.SelectedIndex = previous == "" ? -1 : referenceTokens.IndexOf(previous); references.EndUpdate(); }

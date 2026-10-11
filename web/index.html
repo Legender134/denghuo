@@ -19,13 +19,27 @@
   <script src="/global-history.js" defer></script>
   <script src="/migration.js" defer></script>
   <script src="/scouting.js" defer></script>
+  <script src="/floor-guide.js" defer></script>
   <script src="/forecast.js" defer></script>
 </head>
 <body>
   <aside class="sidebar">
     <a class="brand" href="#overview"><img src="/icon.svg" alt=""><span>灯火<small>DUNGEON COMPANION</small></span></a>
+    <section id="floor-guide" aria-labelledby="floor-guide-title">
+      <div class="panel-title"><h2 id="floor-guide-title">当前楼层</h2><button id="floor-guide-refresh" class="text-button" type="button">刷新</button></div>
+      <p id="floor-guide-source" class="muted" role="status">游戏保存后，自动显示本层资料。</p>
+      <details id="floor-hidden" open><summary>本层隐藏内容 <span id="floor-hidden-count">尚未揭示</span></summary>
+        <p id="floor-hidden-status" class="muted">隐藏门、陷阱和未见物品需主动揭示。</p>
+        <button id="floor-hidden-open" class="secondary" type="button" disabled>揭示本层隐藏内容</button>
+        <div id="floor-hidden-content" hidden></div>
+      </details>
+      <details id="floor-monsters" open><summary>本层可能出现的怪物 <span id="floor-monsters-count"></span></summary>
+        <p id="floor-monsters-note" class="muted">等待有效存档。</p><div id="floor-monsters-list"></div>
+      </details>
+      <p id="floor-guide-error" class="rule-warning" role="alert" hidden></p>
+    </section>
     <div class="nav-label">你的地牢同行者</div>
-    <button id="nav-toggle" class="secondary nav-toggle" aria-expanded="false" aria-controls="main-nav">更多页面（共 11 项） ▾</button>
+    <button id="nav-toggle" class="secondary nav-toggle" aria-expanded="false" aria-controls="main-nav">更多页面（共 12 项） ▾</button>
     <nav id="main-nav" aria-label="主导航">
       <button class="nav active" data-view="overview"><span>◈</span>冒险概览</button>
       <button class="nav" data-view="inventory"><span>▣</span>背包与装备</button>
@@ -80,7 +94,7 @@
       <section id="view-scouting" class="view" hidden>
         <div class="page-heading"><div><div class="eyebrow">LOOK INSIDE A SAVED FLOOR</div><h1>探查已生成的楼层。</h1><p>查看隐藏门、陷阱、容器和生物随身保存的物品。内容来自最近保存的楼层。</p></div><button id="scout-refresh" type="button" class="secondary">重新读取楼层清单</button></div>
         <section class="panel"><p id="scout-source" class="muted" role="status">连接存档后可读取本局已生成楼层。</p><div class="form-grid"><label>选择已生成楼层<select id="scout-floor" disabled></select></label><label class="check"><input id="scout-reveal" type="checkbox" disabled>主动揭示所选楼层的未知内容</label></div><div class="backup-actions"><button id="scout-open" type="button" class="primary" disabled>揭示这个楼层</button></div><p id="scout-status" class="muted" role="status">默认不展开隐藏内容；不会改变游戏中的探索或鉴定状态。</p><p id="scout-error" class="rule-warning" role="alert" hidden></p></section>
-        <div id="scout-result" hidden><section class="panel"><h2 id="scout-title"></h2><p id="scout-snapshot" class="muted"></p><div class="scout-map-scroll"><canvas id="scout-map" aria-label="主动揭示的存档楼层地图"></canvas></div><p class="muted">金色方框：物品或容器；粉色：隐藏门；红色：陷阱；蓝色方框：生物；亮点：当前楼层保存的英雄位置。坐标从左上角 (1, 1) 起算。</p><details><summary>地形坐标与文字地图</summary><pre id="scout-map-text" tabindex="0"></pre><p class="muted"># 墙壁，. 地面，+ 门，? 隐藏门，^ 陷阱，&lt; 上行，&gt; 下行，~ 水，@ 英雄；物品与生物位置见下方清单。</p></details></section><section class="panel"><h2>门、楼梯与设施</h2><ul id="scout-features"></ul></section><section class="panel"><h2>地面与容器物品</h2><div id="scout-heaps" class="scout-cards"></div></section><section class="panel"><h2>陷阱</h2><ul id="scout-traps"></ul></section><section class="panel"><h2>保存的生物与随身物品</h2><div id="scout-mobs" class="scout-cards"></div></section></div>
+        <div id="scout-result" hidden><section class="panel"><h2 id="scout-title"></h2><p id="scout-snapshot" class="muted"></p><div class="scout-map-scroll"><canvas id="scout-map" aria-label="主动揭示的存档楼层地图"></canvas></div><p class="muted">棕色：实心障碍；灰色：墙；紫色：未知地形。金色方框：物品或容器；粉色：隐藏门；红色：陷阱；蓝色方框：生物；亮点：当前楼层保存的英雄位置。坐标从左上角 (1, 1) 起算。</p><details><summary>地形坐标与文字地图</summary><pre id="scout-map-text" tabindex="0"></pre><p class="muted"># 墙壁，X 实心障碍，. 普通地面，+ 关闭或锁住的门，/ 打开的门，? 隐藏门，^ 陷阱，_ 失效陷阱，% 高草，O 水井，空格为深渊，U 未知地形，&lt; 上行，&gt; 下行，~ 水，@ 英雄；物品与生物位置见下方清单。</p></details></section><section class="panel"><h2>地形、设施与障碍</h2><ul id="scout-features"></ul></section><section class="panel"><h2>地面与容器物品</h2><div id="scout-heaps" class="scout-cards"></div></section><section class="panel"><h2>陷阱</h2><ul id="scout-traps"></ul></section><section class="panel"><h2>保存的生物与随身物品</h2><div id="scout-mobs" class="scout-cards"></div></section></div>
 
         <section class="panel" aria-labelledby="forecast-heading"><h2 id="forecast-heading">接下来能找到哪些装备？</h2><p>使用种子离线生成官方 4.0.2 的新局参考。已保存楼层的实际内容请查看上方探查。</p><p id="forecast-profile" class="muted">战士、无挑战、不装备饰品、无遗骸；主楼层按顺序生成。教程已完成，日志按引擎基准。只列静态装备、饰品候选和房间类型，不包含全部消耗品、随机击杀掉落或精确位置。</p><div class="form-grid"><label>九字母种子或 UTC 每日日期<input id="forecast-seed" type="text" maxlength="32" placeholder="ABC-DEF-GHI 或 2026-10-11" autocomplete="off"></label><label>计算到第几层<select id="forecast-depth"></select></label></div><div class="form-actions"><button id="forecast-read-seed" type="button" class="secondary">主动读取本局种子</button><button id="forecast-run" type="button" class="primary" disabled>生成新局参考</button><button id="forecast-cancel" type="button" class="secondary" hidden>取消计算</button><button id="forecast-hide" type="button" class="secondary">收起预测</button></div><p id="forecast-origin" class="muted">种子尚未读取；也可手填独立种子。</p><label class="check"><input id="forecast-confirm" type="checkbox">我理解这是上述条件下的新局参考，不能保证与正在游玩的冒险一致</label><p id="forecast-status" role="status" class="muted">默认不揭示或计算。</p><p id="forecast-error" role="alert" class="rule-warning" hidden></p>
           <div id="forecast-result" hidden><h3 id="forecast-title"></h3><p id="forecast-boundary" class="rule-warning">以下是独立参考情景。物品不在你的背包中；商店需要购买，任务奖励需要完成任务。同一互斥组的不同选项不能同时取得。</p><div class="form-grid"><label>从第几层开始查看<select id="forecast-from"></select></label><label>物品类别<select id="forecast-kind"><option value="">全部装备与饰品候选</option><option value="Weapon">武器与投掷武器</option><option value="Armor">护甲</option><option value="Wand">法杖</option><option value="Ring">戒指</option><option value="Artifact">神器</option><option value="Trinket">初始饰品候选</option></select></label><label>按名称、来源或效果搜索<input id="forecast-query" type="search" maxlength="100" autocomplete="off"></label></div><p id="forecast-count" class="muted" role="status"></p><div id="forecast-floors" class="scout-cards"></div></div>

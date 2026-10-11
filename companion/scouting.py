@@ -20,6 +20,8 @@ HEAPS = {'HEAP': '地面物品', 'FOR_SALE': '待售物品', 'CHEST': '宝箱', 
 FEATURES = {7: '上行楼梯', 8: '下行楼梯', 10: '上锁的门', 16: '隐藏门', 17: '隐藏陷阱',
             18: '已发现陷阱', 19: '失效陷阱', 21: '锁住的出口', 22: '解锁的出口',
             24: '水井', 28: '炼金装置', 31: '水晶门', 37: '特殊入口', 38: '骷髅钥匙锁门'}
+FEATURES.update({13:'路障',23:'实心环境装饰',25:'石像',26:'特殊石像',27:'书架',33:'区域障碍',
+                 34:'特殊区域障碍',35:'矿晶',36:'矿石巨岩',39:'水中实心装饰'})
 MIMICS = {'Mimic', 'GoldenMimic', 'CrystalMimic', 'EbonyMimic'}
 
 
@@ -88,6 +90,8 @@ def inspect_saved(session, payload):
         source = {'slot': context.active_slot, 'depth': game['depth'], 'branch': game.get('branch', 0),
                   'version': game.get('version'), 'version_name': VERSIONS.get(game.get('version')),
                   'modified': modified, 'expected': expected}
+        hero_level = game.get('hero', {}).get('lvl')
+        source['hero_level'] = hero_level if type(hero_level) is int and 1 <= hero_level <= 30 else None
         if action == 'catalog':
             floors = []
             for depth, branch in locations:
@@ -98,7 +102,9 @@ def inspect_saved(session, payload):
                     available = False
                 floors.append({'depth': depth, 'branch': branch, 'available': available,
                     'current': (depth, branch) == (game['depth'], game.get('branch', 0))})
+            from .floor_guide import floor_encounters
             result = {'source': source, 'floors': floors, 'supported': source['version'] in VERSIONS,
+                      'encounters': floor_encounters(game, session.catalog),
                       'note': '只列本局已生成楼层；不展开隐藏内容。尚未生成的楼层不在此清单。'}
         else:
             if expected != payload['expected']:
