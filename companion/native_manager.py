@@ -379,7 +379,8 @@ class NativeManager:
         key = binding_token([data.get(k) for k in ('depth','branch','version')]+[data.get('hero',{}).get('level')])
         if key!=getattr(self,'_floor_public_key',None):
             guide = floor_encounters({'depth':data['depth'],'branch':data.get('branch',0),'version':data.get('version')},self.session.catalog)
-            rows=[]
+            rows=[];groups={}
+            self._floor_reference_rows={r['id']:r['name'] for r in guide['rows']}
             def leaf(identity,text,detail=''): return {'id':identity,'text':text,'detail':detail or text}
             hero = data.get('hero',{}).get('level')
             hero = hero if type(hero) is int and 1<=hero<=30 else 1
@@ -397,10 +398,18 @@ class NativeManager:
                         children.append(leaf(f'r-{i}-{j}',text,full+'\n'+block.get('note','')))
                     blocks.append({'id':'b-'+str(i),'text':block['title'],'detail':block.get('note',''),'children':children})
                 name=row['name']+('' if row['group']=='普通轮换' else ' · '+row['group'])
-                rows.append({'id':row['id'],'text':f"{name} · 生命 {row['hp']} · 伤害 {row['damage']} · 减伤 {row['dr']}",
+                node={'id':row['id'],'text':f"{name} · 生命 {row['hp']} · 普攻 {row['damage']} · 减伤 {row['dr']}",
                     'detail':row['condition']+f'\n正常基础状态；角色等级 {hero}；累计成功掉落示例0次。实际财富、掉落次数、临时状态另查完整数值。',
-                    'children':blocks})
-            self._floor_public_key,self._floor_public_nodes=key,{'id':'monsters','text':f'本层可能出现的怪物 · {len(rows)} 种',
+                    'children':blocks}
+                group=row.get('fold_group')
+                if group:
+                    if group not in groups:
+                        groups[group]={'id':'group-'+group,'text':group,'children':[]}
+                        rows.append(groups[group])
+                    groups[group]['children'].append(node)
+                else: rows.append(node)
+            for group in groups.values(): group['text']+=f" · {len(group['children'])} 种"
+            self._floor_public_key,self._floor_public_nodes=key,{'id':'monsters','text':f"本层可能出现的怪物 · {len(guide['rows'])} 种",
                 'detail':guide['note'],'children':rows,'expanded':True}
         contents=[]
         if hidden:
@@ -488,14 +497,14 @@ class NativeManager:
                 snap=self.session.snapshot()
                 if item.get('token')!=self.floor_token(snap): raise ValueError('楼层参考已更新，请重新选择。')
                 identity=item.get('id')
-                current=self.floor_state(snap)
-                rows=current['nodes'][1]['children'] if len(current['nodes'])>1 else []
-                if identity not in {r['id'] for r in rows}:
+                self.floor_state(snap)
+                rows=getattr(self,'_floor_reference_rows',{}) if snap.get('data') and not snap.get('error') and snap['settings']['mode']=='save' else {}
+                if identity not in rows:
                     raise ValueError('请从本层可能出现的怪物选择。')
                 hero=snap['data'].get('hero',{}).get('level')
                 hero=hero if type(hero) is int and 1<=hero<=30 else 1
                 from .native_workspace import NumericLookup
-                name=next(r['text'].split(' · ')[0] for r in rows if r['id']==identity)
+                name=rows[identity]
                 row={'entry':identity,'source':{'mode':snap['settings']['mode']},
                     'stamp':NumericLookup.source_stamp(snap),
                     'source_label':name+' · 本层正常敌人参考 · 角色等级来自所选存档；掉落次数为0次示例',

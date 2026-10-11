@@ -455,7 +455,7 @@ namespace Denghuo.Native {
             var inspector = UI.Table(1); inspector.Dock = DockStyle.Fill; inspector.RowCount = 4;
             inspector.RowStyles.Add(new RowStyle(SizeType.AutoSize)); inspector.RowStyles.Add(new RowStyle(SizeType.AutoSize)); inspector.RowStyles.Add(new RowStyle(SizeType.Percent, 65)); inspector.RowStyles.Add(new RowStyle(SizeType.Percent, 35));
             revealFloor = UI.Button("揭示本层隐藏内容", delegate { Host.Send("reveal_floor", "token", floorToken); });
-            var adjustFloor = UI.Button("调整所选怪物条件…", delegate { if (floor.SelectedNode == null) return; string[] parts = floor.SelectedNode.Name.Split('/'); if (parts.Length > 2 && parts[1] == "monsters") Host.Send("floor_reference", "id", parts[2], "token", floorToken); });
+            var adjustFloor = UI.Button("调整所选怪物条件…", delegate { AdjustFloorReference(); });
             inspector.Controls.Add(floorCaption, 0, 0); inspector.Controls.Add(UI.Buttons(revealFloor, adjustFloor), 0, 1); inspector.Controls.Add(floor, 0, 2); inspector.Controls.Add(floorDetail, 0, 3);
             floor.AfterSelect += delegate { if (floor.SelectedNode != null) UI.ReplaceText(floorDetail, Convert.ToString(floor.SelectedNode.Tag)); };
             table.Controls.Add(inspector, 0, 2); table.Controls.Add(summary, 0, 3); table.Controls.Add(references, 0, 4); table.Controls.Add(Status, 0, 5);
@@ -465,13 +465,21 @@ namespace Denghuo.Native {
             references.DoubleClick += delegate { Reference(); }; references.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.Enter) { Reference(); e.SuppressKeyPress = true; } };
         }
         void Reference() { int index = references.SelectedIndex; if (index >= 0 && index < referenceTokens.Count) Host.Send("reference", "index", index, "token", referenceTokens[index]); }
-        void RememberFloor(TreeNodeCollection nodes, HashSet<string> expanded) { foreach (TreeNode node in nodes) { if (node.IsExpanded) expanded.Add(node.Name); RememberFloor(node.Nodes, expanded); } }
-        void AddFloor(TreeNodeCollection nodes, object[] rows, string parent, HashSet<string> expanded, string selected, ref TreeNode chosen) {
+        void AdjustFloorReference() {
+            for (TreeNode node = floor.SelectedNode; node != null; node = node.Parent) {
+                string id = node.Name.Substring(node.Name.LastIndexOf('/') + 1);
+                if (node.Name.StartsWith("/monsters/") && (id.StartsWith("actors.mobs.") || id.StartsWith("levels.") || id.StartsWith("items.quest."))) {
+                    Host.Send("floor_reference", "id", id, "token", floorToken); return;
+                }
+            }
+        }
+        void RememberFloor(TreeNodeCollection nodes, HashSet<string> expanded, HashSet<string> known) { foreach (TreeNode node in nodes) { if (node.Nodes.Count > 0) known.Add(node.Name); if (node.IsExpanded) expanded.Add(node.Name); RememberFloor(node.Nodes, expanded, known); } }
+        void AddFloor(TreeNodeCollection nodes, object[] rows, string parent, HashSet<string> expanded, HashSet<string> known, string selected, ref TreeNode chosen) {
             foreach (object raw in rows) {
                 var row = raw as Dictionary<string, object>; if (row == null) continue;
                 string name = parent + "/" + Data.Text(row, "id", ""); var node = new TreeNode(Data.Text(row, "text", "")) { Name = name, Tag = Data.Text(row, "detail", Data.Text(row, "text", "")) };
-                node.ToolTipText = Convert.ToString(node.Tag); nodes.Add(node); AddFloor(node.Nodes, Data.Array(row, "children"), name, expanded, selected, ref chosen);
-                if (expanded.Contains(name) || Data.Flag(row, "expanded")) node.Expand(); if (name == selected) chosen = node;
+                node.ToolTipText = Convert.ToString(node.Tag); nodes.Add(node); AddFloor(node.Nodes, Data.Array(row, "children"), name, expanded, known, selected, ref chosen);
+                if (expanded.Contains(name) || !known.Contains(name) && Data.Flag(row, "expanded")) node.Expand(); if (name == selected) chosen = node;
             }
         }
         void RenderFloor(Dictionary<string, object> d) {
@@ -479,8 +487,8 @@ namespace Denghuo.Native {
             revealFloor.Text = Data.Flag(d, "revealed") ? "收起本层隐藏内容" : "揭示本层隐藏内容";
             string owner = Data.Text(d, "owner", ""); bool same = owner == floorOwner; floorOwner = owner;
             object[] rows = Data.Array(d, "nodes"); string signature = owner + new JavaScriptSerializer { MaxJsonLength = 524288 }.Serialize(rows); if (signature == floorSignature) return;
-            var expanded = new HashSet<string>(); if (same) RememberFloor(floor.Nodes, expanded); string selected = !same || floor.SelectedNode == null ? "" : floor.SelectedNode.Name;
-            TreeNode chosen = null; floor.BeginUpdate(); try { floor.Nodes.Clear(); AddFloor(floor.Nodes, rows, "", expanded, selected, ref chosen); floor.SelectedNode = chosen; if (chosen == null) UI.ReplaceText(floorDetail, "展开怪物后查看战斗数值、掉落物与概率；选择条目可读完整条件。隐藏资料需主动揭示。"); } finally { floor.EndUpdate(); }
+            var expanded = new HashSet<string>(); var known = new HashSet<string>(); if (same) RememberFloor(floor.Nodes, expanded, known); string selected = !same || floor.SelectedNode == null ? "" : floor.SelectedNode.Name;
+            TreeNode chosen = null; floor.BeginUpdate(); try { floor.Nodes.Clear(); AddFloor(floor.Nodes, rows, "", expanded, known, selected, ref chosen); floor.SelectedNode = chosen; if (chosen == null) UI.ReplaceText(floorDetail, "展开怪物后查看战斗数值、掉落物与概率；选择条目可读完整条件。隐藏资料需主动揭示。"); } finally { floor.EndUpdate(); }
             floorSignature = signature;
         }
         public void Render(Dictionary<string, object> d) {

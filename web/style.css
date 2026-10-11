@@ -68,6 +68,7 @@ textarea{font:inherit;color:var(--text);background:#121915;border:1px solid #364
 #floor-guide summary span{font-size:11px;color:var(--muted);font-weight:400}#floor-hidden-content button{display:block;text-align:left;white-space:normal}
 #floor-hidden-content>details{padding:8px 0;border-top:1px solid var(--border)}#floor-hidden-content ul{padding-left:18px;max-height:180px;overflow:auto}
 .floor-monster{border-top:1px solid var(--border);padding:9px 0}.floor-monster>summary strong{font-size:13px;font-weight:600}.floor-monster>summary span{display:block;margin-left:14px}
+.floor-monster-group{border-top:1px solid var(--border);padding:9px 0}.floor-monster-group>summary{font-size:12px;color:var(--gold);cursor:pointer}.floor-monster-group>div{padding-left:8px}.floor-monster-group .floor-monster:first-child{border-top:0}
 .floor-monster .example-block{padding:10px 0;margin:0;border:0}.floor-monster h3{font-size:12px;margin:4px 0}.floor-monster .numeric-values{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .floor-monster .numeric-values dt,.floor-monster .numeric-condition{font-size:11px}.floor-monster .numeric-values dd{font-size:16px;margin:2px 0}.floor-monster .numeric-values small{font-size:10px}
 .floor-monster .table-scroll{max-height:340px;overflow:auto}.floor-monster th,.floor-monster td{font-size:11px;padding:7px;min-width:65px}.floor-monster td:last-child{min-width:180px}
@@ -76,3 +77,5 @@ textarea{font:inherit;color:var(--text);background:#121915;border:1px solid #364
 @media(max-width:1100px) and (min-width:801px){.sidebar{width:290px}main{margin-left:290px}}
 @media(max-width:800px){.sidebar{width:auto;position:static;padding:16px 18px}main{margin-left:0}#floor-guide{order:3}.sidebar #main-nav{grid-template-columns:repeat(2,minmax(0,1fr))}#floor-monsters-list{max-height:420px;overflow-y:auto}.floor-monster .numeric-values{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(prefers-reduced-motion:no-preference){#floor-guide summary{transition:color .12s ease}#floor-guide summary:hover{color:var(--accent)}}
+
+.legend-obstacle{background:#74604a}.legend-unknown{background:#845c9e}

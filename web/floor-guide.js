@@ -39,13 +39,22 @@ function renderFloorMonsters(catalog,key){
   $('#floor-monsters-count').textContent=`${rows.length} 种`;
   if(signature===floorGuide.signature)return;
   floorGuide.signature=signature;const target=$('#floor-monsters-list');target.replaceChildren();
+  const groups=new Map();
   for(const row of rows){
+    if(!row.fold_group||groups.has(row.fold_group))continue;
+    const wrapper=document.createElement('details');wrapper.className='floor-monster-group';
+    const heading=document.createElement('summary');heading.textContent=`${row.fold_group} · ${rows.filter(r=>r.fold_group===row.fold_group).length} 种`;
+    const content=document.createElement('div');wrapper.append(heading,content);groups.set(row.fold_group,{wrapper,content,attached:false});
+  }
+  for(const row of rows){
+    let container=target;
+    if(row.fold_group){const group=groups.get(row.fold_group);if(!group.attached){target.append(group.wrapper);group.attached=true;}container=group.content;}
     const card=document.createElement('details');card.className='floor-monster';
     const summary=document.createElement('summary'),name=document.createElement('strong'),brief=document.createElement('span');
-    name.textContent=row.name+(row.group==='普通轮换'?'':` · ${row.group}`);brief.textContent=`生命 ${row.hp} · 伤害 ${row.damage} · 减伤 ${row.dr}`;summary.append(name,brief);
+    name.textContent=row.name+(row.group==='普通轮换'?'':` · ${row.group}`);brief.textContent=`生命 ${row.hp} · 普攻 ${row.damage} · 减伤 ${row.dr}`;summary.append(name,brief);
     const condition=document.createElement('p');condition.className='muted';condition.textContent=row.group+' · '+row.condition;
     const content=document.createElement('div'),retry=document.createElement('button');retry.type='button';retry.className='text-button';retry.textContent='重新读取怪物资料';retry.hidden=true;
-    card.append(summary,condition,content,retry);target.append(card);
+    card.append(summary,condition,content,retry);container.append(card);
     let loaded=false,busy=false;
     async function load(){
       if(loaded||busy||key!==floorGuide.key||signature!==floorGuide.signature)return;
@@ -54,7 +63,7 @@ function renderFloorMonsters(catalog,key){
         const hero=catalog.source.hero_level??1,query=new URLSearchParams({id:row.id,depth:catalog.source.depth,hero_level:hero,loot_count:0});
         const response=await fetch('/api/values?'+query);const detail=await response.json();if(!response.ok)throw new Error(detail.error||'怪物资料读取失败');
         if(key!==floorGuide.key||signature!==floorGuide.signature)return;
-        content.innerHTML=`<p class="muted">正常基础状态 · 角色等级 ${hero}${catalog.source.hero_level==null?'（示例）':''} · 累计成功掉落按0次参考。实际次数与财富等加成请在完整资料调整。</p>`+detail.blocks.map(exampleHTML).join('');
+        content.innerHTML=`<p class="muted">正常基础状态 · 角色等级 ${hero}${catalog.source.hero_level==null?'（示例）':''} · 累计成功掉落与财富有效加成都按0参考。完整资料可调整适用的次数和财富条件。</p>`+detail.blocks.map(exampleHTML).join('');
         const button=document.createElement('button');button.type='button';button.className='text-button';button.textContent='调整掉落次数等条件 / 查看来源';
         button.addEventListener('click',()=>{if(key!==floorGuide.key||signature!==floorGuide.signature)return;showReference({id:row.id,name:row.name,lookup_context:{capture_context:true,ignore_drafts:true,source:{mode:'example'},params:{depth:catalog.source.depth,hero_level:hero,loot_count:0},conditions:'本层正常敌人参考；累计成功掉落示例0次，未读取本局计数或敌人临时状态。'}},'4.0.2');});
         content.append(button);loaded=true;

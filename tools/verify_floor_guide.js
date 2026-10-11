@@ -29,7 +29,7 @@ const deadline=setTimeout(()=>{console.error('FAIL: floor guide verification did
   const h=harness();assert.equal(h.writes.length,1);assert.equal(h.writes[0].payload.action,'catalog');await load(h);
   assert.equal(h.writes.length,1,'automatic guide must never reveal a floor');assert.equal(h.reads.length,0,'collapsed cards must not fetch all numeric details');
   assert.equal(h.get('#floor-hidden-open').disabled,false);assert.equal(h.get('#floor-monsters-count').textContent,'1 种');
-  const card=h.get('#floor-monsters-list').children[0];assert.equal(card.tagName,'DETAILS');assert.equal(card.open,false);assert.match(card.children[0].children[1].textContent,/生命 15.*伤害 1–7/);
+  const card=h.get('#floor-monsters-list').children[0];assert.equal(card.tagName,'DETAILS');assert.equal(card.open,false);assert.match(card.children[0].children[1].textContent,/生命 15.*普攻 1–7/);
   card.open=true;card.listeners.toggle();assert.equal(h.reads.length,1);const params=new URL(h.reads[0].url,'http://synthetic').searchParams;
   assert.equal(params.get('hero_level'),'5');assert.equal(params.get('loot_count'),'0');assert.equal(params.get('depth'),'4');
   h.reads[0].resolve({ok:true,json:async()=>({blocks:[{title:'掉落物、数量与概率'}]})});await settle();assert.match(card.children[2].innerHTML,/掉落物、数量与概率/);
@@ -52,5 +52,18 @@ const deadline=setTimeout(()=>{console.error('FAIL: floor guide verification did
   assert.equal(retryCard.children[3].hidden,false);const retrying=retryCard.children[3].listeners.click();assert.equal(retry.reads.length,2);
   retry.state.data.depth=5;retry.state.revision++;retry.run('refreshFloorGuide()');retry.reads[1].resolve({ok:true,json:async()=>({blocks:[{title:'过期响应'}]})});await retrying;
   assert(!retryCard.children[2].innerHTML.includes('过期响应'));
-  console.log(JSON.stringify({public_only_automatic:true,collapsed_lazy_numeric_and_loot:true,same_floor_expansion_preserved:true,explicit_hidden_opt_in:true,save_slot_error_and_late_response_invalidation:true,retry:true}));
+  const grouped=harness(),groupedCatalog=catalog();
+  groupedCatalog.encounters.rows.push(...['活化石像','巨型食人鱼'].map((name,index)=>({id:'special-'+index,name,hp:'30',damage:'随条件',dr:'0–4',group:'特殊房间',fold_group:'房间与任务条件',condition:'仅在对应房间出现'})));
+  grouped.writes[0].resolve(groupedCatalog);await settle();
+  const top=grouped.get('#floor-monsters-list').children;
+  assert.equal(top.length,2,'one visible regular enemy and one conditional group');
+  const group=top[1];assert.equal(group.tagName,'DETAILS');assert.equal(group.open,false);assert.match(group.children[0].textContent,/房间与任务条件.*2 种/);
+  assert.equal(group.children[1].children.length,2);assert.equal(grouped.reads.length,0);
+  group.open=true;assert.equal(grouped.reads.length,0,'opening a condition group must not load all enemy details');
+  const nested=group.children[1].children[0];nested.open=true;nested.listeners.toggle();assert.equal(grouped.reads.length,1);
+  grouped.reads[0].resolve({ok:true,json:async()=>({blocks:[{title:'掉落物、数量与概率'}]})});await settle();
+  grouped.state.revision++;grouped.run('refreshFloorGuide()');grouped.writes.at(-1).resolve(groupedCatalog);await settle();
+  assert.equal(grouped.get('#floor-monsters-list').children[1],group,'same-floor refresh retains group and nested expansion');
+  assert.equal(group.open,true);assert.equal(nested.open,true);
+  console.log(JSON.stringify({public_only_automatic:true,collapsed_lazy_numeric_and_loot:true,same_floor_expansion_preserved:true,explicit_hidden_opt_in:true,save_slot_error_and_late_response_invalidation:true,retry:true,conditional_groups_collapsed_and_lazy:true}));
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>clearTimeout(deadline));

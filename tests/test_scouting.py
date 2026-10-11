@@ -237,7 +237,14 @@ class ScoutingTests(unittest.TestCase):
             listing=send({'action':'catalog'})
             self.assertEqual(listing['source']['hero_level'],5)
             self.assertIn('actors.mobs.crab',[r['id'] for r in listing['encounters']['rows']])
-            self.assertNotIn('actors.mobs.goldenmimic',[r['id'] for r in listing['encounters']['rows']])
+            # Conditional room possibilities are public rules. They must not
+            # expose the saved mimic's current HP, position or held ring.
+            mimic=next(r for r in listing['encounters']['rows'] if r['id']=='actors.mobs.goldenmimic')
+            self.assertEqual(mimic['group'],'特殊房间')
+            self.assertEqual(mimic['hp'],'36')
+            self.assertNotEqual(mimic['hp'],str(self.level['mobs'][0]['HP']))
+            self.assertTrue({'pos','items','reference'}.isdisjoint(mimic))
+            self.assertNotIn('mobs',listing)
             self.assertNotIn('features',listing)
             self.assertNotIn('heaps',listing)
             request={'action':'floor','depth':4,'branch':0,'expected':listing['source']['expected'],'reveal':True}

@@ -20,7 +20,9 @@ class FloorGuideTests(unittest.TestCase):
 
     def test_floor_one_and_three_slots_and_alternatives_follow_spawner(self):
         first={r['id']:r for r in self.guide(1)['rows']}
-        self.assertEqual(set(first),{'actors.mobs.rat','actors.mobs.snake','actors.mobs.albino'})
+        self.assertEqual({key for key,row in first.items() if row['group'] in ('普通轮换','稀有替换')},{'actors.mobs.rat','actors.mobs.snake','actors.mobs.albino'})
+        self.assertNotIn('actors.mobs.mimic',first)
+        self.assertNotIn('actors.mobs.bee',first)
         self.assertIn('4 个名额中占 3 个',first['actors.mobs.rat']['condition'])
         self.assertEqual(first['actors.mobs.rat']['hp'],'8')
         third={r['id']:r for r in self.guide(3)['rows']}
@@ -29,13 +31,14 @@ class FloorGuideTests(unittest.TestCase):
         self.assertNotIn('actors.mobs.slime',third)
 
     def test_rare_additions_are_per_rotation_and_boss_floor_is_not_rotation(self):
-        groups=[r['group'] for r in self.guide(4)['rows']]
+        groups=[r['group'] for r in self.guide(4)['rows'] if r['group'] not in ('特殊房间','任务房间')]
         self.assertEqual(groups,sorted(groups,key={'普通轮换':0,'稀有替换':1,'罕见跨区':2,'罕见跨区变种':3}.get))
         fourth={r['id']:r for r in self.guide(4)['rows']}
         self.assertIn('不是每次刷新2.5%',fourth['actors.mobs.thief']['condition'])
         self.assertIn('先满足2.5%',fourth['actors.mobs.bandit']['condition'])
         for depth,boss in ((5,'goo'),(10,'tengu'),(15,'dm300'),(20,'dwarfking'),(25,'yogdzewa')):
-            rows=self.guide(depth)['rows'];self.assertEqual([r['id'] for r in rows],['actors.mobs.'+boss])
+            rows=self.guide(depth)['rows'];self.assertEqual([r['id'] for r in rows if r['group']=='首领'],['actors.mobs.'+boss])
+            self.assertFalse(any(r['group']=='普通轮换' for r in rows))
         self.assertEqual(self.guide(26)['rows'],[])
         self.assertTrue(self.guide(5)['sources'])
         self.assertTrue(self.guide(12,1)['sources'])
@@ -51,12 +54,55 @@ class FloorGuideTests(unittest.TestCase):
     def test_branch_rules_are_distinct_and_unsupported_versions_do_not_guess(self):
         mining=self.guide(12,1)
         self.assertIn('互斥',mining['note'])
-        self.assertEqual({r['id'] for r in mining['rows']},{'actors.mobs.'+x for x in ('bat','crystalwisp','gnollguard','fungalspinner')})
+        self.assertEqual({r['id'] for r in mining['rows'] if r['group']=='任务条件'},{'actors.mobs.'+x for x in ('crystalwisp','gnollguard')})
+        self.assertLessEqual({'actors.mobs.'+x for x in ('crystalspire','crystalguardian','gnollgeomancer','gnollsapper')},{r['id'] for r in mining['rows']})
+        self.assertFalse(any('fungal' in r['id'] for r in mining['rows']))
+        self.assertIn('尚未实装',mining['note'])
+        self.assertIn('兼容位置',self.guide(11,1)['note'])
         vault=self.guide(17,1)
         self.assertEqual(len(vault['rows']),10)
         self.assertTrue(all(r['id'].startswith('actors.mobs.quest.vault.') for r in vault['rows']))
         for depth,branch,version in ((4,1,922),(4,0,920),(4,0,999),(True,0,922),(4,True,922)):
             self.assertEqual(self.guide(depth,branch,version)['rows'],[])
+
+    def test_quest_depths_and_mutually_exclusive_conditions_are_explicit(self):
+        for depth,boss in ((2,'fetidrat'),(3,'gnolltrickster'),(4,'greatcrab')):
+            quests={r['id']:r for r in self.guide(depth)['rows'] if r['group']=='任务房间'}
+            self.assertIn('actors.mobs.'+boss,quests)
+            self.assertIn('玩家接受',quests['actors.mobs.'+boss]['condition'])
+        for depth in (7,8,9):
+            rows={r['id']:r for r in self.guide(depth)['rows']}
+            for enemy in ('rotheart','rotlasher','elemental$newbornfireelemental'):
+                self.assertIn('互斥',rows['actors.mobs.'+enemy]['condition'])
+                self.assertEqual(rows['actors.mobs.'+enemy]['fold_group'],'房间与任务条件')
+        for depth in (1,6,10,11):
+            self.assertNotIn('actors.mobs.rotheart',{r['id'] for r in self.guide(depth)['rows']})
+
+    def test_boss_support_preserves_normal_difficulty_and_yog_pair_selection(self):
+        king={r['id']:r for r in self.guide(20)['rows']}
+        self.assertIn('actors.mobs.dwarfking$dkwarlock',king)
+        self.assertNotIn('actors.mobs.dwarfking$dkgolem',king)
+        self.assertEqual(king['actors.mobs.dwarfking$dkmonk']['fold_group'],'首领支援与召唤')
+        yog={r['id']:r for r in self.guide(25)['rows']}
+        self.assertEqual(len([key for key in yog if key.startswith('actors.mobs.yogfist$')]),6)
+        self.assertTrue(all('不是6拳都会出现' in row['condition'] for key,row in yog.items() if key.startswith('actors.mobs.yogfist$')))
+        self.assertIn('已摧毁恶魔血巢',yog['actors.mobs.yogdzewa$larva']['condition'])
+        self.assertIn('仍存活的恶魔血巢',yog['actors.mobs.yogdzewa$yogripper']['condition'])
+        self.assertNotIn('actors.mobs.yogdzewa$yogeye',yog)
+        self.assertIn('actors.mobs.pylon',{r['id'] for r in self.guide(15)['rows']})
+
+    def test_conditional_enemies_are_unique_and_do_not_turn_room_chances_into_spawn_odds(self):
+        for branch,depths in ((0,range(1,27)),(1,range(11,20))):
+            for depth in depths:
+                rows=self.guide(depth,branch)['rows']
+                self.assertEqual(len({r['id'] for r in rows}),len(rows),(depth,branch))
+        first={r['id']:r for r in self.guide(1)['rows']}
+        self.assertIn('默认10%',first['actors.mobs.armoredstatue']['condition'])
+        self.assertIn('不是房间生成概率',first['actors.mobs.phantompiranha']['condition'])
+        prison={r['id']:r for r in self.guide(7)['rows']}
+        self.assertIn('另可出现',prison['actors.mobs.skeleton']['condition'])
+        self.assertIn('actors.mobs.necromancer$necroskeleton',{r['id'] for r in self.guide(8)['rows']})
+        self.assertIn('actors.mobs.demonspawner',{r['id'] for r in self.guide(21)['rows']})
 
     def test_all_public_encounters_have_normal_numeric_and_drop_details(self):
         values=PlayerValues(NumericRules(self.catalog))
@@ -134,6 +180,17 @@ class NativeFloorGuideTests(unittest.TestCase):
         self.assertIn('0次示例',reference['source_label'])
         self.assertIn('未读取本局计数',reference['conditions'])
         self.assertIsNone(source)
+        self.assertEqual(self.ui.manager.action_error,'')
+
+    def test_native_condition_groups_are_collapsed_and_nested_references_still_open(self):
+        public=self.ui.floor_state(self.session.snapshot())
+        groups=[r for r in public['nodes'][1]['children'] if r['id'].startswith('group-')]
+        self.assertTrue(groups)
+        self.assertTrue(all(not row.get('expanded') for row in groups))
+        calls=[];self.ui.manager.open_reference=lambda *args:calls.append(args)
+        self.ui.frozen=False
+        self.ui.dispatch({'action':'floor_reference','token':public['token'],'id':'actors.mobs.greatcrab'})
+        self.assertEqual(calls[0][0]['entry'],'actors.mobs.greatcrab')
         self.assertEqual(self.ui.manager.action_error,'')
 
 
