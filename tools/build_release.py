@@ -14,7 +14,7 @@ from companion import __version__
 
 # Deliberate allowlist: never include save data, local preferences, logs or research.
 FILES = (
-    "README.md", "BUILD.md", "CONTRIBUTING.md", "CHANGELOG.md", ".gitignore", ".github/workflows/ci.yml", "THIRD_PARTY_NOTICES.md", "LICENSE.txt", "launch.pyw", "启动灯火助手.cmd", "desktop.pyw", "requirements-desktop.txt",
+    "README.md", "BUILD.md", "CONTRIBUTING.md", "CHANGELOG.md", ".gitignore", ".gitattributes", ".github/workflows/ci.yml", "THIRD_PARTY_NOTICES.md", "LICENSE.txt", "launch.pyw", "启动灯火助手.cmd", "desktop.pyw", "requirements-desktop.txt",
     "companion/__init__.py", "companion/__main__.py", "companion/diagnostics.py", "companion/panel.py", "companion/hotkeys.py", "companion/game_math.py",
     "companion/engine.py", "companion/overlay.py", "companion/play_state.py", "companion/play_overlay.py", "companion/play_settings.py", "companion/quick_reference.py", "companion/windows.py", "companion/saves.py", "companion/paths.py", "companion/tray.py", "data/lamp.ico", "data/lamp.png",
     "companion/knowledge.py", "companion/knowledge_search.py", "companion/decisions.py", "companion/support.py", "companion/workspace_service.py", "companion/values_resources.py", "companion/reference_sources.py", "companion/backup_workflows.py", "companion/backup_libraries.py",
