@@ -140,7 +140,7 @@ class Handler(BaseHTTPRequestHandler):
             args = parse_qs(url.query)
             try:
                 self.send_data(self.server.session.global_history_status(args.get('library', [None])[0],
-                    args.get('context', [None])[0]))
+                    args.get('context', [None])[0], args.get('archive', [None])[0]))
             except (OSError, ValueError) as exc:
                 self.send_data({'error': str(exc)}, 400)
         elif url.path == '/api/backup-destination':
@@ -327,7 +327,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == '/api/global-history':
                 result = self.server.session.global_history_action(payload)
-                if payload['action'] in ('export', 'portable-export'):
+                if payload['action'] in ('export', 'portable-export', 'archive-export', 'damaged-export'):
                     self.send_data(result[0], mime='application/zip', filename=result[1])
                 else:
                     self.send_data({'ok': True, **result})

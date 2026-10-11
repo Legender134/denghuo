@@ -152,6 +152,7 @@ class Session:
         self._shutdown_receipt_done = threading.Event()
         self._shutdown_receipt_error = ''
         self._shutdown_captured = []
+        self._shutdown_global_result = None
         self._backup_shutdown_started = False
         self._consumed_stop_at = None
         from .session_exit import ExitCoordinator, ExitDraftStore, ExitRecoveryJournal
@@ -359,6 +360,11 @@ class Session:
             if self._shutdown_backup_result is None and time.monotonic() < self._shutdown_deadline:
                 self._shutdown_captured.append(copy.deepcopy(row))
 
+    def _record_shutdown_global_capture(self, result):
+        with self._shutdown_lock:
+            if self._shutdown_backup_result is None and time.monotonic() < self._shutdown_deadline:
+                self._shutdown_global_result = copy.deepcopy(result)
+
     def _capture_for_shutdown(self, deadline):
         result = None
         try:
@@ -378,14 +384,17 @@ class Session:
                            'error': '最后一次备份未完成：连接设置尚未修复；已有原件仍保留。'}
                           if config_error else manager.final_capture(root, deadline,
                               allow_missing_default=allow_missing_default,
-                              on_capture=self._record_shutdown_capture))
+                              on_capture=self._record_shutdown_capture,
+                              on_global_capture=self._record_shutdown_global_capture))
             finally:
                 self._backup_io_lock.release()
         except Exception:
             logging.exception('Final backup capture failed')
             with self._shutdown_lock:
                 captured = copy.deepcopy(self._shutdown_captured)
-            result = {'ok': False, 'state': 'partial' if captured else 'failed', 'captured': captured,
+                global_result = copy.deepcopy(self._shutdown_global_result)
+            result = {'ok': False, 'state': 'partial' if captured or global_result and global_result.get('raw_retained') else 'failed', 'captured': captured,
+                      'global_progress': global_result,
                       'error': '最后一次备份未完成；已有备份与活动存档原件仍保留。'}
         finally:
             with self._shutdown_lock:
@@ -424,8 +433,11 @@ class Session:
         with self._shutdown_lock:
             if self._shutdown_backup_result is None:
                 captured = copy.deepcopy(self._shutdown_captured)
-                self._shutdown_backup_result = self._shutdown_capture_result or {'ok': False, 'state': 'partial' if captured else 'timeout', 'captured': captured,
-                    'error': '最后一次备份检查未能在结束前完成；其余槽位的结果尚未确认。已有备份与活动存档原件仍保留；下次启动助手后，请检查存档历史与备份状态。'}
+                global_result = copy.deepcopy(self._shutdown_global_result)
+                self._shutdown_backup_result = self._shutdown_capture_result or {
+                    'ok': False, 'state': 'partial' if captured or global_result and global_result.get('raw_retained') else 'timeout',
+                    'captured': captured, 'global_progress': global_result,
+                    'error': '最后一次备份检查未能在结束前完成；未列为已完成的槽位与全局进度结果尚未确认。已有备份与活动存档原件仍保留；下次启动助手后，请检查存档历史与备份状态。'}
             if self._shutdown_receipt_thread is None:
                 self._shutdown_receipt_thread = threading.Thread(target=self._write_shutdown_receipt,
                     args=(copy.deepcopy(self._shutdown_backup_result),), name='last-exit-receipt', daemon=True)
@@ -714,7 +726,7 @@ class Session:
         if not isinstance(context, str) or context != self.backup_context:
             raise ValueError('存档连接已变化或确认已过期，请重新打开存档历史并预览')
 
-    def global_history_status(self, library=None, expected_context=None):
+    def global_history_status(self, library=None, expected_context=None, archive=None):
         from . import global_history, backup_libraries
         with self._backup_operation() as context:
             if expected_context is not None:
@@ -724,35 +736,70 @@ class Session:
             context.backups.ensure_storage()
             root = context.settings['save_root']
             reference = backup_libraries.resolve_library(context.backups, library, root) if library else root
-            result = global_history.status(context.backups, root, reference)
+            result = global_history.status(context.backups, root, reference, archive_id=archive)
             available = backup_libraries.catalog(context.backups, root)
             return {**result, 'context': context.backup_context, 'target_root': root,
                     'libraries': [{'id': row['id'], 'current': row['current']} for row in available['libraries']]}
 
     def global_history_action(self, payload):
         from . import global_history, backup_libraries
-        if not isinstance(payload, dict) or payload.get('action') not in ('export', 'portable-export', 'restore-preview', 'restore'):
+        actions = ('export', 'portable-export', 'restore-preview', 'restore', 'damaged-export', 'archive-export',
+                   'maintenance-preview', 'maintenance', 'maintenance-recovery-preview',
+                   'maintenance-continue', 'maintenance-cancel')
+        if not isinstance(payload, dict) or payload.get('action') not in actions:
             raise ValueError('全局历史请求格式不正确。')
         action = payload['action']
-        allowed = {'action', 'context', 'library', 'id'}
+        required = {'action', 'context', 'library'}
+        optional = set()
+        if action in ('export', 'portable-export', 'restore-preview', 'restore', 'damaged-export'):
+            required.add('id')
+            optional.add('archive')
+        if action in ('export', 'restore-preview', 'restore'):
+            optional.add('selected')
         if action == 'restore':
-            allowed |= {'expected', 'confirmed', 'version', 'version_confirmed', 'choices'}
+            required |= {'expected', 'confirmed', 'version', 'version_confirmed', 'choices'}
         if action == 'portable-export':
-            allowed |= {'selected', 'version', 'version_confirmed'}
-        if set(payload) != allowed:
+            required |= {'selected', 'version', 'version_confirmed'}
+        if action == 'archive-export':
+            required.add('archive')
+        if action in ('maintenance', 'maintenance-continue', 'maintenance-cancel'):
+            required |= {'expected', 'confirmed'}
+        if not required <= set(payload) or set(payload) - required - optional:
             raise ValueError('全局历史请求字段不完整或不受支持。')
-        with self._backup_operation(mutating=action == 'restore') as context:
+        with self._backup_operation(mutating=action in ('restore', 'maintenance', 'maintenance-continue', 'maintenance-cancel')) as context:
             self.check_backup_context(payload['context'])
             if self.config_error:
                 raise ValueError('请先修复连接设置，再处理全局历史。')
             root = context.settings['save_root']
             reference = backup_libraries.resolve_library(context.backups, payload['library'], root)
             if action == 'export':
-                return global_history.export(context.backups, reference, payload['id'])
+                return global_history.export(context.backups, reference, payload['id'],
+                    selected_names=payload.get('selected'), archive_id=payload.get('archive'))
             if action == 'portable-export':
                 return global_history.portable_export(context.backups, reference, payload)
+            if action == 'damaged-export':
+                return global_history.damaged_export(context.backups, reference, payload['id'], archive_id=payload.get('archive'))
+            if action == 'archive-export':
+                return global_history.archive_export(context.backups, reference, payload['archive'])
+            if action == 'maintenance-preview':
+                result = global_history.maintenance_preview(context.backups, root, reference)
+            elif action == 'maintenance-recovery-preview':
+                result = global_history.maintenance_recovery_preview(context.backups, root, reference)
+            elif action == 'maintenance':
+                result = global_history.maintain(context.backups, root, reference, payload,
+                    lambda: self._check_settings_commit(context))
+            elif action in ('maintenance-continue', 'maintenance-cancel'):
+                result = global_history.recover_maintenance(context.backups, root, reference, payload,
+                    'continue' if action == 'maintenance-continue' else 'cancel',
+                    lambda: self._check_settings_commit(context))
+            else:
+                result = None
+            if result is not None or action == 'maintenance-recovery-preview':
+                return {**(result or {'pending': False}), 'context': context.backup_context, 'target_root': root,
+                        'library': context.backups.scope(reference).name}
             if action == 'restore-preview':
-                return {**global_history.preview(context.backups, root, reference, payload['id']),
+                return {**global_history.preview(context.backups, root, reference, payload['id'],
+                    selected_names=payload.get('selected'), archive_id=payload.get('archive')),
                         'context': context.backup_context, 'target_root': root}
             result = global_history.restore(context.backups, root, reference, payload,
                 lambda: self._check_settings_commit(context))

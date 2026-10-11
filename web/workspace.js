@@ -383,15 +383,18 @@ function renderWebExitReceipt(showToast=false){
   const title=finished?'本次辅助已结束':'正在结束本次辅助';
   let warning=finished,message=finished?'最后备份结果尚未确认，请在下次启动核对退出回执。':'正在检查最后备份，结果尚未确认，请等待。';
   if(finished){
+    const completed=Array.isArray(result?.captured)?result.captured.filter(row=>Number.isInteger(row?.slot)&&row.slot>=1&&row.slot<=6&&typeof row.id==='string'&&/^[a-f0-9]{64}$/.test(row.id)):[];
+    const global=result?.global_progress,validGlobal=global?.raw_retained===true&&typeof global.snapshot_id==='string'&&/^[a-f0-9]{64}$/.test(global.snapshot_id)&&Array.isArray(global.files)&&global.files.length&&global.files.every(name=>['badges.dat','rankings.dat'].includes(name));
+    const globalCompleted=validGlobal&&global.protected===true&&global.state==='protected';
+    const globalLabel=validGlobal?'全局进度：'+global.files.map(name=>name==='badges.dat'?'成就':'排行').join('、')+'（'+global.snapshot_id.slice(0,12)+'）':'';
+    const completedText=[...completed.map(row=>`槽位 ${row.slot}（${row.id.slice(0,12)}）`),...(globalCompleted?[globalLabel]:[])].join('、');
     if(webExitState.error||result?.ok===false)message=webExitState.error||result.error||'最后备份未完成；已有备份与活动存档原件仍保留。';
-    else if(result?.ok===true&&result.state==='captured'&&Array.isArray(result.captured)&&result.captured.length){
-      warning=false;message='最后备份已完成：'+result.captured.map(row=>`槽位 ${row.slot}（${row.id.slice(0,12)}）`).join('、')+'。';
+    else if(result?.ok===true&&result.state==='captured'&&completedText){
+      warning=false;message='最后备份已完成：'+completedText+'。';
     }else if(result?.ok===true&&result.state==='no-save'){warning=false;message='本次没有游戏存档需要备份。';}
     else if(result?.ok===true&&result.state==='paused'){warning=false;message='自动备份已暂停，本次结束未执行最后备份。';}
-    if(result?.ok===false&&Array.isArray(result.captured)){
-      const completed=result.captured.filter(row=>Number.isInteger(row?.slot)&&row.slot>=1&&row.slot<=6&&typeof row.id==='string'&&/^[a-f0-9]{64}$/.test(row.id));
-      if(completed.length)message+=' 已完成的槽位：'+completed.map(row=>`槽位 ${row.slot}（${row.id.slice(0,12)}）`).join('、')+'。';
-    }
+    if((webExitState.error||result?.ok===false)&&completedText)message+=' 已完成的备份：'+completedText+'。';
+    if(validGlobal&&!globalCompleted)message+=' 已保留原始副本：'+globalLabel+'；内容可恢复性尚未确认。';
     if(result?.receipt_error){warning=true;message+=' '+result.receipt_error;}
     message+=' 明确保存的未完成草稿可在下次启动后找回。';
   }

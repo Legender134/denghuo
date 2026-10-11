@@ -44,7 +44,7 @@ async function verifyGlobalHistory(){
   inputs[0].checked=true;h.get('#global-history-version').checked=true;h.get('#global-history-confirm').checked=true;h.run('renderGlobalHistoryControls()');
   assert(!h.get('#global-history-restore').disabled);
   const submitting=h.get('#global-history-restore-form').listeners.submit({preventDefault(){}});
-  assert.equal(writes[1].payload.choices['badges.dat'],'replace');assert.equal(writes[1].payload.choices['rankings.dat'],'keep');assert.equal(writes[1].payload.expected,'fresh-hash');
+  assert.equal(writes[1].payload.choices['badges.dat'],'replace');assert.equal(writes[1].payload.choices['rankings.dat'],undefined);assert.deepEqual([...writes[1].payload.selected],['badges.dat']);assert.equal(writes[1].payload.expected,'fresh-hash');
   assert.equal(writes[1].payload.version,'4.0.2');assert.equal(writes[1].payload.version_confirmed,true);assert.equal(writes[1].payload.confirmed,true);
   assert(h.get('#global-history-close').disabled);assert(inputs[0].disabled);let prevented=false;h.get('#global-history-dialog').listeners.cancel({preventDefault(){prevented=true;}});assert(prevented);
   writes[1].reject(new Error('当前文件变化，请重新预览'));await submitting;
