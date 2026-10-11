@@ -1,6 +1,6 @@
 """Public floor encounter rules; never reads or reveals saved enemy instances.
 
-Derived from SPD 4.0.2 MobSpawner/Shaman/Elemental and Dungeon (GPL-3.0+,
+Derived from SPD 4.0.2 spawn, room and boss challenge rules (GPL-3.0+,
 Oleg Dolya and Evan Debenham). Rotation slots are not per-floor guarantees.
 """
 from collections import Counter
@@ -10,8 +10,12 @@ from .monster_reference import monster_record, normal_stats, reference
 
 def floor_encounters(game, catalog):
     depth, branch, version = game.get('depth'), game.get('branch', 0), game.get('version')
+    mask = game.get('challenges')
+    known = type(mask) is int and 0 <= mask <= 511
+    stronger = known and bool(mask & 256)
     result = {'depth':depth,'branch':branch,'version':'4.0.2','rows':[],
-              'note':'普通轮换、房间、任务与饰品生成条件参考；不是本局已出现的怪物清单。携带物品主动召唤、挑战与临时变化另查对应资料。'}
+              'challenges_mask':mask if known else None,'challenges_known':known,
+              'note':'普通轮换、房间、任务与饰品生成条件参考；不是本局已出现的怪物清单。携带物品主动召唤与临时变化另查对应资料。'}
     if version!=922 or type(depth) is not int or not 1<=depth<=26 or type(branch) is not int:
         result['note']='当前保存版本或楼层尚未核对常规生成规则；可在手册查询4.0.2独立参考。'
         return result
@@ -25,10 +29,12 @@ def floor_encounters(game, catalog):
             return
         row = monster_record(catalog, identity)
         if not row: raise ValueError('楼层怪物参考不完整，请核对资料版本。')
-        stats = normal_stats(row,identity,depth if reference_depth is None else reference_depth)
+        stats = normal_stats(row,identity,depth if reference_depth is None else reference_depth,stronger_bosses=stronger)
         health=str(stats['HP'])+('/'+str(stats['HT']) if stats['HP']!=stats['HT'] else '')
         item={'id':identity,'name':row['name'],'condition':condition,'group':group,
             'hp':health,'damage':str(stats['damageRoll']),'dr':str(stats['drRoll'])}
+        if identity in ('actors.mobs.goo','actors.mobs.tengu','actors.mobs.dm300','actors.mobs.dwarfking','actors.mobs.yogdzewa','actors.mobs.pylon'):
+            item['reference_params']={'stronger_bosses':int(stronger)}
         if reference_depth is not None:item['reference_depth']=reference_depth
         if profile:
             item['reference_key']=identity+'@'+profile
@@ -40,7 +46,12 @@ def floor_encounters(game, catalog):
             if group in ('稀有替换','罕见跨区','罕见跨区变种'): row['fold_group']='稀有与罕见变种'
             elif group in ('特殊房间','任务房间'): row['fold_group']='房间与任务条件'
             elif group=='首领支援': row['fold_group']='首领支援与召唤'
+            elif group=='挑战支援': row['fold_group']='绝命头目挑战支援'
+            elif group=='宝库机关': row['fold_group']='宝库机关/房间条件'
             elif group=='饰品条件': row['fold_group']='饰品生成条件'
+        result['note']+=(' 已确认开启绝命头目：应用已核对的首领初始生命、支援名单与拳头选择规则；其他挑战机制及临时状态另查资料。' if stronger else
+                         ' 已确认未开启绝命头目，采用普通首领参考；其他挑战及临时状态另查资料。' if known else
+                         ' 挑战信息未确认，暂按未开启绝命头目的普通参考；不能据此确认本局难度。')
         return result
     if branch:
         if branch==1 and 11<=depth<=14:
@@ -56,23 +67,30 @@ def floor_encounters(game, catalog):
         elif branch==1 and 16<=depth<=19:
             for identity in ('vaultskeleton','vaultdm100','vaultshaman','vaultdm200','vaultghoul','vaultelemental$fire','vaultelemental$frost','vaultelemental$shock','vaultgolem','vaultbosselemental'):
                 add('actors.mobs.quest.vault.'+identity,'宝库房间按自身布置生成；不是普通主地牢刷新','宝库房间')
+            add('actors.mobs.npcs.vaultsentry','扫描宝藏房间生成的固定机关，不可破坏；扫描方向、宽度及间隔由房间配置，不是普通攻击或普通随机掉落','宝库机关')
+            add('actors.mobs.npcs.vaultlaser','激光房间按可用墙面布置的固定机关，不可破坏；方向、轮次间隔及射击次数由房间配置，不是普通攻击或普通随机掉落','宝库机关')
             result['note']='宝库房间与首领参考；不使用主地牢轮换或稀有替换概率。房间的实际生物须主动揭示本层保存内容。'
         else: result['note']='此支线位置没有已核对的常规生成规则。'
         return finish()
     bosses = {5:'goo',10:'tengu',15:'dm300',20:'dwarfking',25:'yogdzewa'}
     if depth in bosses:
-        add('actors.mobs.'+bosses[depth],'首领层主敌人；支援、召唤与战斗阶段另查展开资料','首领')
+        add('actors.mobs.'+bosses[depth],('绝命头目挑战初始生命参考' if stronger else '普通难度初始生命参考')+'；支援、召唤与战斗阶段另查展开资料','首领')
         if depth==15:
-            add('actors.mobs.pylon','DM-300超载阶段的能量塔；未激活的塔无敌','首领支援')
+            add('actors.mobs.pylon',f'DM-300战斗共激活{3 if stronger else 2}座能量塔；超载阶段须破坏当前供能塔，未激活的塔无敌','首领支援')
         elif depth==20:
             for identity in ('dkghoul','dkmonk','dkwarlock'):
-                add('actors.mobs.dwarfking$'+identity,'矮人国王分阶段召唤；未必同时在场。国王魔像仅属首领强化挑战，未列入普通难度','首领支援')
+                add('actors.mobs.dwarfking$'+identity,'矮人国王分阶段召唤；未必同时在场'+('；绝命头目使用强化召唤分支' if stronger else '；国王魔像仅属绝命头目挑战，未列入普通难度'),'首领支援')
+            if stronger:
+                add('actors.mobs.dwarfking$dkgolem','绝命头目第二阶段后段成对召唤；其他召唤分支每第9次也选择国王魔像，须有可用召唤位置；未必同时在场','挑战支援')
         elif depth==25:
             for first,second in (('burningfist','soiledfist'),('rottingfist','rustedfist'),('brightfist','darkfist')):
                 for identity in (first,second):
-                    add('actors.mobs.yogfist$'+identity,'普通难度此配对只随机选1种，再与其他配对打乱出现顺序；不是6拳都会出现','首领支援')
-            add('actors.mobs.yogdzewa$larva','普通召唤池有4个名额；已摧毁恶魔血巢对应名额使用幼虫','首领支援')
-            add('actors.mobs.yogdzewa$yogripper','普通召唤池中仍存活的恶魔血巢对应名额使用跳跃恶魔；未读取本局血巢计数','首领支援')
+                    add('actors.mobs.yogfist$'+identity,'绝命头目三轮召拳每轮同时召唤2拳，共6拳；同一配对不会同轮出现，顺序由生成规则决定，未预测本局顺序' if stronger else '普通难度此配对只随机选1种，再与其他配对打乱出现顺序；不是6拳都会出现','首领支援')
+            add('actors.mobs.yogdzewa$larva',('绝命头目召唤池有6个名额，其中前4个名额按血巢状态分配；' if stronger else '普通召唤池有4个名额；')+'已摧毁恶魔血巢对应名额使用幼虫；未读取本局血巢计数','首领支援')
+            add('actors.mobs.yogdzewa$yogripper','绝命头目召唤池最后2个名额固定使用跳跃恶魔；另4个按血巢状态分配，未读取本局血巢计数' if stronger else '普通召唤池中仍存活的恶魔血巢对应名额使用跳跃恶魔；未读取本局血巢计数','首领支援')
+            if stronger:
+                add('actors.mobs.yogdzewa$yogeye','绝命头目召唤池前4个名额中，仍存活血巢对应的偶数索引名额（第1、3名额）使用古神邪眼；未读取本局血巢计数，不保证出现','挑战支援')
+                add('actors.mobs.yogdzewa$yogscorpio','绝命头目召唤池前4个名额中，仍存活血巢对应的奇数索引名额（第2、4名额）使用古神蝎子；未读取本局血巢计数，不保证出现','挑战支援')
         result['note']='首领层不套用普通楼层刷怪轮换；召唤与场景生物由首领战机制决定。'
         return finish()
     if depth==26:

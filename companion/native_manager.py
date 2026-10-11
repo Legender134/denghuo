@@ -369,7 +369,7 @@ class NativeManager:
             hidden = None
             self._floor_hidden = None
         owner=binding_token([snap.get(k) for k in ('started','active_slot','run_id')]+
-            [snap.get('settings',{}).get(k) for k in ('save_root','mode')]+[data.get(k) for k in ('depth','branch','version')])
+            [snap.get('settings',{}).get(k) for k in ('save_root','mode')]+[data.get(k) for k in ('depth','branch','version','challenges_mask','challenges_known')])
         result = {'token':token,'owner':owner,'enabled':available and not self.io_busy,'revealed':bool(hidden),
                   'caption':'连接有效存档后显示本层资料。','nodes':[]}
         self._floor_item_references = {}
@@ -377,35 +377,36 @@ class NativeManager:
         result['caption']=f"第 {data['depth']} 层"+(f" · 支线 {data['branch']}" if data.get('branch') else '')+' · 最近存档，非实时视野'
         hero=data.get('hero',{})
         result['caption']+=f"\n生命 {hero.get('hp','未确认')} / {hero.get('ht','未确认')} · 等级 {hero.get('level','未确认')}"
-        key = binding_token([data.get(k) for k in ('depth','branch','version')]+[data.get('hero',{}).get('level')])
+        key = binding_token([data.get(k) for k in ('depth','branch','version','challenges_mask','challenges_known')]+[data.get('hero',{}).get('level')])
         if key!=getattr(self,'_floor_public_key',None):
-            guide = floor_encounters({'depth':data['depth'],'branch':data.get('branch',0),'version':data.get('version')},self.session.catalog)
+            guide = floor_encounters({'depth':data['depth'],'branch':data.get('branch',0),'version':data.get('version'),
+                'challenges':data.get('challenges_mask') if data.get('challenges_known') else None},self.session.catalog)
             rows=[];groups={}
             self._floor_reference_rows={r.get('reference_key',r['id']):r for r in guide['rows']}
             def leaf(identity,text,detail=''): return {'id':identity,'text':text,'detail':detail or text}
             hero = data.get('hero',{}).get('level')
             hero = hero if type(hero) is int and 1<=hero<=30 else 1
             for row in guide['rows']:
-                detail=self.session.values.detail(row['id'],{'depth':row.get('reference_depth',data['depth']),'hero_level':hero,'loot_count':0})
+                detail=self.session.values.detail(row['id'],{'depth':row.get('reference_depth',data['depth']),'hero_level':hero,'loot_count':0,**row.get('reference_params',{})})
                 calculation_params=[f"{field['label']}：{field['value']}" for field in detail['inputs']
-                                    if field['key'] not in ('depth','hero_level','loot_count','wealth_bonus')]
+                                    if field['key'] not in ('depth','hero_level','loot_count','wealth_bonus','stronger_bosses')]
                 blocks=[]
                 for i,block in enumerate(detail['blocks']):
                     children=[]
                     for j,value in enumerate(block.get('values',[])):
                         title=f"{value['label']}：{value['value']} {value.get('unit','')}".strip()
-                        children.append(leaf(f'v-{i}-{j}',title,'\n'.join(filter(None,[title,value.get('condition'),block.get('note')]))))
+                        children.append(leaf(f'v-{i}-{j}',title,'\n'.join(filter(None,[title,value.get('condition')]))))
                     for j,cells in enumerate(block.get('rows',[])):
                         text=' · '.join(str(c) for c in cells[:3])
                         full='\n'.join(f'{label}：{cell}' for label,cell in zip(block['columns'],cells))
-                        children.append(leaf(f'r-{i}-{j}',text,full+'\n'+block.get('note','')))
+                        children.append(leaf(f'r-{i}-{j}',text,full))
                     if block['title']=='特殊攻击与机制' and calculation_params:
                         description='本次参考参数 · '+'；'.join(calculation_params)
                         children.insert(0,leaf('reference-params',description,description+'\n这些是可在完整资料调整的示例条件，未读取敌人的当前状态。'))
                     blocks.append({'id':'b-'+str(i),'text':block['title'],'detail':block.get('note',''),'children':children})
                 name=row['name']+('' if row['group']=='普通轮换' else ' · '+row['group'])
                 node={'id':row.get('reference_key',row['id']),'text':f"{name} · 生命 {row['hp']} · 普攻 {row['damage']} · 减伤 {row['dr']}",
-                    'detail':row['condition']+f'\n正常基础状态；角色等级 {hero}；累计成功掉落示例0次。实际财富、掉落次数、临时状态另查完整数值。',
+                    'detail':row['condition']+f'\n本层条件参考；角色等级 {hero}；累计成功掉落示例0次。实际财富、掉落次数、临时状态另查完整数值。',
                     'children':blocks}
                 group=row.get('fold_group')
                 if group:
@@ -427,6 +428,7 @@ class NativeManager:
                 if not row['visible']:
                     contents.append({'id':'trap-'+str(row['pos']),'text':f"({row['x']}, {row['y']}) {row['name']}"})
             for kind in ('heaps','mobs'):
+                entries=[]
                 for i,row in enumerate(floor[kind]):
                     children=[]
                     for item in row['items']:
@@ -438,7 +440,11 @@ class NativeManager:
                     if kind=='mobs':
                         caption+=' · '+('保存生命未确认' if row.get('hp') is None else f"保存生命 {row['hp']}")
                         if row.get('ht') is not None:caption+=f" / {row['ht']}"
-                    contents.append({'id':f'{kind}-{i}','text':caption,'detail':floor['note'],'children':children})
+                    entries.append({'id':f'{kind}-{i}','text':caption,'detail':floor['note'],'children':children})
+                if entries:
+                    label='地上物品与容器' if kind=='heaps' else '本层已保存生物'
+                    contents.append({'id':'hidden-'+kind,'text':f'{label} · {len(entries)} 处',
+                        'detail':floor['note'],'children':entries})
         result['nodes']=[{'id':'hidden','text':'本层隐藏内容 · '+('已主动揭示' if hidden else '尚未揭示'),
             'detail':hidden['result']['note'] if hidden else '点击“揭示本层隐藏内容”后只读查看；保存快照更新后自动收起。',
             'children':contents,'expanded':bool(hidden)},self._floor_public_nodes]
@@ -522,11 +528,14 @@ class NativeManager:
                 name=selected['name']
                 row={'entry':selected['id'],'source':{'mode':snap['settings']['mode']},
                     'stamp':NumericLookup.source_stamp(snap),
-                    'source_label':name+' · 本层正常敌人参考 · 角色等级来自所选存档；掉落次数为0次示例',
-                    'params':{'depth':selected.get('reference_depth',snap['data']['depth']),'hero_level':hero,'loot_count':0},
-                    'conditions':selected['condition']+'；本层正常敌人参考；累计成功掉落示例0次，未读取本局计数或敌人临时状态。'}
+                    'source_label':name+' · 本层敌人条件参考 · 角色等级来自所选存档；掉落次数为0次示例',
+                    'params':{'depth':selected.get('reference_depth',snap['data']['depth']),'hero_level':hero,'loot_count':0,**selected.get('reference_params',{})},
+                    'conditions':selected['condition']+'；累计成功掉落示例0次，未读取本局计数或敌人临时状态。',
+                    'field_origins':{}}
                 if 'reference_depth' in selected:
-                    row['field_origins']={'depth':'召唤规则固定等效层数，非当前楼层'}
+                    row['field_origins']['depth']='召唤规则固定等效层数，非当前楼层'
+                if 'stronger_bosses' in selected.get('reference_params',{}):
+                    row['field_origins']['stronger_bosses']='所选存档已保存的挑战条件' if snap['data'].get('challenges_known') else '挑战未知，按普通难度假设'
                 self.manager.open_reference(row,None,'')
             elif action == 'floor_item_reference':
                 snap=self.session.snapshot()

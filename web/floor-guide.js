@@ -1,8 +1,8 @@
 'use strict';
 // Public rules load automatically; saved hidden contents require a fresh click.
 const floorGuide={context:null,key:null,level:null,catalog:null,serial:0,signature:null,revealed:false,nodes:new Map()};
-function floorGuideContext(){return JSON.stringify([snapshotViewOwner(),state?.revision,state?.settings_revision,state?.error,state?.stale,state?.data?.depth,state?.data?.branch,state?.data?.version,state?.data?.hero?.level]);}
-function floorGuideKey(){return JSON.stringify([snapshotViewOwner(),state?.data?.depth,state?.data?.branch,state?.data?.version]);}
+function floorGuideContext(){return JSON.stringify([snapshotViewOwner(),state?.revision,state?.settings_revision,state?.error,state?.stale,state?.data?.depth,state?.data?.branch,state?.data?.version,state?.data?.challenges_mask,state?.data?.challenges_known,state?.data?.hero?.level]);}
+function floorGuideKey(){return JSON.stringify([snapshotViewOwner(),state?.data?.depth,state?.data?.branch,state?.data?.version,state?.data?.challenges_mask,state?.data?.challenges_known]);}
 function hideFloorContents(message='隐藏门、陷阱和未见物品需主动揭示。'){
   floorGuide.revealed=false;$('#floor-hidden-content').replaceChildren();$('#floor-hidden-content').hidden=true;
   $('#floor-hidden-count').textContent='尚未揭示';$('#floor-hidden-status').textContent=message;$('#floor-hidden-open').textContent='揭示本层隐藏内容';
@@ -24,10 +24,10 @@ function refreshFloorGuide(force=false){
   if(!state?.data||state.error||state.settings.mode!=='save'){
     floorGuide.signature=null;floorGuide.nodes.clear();$('#floor-monsters-list').replaceChildren();$('#floor-monsters-count').textContent='';
     $('#floor-guide-title').textContent='当前楼层';$('#floor-guide-source').textContent=state?.settings?.mode==='manual'?'手动局势不提供本层探查。':'游戏保存后，自动显示本层资料。';
-    $('#floor-monsters-note').textContent='连接有效存档后显示本层生成规则。';return;
+    $('#floor-monsters-note').textContent='连接有效存档后显示本层生成规则。';$('#floor-monsters-brief').textContent=$('#floor-guide-source').textContent;return;
   }
   $('#floor-guide-title').textContent=`第 ${state.data.depth} 层${state.data.branch?' · 支线 '+state.data.branch:''}`;
-  $('#floor-guide-source').textContent='正在读取本层资料…';
+  $('#floor-guide-source').textContent='正在读取本层资料…';$('#floor-monsters-brief').textContent='正在核对本层生成规则…';
   void loadFloorGuide(serial,context,key);
 }
 async function loadFloorGuide(serial,context,key){
@@ -35,15 +35,17 @@ async function loadFloorGuide(serial,context,key){
     const catalog=await post('/api/scouting',{action:'catalog'});
     if(serial!==floorGuide.serial||context!==floorGuideContext())return;
     if(catalog.source.depth!==state.data.depth||catalog.source.branch!==state.data.branch)throw new Error('角色正在换层，请等待保存完成后刷新。');
+    if((catalog.source.challenges_mask??null)!==(state.data.challenges_mask??null)||Boolean(catalog.source.challenges_known)!==Boolean(state.data.challenges_known))throw new Error('挑战条件已变化，请等待保存快照更新后刷新。');
     floorGuide.catalog=catalog;
     $('#floor-guide-source').textContent=`槽位 ${catalog.source.slot} · ${fmtTime(catalog.source.modified)} 保存${state.stale?' · 旧快照':''}`;
-    $('#floor-monsters-note').textContent=catalog.encounters.note;
+    $('#floor-monsters-note').textContent=catalog.encounters.note;$('#floor-monsters-brief').textContent=catalog.encounters.rows.length?'生成候选，非已在场。展开看数值、掉落与条件。':catalog.encounters.note;
     $('#floor-hidden-open').disabled=!catalog.supported||!catalog.floors.some(f=>f.current&&f.available);
     renderFloorMonsters(catalog,key);
-  }catch(error){if(serial===floorGuide.serial){inlineError($('#floor-guide-error'),error.message);$('#floor-guide-source').textContent='本层资料尚未读取；可点击刷新重试。';}}
+  }catch(error){if(serial===floorGuide.serial){inlineError($('#floor-guide-error'),error.message);$('#floor-guide-source').textContent='本层资料尚未读取；可点击刷新重试。';$('#floor-monsters-brief').textContent='本层怪物资料尚未确认，请刷新重试。';}}
 }
 function renderFloorMonsters(catalog,key){
   const rows=catalog.encounters.rows,signature=JSON.stringify([key,catalog.source.hero_level,rows]);
+  const referenceStamp=[state.started,state.settings.save_root,state.settings.mode,catalog.source.slot,state.revision,catalog.source.modified];
   $('#floor-monsters-count').textContent=`${rows.length} 种`;
   if(signature===floorGuide.signature)return;
   const previous=new Map([...floorGuide.nodes].map(([id,row])=>[id,{open:row.node.open,focused:row.node.contains(document.activeElement)}]));
@@ -71,14 +73,14 @@ function renderFloorMonsters(catalog,key){
       if(loaded||busy||key!==floorGuide.key||signature!==floorGuide.signature)return;
       busy=true;retry.hidden=true;content.textContent='正在读取数值与掉落概率…';
       try{
-        const hero=catalog.source.hero_level??1,referenceDepth=row.reference_depth??catalog.source.depth,query=new URLSearchParams({id:row.id,depth:referenceDepth,hero_level:hero,loot_count:0});
+        const hero=catalog.source.hero_level??1,referenceDepth=row.reference_depth??catalog.source.depth,referenceParams={depth:referenceDepth,hero_level:hero,loot_count:0,...(row.reference_params||{})},query=new URLSearchParams({id:row.id,...referenceParams});
         const response=await fetch('/api/values?'+query);const detail=await response.json();if(!response.ok)throw new Error(detail.error||'怪物资料读取失败');
         if(key!==floorGuide.key||signature!==floorGuide.signature)return;
-        const calculationParams=(detail.inputs||[]).filter(field=>!['depth','hero_level','loot_count','wealth_bonus'].includes(field.key));
+        const calculationParams=(detail.inputs||[]).filter(field=>!['depth','hero_level','loot_count','wealth_bonus','stronger_bosses'].includes(field.key));
         const parameterNote=calculationParams.length?`<p class="muted">本次参考参数：${escapeHTML(calculationParams.map(field=>`${field.label}：${field.value}`).join('；'))}。未读取敌人的当前状态，可在完整资料调整。</p>`:'';
-        content.innerHTML=`<p class="muted">正常基础状态 · 角色等级 ${hero}${catalog.source.hero_level==null?'（示例）':''} · 累计成功掉落与财富有效加成都按0参考。完整资料可调整适用的次数和财富条件。</p>`+parameterNote+detail.blocks.map(exampleHTML).join('');
+        content.innerHTML=`<p class="muted">${row.reference_params?.stronger_bosses===1?'绝命头目初始生命及明确列出分支':'普通基础状态参考'} · 角色等级 ${hero}${catalog.source.hero_level==null?'（示例）':''} · 累计成功掉落与财富有效加成都按0参考。完整资料可调整适用的次数和财富条件。</p>`+parameterNote+detail.blocks.map(exampleHTML).join('');
         const button=document.createElement('button');button.type='button';button.className='text-button';button.textContent='调整掉落次数等条件 / 查看来源';
-        button.addEventListener('click',()=>{if(key!==floorGuide.key||signature!==floorGuide.signature)return;showReference({id:row.id,name:row.name,lookup_context:{capture_context:true,ignore_drafts:true,source:{mode:'example'},params:{depth:referenceDepth,hero_level:hero,loot_count:0},field_origins:row.reference_depth==null?{}:{depth:'召唤规则固定等效层数，非当前楼层'},conditions:row.condition+'；本层正常敌人参考；累计成功掉落示例0次，未读取本局计数或敌人临时状态。'}},'4.0.2');});
+        button.addEventListener('click',()=>{if(key!==floorGuide.key||signature!==floorGuide.signature)return;const fieldOrigins=row.reference_depth==null?{}:{depth:'召唤规则固定等效层数，非当前楼层'};if(row.reference_params?.stronger_bosses!=null)fieldOrigins.stronger_bosses=catalog.source.challenges_known?'所选存档已保存的挑战条件':'挑战未知，按普通难度假设';showReference({id:row.id,name:row.name,lookup_context:{capture_context:true,ignore_drafts:true,stamp:referenceStamp,params:referenceParams,field_origins:fieldOrigins,conditions:row.condition+'；累计成功掉落示例0次，未读取本局计数或敌人临时状态。'}},'4.0.2');});
         content.append(button);loaded=true;
       }catch(error){if(key===floorGuide.key&&signature===floorGuide.signature){content.textContent=error.message;retry.hidden=false;}}
       finally{busy=false;}
@@ -107,9 +109,12 @@ function renderFloorContents(result){
   $('#floor-hidden-status').textContent=`已主动揭示 · 楼层保存于 ${fmtTime(result.source.floor_modified)} · 非实时视野`;
   const lines=[...hidden.filter(r=>r.terrain===16).map(r=>`${scoutCoordinate(r)} ${r.name}`),...unseen.map(r=>`${scoutCoordinate(r)} ${r.name}${r.active?'':' · 已失效'}`)];
   const list=document.createElement('ul');for(const text of lines.length?lines:['没有保存隐藏门或未显示的陷阱。']){const li=document.createElement('li');li.textContent=text;list.append(li);}target.append(list);
+  const heaps=document.createElement('details'),heapHeading=document.createElement('summary');
+  heaps.id='floor-hidden-heaps';heapHeading.textContent=`地上物品与容器 · ${result.heaps.length} 处`;heaps.append(heapHeading);
+  if(result.heaps.length)target.append(heaps);
   for(const heap of result.heaps){
     const card=document.createElement('details'),heading=document.createElement('summary');heading.textContent=`${heap.name} ${scoutCoordinate(heap)} · ${heap.items.length} 项${heap.seen?'':' · 未见'}${heap.hidden?' · 隐藏':''}`;card.append(heading);
-    for(const item of heap.items){const button=document.createElement('button');button.type='button';button.className='text-button';button.textContent=`${item.name} ×${item.quantity}${item.cursed===true?' · 诅咒':''}`;button.addEventListener('click',()=>showScoutedItem(item,result));card.append(button);}target.append(card);
+    for(const item of heap.items){const button=document.createElement('button');button.type='button';button.className='text-button';button.textContent=`${item.name} ×${item.quantity}${item.cursed===true?' · 诅咒':''}`;button.addEventListener('click',()=>showScoutedItem(item,result));card.append(button);}heaps.append(card);
   }
   const saved=document.createElement('details'),heading=document.createElement('summary');heading.textContent=`本层保存的生物 · ${result.mobs.length} 个`;saved.append(heading);
   const container=document.createElement('div');container.id='floor-saved-mobs';saved.append(container);target.append(saved);

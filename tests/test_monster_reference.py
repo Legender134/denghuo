@@ -29,6 +29,86 @@ class MonsterReferenceTests(unittest.TestCase):
         block=next(row for row in self.detail(name,**params)['blocks'] if row['title']=='特殊攻击与机制')
         return {row['label']:row for row in block['values']}
 
+    def test_mining_guardian_recovery_is_not_a_killable_health_pool(self):
+        metrics=self.mechanisms('crystalguardian')
+        self.assertIn('生命设为1',metrics['正常零生命处理']['value'])
+        self.assertEqual(metrics['倒地每次自身行动恢复']['value'],'5')
+        self.assertIn('达到满血才结束',metrics['倒地每次自身行动恢复']['condition'])
+        self.assertIn('传入伤害',metrics['恢复期间防御效果处理']['condition'])
+        self.assertEqual(metrics['恢复期间基础闪避']['value'],'0')
+        self.assertEqual(metrics['狭窄位置正常移动速度倍率']['value'],'0.25')
+        self.assertEqual(metrics['踩碎矿洞水晶额外移动耗时']['value'],'1')
+        self.assertTrue(any('倒地恢复期间' in r[2] for r in self.defenses('crystalguardian')['rows']))
+
+    def test_crystal_spire_keeps_strict_wave_thresholds_and_floating_cooldown(self):
+        metrics=self.mechanisms('crystalspire')
+        for label,value in (('开始主动攻击所需镐子交互','3'),('尖刺单次基础伤害','6–15'),
+                            ('尖刺对水晶守卫的基础伤害','18–27'),('尖刺对守卫残废基础延长参数','30'),
+                            ('波次数：生命200–300／100–199／1–99','1／2／3'),
+                            ('新攻击警告准备耗时','1–3'),('准备新攻击后添加冷却','15')):
+            self.assertEqual(metrics[label]['value'],value)
+        self.assertEqual(metrics['准备新攻击后添加冷却']['unit'],'浮点计数')
+        self.assertIn('严格低于200',metrics['波次数：生命200–300／100–199／1–99']['condition'])
+        self.assertIn('严格低于100',metrics['波次数：生命200–300／100–199／1–99']['condition'])
+        self.assertIn('重设为1',metrics['镐子交互推进冷却']['condition'])
+        self.assertIn('没有合法落点则不移动',metrics['尖刺位移']['condition'])
+        self.assertEqual(self.stats('crystalspire')['基础伤害范围'],'不使用普通攻击')
+
+    def test_gnoll_shared_rock_attacks_do_not_replace_sapper_melee_with_unused_geomancer_values(self):
+        for name,cd in (('gnollsapper','4–6'),('gnollgeomancer','3–5')):
+            metrics=self.mechanisms(name)
+            self.assertEqual(metrics['投石／落石每次基础伤害']['value'],'6–12')
+            self.assertEqual(metrics['存活目标麻痹基础延长参数']['value'],'3；豺狼守卫10')
+            self.assertEqual(metrics['初始／施放后能力冷却']['value'],cd)
+            self.assertIn('整体转整数',metrics['承伤推进能力冷却']['condition'])
+            self.assertIn('不增加碰撞伤害',metrics['投石击退']['condition'])
+        self.assertEqual(self.stats('gnollsapper')['基础伤害范围'],'1–6')
+        geomancer=self.stats('gnollgeomancer')
+        self.assertEqual(geomancer['基础伤害范围'],'不使用普通攻击')
+        self.assertEqual(geomancer['普通攻击基础耗时'],'不使用普通攻击')
+        metrics=self.mechanisms('gnollgeomancer')
+        self.assertEqual(metrics['生命100–150／50–99／1–49最多投石数']['value'],'1／2／3')
+        self.assertEqual(metrics['生命100–150／50–99／1–49落石范围参数']['value'],'2／4／6')
+        self.assertEqual(metrics['跨生命阶段时岩石护甲']['value'],'25')
+        self.assertIn('设回51',metrics['跨段伤害生命保护']['condition'])
+        self.assertIn('设回1',metrics['跨段伤害生命保护']['condition'])
+        self.assertIn('已在末段才可正常击杀',metrics['跨段伤害生命保护']['condition'])
+
+    def test_spinner_web_volume_roots_and_action_counter_are_distinct(self):
+        metrics=self.mechanisms('spinner')
+        self.assertEqual(metrics['成功吐网后冷却']['value'],'10')
+        self.assertIn('追击或逃跑状态',metrics['成功吐网后冷却']['condition'])
+        self.assertIn('共至多3格',metrics['吐网预测覆盖']['value'])
+        self.assertIn('蜘蛛未处于逃跑状态',metrics['吐网预测覆盖']['condition'])
+        self.assertEqual(metrics['每格蛛网播种体积']['value'],'20')
+        self.assertEqual(metrics['每格蛛网播种体积']['unit'],'体积')
+        self.assertEqual(metrics['触网扎根基础延长参数']['value'],'5')
+        self.assertIn('飞行目标不能附着',metrics['触网扎根基础延长参数']['condition'])
+        self.assertEqual(metrics['新中毒基础持续']['value'],'7–8')
+        self.assertEqual(metrics['攻击命中后施加中毒概率']['value'],'50')
+
+    def test_stronger_bosses_is_a_strict_explicit_parameter_with_bounded_scope(self):
+        for name,normal,strong in (('goo','100','120'),('tengu','200','250'),('dm300','300','400'),('dwarfking','300','450'),('yogdzewa','1000','1000')):
+            self.assertEqual(self.stats(name,stronger_bosses=0)['初始生命'],normal)
+            detail=self.detail(name,stronger_bosses=1)
+            self.assertEqual(detail['blocks'][0]['values'][0]['value'],strong)
+            self.assertIn('未覆盖全部挑战变化',detail['blocks'][0]['note'])
+            self.assertEqual(next(r for r in detail['inputs'] if r['key']=='stronger_bosses')['value'],1)
+        for invalid in (True,False,-1,2,0.5,'true'):
+            with self.assertRaises(ValueError):self.detail('dwarfking',stronger_bosses=invalid)
+        self.assertFalse(any(r['key']=='stronger_bosses' for r in self.detail('rat')['inputs']))
+
+    def test_verified_goo_and_dm300_challenge_mechanisms_do_not_keep_normal_counts(self):
+        goo=self.mechanisms('goo',stronger_bosses=1)
+        self.assertNotIn('正常蓄力准备',goo)
+        self.assertNotIn('正常水中每次行动恢复',goo)
+        self.assertEqual(goo['绝命头目蓄力准备']['value'],'1')
+        self.assertIn('1至3倍',goo['绝命头目蓄力准备']['condition'])
+        self.assertEqual(goo['绝命头目连续水中恢复']['value'],'1→2→3')
+        for strong,count in ((0,2),(1,3)):
+            defenses=next(b for b in self.detail('dm300',stronger_bosses=strong)['blocks'] if b['title']=='固有抗性、免疫与防御条件')
+            self.assertTrue(any(f'共激活{count}座' in row[2] for row in defenses['rows']))
+
     def test_slime_compression_has_source_thresholds_and_separate_input_stage(self):
         # Slime.java's explicit threshold examples, plus the values immediately
         # below each boundary. CausticSlime inherits the same damage method.
@@ -213,6 +293,84 @@ class MonsterReferenceTests(unittest.TestCase):
             self.assertEqual(metrics['相邻已定位来源的所填伤害']['value'],str(damage))
             self.assertIn('法杖或牧师法术按玩家位置',metrics['非相邻或无法定位来源的所填伤害']['condition'])
         self.assertTrue(any('四舍五入' in r[1] and '八方向相邻' in r[2] for r in self.defenses('phantompiranha')['rows']))
+
+    def test_vault_elemental_boss_phase_and_rotation_keep_survival_and_reload_limits(self):
+        # VaultBossElemental.java: HT/5; isAlive checked before Math.max;
+        # formChances is not in storeInBundle or restoreFromBundle.
+        metrics=self.mechanisms('quest.vault.vaultbosselemental')
+        self.assertEqual(metrics['形态分段生命']['value'],'120')
+        floor=metrics['存活时单次跨段后的生命下限']
+        self.assertIn('600降到100会抬至360',floor['condition'])
+        self.assertIn('直接致死不进入此保护',floor['condition'])
+        self.assertEqual(metrics['新生成时三种初始形态概率']['value'],'各1/3')
+        rotation=metrics['新生成连续战斗的各形态初始可用次数']
+        self.assertEqual(rotation['value'],'2')
+        for required in ('初始形态也扣1次','按剩余次数加权','排除当前形态','未读档','数组未保存','读档不保证'):
+            self.assertIn(required,rotation['condition'])
+        self.assertEqual(metrics['各形态普通近战伤害：冰霜／其余']['value'],'15–20／20–25')
+
+    def test_vault_elemental_boss_cooldowns_distinguish_initial_reset_and_integer_update(self):
+        metrics=self.mechanisms('quest.vault.vaultbosselemental')
+        self.assertEqual(metrics['初始特殊／环境冷却']['value'],'6–10／10–15')
+        self.assertIn('初始为电光也不缩放',metrics['初始特殊／环境冷却']['condition'])
+        for label,value in (('特殊施放后重设冷却：火焰／冰霜','6–10'),
+                            ('特殊施放后重设冷却：电光','4–6'),
+                            ('环境施放后重设冷却：火焰／冰霜','10–15'),
+                            ('环境施放后重设冷却：电光','6–10')):
+            self.assertEqual(metrics[label]['value'],value)
+        self.assertIn('特殊技能优先',metrics['特殊施放后重设冷却：火焰／冰霜']['condition'])
+        update=metrics['实际扣血推进特殊／环境冷却']
+        for required in ('向零取整','当前冷却','12／24'):
+            self.assertIn(required,update['value'])
+        for required in ('实际扣血','跨段抬生命之前','整体转为整数','不是先取整','不是所填输入伤害'):
+            self.assertIn(required,update['condition'])
+        self.assertEqual(metrics['特殊技能准备耗时']['value'],'1–3')
+        self.assertIn('不要求继续处于追击状态',metrics['特殊技能准备耗时']['condition'])
+        self.assertEqual(metrics['特殊技能施放耗时']['value'],'1')
+        self.assertEqual(metrics['环境技能发动耗时']['value'],'1')
+        change=metrics['换形态时环境冷却']
+        self.assertIn('向零取整',change['value'])
+        self.assertIn('没有待发技能时保留特殊冷却',change['condition'])
+
+    def test_vault_elemental_boss_fire_distinguishes_blob_volume_burning_and_wall_scans(self):
+        metrics=self.mechanisms('quest.vault.vaultbosselemental')
+        self.assertEqual(metrics['火焰火球每格播种火焰体积']['value'],'2')
+        self.assertEqual(metrics['火焰火球每格播种火焰体积']['unit'],'体积')
+        self.assertIn('不直接调用伤害',metrics['火焰火球每格播种火焰体积']['condition'])
+        self.assertEqual(metrics['火焰火球点燃基础持续参数']['value'],'8')
+        self.assertEqual(metrics['火墙点燃基础持续参数']['value'],'5')
+        self.assertEqual(metrics['火墙每次扫描厚度／前进距离']['value'],'2／1')
+        self.assertEqual(metrics['新火墙最多扫描次数']['value'],'12')
+        self.assertIn('包括0那次',metrics['新火墙最多扫描次数']['condition'])
+        self.assertIn('不保证命中12次',metrics['新火墙最多扫描次数']['condition'])
+        self.assertEqual(metrics['火墙缺口横向距离：高于半血／不高于半血']['value'],'1–3／4–6')
+        self.assertIn('不是与首领距离',metrics['火墙缺口横向距离：高于半血／不高于半血']['condition'])
+        self.assertNotIn('近战命中后点燃概率',metrics)
+        self.assertNotIn('火球播种火焰体积：干燥／水格',metrics)
+
+    def test_vault_elemental_boss_frost_and_shock_keep_each_ability_damage_and_control_separate(self):
+        metrics=self.mechanisms('quest.vault.vaultbosselemental')
+        for label,value in (('冰霜冰锥最大射程／锥角','10／50'),
+                            ('冰锥初始推进半径／每次增长','2／2'),
+                            ('冰锥单次基础伤害','10–15'),
+                            ('冰锥／冰霜涡旋冻结基础持续参数','5'),
+                            ('涡旋方向组数：高于半血／不高于半血','2／4'),
+                            ('电光闪电束基础伤害','20–30'),
+                            ('追踪闪电基础伤害','10–15'),
+                            ('闪电束／追踪闪电麻痹延长基础参数','1'),
+                            ('追踪闪电数量：高于半血／不高于半血','2／4'),
+                            ('追踪闪电每次前进距离','2'),
+                            ('追踪闪电转向最大幅度抽取范围','22.5–30'),
+                            ('电光形态非投掷武器攻击反击','5–10')):
+            self.assertEqual(metrics[label]['value'],value)
+        self.assertIn('涡旋只尝试冻结，不直接扣血',metrics['冰锥／冰霜涡旋冻结基础持续参数']['condition'])
+        self.assertIn('不保证恰好跨2个格子',metrics['追踪闪电每次前进距离']['condition'])
+        self.assertIn('首次行动只准备路径',metrics['追踪闪电每次前进距离']['condition'])
+        for label in ('冰霜重复命中保护','电击重复命中保护'):
+            self.assertIn('结束后再移除',metrics[label]['condition'])
+        retaliation=metrics['电光形态非投掷武器攻击反击']
+        self.assertIn('不要求首领最终扣血',retaliation['condition'])
+        self.assertIn('不额外检查相邻',retaliation['condition'])
 
     def test_elemental_profiles_keep_normal_vault_and_newborn_actions_separate(self):
         for name in ('elemental$fireelemental','quest.vault.vaultelemental$fire'):
@@ -631,7 +789,9 @@ class MonsterReferenceTests(unittest.TestCase):
             'necromancer$necroskeleton':{'死亡碎骨爆炸基础伤害':'6–12','碎骨爆炸护甲减伤掷骰':'2'},
             'brute':{'濒死狂暴基础伤害':'15–40','正常濒死狂暴初始护盾':'24','狂暴护盾每次自然衰减':'4','狂暴护盾自然衰减间隔':'1'},
             'armoredbrute':{'濒死狂暴基础伤害':'15–40','正常濒死狂暴初始护盾':'21','狂暴护盾每次自然衰减':'1','狂暴护盾自然衰减间隔':'3'},
-            'spinner':{'攻击命中后施加中毒概率':'50','新中毒基础持续':'7–8'},
+            'spinner':{'攻击命中后施加中毒概率':'50','新中毒基础持续':'7–8',
+                '成功吐网后冷却':'10','吐网预测覆盖':'前进方向邻格及其两侧，共至多3格',
+                '每格蛛网播种体积':'20','触网扎根基础延长参数':'5','结束中毒逃跑的条件':'可见目标已无中毒且无恐惧／畏惧'},
             'scorpio':{'远程攻击基础伤害':'30–40','攻击命中后施加残废概率':'50','残废基础持续':'10'},
         }
         for name,vector in expected.items():

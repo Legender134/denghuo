@@ -228,7 +228,7 @@ def build(index, catalog, upstream):
         if name.startswith('dwarfking$dk'):
             # Summoning.act sets maxLvl after construction, before GameScene.add.
             stats['maxLvl'] = -2
-        if name in ('pylon', 'crystalspire', 'fungalcore', 'demonspawner', 'necromancer', 'spectralnecromancer', 'yogdzewa', 'rotheart'):
+        if name in ('pylon', 'crystalspire', 'gnollgeomancer', 'fungalcore', 'demonspawner', 'necromancer', 'spectralnecromancer', 'yogdzewa', 'rotheart'):
             stats['damageRoll'] = '不使用普通攻击'
         if stats.get('damageRoll')=='不使用普通攻击' or dynamic=='sentry':
             stats['attackDelay']='不使用普通攻击'
@@ -334,6 +334,7 @@ def build(index, catalog, upstream):
     # Floor condition profiles in companion.floor_guide also depend on these
     # version-bound room, quest and container rules, outside MobSpawner.
     condition_sources = [GAME_PATH+tail for tail in (
+        'Challenges.java','actors/mobs/Goo.java','actors/mobs/Tengu.java','actors/mobs/DM300.java',
         'actors/mobs/npcs/Ghost.java','actors/mobs/npcs/Wandmaker.java','actors/mobs/npcs/Blacksmith.java',
         'actors/mobs/DwarfKing.java','actors/mobs/YogDzewa.java','actors/mobs/DemonSpawner.java',
         'actors/mobs/Necromancer.java','actors/mobs/SpectralNecromancer.java',
@@ -343,6 +344,8 @@ def build(index, catalog, upstream):
         'levels/rooms/secret/SecretRoom.java','levels/rooms/secret/SecretHoneypotRoom.java',
         'levels/rooms/quest/MassGraveRoom.java','levels/rooms/quest/RotGardenRoom.java','levels/rooms/quest/RitualSiteRoom.java',
         'levels/rooms/quest/MineLargeRoom.java','levels/rooms/quest/MineGiantRoom.java',
+        'levels/rooms/quest/vault/VaultRoom.java','levels/rooms/quest/vault/VaultLasersRoom.java',
+        'levels/rooms/quest/vault/treasure/VaultTreasureRoom.java','levels/rooms/quest/vault/treasure/VaultCircleScanTreasureRoom.java',
         'items/Heap.java','items/quest/CorpseDust.java','items/quest/CeremonialCandle.java','items/trinkets/MimicTooth.java')]
     for path in condition_sources: source(path)
     # Player-facing special mechanisms and the ordinary loot modifier use
@@ -354,9 +357,9 @@ def build(index, catalog, upstream):
                  'actors/buffs/Chill.java','actors/buffs/Frost.java','actors/buffs/Buff.java','actors/buffs/MagicImmune.java',
                  'actors/blobs/Freezing.java','items/weapon/enchantments/Shocking.java','items/wands/CursedWand.java',
                  'actors/hero/Belongings.java','items/Item.java','items/Gold.java','items/quest/Embers.java',
-                 'items/trinkets/ExoticCrystals.java','items/trinkets/Trinket.java',
+                 'items/trinkets/ExoticCrystals.java','items/trinkets/ShardOfOblivion.java','items/trinkets/Trinket.java',
                  'items/potions/exotic/ExoticPotion.java','items/scrolls/exotic/ExoticScroll.java',
-                 'actors/blobs/StenchGas.java','actors/blobs/ToxicGas.java',
+                 'actors/blobs/StenchGas.java','actors/blobs/ToxicGas.java','actors/blobs/Web.java','items/wands/WandOfBlastWave.java',
                  'actors/buffs/Roots.java','actors/buffs/Light.java','actors/buffs/FlavourBuff.java','actors/blobs/Fire.java','items/armor/glyphs/Viscosity.java','items/weapon/melee/Sickle.java','mechanics/Ballistica.java','levels/Level.java',
                  'items/rings/Ring.java','items/rings/RingOfWealth.java'):
         source(GAME_PATH+tail)

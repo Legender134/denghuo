@@ -60,7 +60,7 @@ function navigate(next,historyMode='push'){
   if(changed)window.scrollTo({top:viewPositions.get(next)||0,behavior:'instant'});
 }
 $$('[data-view]').forEach(el=>el.addEventListener('click',()=>{navigate(el.dataset.view);if($('#main-nav').classList.contains('expanded')){setNavigationExpanded(false);$('#nav-toggle').focus();}}));
-function setNavigationExpanded(expanded){$('#main-nav').classList.toggle('expanded',expanded);$('#nav-toggle').setAttribute('aria-expanded',String(expanded));$('#nav-toggle').textContent=expanded?'收起页面 ▴':`更多页面（共 ${Object.keys(names).length} 项） ▾`;}
+function setNavigationExpanded(expanded){$('#main-nav').classList.toggle('expanded',expanded);$('#nav-toggle').setAttribute('aria-expanded',String(expanded));$('#nav-toggle').textContent=expanded?'收起 ▴':'页面 ▾';$('#nav-toggle').setAttribute('aria-label',expanded?'收起全部页面':`展开全部${Object.keys(names).length}个页面`);}
 $('#nav-toggle').addEventListener('click',()=>setNavigationExpanded($('#nav-toggle').getAttribute('aria-expanded')!=='true'));
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&$('#nav-toggle').getAttribute('aria-expanded')==='true'&&($('#main-nav').contains(event.target)||event.target===$('#nav-toggle'))){event.preventDefault();setNavigationExpanded(false);$('#nav-toggle').focus();}});
 $$('[data-goto]').forEach(el=>el.addEventListener('click',()=>navigate(el.dataset.goto)));
