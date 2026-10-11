@@ -241,7 +241,8 @@ class NumericLookup:
         if not self.variables:
             for field in self.inputs:
                 key = field['key']
-                prefix = ('参考来源未确认' if self.context and not self.context.get('stamp') else
+                prefix = ('独立参考' if self.context and not self.context.get('stamp') and self.context.get('mode')=='example' and self.context.get('source_label') else
+                          '参考来源未确认' if self.context and not self.context.get('stamp') else
                           '手动局势' if self.context and self.context.get('mode') == 'manual' else '快照')
                 self.input_origins[key] = (self.saved_plan['origin'].get('fields', {}).get(key, '保存的参考参数') if self.saved_plan else
                     (prefix+'已知等级' if key == 'level' else prefix+'已知阶数' if key == 'tier' else
@@ -289,7 +290,9 @@ class NumericLookup:
             old = uses and (not stamp or snap.get('error') or not snap.get('data') or snap.get('stale') or tuple(stamp) != self.source_stamp(snap))
             if uses and self.input_origins.get('strength', '').startswith(('快照', '手动局势')) and 'character_scene' in self.context:
                 old = old or self.context['character_scene'] != (snap.get('data') or {}).get('character_scene')
-            source = ('参考来源未确认；请核对原参数。' if uses and not stamp else
+            independent=any(value.startswith('独立参考') for value in self.input_origins.values())
+            source = ('固定参考；未绑定当前角色，条件以所给来源为准。' if independent and not uses else
+                      '参考来源未确认；请核对原参数。' if uses and not stamp else
                       '旧参考：快照已变/过期，请核对。' if old else
                       ('手动局势' if snap['settings']['mode'] == 'manual' else f"槽位 {snap['active_slot']} 快照")+'；其余示例/手填。' if uses else
                       '示例/手填；未自动读取当前角色。')

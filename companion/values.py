@@ -15,6 +15,7 @@ from .public_source_data import MISSILE_PUBLIC_TYPES
 from .monster_reference import add_monster_values, monster_record
 
 INPUTS = {
+    'exotic_crystals': ('异晶生效等级（−1为无效果）', -1, -1, 3),
     'wealth_bonus': ('财富有效加成（不是戒指等级，无效果填0）', 0, -100, 100),
     'loot_count': ('本局此类战利品已成功掉落次数', 0, 0, 1000),
     'swarm_generation': ('蝇群分裂代数（原始为0）', 0, 0, 1000),
@@ -52,6 +53,7 @@ INPUTS = {
     'combo': ('当前连击数', 8, 0, 1000),
     'armor_roll': ('此次自身随机护甲减伤', 10, 0, 100000),
     'enemy_armor': ('此次目标随机护甲减伤', 0, 0, 100000),
+    'grass_cells': ('拳头自身及周围8格的高草／茂草格数', 0, 0, 9),
 }
 
 
@@ -399,8 +401,19 @@ class PlayerValues:
         if identity in power_labels:
             for input_value in inputs:
                 if input_value['key']=='power':input_value['label']=power_labels[identity]
-        if identity in ('actors.mobs.eye','actors.mobs.slime','actors.mobs.causticslime','actors.mobs.gnollguard','actors.mobs.phantompiranha'):
+        if identity in ('actors.mobs.eye','actors.mobs.slime','actors.mobs.causticslime','actors.mobs.gnollguard','actors.mobs.phantompiranha','actors.mobs.demonspawner'):
             label = '进入蓄力承伤分支的整数伤害' if identity=='actors.mobs.eye' else '进入敌人承伤分支的整数伤害'
+            for input_value in inputs:
+                if input_value['key']=='damage':input_value['label']=label
+        if identity=='actors.mobs.swarm':
+            for input_value in inputs:
+                if input_value['key']=='target_hp':input_value['label']='分裂判定前该蝇群的当前生命'
+                if input_value['key']=='damage':input_value['label']='进入蝇群防御效果处理的整数伤害'
+        if identity in ('actors.mobs.elemental$shockelemental','actors.mobs.quest.vault.vaultelemental$shock'):
+            for input_value in inputs:
+                if input_value['key']=='damage':input_value['label']='进入近战命中效果处理后的伤害参数'
+        if identity in ('actors.mobs.yogfist$soiledfist','actors.mobs.yogfist$rottingfist'):
+            label = '进入草丛减伤分支的整数伤害' if identity.endswith('$soiledfist') else '来源抗性结算并四舍五入后的整数伤害'
             for input_value in inputs:
                 if input_value['key']=='damage':input_value['label']=label
         source_metadata = provenance(self, identity, owner)
@@ -413,6 +426,12 @@ class PlayerValues:
                 source_metadata['links'].append({'label':label,
                     'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{commit}/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/items/rings/{filename}.java',
                     'kind':'official-game-source'})
+            if 'exotic_crystals' in requested:
+                for tail,label in (('items/trinkets/ExoticCrystals.java','异晶转换概率'),
+                                   ('items/trinkets/Trinket.java','饰品生效与无效果条件'),
+                                   ('items/potions/exotic/ExoticPotion.java','药剂与合剂对应关系'),
+                                   ('items/scrolls/exotic/ExoticScroll.java','卷轴与秘卷对应关系')):
+                    source_metadata['links'].append({'label':label,'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{commit}/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/{tail}','kind':'official-game-source'})
             source_metadata['limits'].append('怪物表默认角色等级1、本局已掉落次数0；这是可调整的参考参数，不会推定本局的实际计数。已被神偷袖章取走的战利品不会再次进行普通掉落。')
             for source in enemy_reference['defenses']['sources']:
                 source_metadata['links'].append({'label':'抗性与免疫来源',

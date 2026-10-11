@@ -74,6 +74,21 @@ class ReferenceHandoffTests(ControllerFixture):
         self.assertEqual(set(self.lookup.saved_plan['origin']), {'kind', 'mode', 'snapshot_at', 'slot', 'fields'})
         self.assertNotIn(str(self.directory), str(self.lookup.saved_plan['origin']))
 
+    def test_revealed_floor_reference_is_fixed_without_claiming_current_character(self):
+        self.lookup.open_reference({'entry':'items.weapon.melee.sword','params':{'level':3,'tier':3},
+            'source':{'mode':'example'},'source_label':'槽位1 · 第8层 · 已主动揭示的楼层物品',
+            'level_origin':'revealed','field_origins':{'level':'楼层保存物品的等级'},
+            'conditions':'固定楼层物品参考，游戏鉴定状态未改变。'})
+        self.finish()
+        self.assertEqual(self.lookup.calculated['level'],3)
+        self.assertIsNone(self.lookup.context['stamp'])
+        self.assertEqual(self.lookup.input_origins['level'],'独立参考 · 楼层保存物品的等级')
+        self.assertIn('固定参考；未绑定当前角色',self.lookup.origin.text)
+        self.session.update_manual({'level':6})
+        self.lookup.refresh_origin(self.session.snapshot())
+        self.assertIn('固定参考；未绑定当前角色',self.lookup.origin.text)
+        self.assertEqual(self.lookup.calculated['level'],3)
+
     def test_missing_stamp_is_unconfirmed_and_can_save_without_path(self):
         ref = self.reference()
         ref.pop('stamp')

@@ -45,6 +45,167 @@ class MonsterReferenceTests(unittest.TestCase):
             self.assertTrue(any('5点起压缩' in r[1] for r in self.defenses(name)['rows']))
             self.assertFalse(any(b['title']=='其他明确数值' for b in self.detail(name)['blocks']))
 
+    def test_spawner_compression_boundaries_and_depth_cooldown_follow_official_body(self):
+        # DemonSpawner.damage's explicit input/output examples and their lower
+        # neighbours, independent of the candidate's compression expression.
+        for damage,expected in ((0,0),(19,19),(20,20),(21,20),(22,21),(24,21),
+                                (25,22),(28,22),(29,23),(33,23),(34,24),(39,24),
+                                (40,25),(46,25),(47,26),(54,26),(55,27),(63,27),
+                                (64,28),(73,28),(74,29),(84,29),(85,30)):
+            metrics=self.mechanisms('demonspawner',damage=damage,depth=21)
+            self.assertEqual(metrics['所填输入经血巢压缩后']['value'],str(expected))
+            self.assertEqual(metrics['该输入推进召唤冷却']['value'],str(expected))
+        # The body uses6.67, so floor23 is46.66, not the rounded46.67 comment.
+        for depth,expected in ((20,'60'),(21,'60'),(22,'53.33'),(23,'46.66'),(24,'40'),(30,'40')):
+            self.assertEqual(self.mechanisms('demonspawner',depth=depth)['成功召唤后基础添加冷却']['value'],expected)
+        self.assertTrue(any('20点起压缩' in row[1] for row in self.defenses('demonspawner')['rows']))
+        field=next(r for r in self.detail('demonspawner')['inputs'] if r['key']=='damage')
+        self.assertEqual(field['label'],'进入敌人承伤分支的整数伤害')
+
+    def test_golem_and_guard_control_conditions_do_not_claim_fixed_player_turns(self):
+        golem=self.mechanisms('golem')
+        self.assertEqual(golem['拉回目标后冷却']['value'],'20')
+        self.assertEqual(golem['自身成功传送后冷却']['value'],'30')
+        self.assertIn('无落点时也会',golem['拉回目标行动耗时']['condition'])
+        self.assertIn('只有成功传送',golem['自身成功传送后冷却']['condition'])
+        guard=self.mechanisms('guard')
+        self.assertEqual(guard['正常铁链最大敌人距离']['value'],'4')
+        self.assertEqual(guard['每只守卫成功使用铁链次数']['value'],'1')
+        self.assertEqual(guard['拉拽后残废基础持续']['value'],'4')
+
+    def test_vault_golem_keeps_enemy_pull_without_unavailable_self_teleport(self):
+        # VaultGolem retains Golem.Hunting, but Mob's stealth setup replaces
+        # Golem.Wandering, the only normal entry to self-teleport preparation.
+        metrics=self.mechanisms('quest.vault.vaultgolem')
+        self.assertEqual(metrics['拉回目标后冷却']['value'],'20')
+        self.assertEqual(metrics['拉回目标行动耗时']['value'],'1')
+        self.assertEqual(metrics['能正常追近时的拉回选择']['value'],'1 / ⌊100÷距敌距离⌋')
+        self.assertIn('追近失败后还有不经',metrics['能正常追近时的拉回选择']['condition'])
+        self.assertIn('魔法免疫或无落点',metrics['拉回目标行动耗时']['condition'])
+        self.assertEqual(metrics['自身传送']['value'],'不使用')
+        self.assertIn('宝库潜行行为替换游荡状态',metrics['自身传送']['condition'])
+        for label in ('自身传送准备耗时','自身传送落点处理耗时','自身成功传送后冷却'):
+            self.assertNotIn(label,metrics)
+            self.assertIn(label,self.mechanisms('golem'))
+
+    def test_vault_dm200_inherits_gas_and_failed_approach_fallback(self):
+        metrics=self.mechanisms('quest.vault.vaultdm200')
+        self.assertEqual(metrics['排气行动耗时']['value'],'1')
+        self.assertEqual(metrics['排气后冷却计数']['value'],'30')
+        self.assertEqual(metrics['排气后冷却计数']['unit'],'次自身行动')
+        self.assertEqual(metrics['弹道路径每格播种毒气体积']['value'],'20')
+        self.assertEqual(metrics['弹道终点另播种毒气体积']['value'],'100')
+        self.assertIn('追近失败后另有不经此随机检定',metrics['排气选择检定']['condition'])
+        self.assertIn('路径与冷却仍需满足',metrics['排气选择检定']['condition'])
+        self.assertNotIn('腐蚀气体基础强度',metrics)
+
+    def test_vault_dm100_remote_shock_uses_vault_accuracy(self):
+        # DM100.doAttack supplies the inherited3-10 bolt. Its virtual
+        # attackSkill resolves to VaultDM100's25, not normal DM100's11.
+        metrics=self.mechanisms('quest.vault.vaultdm100')
+        self.assertEqual(metrics['远程电击基础伤害']['value'],'3–10')
+        self.assertEqual(metrics['远程电击耗时']['value'],'1')
+        self.assertEqual(metrics['魔法命中掷骰倍率']['value'],'2')
+        self.assertIn('基础命中25',metrics['魔法命中掷骰倍率']['condition'])
+        self.assertIn('非相邻',metrics['远程电击基础伤害']['condition'])
+        self.assertIn('弹道被阻挡时使用普通攻击',metrics['远程电击基础伤害']['condition'])
+        self.assertIn('不扣普通护甲',metrics['远程电击耗时']['condition'])
+        self.assertIn('基础命中11',self.mechanisms('dm100')['魔法命中掷骰倍率']['condition'])
+
+    def test_vault_skeleton_retains_death_explosion_and_two_independent_armor_rolls(self):
+        metrics=self.mechanisms('quest.vault.vaultskeleton')
+        self.assertEqual(metrics['死亡碎骨爆炸基础伤害']['value'],'6–12')
+        self.assertIn('非坠落死亡',metrics['死亡碎骨爆炸基础伤害']['condition'])
+        self.assertIn('周围8格',metrics['死亡碎骨爆炸基础伤害']['condition'])
+        self.assertIn('不进行命中检定',metrics['死亡碎骨爆炸基础伤害']['condition'])
+        self.assertEqual(metrics['碎骨爆炸护甲减伤掷骰']['value'],'2')
+        self.assertIn('两次独立减伤掷骰之和',metrics['碎骨爆炸护甲减伤掷骰']['condition'])
+
+    def test_vault_shaman_fixed_type_is_separate_from_per_hit_debuff_chance(self):
+        metrics=self.mechanisms('quest.vault.vaultshaman')
+        self.assertEqual(metrics['远程土弹伤害']['value'],'6–15')
+        self.assertEqual(metrics['远程土弹耗时']['value'],'1')
+        self.assertEqual(metrics['魔法命中掷骰倍率']['value'],'2')
+        self.assertIn('基础命中25',metrics['魔法命中掷骰倍率']['condition'])
+        self.assertIn('相邻或弹道受阻时使用普通攻击',metrics['远程土弹伤害']['condition'])
+        self.assertEqual(metrics['命中后附加负面状态概率']['value'],'50')
+        self.assertIn('仅远程魔法命中后、土弹伤害结算前',metrics['命中后附加负面状态概率']['condition'])
+        for buff,chance in (('weakness','2/5'),('vulnerable','2/5'),('hex','1/5')):
+            name=self.values.catalog.messages['actors.buffs.'+buff+'.name']
+            metric=metrics[f'生成时选择{name}类型概率']
+            self.assertEqual(metric['value'],chance)
+            self.assertIn('生成时均匀抽取0–4并固定类型',metric['condition'])
+            self.assertIn('每次攻击不重抽类型',metric['condition'])
+            self.assertIn('未读取本局类型',metric['condition'])
+        normal=self.mechanisms('shaman$redshaman')
+        self.assertIn('基础命中18',normal['魔法命中掷骰倍率']['condition'])
+        self.assertFalse(any('生成时选择' in label for label in normal))
+
+    def test_vault_ability_reuse_keeps_overridden_stats_and_token_loot(self):
+        # Values are independently specified by the fixed Vault subclasses;
+        # they must not be replaced by the normal parent's stats or loot gate.
+        expected={
+            'vaultdm100':('2–8','25','18','4–8'),
+            'vaultdm200':('10–25','28','15','0–8'),
+            'vaultgolem':('25–30','28','15','0–12'),
+            'vaultshaman':('5–25','25','18','5–11'),
+            'vaultskeleton':('2–10','24','20','4–9'),
+        }
+        for name,vector in expected.items():
+            identity='quest.vault.'+name
+            with self.subTest(name=name):
+                stats=self.stats(identity)
+                self.assertEqual(tuple(stats[label] for label in ('基础伤害范围','基础命中','基础闪避','基础减伤范围')),vector)
+                self.assertEqual(stats['基础经验'],'0')
+                rows=self.loot(identity,hero_level=30,loot_count=7,wealth_bonus=-1)
+                self.assertEqual(len(rows),1)
+                self.assertEqual(rows[0]['id'],'items.quest.dwarftoken')
+                self.assertAlmostEqual(rows[0]['probability'],5/6 if name=='vaultdm100' else 1,places=6)
+                self.assertNotIn('loot_count',{row['key'] for row in self.detail(identity)['inputs']})
+
+    def test_existing_vault_ghoul_and_elemental_abilities_keep_source_inheritance(self):
+        pairs=(('ghoul','vaultghoul'),('elemental$fireelemental','vaultelemental$fire'),
+               ('elemental$frostelemental','vaultelemental$frost'),('elemental$shockelemental','vaultelemental$shock'))
+        for normal,vault in pairs:
+            with self.subTest(vault=vault):
+                self.assertEqual(self.mechanisms(normal,damage=7),self.mechanisms('quest.vault.'+vault,damage=7))
+
+    def test_necromancer_and_spectral_summons_have_separate_profiles(self):
+        normal=self.mechanisms('necromancer',depth=8)
+        spectral=self.mechanisms('spectralnecromancer',depth=8)
+        self.assertEqual(normal['首次召唤准备耗时']['value'],'1')
+        self.assertEqual(normal['后续召唤准备耗时']['value'],'2')
+        self.assertEqual(normal['普通召唤骷髅初始生命']['value'],'20')
+        self.assertEqual(normal['骷髅满血时肾上腺素基础持续']['value'],'3')
+        self.assertNotIn('普通召唤骷髅初始生命',spectral)
+        self.assertNotIn('骷髅满血时肾上腺素基础持续',spectral)
+        self.assertEqual(spectral['召唤怨灵的固定等效层数']['value'],'4')
+        self.assertIn('普攻3–6',spectral['该召唤怨灵的基础数值']['value'])
+
+    def test_bandit_requires_successful_theft_and_uses_half_source_durations(self):
+        normal=self.mechanisms('thief')
+        bandit=self.mechanisms('bandit')
+        self.assertEqual(normal['一次成功偷窃数量']['value'],'1')
+        self.assertIn('顶层',normal['偷窃尝试']['condition'])
+        self.assertIn('不重抽',normal['偷窃尝试']['condition'])
+        self.assertEqual(normal['丢弃被盗物品的逃脱最小距离']['value'],'6')
+        self.assertNotIn('成功偷窃后失明基础持续',normal)
+        self.assertEqual(bandit['成功偷窃后失明基础持续']['value'],'5')
+        self.assertEqual(bandit['成功偷窃后残废基础持续']['value'],'5')
+        self.assertEqual(bandit['成功偷窃后中毒剩余参数']['value'],'5–6')
+        self.assertEqual(bandit['新中毒首次基础伤害']['value'],'2–3')
+
+    def test_swarm_split_requires_remaining_two_hp_and_separates_pre_damage_parent(self):
+        for hp,damage,clone in ((50,20,15),(9,2,3),(2,0,1),(21,20,0),(0,0,0),(10,20,0)):
+            metrics=self.mechanisms('swarm',target_hp=hp,damage=damage,swarm_generation=2)
+            self.assertEqual(metrics['若成功分裂，新个体初始生命']['value'],str(clone))
+            self.assertEqual(metrics['原个体分裂后、最终承伤前生命']['value'],str(hp-clone))
+            self.assertEqual(metrics['新个体分裂代数']['value'],'3')
+        detail=self.detail('swarm',target_hp=50,damage=20)
+        inputs={r['key']:r for r in detail['inputs']}
+        self.assertIn('分裂判定前',inputs['target_hp']['label'])
+        self.assertIn('防御效果处理',inputs['damage']['label'])
+
     def test_phantom_piranha_source_distance_and_java_half_rounding(self):
         for damage,expected in ((0,0),(1,1),(2,1),(11,6),(20,10),(25,13)):
             metrics=self.mechanisms('phantompiranha',damage=damage)
@@ -52,6 +213,29 @@ class MonsterReferenceTests(unittest.TestCase):
             self.assertEqual(metrics['相邻已定位来源的所填伤害']['value'],str(damage))
             self.assertIn('法杖或牧师法术按玩家位置',metrics['非相邻或无法定位来源的所填伤害']['condition'])
         self.assertTrue(any('四舍五入' in r[1] and '八方向相邻' in r[2] for r in self.defenses('phantompiranha')['rows']))
+
+    def test_elemental_profiles_keep_normal_vault_and_newborn_actions_separate(self):
+        for name in ('elemental$fireelemental','quest.vault.vaultelemental$fire'):
+            metrics=self.mechanisms(name)
+            self.assertEqual(metrics['近战命中后点燃概率']['value'],'50')
+            self.assertEqual(metrics['远程点燃基础持续参数']['value'],'4')
+            self.assertNotIn('火球影响范围',metrics)
+        newborn=self.mechanisms('elemental$newbornfireelemental')
+        self.assertEqual(newborn['普通敌对形态近战点燃概率']['value'],'0')
+        self.assertNotIn('近战命中后点燃概率',newborn)
+        self.assertIn('保存落点',newborn['火球准备耗时范围']['condition'])
+        frost=self.mechanisms('elemental$frostelemental')
+        self.assertEqual(frost['一次冻结处理添加冻伤：干燥／水格']['value'],'3／5')
+        self.assertIn('不是首次命中必定冻结',frost['冻伤达到上限后的冻结基础持续']['condition'])
+        chaos=self.mechanisms('elemental$chaoselemental')
+        self.assertEqual(chaos['混沌远程普通命中检定']['value'],'跳过')
+        for name in ('elemental$shockelemental','quest.vault.vaultelemental$shock'):
+            for damage,expected in ((0,'0'),(1,'0'),(2,'1'),(6,'2'),(7,'3'),(20,'8'),(25,'10')):
+                metrics=self.mechanisms(name,damage=damage)
+                self.assertEqual(metrics['所填近战伤害的每个电弧基础伤害']['value'],expected)
+            detail=self.detail(name,damage=7)
+            field=next(row for row in detail['inputs'] if row['key']=='damage')
+            self.assertIn('近战命中效果处理后',field['label'])
 
     def test_wealth_conditions_scale_pools_and_cap_only_after_limited_drop_counts(self):
         # Mob.lootChance multiplies by 1.2 ** effective bonus; Scorpio chooses
@@ -460,6 +644,123 @@ class MonsterReferenceTests(unittest.TestCase):
         self.assertIn('非坠落',self.detail('skeleton')['blocks'][2]['values'][0]['condition'])
         self.assertIn('不是7–8点总伤害',self.detail('spinner')['blocks'][2]['values'][1]['condition'])
 
+    def test_yog_fists_separate_normal_ranged_attacks_from_melee_and_cooldown(self):
+        # Pinned YogFist.doAttack/canAttack and the two no-op cooldown overrides.
+        for subtype in ('burning','soiled','rotting','rusted','bright','dark'):
+            with self.subTest(subtype=subtype):
+                name='yogfist$'+subtype+'fist'
+                detail=self.detail(name)
+                metrics=self.mechanisms(name)
+                self.assertEqual(metrics['初始远程冷却']['value'],'0')
+                self.assertEqual(metrics['远程施放耗时']['value'],'1')
+                light_dark=subtype in ('bright','dark')
+                self.assertEqual(metrics['远程施放后添加冷却']['value'],'0' if light_dark else '8–12')
+                self.assertEqual(self.stats(name)['基础伤害范围'],'22–44' if subtype=='rusted' else '18–36')
+                self.assertIn('魔法弹道',metrics['初始远程冷却']['condition'])
+                if light_dark:
+                    self.assertIn('相邻时',metrics['远程施放后添加冷却']['condition'])
+                else:
+                    self.assertIn('未麻痹',metrics['远程施放后添加冷却']['condition'])
+                    self.assertIn('浮点值',metrics['远程施放后添加冷却']['condition'])
+                self.assertIn('4格以内',str(self.defenses(name)['rows']))
+                self.assertIn('正常难度',detail['blocks'][2]['note'])
+
+    def test_bright_and_dark_fists_use_magic_damage_and_separate_half_health_events(self):
+        bright=self.mechanisms('yogfist$brightfist')
+        dark=self.mechanisms('yogfist$darkfist')
+        for metrics,label in ((bright,'远程光束基础伤害'),(dark,'远程暗影弹基础伤害')):
+            self.assertEqual(metrics[label]['value'],'10–20')
+            self.assertIn('倍率×2',metrics[label]['condition'])
+            self.assertIn('不是必中',metrics[label]['condition'])
+            self.assertEqual(metrics['半血传送触发线']['value'],'150')
+            self.assertIn('仍存活',metrics['半血传送触发线']['condition'])
+        self.assertEqual([bright[label]['value'] for label in ('远程命中后失明基础持续','半血传送时失明基础持续','死亡时失明基础持续')],['5','15','30'])
+        self.assertEqual(dark['远程命中后削减光亮持续']['value'],'50')
+        self.assertIn('仅目标已有光亮',dark['远程命中后削减光亮持续']['condition'])
+        self.assertEqual(dark['半血传送或死亡时的光亮']['value'],'移除玩家光亮状态')
+        self.assertIn('直接致死',str(self.defenses('yogfist$brightfist')['rows']))
+
+    def test_burning_and_soiled_fists_expose_environment_and_status_parameters(self):
+        burning=self.mechanisms('yogfist$burningfist',depth=25)
+        self.assertEqual(burning['远程点燃基础持续参数']['value'],'8')
+        self.assertEqual(burning['所填层数的燃烧单次基础伤害']['value'],'1–9')
+        self.assertEqual(burning['周围火焰补充后的最低体积']['value'],'4')
+        self.assertEqual(burning['周围火焰补充后的最低体积']['unit'],'体积')
+        self.assertIn('不直接点燃',burning['远程目标格有水时']['value'])
+        self.assertIn('不进行普通命中检定',burning['远程点燃基础持续参数']['condition'])
+        soiled=self.mechanisms('yogfist$soiledfist')
+        self.assertEqual(soiled['远程扎根基础持续参数']['value'],'3')
+        self.assertIn('飞行目标不能扎根',soiled['远程扎根基础持续参数']['condition'])
+        self.assertEqual(soiled['远程每个可播草格变为茂草概率']['value'],'20')
+        self.assertIn('不论扎根是否命中',soiled['远程播草范围']['condition'])
+        self.assertIn('超过4格',soiled['远程播草范围']['condition'])
+        self.assertIn('可重复',soiled['每次自身行动培育茂草的尝试']['condition'])
+        self.assertIn('仍可被点燃',str(self.defenses('yogfist$soiledfist')['rows']))
+
+    def test_soiled_fist_grass_reduction_keeps_java_rounding_and_input_stage(self):
+        # YogFist.SoiledFist.damage counts NEIGHBOURS9, including its own tile.
+        # 6 grass cells yield zero; 7..9 can produce a negative, rejected input.
+        cases=((20,0,20),(20,1,17),(20,3,10),(20,5,3),(20,6,0),
+               (20,7,-3),(20,9,-10),(1,3,1),(1,9,0),(3,7,0),
+               (99999,1,83333),(99999,9,-49999))
+        for damage,grass_cells,expected in cases:
+            with self.subTest(damage=damage,grass_cells=grass_cells):
+                detail=self.detail('yogfist$soiledfist',damage=damage,grass_cells=grass_cells)
+                metric=self.mechanisms('yogfist$soiledfist',damage=damage,grass_cells=grass_cells)['所填草丛减伤后的输入']
+                self.assertEqual(metric['value'],str(expected))
+                self.assertEqual(metric['unit'],'HP输入')
+                self.assertIn('不是最终HP损失',metric['condition'])
+                inputs={row['key']:row for row in detail['inputs']}
+                self.assertEqual(inputs['grass_cells']['max'],9)
+                self.assertEqual(inputs['damage']['label'],'进入草丛减伤分支的整数伤害')
+        for invalid in (-1,10,True,1.5):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                self.detail('yogfist$soiledfist',grass_cells=invalid)
+
+    def test_rotting_fist_bleeding_input_is_not_instant_or_total_damage(self):
+        # Bleeding.set first samples [input/2,input], then act rounds and decays.
+        # These independent source cases include .3/.6 and .9/1.8 boundaries.
+        cases=((0,'0','0','0'),(1,'0.6','0.3–0.6','0–1'),
+               (3,'1.8','0.9–1.8','1–2'),(20,'12','6–12','6–12'))
+        for damage,parameter,strength,first_hit in cases:
+            with self.subTest(damage=damage):
+                metrics=self.mechanisms('yogfist$rottingfist',damage=damage)
+                self.assertEqual(metrics['所填伤害传给流血的强度参数']['value'],parameter)
+                self.assertEqual(metrics['所填伤害传给流血的强度参数']['unit'],'强度参数')
+                self.assertEqual(metrics['新流血首次强度范围']['value'],strength)
+                self.assertEqual(metrics['新流血首跳基础伤害']['value'],first_hit)
+                self.assertIn('已有流血取更强值',metrics['新流血首次强度范围']['condition'])
+                self.assertIn('后续每跳重新随机衰减',metrics['新流血首跳基础伤害']['condition'])
+        detail=self.detail('yogfist$rottingfist')
+        self.assertEqual(next(row for row in detail['inputs'] if row['key']=='damage')['label'],'来源抗性结算并四舍五入后的整数伤害')
+        metrics=self.mechanisms('yogfist$rottingfist',depth=25)
+        self.assertEqual(metrics['正常水中每次自身行动恢复']['value'],'6')
+        self.assertIn('恢复不超过缺失生命',metrics['正常水中每次自身行动恢复']['condition'])
+        self.assertEqual(metrics['远程播种毒气体积']['value'],'100')
+        self.assertEqual(metrics['远程播种毒气体积']['unit'],'体积')
+        self.assertEqual(metrics['所填层数的毒气单次基础伤害']['value'],'6')
+        self.assertEqual(metrics['近战命中后施加淤泥概率']['value'],'50')
+        self.assertEqual(metrics['淤泥初始持续参数']['value'],'20')
+        self.assertEqual(metrics['所填等效层数的淤泥单次基础伤害']['value'],'6')
+        self.assertIn('无镰刀收割标记',metrics['受伤转流血']['condition'])
+
+    def test_rusted_fist_deferred_pool_and_remote_cripple_keep_their_stages(self):
+        metrics=self.mechanisms('yogfist$rustedfist')
+        self.assertEqual(metrics['远程残废基础持续参数']['value'],'4')
+        self.assertIn('不进行普通命中检定',metrics['远程残废基础持续参数']['condition'])
+        self.assertEqual(metrics['承伤转为延迟池的额度']['unit'],'伤害池参数')
+        self.assertEqual(metrics['新延迟池首次伤害前等待']['value'],'1')
+        self.assertEqual(metrics['延迟状态后续行动间隔']['value'],'1')
+        self.assertEqual(metrics['延迟池每次基础伤害']['value'],'max(1, ⌊当前池×0.1⌋)')
+        self.assertEqual(metrics['延迟池每次基础伤害']['unit'],'HP输入')
+        self.assertIn('实际HP损失受后续承伤处理影响',metrics['延迟池每次基础伤害']['condition'])
+        self.assertIn('不再次入池',str(self.defenses('yogfist$rustedfist')['rows']))
+        for subtype in ('burning','soiled','rotting','rusted','bright','dark'):
+            inputs={row['key'] for row in self.detail('yogfist$'+subtype+'fist')['inputs']}
+            self.assertEqual('grass_cells' in inputs,subtype=='soiled')
+            self.assertEqual('damage' in inputs,subtype in ('soiled','rotting'))
+            self.assertEqual('depth' in inputs,subtype in ('burning','rotting'))
+
     def test_count_decay_and_swarm_generation_are_evaluated(self):
         healing = 'items.potions.potionofhealing'
         self.assertAlmostEqual(self.chance('bat',healing,loot_count=1),.1667*6/7)
@@ -496,6 +797,34 @@ class MonsterReferenceTests(unittest.TestCase):
         for key,value in [('loot_count',-1),('loot_count',True),('swarm_generation',1.5),('depth',0)]:
             with self.subTest(key=key,value=value), self.assertRaises(ValueError):
                 self.detail('swarm',**{key:value})
+
+    def test_exotic_crystals_splits_class_loot_without_increasing_success_chance(self):
+        healing='items.potions.potionofhealing';shielding='items.potions.exotic.potionofshielding'
+        for level,fraction in ((-1,0),(0,.2),(1,.4),(2,.6),(3,.8)):
+            rows=self.loot('bat',exotic_crystals=level,loot_count=1,wealth_bonus=1)
+            total=.1667*6/7*1.2
+            self.assertAlmostEqual(sum(r['probability'] for r in rows),total,places=7)
+            self.assertAlmostEqual(sum(r['probability'] for r in rows if r['id']==healing),total*(1-fraction),places=7)
+            self.assertAlmostEqual(sum(r['probability'] for r in rows if r['id']==shielding),total*fraction,places=7)
+        for name in ('bat','necromancer','spectralnecromancer','swarm','demonspawner',
+                     'elemental$fireelemental','elemental$frostelemental','elemental$shockelemental','elemental$chaoselemental'):
+            self.assertIn('exotic_crystals',{r['key'] for r in self.detail(name)['inputs']})
+        self.assertEqual(self.chance('bat',shielding,exotic_crystals=3,loot_count=7),0)
+        self.assertEqual(self.chance('bat',shielding,exotic_crystals=3,hero_level=30),0)
+        for name in ('warlock','scorpio','succubus','dm100','acidic','quest.vault.vaultelemental$fire'):
+            self.assertEqual(self.loot(name),self.loot(name,exotic_crystals=3))
+            self.assertNotIn('exotic_crystals',{r['key'] for r in self.detail(name)['inputs']})
+        for value in (-2,4,1.5,True):
+            with self.assertRaises(ValueError):self.detail('bat',exotic_crystals=value)
+
+    def test_newborn_embers_remains_fixed_enemy_reward_above_loot_gate(self):
+        for hero in (1,30):
+            for wealth,exotic in ((-10,-1),(100,3)):
+                rows=self.loot('elemental$newbornfireelemental',hero_level=hero,wealth_bonus=wealth,exotic_crystals=exotic)
+                embers=next(row for row in rows if row['id']=='items.quest.embers')
+                self.assertEqual((embers['quantity'],embers['probability']),(1,1))
+                self.assertIn('友方召唤体不提供',embers['condition'])
+        self.assertNotIn('items.quest.embers',{r['id'] for r in self.loot('elemental$fireelemental')})
 
 
 if __name__ == '__main__':

@@ -24,6 +24,8 @@ def provenance(values,identity,owner):
         extras={
             'items.armor.glyphs.camouflage':('levels.features.highgrass','actors.hero.hero','actors.char'),
             'actors.mobs.dm200':('actors.blobs.toxicgas',),
+            'actors.mobs.quest.vault.vaultdm200':('actors.blobs.toxicgas',),
+            'actors.mobs.quest.vault.vaultgolem':('actors.buffs.magicimmune',),
             'actors.mobs.dm201':('actors.blobs.corrosivegas','actors.buffs.corrosion'),
             'actors.mobs.gnolltrickster':('actors.buffs.poison','actors.buffs.burning','actors.blobs.fire'),
             'actors.mobs.albino':('actors.buffs.bleeding','actors.char'),
@@ -46,9 +48,29 @@ def provenance(values,identity,owner):
             'actors.mobs.gnollguard':('actors.char',),
             'actors.mobs.phantompiranha':('actors.char',),
             'actors.mobs.acidic':('actors.buffs.ooze','actors.buffs.cripple','actors.char'),
+            'actors.mobs.guard':('actors.buffs.cripple','actors.char'),
+            'actors.mobs.golem':('actors.buffs.magicimmune','actors.char'),
+            'actors.mobs.necromancer':('actors.buffs.adrenaline','actors.mobs.necromancer$necroskeleton','actors.char'),
+            'actors.mobs.spectralnecromancer':('actors.mobs.necromancer','actors.mobs.wraith','actors.char'),
+            'actors.mobs.thief':('actors.hero.belongings','items.item','items.gold','actors.char'),
+            'actors.mobs.bandit':('actors.mobs.thief','actors.hero.belongings','items.item','items.gold','actors.buffs.blindness','actors.buffs.cripple','actors.buffs.poison','actors.char'),
+            'actors.mobs.demonspawner':('actors.mobs.ripperdemon','actors.char'),
+            'actors.mobs.swarm':('actors.buffs.poison','actors.buffs.burning','actors.char'),
             'actors.mobs.goo':('actors.buffs.ooze','actors.char'),
+            'actors.mobs.yogfist$burningfist':('actors.mobs.yogfist', 'actors.mobs.mob', 'actors.char', 'mechanics.ballistica', 'levels.level', 'actors.buffs.buff', 'actors.buffs.burning', 'actors.blobs.fire'),
+            'actors.mobs.yogfist$soiledfist':('actors.mobs.yogfist', 'actors.mobs.mob', 'actors.char', 'mechanics.ballistica', 'levels.level', 'actors.buffs.buff', 'actors.buffs.roots', 'actors.buffs.burning', 'actors.blobs.fire'),
+            'actors.mobs.yogfist$rottingfist':('actors.mobs.yogfist', 'actors.mobs.mob', 'actors.char', 'mechanics.ballistica', 'levels.level', 'actors.buffs.buff', 'actors.buffs.bleeding', 'actors.buffs.ooze', 'actors.blobs.toxicgas', 'items.weapon.melee.sickle'),
+            'actors.mobs.yogfist$rustedfist':('actors.mobs.yogfist', 'actors.mobs.mob', 'actors.char', 'mechanics.ballistica', 'levels.level', 'actors.buffs.buff', 'items.armor.glyphs.viscosity', 'actors.buffs.cripple'),
+            'actors.mobs.yogfist$brightfist':('actors.mobs.yogfist', 'actors.mobs.mob', 'actors.char', 'mechanics.ballistica', 'levels.level', 'actors.buffs.buff', 'actors.buffs.blindness'),
+            'actors.mobs.yogfist$darkfist':('actors.mobs.yogfist', 'actors.mobs.mob', 'actors.char', 'mechanics.ballistica', 'levels.level', 'actors.buffs.buff', 'actors.buffs.light'),
         }
         related.extend('com.shatteredpixel.shatteredpixeldungeon.'+tail for tail in extras.get(identity,()))
+        if identity.startswith(('actors.mobs.elemental$','actors.mobs.quest.vault.vaultelemental$')):
+            related.extend('com.shatteredpixel.shatteredpixeldungeon.'+tail for tail in
+                           ('actors.mobs.elemental','actors.buffs.burning','actors.blobs.freezing','actors.buffs.chill',
+                            'actors.buffs.frost','actors.buffs.blindness','items.weapon.enchantments.shocking','items.wands.cursedwand'))
+        if identity=='actors.mobs.elemental$newbornfireelemental':
+            related.extend('com.shatteredpixel.shatteredpixeldungeon.'+tail for tail in ('items.quest.embers','items.item'))
         if identity in ('actors.mobs.warlock','actors.mobs.dwarfking$dkwarlock','actors.mobs.scorpio','actors.mobs.spinner'):
             buff='degrade' if 'warlock' in identity else 'cripple' if identity.endswith('scorpio') else 'poison'
             related.append('com.shatteredpixel.shatteredpixeldungeon.actors.buffs.'+buff)

@@ -336,20 +336,28 @@ def build(index, catalog, upstream):
     condition_sources = [GAME_PATH+tail for tail in (
         'actors/mobs/npcs/Ghost.java','actors/mobs/npcs/Wandmaker.java','actors/mobs/npcs/Blacksmith.java',
         'actors/mobs/DwarfKing.java','actors/mobs/YogDzewa.java','actors/mobs/DemonSpawner.java',
+        'actors/mobs/Necromancer.java','actors/mobs/SpectralNecromancer.java',
         'actors/mobs/Piranha.java','actors/mobs/Statue.java','actors/mobs/Wraith.java',
         'levels/RegularLevel.java','levels/SewerLevel.java','levels/HallsLevel.java',
         'levels/rooms/special/PoolRoom.java','levels/rooms/special/StatueRoom.java','levels/rooms/special/SentryRoom.java','levels/rooms/special/CrystalVaultRoom.java',
         'levels/rooms/secret/SecretRoom.java','levels/rooms/secret/SecretHoneypotRoom.java',
         'levels/rooms/quest/MassGraveRoom.java','levels/rooms/quest/RotGardenRoom.java','levels/rooms/quest/RitualSiteRoom.java',
         'levels/rooms/quest/MineLargeRoom.java','levels/rooms/quest/MineGiantRoom.java',
-        'items/Heap.java','items/quest/CorpseDust.java','items/quest/CeremonialCandle.java')]
+        'items/Heap.java','items/quest/CorpseDust.java','items/quest/CeremonialCandle.java','items/trinkets/MimicTooth.java')]
     for path in condition_sources: source(path)
     # Player-facing special mechanisms and the ordinary loot modifier use
     # these state rules in addition to each enemy's own class hierarchy.
     for tail in ('actors/buffs/Bleeding.java','actors/buffs/Ooze.java','actors/buffs/Charm.java',
                  'actors/buffs/Barrier.java','actors/buffs/ShieldBuff.java','actors/buffs/Cripple.java',
                  'actors/buffs/Burning.java','actors/buffs/AscensionChallenge.java',
+                 'actors/buffs/Blindness.java','actors/buffs/Poison.java','actors/buffs/Adrenaline.java',
+                 'actors/buffs/Chill.java','actors/buffs/Frost.java','actors/buffs/Buff.java','actors/buffs/MagicImmune.java',
+                 'actors/blobs/Freezing.java','items/weapon/enchantments/Shocking.java','items/wands/CursedWand.java',
+                 'actors/hero/Belongings.java','items/Item.java','items/Gold.java','items/quest/Embers.java',
+                 'items/trinkets/ExoticCrystals.java','items/trinkets/Trinket.java',
+                 'items/potions/exotic/ExoticPotion.java','items/scrolls/exotic/ExoticScroll.java',
                  'actors/blobs/StenchGas.java','actors/blobs/ToxicGas.java',
+                 'actors/buffs/Roots.java','actors/buffs/Light.java','actors/buffs/FlavourBuff.java','actors/blobs/Fire.java','items/armor/glyphs/Viscosity.java','items/weapon/melee/Sickle.java','mechanics/Ballistica.java','levels/Level.java',
                  'items/rings/Ring.java','items/rings/RingOfWealth.java'):
         source(GAME_PATH+tail)
     return {'format': 1, 'version': catalog['version'], 'commit': catalog['commit'], 'license': 'GPL-3.0-or-later',
