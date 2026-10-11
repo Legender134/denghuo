@@ -99,6 +99,24 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(self.target.play_preferences.values['font_scale'], 1.3)
         self.assertEqual(self.target.exit_drafts.list()[0]['draft_kind'], 'workspace')
 
+    def test_preference_import_obeys_shared_storage_lock_and_can_retry(self):
+        from companion.play_state import PlayPreferences
+        key = 'preference:font_scale'
+        raw = self.bundle([key])
+        competing = PlayPreferences(self.target.play_preferences.path.parent)
+        before = self.target.play_preferences.published()
+        with competing._storage_lock():
+            result = self.apply(raw, [key])
+            self.assertEqual((result['success_count'], result['failure_count']), (0, 1))
+            self.assertFalse(result['results'][0]['saved'])
+            self.assertIn('另一个助手', result['results'][0]['error'])
+            self.assertEqual(self.target.play_preferences.published(), before)
+        self.assertEqual(self.game_bytes(self.target), self.original_game)
+        result = self.apply(raw, [key])
+        self.assertEqual((result['success_count'], result['failure_count']), (1, 0))
+        self.assertEqual(PlayPreferences(competing.path.parent).values['font_scale'], 1.3)
+        self.assertEqual(self.game_bytes(self.target), self.original_game)
+
     def test_mixed_bundle_isolates_bad_knowledge_and_rechecks_recovery(self):
         raw = self.bundle(['plan:' + self.plan['id'], 'favorite:' + self.favorite, 'preference:font_scale'])
         original = b'{"plans": damaged mixed original'

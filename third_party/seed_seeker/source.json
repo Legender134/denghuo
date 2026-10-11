@@ -1,0 +1,1600 @@
+{
+  "upstream": "https://github.com/akhial/shpd-seed-seeker",
+  "commit": "b3596f5c0d26852acc20bb6de4f2169ebcbdd24a",
+  "license": "GPL-3.0-or-later",
+  "game_version": "4.0.2",
+  "game_commit": "57a4e06a4caf162446d1c28caa7983f0493fecf0",
+  "rust_version": "1.99.0",
+  "source_archive_sha256": "a340e29078e9451dc2cd95b5525d51ead309bdc31eb6f5584b9d0ad4a21ebc54",
+  "wasm_sha256": "4facdffeae5567716c1d4e952db094ee15ded6f81fb4f4526b2e1a19d9b3ba54",
+  "source_files": [
+    {
+      "path": "CARGO-NOTICES.txt",
+      "sha256": "bdeca6bf18ad7cd8e744612ff06eeb295e1fb13b54dab8de6e665dbbeb2a378d"
+    },
+    {
+      "path": "COPYING",
+      "sha256": "c61f12da7cdad526bdcbed47a4c0a603e60dbbfdaf8b66933cd088e9132c303f"
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "97b96914152bdcfb2b9adf063e839c2b4fe0f217f96aa609dbd9ceb78dcc50c9"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "6033c202afe7c3c98d1b785133a071e2913e2e443cf76077a792f1188db8ce26"
+    },
+    {
+      "path": "NOTICE",
+      "sha256": "40e72d10ea3d0883ff725b74881e0d51bbcdba70546f12ad3ed99ee16dcd961e"
+    },
+    {
+      "path": "UPSTREAM_COMPATIBILITY.md",
+      "sha256": "00cfd542a4ed32e062ab678b1521b198f72e53905f1a8bcbe765af3d1298e47f"
+    },
+    {
+      "path": "crates/denghuo-forecast/Cargo.toml",
+      "sha256": "3acd423c379423fbf75a61317bcaabecad8c1bd8b9d80628a9724787ebb34e6f"
+    },
+    {
+      "path": "crates/denghuo-forecast/src/lib.rs",
+      "sha256": "8582b8b35f337de65c398a1d81ebd28461641ef5bc72b52a01e01b5acbebebeb"
+    },
+    {
+      "path": "crates/seedfinder-core/Cargo.toml",
+      "sha256": "fd62a4f4098ded799c37cce3db022f8271783a94b35d56bf857232a7db3e337c"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/ATTRIBUTION.md",
+      "sha256": "cb8474706f61d27210a780b4d71fcbced0e21a829556f6c73d14785b57afd5a4"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/bat.png",
+      "sha256": "feddde454601866d6c4259e387ff2dfca0bd946a9c2f1bc690c64e2623427d71"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/bee.png",
+      "sha256": "8bf878d4d7ad8b4831368c720be391e5b8b201c069ca02240e2ae1073b171370"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/blacksmith.png",
+      "sha256": "82a453fa3439bb85e6c052c56054ad8ed060129d1b5d8887f6e4f1385c678471"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/brute.png",
+      "sha256": "40cae2ad67d66c059d600ca23f7b1ac7292e0ed2067edcc00600844864fac4c7"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/carpet.png",
+      "sha256": "d03baf545af6c0eefa23d74dbc399d0aab76406b28975f9ebea3e37141d2933b"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/caves_boss.png",
+      "sha256": "ac387d738d4edcf011288ba6f39b429a1ccc9115468960bae610a036b75202e1"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/caves_quest.png",
+      "sha256": "7b5917a106271f320f53ffc84df1a40447b2c283e31309bacc803cac3eadfcd7"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/city_quest.png",
+      "sha256": "20dc779770967af1d1979af2d90def0073ba71b4a5497184287ec2b89ebba9d4"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/crab.png",
+      "sha256": "e59563335e00e5d9077ed6adabc68334e2ccc61c4f54009c154ec6d7ed10b58e"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/crystal_guardian.png",
+      "sha256": "7f8b616483573d60db5a22a09f4c449437498dd8fac79f6119952c9fcec8041a"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/crystal_spire.png",
+      "sha256": "8c9e800d8a1cb83b3138c6e2121a3f01795ca5b617b330c097efed2956af914d"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/crystal_wisp.png",
+      "sha256": "7ae938901a80fcd1b952c1036a2f4236ceb21b780010dc13ce6c7fff9e110c73"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/dm100.png",
+      "sha256": "6ba5b74b3abc75c367a15ffe839cc2bbec2bc295259b1b7b936586ef09dc1aa0"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/dm200.png",
+      "sha256": "f240dab89fb1bf26a0d56b06a4f999ea9fd04f9bd3e5172d80aa89e7a50ca695"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/effects.png",
+      "sha256": "230d6a9cd275d6019946426943e68e1128a3bf3f9d00100a585035066f04c4ac"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/elemental.png",
+      "sha256": "a30b278178300cd3a46830bbde595859d0288984aee3319ad16cb889a1e639d9"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/eye.png",
+      "sha256": "02bd2b6e5d859175699b11dcd4054da7426c561694378aa3f5e2bacf04e6ab0c"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/ghost.png",
+      "sha256": "b03990a1ef99e96f325f76277dc03ea09519e996ea1a5e6da6744c0ade95fd2a"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/ghoul.png",
+      "sha256": "2366ba5f19c3596c79229548a859aa60bdf9e6659c074adc561429bcc543f712"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/gnoll.png",
+      "sha256": "1999a12b3c1482aeba208e1508d79199a8f98c3cc038e0bdcc9958c535e86706"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/gnoll_geomancer.png",
+      "sha256": "95f9dc27d6bec5220036a7897a0fec5a4ace4817e1cfe061ca13edc713eabb87"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/gnoll_guard.png",
+      "sha256": "c962d52945ec8f5a994bad6c72ff8929ac787e9bbf846695c97e6d8060db31c5"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/gnoll_sapper.png",
+      "sha256": "5f16fe648be2c1bfcb8a94f18c136ce8423e0895002260813fa8d52ff59d032d"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/golem.png",
+      "sha256": "f535b4b231b7c63e00bae36702936ec3d3e07dc07b58a78710c114979da6ca60"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/goo.png",
+      "sha256": "18743d610170aaf9914a41eedcd654524290105f222e2118b23031f422d808a6"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/guard.png",
+      "sha256": "89f104cb26d3c92c81a6b0e3a0399f889d9c44c4c1c7ff6b22cc9614249829b8"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/halls_special.png",
+      "sha256": "c56e1e09643866d1eacd695b86e01f8bc4f0e9c0c8dcbcd1cdfda7ca0608e47a"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/icons.png",
+      "sha256": "592ba061fde6ebba4c6c912604f4e2846c956a473d6e89b53ffc05339e0f49d8"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/imp.png",
+      "sha256": "3c32c3ebfa61c6feb2f778213386d38669655e297936afafcc24c85898205fea"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/items.png",
+      "sha256": "86b2fd9e99efc34718cb0194bfd4a4d856882cf3e97416283f44889e81e11404"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/mimic.png",
+      "sha256": "f90c11767de281bea9334f031e092073515526d57eae14e5a24f59d0fcb36ad7"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/monk.png",
+      "sha256": "80ba0bc9dadefa0ddc0885c49388e0b4425ab92a2b9127c7591caeded4a5ff29"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/necromancer.png",
+      "sha256": "61d5d0d926430a46511cc291372d678533448f408c4631de58a4a34f33ea5968"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/occlusion_shadows.png",
+      "sha256": "f51350203bf898a544c03fd87f36607c225619ee5e785ecdd7940ac7fe9213f2"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/piranha.png",
+      "sha256": "b72a3c2cd8e7e0aadf3974e729b93e1b42e4c599e87931ebb25b01ae4bf27e03"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/prison_quest.png",
+      "sha256": "82efc80fb7607a7250d73485f467f27cbd59137134f9d0bca5f5c85f1b81082b"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/pylon.png",
+      "sha256": "e86a17446a301973db13484e3ba6e0c9ab7b7547ef96ebf2f25d1640afefbeb0"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/raised_terrain.png",
+      "sha256": "405c2c34b3f8815a78ad78a68ed89cc8fd5b8cbdcec88f31532ec266a394b76b"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/rat.png",
+      "sha256": "96eb45389f49db2f4cd74840ec6200cb714acfa061fd3f2a1984f9ebe30c6f8b"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/rat_king_room.png",
+      "sha256": "15bf1352e4db0805ce2862f1fb67b68c57f4a4c5f32148b70139208f09149a35"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/ratking.png",
+      "sha256": "94b93112d4133136a3f2a4973e5647326311ed5f3f1b6b829dd87ce492c546a8"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/rot_heart.png",
+      "sha256": "e2957321763f768420b4b8db3557f46d0be951de34021011f1391bf30ecd8822"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/rot_lasher.png",
+      "sha256": "44137ad419da4911fe6f2f32d80d25a3871de4716ec97b3ddec416870413891b"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/scorpio.png",
+      "sha256": "fb619a64c75d37215e84867429266cb54ba95a2b79c976f06c33d00b8149b108"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/sentry.png",
+      "sha256": "034c7136a493db5d248246d51de16f05bf875f68006553006fcf8bb4314fe5f0"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/sewer_boss.png",
+      "sha256": "1667875bbbcfa8ef88fba42721aaf97c0c01d5ee40f985f1ee4c98c534b6010f"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/shaman.png",
+      "sha256": "6646dd738e52e37d16a55d4845a37a71569f6bf7efcab33460105d803e2adfd6"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/shopkeeper.png",
+      "sha256": "0cd97064247e166dbfaa838c18cc98857fd03978567af31cdf548921b8407ef8"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/skeleton.png",
+      "sha256": "8cd84e26a079133b894b94243cd3927fc7c3f6149551abd0ead48c5438da2a70"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/slime.png",
+      "sha256": "f367f470facc7be807559359729ede5745d7ab9990304bb107c3a54e9643ca41"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/snake.png",
+      "sha256": "52ea94ce9c636fbbd73d64881e417aee70d098d9a13e159ddf5f4a303aa90b5f"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/spawner.png",
+      "sha256": "82cbfd9803234e6a1cf78df6e31cb7e116286003fc32f9de187d70ae485d9d57"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/specks.png",
+      "sha256": "5601e5a3452fbdcf4b4a54f85614fba0b16cd127e4a7985331fda0e481d29a7b"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/spinner.png",
+      "sha256": "3965fca3ed45b9ac8918af9a9fc28e56d971368bc265b048e4b27b5067455134"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/statue.png",
+      "sha256": "e9ebbc93295e61193fb25fd3e235a0aadea448c1beb940c392a6ff4ecfb73b10"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/succubus.png",
+      "sha256": "df5a4311ffd2040626beed2d54d727e8c8605338cd4b7381b2e8e802a1028396"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/swarm.png",
+      "sha256": "692cd341d6216e42ed602ef2d9a6b555f1aa15b8a744a11d5befe4849cb2c715"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/terrain_features.png",
+      "sha256": "1786acbca33b65fbb6f8e671b811201263f56cbb26d9a7741e0a698421460bec"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/thief.png",
+      "sha256": "c79496017117e9e9e5dda5bbc536b482ba548ed2140408de130b39436c59e1b7"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/tiles_caves.png",
+      "sha256": "85141c7c7ad9450bb324a79707b4645343542b74160a98ff5fdf0c6f82968056"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/tiles_caves_crystal.png",
+      "sha256": "e9d55a8059fef86c2fd43b3124455e62335cfb6e5473b6b22423a0871ccbed9c"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/tiles_caves_gnoll.png",
+      "sha256": "8258601b286b685530e26835ff20962ad4d6b43a64bc3458653e618088701ef5"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/tiles_city.png",
+      "sha256": "a1f5d8b76321e2774811e7a4144832ab50666c5cebca52334824c087d3d97b80"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/tiles_halls.png",
+      "sha256": "6c8a81bd9e32832e78f647fc833c76ab8db640e56de03255efdf5644075316f0"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/tiles_prison.png",
+      "sha256": "67e88eb7596b2d963b458480f6b025aa9107ef610f291961d0e257d8b68fd5cb"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/tiles_sewers.png",
+      "sha256": "4a097755d0b0335b04238ef5e848da45d9c313348865e4dc17ccac44dc487567"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/vault_mirror.png",
+      "sha256": "294583bc8383461eabec80da677081449402b27df1335a3f210eed05dacfdaba"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/vault_tokens_door.png",
+      "sha256": "89f692729d54c0a883a2e2dfcce3a52a61e0f296aca59e7b7870c120f5d45c4c"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/wandmaker.png",
+      "sha256": "3c23d6bd73887c1accc2b506dc188f2191ad9e211fe2de5c02475c7561be120b"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/warlock.png",
+      "sha256": "6e5c8391780529edcd57237b22c5b795ec8ed42ab989f8eda84399c36177558a"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/water0.png",
+      "sha256": "4d50a06e9381824d50495c6df332c4644349021693cdbceef1a80f25ffae9202"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/water1.png",
+      "sha256": "16b7cd5e206e0938694112f27ab8bf5ec47cb7c3080b90ffc697cd929872f71f"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/water2.png",
+      "sha256": "e3cb69225c9d27234474d80dbe30fbb411d0042fea8e3ebaeba519a1f5f0b894"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/water3.png",
+      "sha256": "35811bc2cfccd53a7278748e4202ed6a175d6993158f1cd48679e4392ae4ca69"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/water4.png",
+      "sha256": "ada5c5a29bb564b15380fa07c161004b3f11bc6c5907bbda34cf539d19f5a84c"
+    },
+    {
+      "path": "crates/seedfinder-core/assets/level-map/weak_floor.png",
+      "sha256": "4355b61a4c6543e15f9144c8ae22ccd1232324a2193903239331c8021bcdf97b"
+    },
+    {
+      "path": "crates/seedfinder-core/build.rs",
+      "sha256": "08669f946c13fd2e46602eefe4f9b1d90e09015ea8640cdfda13ee88a0fa2aef"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/auto_trinket_production_benchmark.rs",
+      "sha256": "a54ac22190df98453be370b8c907c52c411d15c63912fadb17182674185d8acf"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/benchmark_floors.rs",
+      "sha256": "6425e3f177991dc1e862b4cab6f7d0859b7b73f58d8e39d2cf3e91111c15d3ba"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/benchmark_preparation.rs",
+      "sha256": "e8485c8f7820e8c6e1556b7cd1c9bfc1319cd7d2142f151921affed168c5a60b"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/calibrate_artifact_decks.rs",
+      "sha256": "89b89eb528bb9314d5084773739c3c853f1c7b1d34f124824be2585859f3c6cf"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/calibrate_artifacts.rs",
+      "sha256": "dd25f289d49edea313f4421a2b02e9f62431c27bebb42300e9b2e07cb0d8502b"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/calibrate_first_floor.rs",
+      "sha256": "91fc3ccdd2272577d8c1eed16b122e52349a92fcb0fd5e37afe4b20818632ac1"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/calibrate_floors.rs",
+      "sha256": "ecf98d679280811b9aab3f14f68677a8759c8d158d6cb6ab4cb1a8cfa6e1fc6f"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/calibrate_probability.rs",
+      "sha256": "2c72cc434c87573a8b8fe8ae48ea5cf8412152d496c98c8f220e52b60b563472"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/calibrate_source_counts.rs",
+      "sha256": "6aaa4aeebbacbb6e649b44fcf63a954d438af732120cfceec932a0f75b51d43d"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/calibrate_wand_repeats.rs",
+      "sha256": "ecbb571b176b1f077c901b5fe81fdb83994e313676a6d5d7c9f2a9751aff1e43"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/calibrate_weapon_repeats.rs",
+      "sha256": "654cf98e2e925d2fa91f2d0bfd940bedc7df33f47d3d03294015eaefc0dcd5d6"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/dump_floors.rs",
+      "sha256": "e3b9be543dad596a353254adfb862a4a19aafe2d92daabe86649ff70dfe89084"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/equivalence.rs",
+      "sha256": "6a738bb0f4d18b0450976964beeeca55ff92f81c928136f5fc5e86755ee0d9a8"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/level_map.rs",
+      "sha256": "35635d26ab872a2d3732f3bd7c980973b7c5b5c9626edab4d89895e2873b06be"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/probability_sweep.rs",
+      "sha256": "b8fac830b22a5c4fcfbf02043926ef94d8632182db4d17487a9653d40ef8bd3c"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/share_link.rs",
+      "sha256": "28103cad4e9aefe333b4c8b1a2a0308c55a9156bdac9e671244e4721ec28282f"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/single_trinket_benchmark.rs",
+      "sha256": "7950407b8b9229193419c5266f2b080324434f2dc34cef64cd4cee816422cf20"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/support/locations.rs",
+      "sha256": "0c68cc7555af91cc46a892aecd66a3ac2fabdce8b1cfbde90245cb6d1dc0e591"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/support/parity_floors.rs",
+      "sha256": "bebb9ff92f8c0f32d63286626c3482f54a534d3db4d35fb39465abaeb4b2fe33"
+    },
+    {
+      "path": "crates/seedfinder-core/examples/world_digest.rs",
+      "sha256": "ad2420afe2d68030a66387bb1dcd04b84d71dbec41ef8bfc0449f2f28bc41aed"
+    },
+    {
+      "path": "crates/seedfinder-core/src/artifacts.rs",
+      "sha256": "69575c1f2da6f8b338e9f7dfeb6083df439daae03f09b162c0622995d69e304c"
+    },
+    {
+      "path": "crates/seedfinder-core/src/auto_trinkets.rs",
+      "sha256": "fe681a545ca819042c823d51b7c21281c709950007c58dd7ddf1b6f26afae339"
+    },
+    {
+      "path": "crates/seedfinder-core/src/batch.rs",
+      "sha256": "6b58194f9cc303625c9d89508c5a25a8b6cc5e66625160bee938dab80da6cfec"
+    },
+    {
+      "path": "crates/seedfinder-core/src/bit_rows.rs",
+      "sha256": "aa2a684b13ffbee8d1fe7541d7e6f826562a288170867e5873f3b12ddef6e54c"
+    },
+    {
+      "path": "crates/seedfinder-core/src/boss_floor.rs",
+      "sha256": "d2790a07a0301af3738a4fd4b1a911b2a3fdc1068adda105ae4eff4ff89ce00e"
+    },
+    {
+      "path": "crates/seedfinder-core/src/builder.rs",
+      "sha256": "fea57223b5b14f0ddaa8645308b9748aa151567805f11c0f300a92bf8f55d624"
+    },
+    {
+      "path": "crates/seedfinder-core/src/catalog.rs",
+      "sha256": "ca0a16b52fde7d4f857edcb6422db76e673b8486f11d26270c99e484ae4cfa73"
+    },
+    {
+      "path": "crates/seedfinder-core/src/caves_floor.rs",
+      "sha256": "51945127afa1680f4a7f9bca8119cd4a73868e94e0c8e80c423dd4ea6d41e1d2"
+    },
+    {
+      "path": "crates/seedfinder-core/src/caves_mobs.rs",
+      "sha256": "7c07bcd37256627c0bb47176257ef99da5cc6fc40e0a5eca58a0c9431d30f0c6"
+    },
+    {
+      "path": "crates/seedfinder-core/src/caves_rooms.rs",
+      "sha256": "bd8dbe4570960f087490d040534abef1be4798aced1203ff0cc55892f35b4f27"
+    },
+    {
+      "path": "crates/seedfinder-core/src/challenges.rs",
+      "sha256": "e641377928dadecc0d7d3505460516383ddfb0b78c17b6e716fc1f5bd6b7af93"
+    },
+    {
+      "path": "crates/seedfinder-core/src/city_boss_shop.rs",
+      "sha256": "8891807bdc20ac386fb74de776ced31104d7020b4e0b6ec029d6791a54c600ad"
+    },
+    {
+      "path": "crates/seedfinder-core/src/city_floor.rs",
+      "sha256": "9f4208e52764b9d8cb6e6199f5e07ed6899e6b30f72d4122e217ff23becb53df"
+    },
+    {
+      "path": "crates/seedfinder-core/src/city_mobs.rs",
+      "sha256": "ebcd4e098d7678db0f65f47c8753053c1001db4a981dc5ad307706b5507d9204"
+    },
+    {
+      "path": "crates/seedfinder-core/src/city_rooms.rs",
+      "sha256": "dc6e49fa600672f2e904144a4e0852b5335ab136136c75525e96d0403ee8a150"
+    },
+    {
+      "path": "crates/seedfinder-core/src/deep_link.rs",
+      "sha256": "054706878a3f3a0f8c8d6e5b9576f8ed383c657a5c3ec77108a2310c2b7a1afc"
+    },
+    {
+      "path": "crates/seedfinder-core/src/editor/board.rs",
+      "sha256": "be9ccbb9c8b8783ace915af391f7223a0f53faaae801c4b8de15edcfd880f028"
+    },
+    {
+      "path": "crates/seedfinder-core/src/editor/board/tests.rs",
+      "sha256": "3224b5bdd9cd9d6770a38d3467aa946d6f1d9f1847925d1ba4ac04005aa2e17f"
+    },
+    {
+      "path": "crates/seedfinder-core/src/editor/chips.rs",
+      "sha256": "f6aef470a33ce86228d9a78243a758fb45c5d1177daee8f00839fe86bb4476ea"
+    },
+    {
+      "path": "crates/seedfinder-core/src/editor/chips/tests.rs",
+      "sha256": "115abf4a19a33d48ef73940a10b899982c78e8126523ac3a48ce32c67926f4ae"
+    },
+    {
+      "path": "crates/seedfinder-core/src/editor/draft.rs",
+      "sha256": "00a7cdb949b1de79dbbcefcff9d20a81f5a906bed5401b8338542ff486c669e5"
+    },
+    {
+      "path": "crates/seedfinder-core/src/editor/draft/tests.rs",
+      "sha256": "9e8a7701f802b1ad61f2c7aebc7cb11887c3aaf49f55f8324ca390f7dd7da9b5"
+    },
+    {
+      "path": "crates/seedfinder-core/src/editor/json.rs",
+      "sha256": "dcbb4f3314c0239950edcb30b4e64c922bd64b04ff9fbe5ebbbacd1cf3eeda47"
+    },
+    {
+      "path": "crates/seedfinder-core/src/editor/json/tests.rs",
+      "sha256": "ffddd4e4fc7904e3130c52444b1f9d330e569aa50fc5bb8410a6613c301cf602"
+    },
+    {
+      "path": "crates/seedfinder-core/src/editor/labels.rs",
+      "sha256": "90e1256952d78135ce9d923ebb6bbc676dfee00bec14cf75236f9cbd29bb3b4c"
+    },
+    {
+      "path": "crates/seedfinder-core/src/editor/mod.rs",
+      "sha256": "4ae9aa33e7a4e1b0a50992fa5ab925d3ec23245bba1a84a6959e4fbd7a71b3b1"
+    },
+    {
+      "path": "crates/seedfinder-core/src/editor/problems.rs",
+      "sha256": "b30a923acdb13aa30cf743bb33000975c92226485d66eb233467eec40aae262b"
+    },
+    {
+      "path": "crates/seedfinder-core/src/editor/problems/tests.rs",
+      "sha256": "9a30c873f019f6c3cc90d1a550e80bae73ec8b577ee6d41fb1e133b903051576"
+    },
+    {
+      "path": "crates/seedfinder-core/src/editor/stack.rs",
+      "sha256": "0a387139e66208682b12d28e614e25b3918ddf1bc267dc436799b0e352023e21"
+    },
+    {
+      "path": "crates/seedfinder-core/src/editor/testing.rs",
+      "sha256": "5b6589f0d74dc4c63b9ac1b27d76ab8a4db5d81b03d19a70480ff80292bed1ac"
+    },
+    {
+      "path": "crates/seedfinder-core/src/engine_info.rs",
+      "sha256": "eed3913d952a8d12f816b579adbfcc59ff5a9b761e92383d779ccfccb67e2f63"
+    },
+    {
+      "path": "crates/seedfinder-core/src/equipment.rs",
+      "sha256": "bc0eed6107b52cf38e5c9e941c8e0a70c21fd430cd2ab29c0bd10d8c80fde877"
+    },
+    {
+      "path": "crates/seedfinder-core/src/feasibility.rs",
+      "sha256": "4f8c0fbc61e20cd1119d88eb8c86b8fe8658874887d04eca012963cba1039a6c"
+    },
+    {
+      "path": "crates/seedfinder-core/src/feasibility/future_rooms.rs",
+      "sha256": "3f83c86fb9838e620e77ecfc4460bb6eccddfbbfc5312a2345244ad7dc32634a"
+    },
+    {
+      "path": "crates/seedfinder-core/src/feasibility/reasons.rs",
+      "sha256": "17406d3f86975e06d666ca3a901853db584027ff66b1754e0eec0b88a3afcd85"
+    },
+    {
+      "path": "crates/seedfinder-core/src/floor_filters.rs",
+      "sha256": "81ad679727b1d8c0602d215f6f6e37fff2261c8d74c0165f7898a422deac772d"
+    },
+    {
+      "path": "crates/seedfinder-core/src/generator.rs",
+      "sha256": "9448561f61eb5009659b7d73c9a24924689531fe9185a93d4b117e05e5c1e559"
+    },
+    {
+      "path": "crates/seedfinder-core/src/geometry.rs",
+      "sha256": "92e31d484f66497af035305552f0c2e3f5005ce7d829d226bcb6bc7b5d4c122f"
+    },
+    {
+      "path": "crates/seedfinder-core/src/grid_builder.rs",
+      "sha256": "28ccb72585d51a1b0d2813c43818f6b5d6b3553d4de0730515c290c6966413b6"
+    },
+    {
+      "path": "crates/seedfinder-core/src/halls_floor.rs",
+      "sha256": "0481f07ceb24194f8c55953d3078aabbf77a524bf0e1496e6a459b7ac57d29d9"
+    },
+    {
+      "path": "crates/seedfinder-core/src/halls_mobs.rs",
+      "sha256": "79f58e610fdd6016c7c1bb8c4f0105e6c6d3497cc4c40b4d7f31f62255b5fc06"
+    },
+    {
+      "path": "crates/seedfinder-core/src/halls_rooms.rs",
+      "sha256": "5ca8d5d4ca42fe5dc8012f65510e8d6d04586302c954077a4f86ae4ee19c9dd6"
+    },
+    {
+      "path": "crates/seedfinder-core/src/item_mappings.rs",
+      "sha256": "dfc4a12c53a37245d25fe266dcacaa200a61dfe590993f0a1fd77f6c3735f39a"
+    },
+    {
+      "path": "crates/seedfinder-core/src/java_math.rs",
+      "sha256": "589ad5b4f9c6493cd430f61d8dd0c19c53627f06d13995a89975549fd0942dcc"
+    },
+    {
+      "path": "crates/seedfinder-core/src/json_query.rs",
+      "sha256": "7f1c71fc33b76e9e465dbd77cb75ebf4b98dd0851943c9b14c3d53d47f2eb225"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level.rs",
+      "sha256": "2064136a778b10a5a95fb049164371c9931685a9a960c5ebd0ca63eac54ace52"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_flags.rs",
+      "sha256": "7d7a036c969a5ef1547a165acac04b812fcd34effea0b5dee6a82cebb196371e"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/assets.rs",
+      "sha256": "ca15ad987b350341c512e657eec1abe230bbffbec0ae2ce3b05dc915b248455a"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/contents/items.rs",
+      "sha256": "a4172a44f6b668a075c717b2ae5a9e7cd0856d90821999ae852bc75ab23dc8cc"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/contents/mod.rs",
+      "sha256": "e2c79251dcf9577d93bef8101222a361533fd4fe3d9e49d4cf9be837173b294b"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/contents/sources.rs",
+      "sha256": "1545467c9bb76828b0eb4e1a813a26ff8ef15e97494dc0edb8cfc040e041c6cc"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/glow.rs",
+      "sha256": "900cb1614bcfbdb687dd1caafb2a504c05b07fecb7abd135da6ff07b40eb2afb"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/item_text.rs",
+      "sha256": "202422a172556fdd68e456044281a35cbf7158f2a400b08edf2fe2452cf9c0b4"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/item_tooltips.rs",
+      "sha256": "39d12da28b7ec9561a1f2b6e2c49c7f65658ba953aa4a6f41cc0b22e3ae0ae2e"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/json.rs",
+      "sha256": "6924fea08df95011a1ed7d4cccb68a3172826261c2a5b4f890b85b9e421bd890"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/mod.rs",
+      "sha256": "0f15f0f5059f2f666fd85aefbea0e8f526a6ea53c50c8974769f6cf3bd151526"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/particles.rs",
+      "sha256": "2c11b47933efda5015c379ce31d74bf5d69b98ee355f2ccdc26bf069ab4f9f4c"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/projection.rs",
+      "sha256": "8a72afe6b4fb8a02a6c3c53f8b49f1aeda09fb914d0cf595d905affdf2d6857e"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/visuals.rs",
+      "sha256": "7b75a09bd23324f5c0b86a92fb4be2750a7db7e82036ce65831be08090efed89"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/visuals/actors.rs",
+      "sha256": "a1f125934f86e83ac32e100b97597758e7d86ac38c73bc9a30af3209b4fd0dba"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/visuals/ambient.rs",
+      "sha256": "e0eb753443485c63bb3b7c35e75f3c15780711ebdf73eb5ce921511f35c67fbf"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/visuals/boss.rs",
+      "sha256": "8fdcd350972ba45dbeb5927ffcdee38542248a569a7332889cec99194d23a72a"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/visuals/carpets.rs",
+      "sha256": "7a5d5dcf73e5011531c0f8e458d70476ad584f3ef90b65f123011018ede0f0dc"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/visuals/chasms.rs",
+      "sha256": "0ee3f576df85c5c31ff8a89b9624cf563a532b85b6e824210f6ec088511af6dc"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/visuals/item_rects.rs",
+      "sha256": "9f3bc12b83d8020b1864fb96c59bcac4fa117949184ab015f0be7984b5fff139"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/visuals/objects.rs",
+      "sha256": "cc18f23bc3f418f70bd36adc09a0272fbb8c280db18ef629959e26759cc28ffd"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/visuals/particles.rs",
+      "sha256": "6897d105bfc3ae09bfff601b388ffa56520f8aaec4677e68ed1a126b5223a00a"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/visuals/rooms.rs",
+      "sha256": "02ae7f2ea950f44776c10e11488ca99fd27246b0c6678bceeaa6569207220987"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/visuals/sentries.rs",
+      "sha256": "3f006ecacdd5232380b1bd50c899bd2291b2f7645b37f25c5e4316cd8a6ab529"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/visuals/sentries/geometry.rs",
+      "sha256": "1da121d28ac569a4b2b944b3652d0c051a3c02d0afcd840dae7bd1cee8f2685a"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_map/visuals/sentries/warnings.rs",
+      "sha256": "335083555eeeacc2ed5051cae028f57f1af07654d479a74c8a0f39097b97bc96"
+    },
+    {
+      "path": "crates/seedfinder-core/src/level_prelude.rs",
+      "sha256": "3afacffc1101bc455f96ba4e0d52fb4c2279101f325a8228503112eccbf61b37"
+    },
+    {
+      "path": "crates/seedfinder-core/src/lib.rs",
+      "sha256": "7400f035442ff6716a02e8feaa6586e1bd14f75c4fb3b2cca826c2097e090f7f"
+    },
+    {
+      "path": "crates/seedfinder-core/src/main_world.rs",
+      "sha256": "294b4715ce76678e5ecb92590e853890fce57cdd0d4f938c96cfc8508d20821c"
+    },
+    {
+      "path": "crates/seedfinder-core/src/maze.rs",
+      "sha256": "a10b2caae824e85db46d04065e15a932c8819e6cc999d698635bfe73a91b60b3"
+    },
+    {
+      "path": "crates/seedfinder-core/src/mining_floor.rs",
+      "sha256": "1f856446796ade50cab3c62f86a3c2547d31aaba4740c249c6f189db0766bd1d"
+    },
+    {
+      "path": "crates/seedfinder-core/src/mobs.rs",
+      "sha256": "f23f28cea8019fb94dc8e6bc14f19dfd6bc558828ebd0cdea57a3ff4afabc2b9"
+    },
+    {
+      "path": "crates/seedfinder-core/src/model.rs",
+      "sha256": "172461bf366870f5602185a1b42c0893f60e10b0204f77eac1540db5756daea4"
+    },
+    {
+      "path": "crates/seedfinder-core/src/oracle_fixture_tests.rs",
+      "sha256": "32e2c609f329769d93786205bc8ada535c2b79d9161292bbbe9f1669eebc685f"
+    },
+    {
+      "path": "crates/seedfinder-core/src/painter.rs",
+      "sha256": "624500943c0081ce7b8cf5e7a0e96b32780259899b04c36f23c5e8d7d5d9f0ac"
+    },
+    {
+      "path": "crates/seedfinder-core/src/prison_floor.rs",
+      "sha256": "1c44f636f25cc3fddcfa477f5a35898fc8cc05d4559bdbdb76347afd22d9f14c"
+    },
+    {
+      "path": "crates/seedfinder-core/src/prison_mobs.rs",
+      "sha256": "7b405db8a4b3cb85d2e5cf23abbaf75287fb76ff4e8b04b14feac4f61d0c506b"
+    },
+    {
+      "path": "crates/seedfinder-core/src/prison_rooms.rs",
+      "sha256": "268f5a8903ae5d1390aed4842efb093f0d09fed69c6c5f0b8d2ee5193855fd8e"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability.rs",
+      "sha256": "d78d03a6bdcac4e05b7e830bf5be833dd02f37558bff33e0bf74837214dd09df"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability/artifact_deck.rs",
+      "sha256": "484b77445cb59cb8f9aa204376144cf3fe428daaf44ffd7e9caea8dbd863270a"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability/artifacts.rs",
+      "sha256": "02508f2782f093b033887518850470af03e13c6ded3079d715e28a8aa428d47b"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability/blankets.rs",
+      "sha256": "db4d470967b762a8b2f0d7f0ef5b36b4cacc9152d03f6cb36d7c9d742393a561"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability/cache.rs",
+      "sha256": "4228c2477006f8832cbf6433a63717ed7536ca6769162f1dd1bb50f3f339c558"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability/coverage.rs",
+      "sha256": "7772d26f3f25e32acf2d9fed1daf4d6857738fd9275b8b96255b07d90e68ea36"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability/floors.rs",
+      "sha256": "80f74945541ee322929f8d478320b3bab7a09833834a520124a95cf4d87989fb"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability/resin.rs",
+      "sha256": "a206615f49874d691074a70c01075f9e1e803830836dc3a6b556f39fda236ae3"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability/trinket_deck.rs",
+      "sha256": "5060cd73302373ea80052bd379e206969f04b4a1009dc14cfa6f6026e153c972"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables.rs",
+      "sha256": "3310fdf91eab9c1a85dd0ce442ef03fb9b83f280f0b57aec4b96a1e4214811f6"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/artifact_decks.bin",
+      "sha256": "27a113a9c64d7f9c524eede48f286257dc4ba9019e16b54d8500387059c0e932"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/artifact_worlds.bin",
+      "sha256": "786bde24f9cea32aabede55d5e047f9242b97c2637c031225ab07e076005fd75"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/embedded.rs",
+      "sha256": "5fd7180d4bb1a8a88edde6a6fd4519979e2f883b31ec2b7814b532c35de8ad32"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/feeling_rooms.bin",
+      "sha256": "dbb8abdc0806e85a1b3924bc0d02deca18b4e43752b4af3f01d9cf6a267fc473"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/first_floor.rs",
+      "sha256": "1c7b08ac905b59731a2b7e6ff2158ea55efc60cf0a20fa2ffc53fe92a56a6d8b"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/floors.bin",
+      "sha256": "f5b65279e6abc92cb0c31f5517ef1a62d0b756f9ff526a313dd19ea813df0a12"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/floors.rs",
+      "sha256": "fdcec542333a36787b9412cabbf7adfd26ca075feb86077e957dfc90bffdd033"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/measured.rs",
+      "sha256": "54b1608f42b2c668bee2435567aeff3ae9309150185da7c43f0277a5f785f062"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/source_counts.bin",
+      "sha256": "f68e99d30f2b6fd606a4368a7092b04cf8767253b6add08f6cd771a93cf63b71"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/source_counts.rs",
+      "sha256": "b9f2263e19ff7a3748f70b1aef8dd3c9f07e3ba0e9710127bc0f7d9305a9bf34"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/trinkets.rs",
+      "sha256": "d96d258f7ac7fa1c5f79bc519ca47ee7a3f3c3cf26ced9d35cdb007c1774beab"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/trinkets/cracked_spyglass.rs",
+      "sha256": "00f3075936045fdf772ade055f8f112224e007ed35e6cd0c4ff1756a70a34f61"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/trinkets/exotic_crystals.rs",
+      "sha256": "1fd85bb948e4de92ffc2e1d3d9662972de9610c63fea92e3fe6e8d5e9a67ed13"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/trinkets/mimic_tooth.rs",
+      "sha256": "af1239255af31b7020f2605927990d03b6b2ddce8adb5f597506cd0e880fd43d"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/trinkets/mossy_clump.rs",
+      "sha256": "167fc7a44bf41a724ad27d0d576bbf0bbd2f7a861828e9c064b39fdb5caeb799"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/trinkets/parchment_scrap.rs",
+      "sha256": "c67de642e66a9b64e92cdba40629c14331e89ab888386b0a10d44b37d86ff777"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/trinkets/rat_skull.rs",
+      "sha256": "7b08bc5d1a0a6dfc1c4a5af4318b0c1ee6ccb599f4a2ab4d0e22c9e64f65c101"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/trinkets/trap_mechanism.rs",
+      "sha256": "b434c5856170e85c73a4179681105bc34f44695033a8baf120f6bd22fca2472b"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/wand_repeats.bin",
+      "sha256": "5708bdb14884574519d98469814465f11b9e76ca9bd4ae7b00c739a785415c95"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/wand_repeats.rs",
+      "sha256": "c1c8cbf26d38fc3d6725b429af82a0336389f1dec08f14e41e4767f6f41d8a89"
+    },
+    {
+      "path": "crates/seedfinder-core/src/probability_tables/weapon_repeats.rs",
+      "sha256": "fda5c609ab95489d2b347899ecfbefdf4fea79c983fad15fcded2eee992a4503"
+    },
+    {
+      "path": "crates/seedfinder-core/src/query.rs",
+      "sha256": "c1dd5a99977a94043d0b497c4feff4922b5c67e5054b6230be52c906fd9a7006"
+    },
+    {
+      "path": "crates/seedfinder-core/src/query/resin.rs",
+      "sha256": "0a6068998a7c286842f29d3f3a02225380c07eff7005a4d289de67d44aaaec09"
+    },
+    {
+      "path": "crates/seedfinder-core/src/query/stacks.rs",
+      "sha256": "e9df271a95fe63002d72b03d2376d365ec35931794b7463df9bd19d6715043e6"
+    },
+    {
+      "path": "crates/seedfinder-core/src/quest_rooms.rs",
+      "sha256": "d6506023e79b23292e253d484a4abc2027db72d112af9ddc74d976a9254b0967"
+    },
+    {
+      "path": "crates/seedfinder-core/src/quests.rs",
+      "sha256": "db1d8f576c8518154f42e631b99a5f269f513a1f52f4c4239c3b4abc9be949d7"
+    },
+    {
+      "path": "crates/seedfinder-core/src/regular_items.rs",
+      "sha256": "ff0f5c5bbb1667d6bc37bcccadc29430d1caf1ca2f02f150ee271ab7edf7c795"
+    },
+    {
+      "path": "crates/seedfinder-core/src/regular_level.rs",
+      "sha256": "ba1fbf867b7334ccdb75fb1bce01d874c66c586e1c1d20de8f17f2521607a306"
+    },
+    {
+      "path": "crates/seedfinder-core/src/regular_placement.rs",
+      "sha256": "589514c92671b588e43f0b88dfc05641696de3701b09c1ffc3e910f01e4b22d2"
+    },
+    {
+      "path": "crates/seedfinder-core/src/results_export.rs",
+      "sha256": "23e106f40f68af35389323c30433451c0af886035419e07256215c8f202c0e70"
+    },
+    {
+      "path": "crates/seedfinder-core/src/rng.rs",
+      "sha256": "270675629d7061d9800228e15c5b5e6a373d67da8de7f92d57e1cc91ace1ed40"
+    },
+    {
+      "path": "crates/seedfinder-core/src/room.rs",
+      "sha256": "02c96b4ac359e5843d1e60bb6acb4abd045d6c096f1d97b5dbae83a9275ef9d0"
+    },
+    {
+      "path": "crates/seedfinder-core/src/room_decks.rs",
+      "sha256": "545b95e13e36ed31abf64afadb37e7cd5736db30e05a63501f692e707de660ce"
+    },
+    {
+      "path": "crates/seedfinder-core/src/run.rs",
+      "sha256": "2b900db985a19033367be8c9c7832ce3a9f936264115c70e2d0d19cb06d9e97c"
+    },
+    {
+      "path": "crates/seedfinder-core/src/search.rs",
+      "sha256": "9eb55e12ee7442f36e9790c0e356bfd02d69f3c42466acdca846033209bb0491"
+    },
+    {
+      "path": "crates/seedfinder-core/src/secret_rooms.rs",
+      "sha256": "09c6331b1636921abdf8994c4408d33f376a2db508c49d24ed8555a5aeb8fcd4"
+    },
+    {
+      "path": "crates/seedfinder-core/src/seed.rs",
+      "sha256": "e6628b2040bce66006fbf13bb39681aa1eb0955c5cf1e3254ea5d823795b65b9"
+    },
+    {
+      "path": "crates/seedfinder-core/src/sewer_floor.rs",
+      "sha256": "e3e355a11a7075c28c28846c178458f5c9f7c295c06196c6d63a82ba82ac8a3d"
+    },
+    {
+      "path": "crates/seedfinder-core/src/sewer_mob_placement.rs",
+      "sha256": "74c4280be2b7c014c22a1fe38893dbe6e28759b0564c596007a5be30a5aec1ad"
+    },
+    {
+      "path": "crates/seedfinder-core/src/sewer_rooms.rs",
+      "sha256": "c88824b069745a1c31cec729a3a291c6ef643796d44bd14987f9082217c4690a"
+    },
+    {
+      "path": "crates/seedfinder-core/src/shop.rs",
+      "sha256": "6eccc754540ece779ee062b763ab79c154ce631d85cb9aa3be415a7d27267e11"
+    },
+    {
+      "path": "crates/seedfinder-core/src/special_consumable.rs",
+      "sha256": "ff0dfa015d6b7aab245659e345402de6930f2a2cbf4213fd60c6652133c597e0"
+    },
+    {
+      "path": "crates/seedfinder-core/src/special_equipment.rs",
+      "sha256": "d872bccebfa5b9a43a9eb21556424bab6f1d2c8529125194c88d2a9a68b5cf76"
+    },
+    {
+      "path": "crates/seedfinder-core/src/special_forced.rs",
+      "sha256": "6a5de8ed220b959e50e275e49dbfd89c0961abcb2c8411c2f10f501b288d1eb1"
+    },
+    {
+      "path": "crates/seedfinder-core/src/trinkets.rs",
+      "sha256": "b166a230b82c309d7cadf50ce840989ddff7f219b424bcb9e2a6582f448e64da"
+    },
+    {
+      "path": "crates/seedfinder-core/src/vault_debug.rs",
+      "sha256": "8f949fe4a709cb43507318e0ed5bb51d7bba7e42f9b52700414b98c6b25e6e98"
+    },
+    {
+      "path": "crates/seedfinder-core/src/vault_floor.rs",
+      "sha256": "554f7118e05e6e3d22bce6e28e708d3e2b77b83b2f1a5a618b6b1d32ddd0b7e0"
+    },
+    {
+      "path": "crates/seedfinder-core/src/vault_loot.rs",
+      "sha256": "0b1c46247e6a28de292521ae0c25d8bc1ce94cb903ffcb5e0a608758f1027abc"
+    },
+    {
+      "path": "crates/seedfinder-core/src/vault_mobs.rs",
+      "sha256": "6e67b1ff8f1870650d707de146293c320476c8694d831d37e11df08d0a505057"
+    },
+    {
+      "path": "crates/seedfinder-core/src/vault_paint.rs",
+      "sha256": "18d2910eb36d5c9869d997ea74487faf9998d505d171ad27895797d3f8ebd1e6"
+    },
+    {
+      "path": "crates/seedfinder-core/src/vault_rooms.rs",
+      "sha256": "26fbba0e22f5cdc283f47ff27953bf1cc96b840164028910fdd91acec8884135"
+    },
+    {
+      "path": "crates/seedfinder-core/src/vault_sentries.rs",
+      "sha256": "e70120e7fbf0626910b7d89b5800f5cc190cada66a766d743fadb694da4a05b9"
+    },
+    {
+      "path": "crates/seedfinder-core/src/wire.rs",
+      "sha256": "2c3e921305e3a21f0858308b448f31b55dbb8099d5cdbe67534942d310b16a82"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/arcane_resin.rs",
+      "sha256": "93821c70f5d989093bdc7c7388127521b9115d252997fc1a8aa7c610c543a907"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/artifact_probability.rs",
+      "sha256": "2100133e78932fa555ad8b531632dbe636c79999388e1baf8ff7e7d64ceebf97"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/artifact_transmutation_probability.rs",
+      "sha256": "b9fd3711a50eab20cfe6e66b3c322c20a906bb87ca6f089a5bb42685a38b57d0"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/artifact_transmutations.rs",
+      "sha256": "f9414c7d34e6cdf1b268b47e8a308e829061df8653a1db13acd7d038321596bc"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/artifacts.rs",
+      "sha256": "03b0c1f4c65c17ecb5e95ec027e0ac11c5f3781170918192f01b26c322b81d44"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/beta4_equipment.rs",
+      "sha256": "5506d23511c9ca30694981297a0e438fe2d2d8f6ba925ddaa2a3c4cc7be45431"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/blanket_requirements.rs",
+      "sha256": "bc4f3192447d385c6ecb82dff3bab2c412866f519ef3c13049c93a424fb6ce01"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/boss_maps.rs",
+      "sha256": "3b624a18d94037f0fcdababfa613737743a074d099b9b49aa9d046f2bf888a4c"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/complex_query_differential.rs",
+      "sha256": "8be7ed109bf2753b17ca4f53c314dcaa6be9c4d64452cb14b207b5bd087fc3a6"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/daily_runs.rs",
+      "sha256": "c1666de2212cf8a95d657ccbd70df360cd76715f5ea932d2d014610b4a341469"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/editor_fixtures.rs",
+      "sha256": "3d1e55b098957458fc579a7dcc58fbf66652cccffa827d21ae90ebc3ecca376c"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/beta4-artifacts.txt",
+      "sha256": "c962a818b0b0491c722be94c8bfe9699f0a9a93169b20aed2dba65ee31fd8d35"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/beta4-mob-retry-equipment.txt",
+      "sha256": "29f7714b2196305589c0879093b27e12a5380dc1aedd4e9567c1cc78c6cf2751"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/boss-maps.json",
+      "sha256": "e2ad1e38087563b4c3289839b1bfecf4d1533f44309a9ca09635eadf7c86e4ea"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-blanket-total-refused.json",
+      "sha256": "ad10089225c658ee0880015a41f0224794551f0b6eb297f744e15c0b2782923d"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-cluster-alike-stacks.json",
+      "sha256": "c0c79be6e87603ec8449e6491ac25b0824aa311b0938922709056aa8f5899dde"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-copy-depth.json",
+      "sha256": "ee926776e6f64ceed601b983a9812aaf302a75c282f1f0a77e7dc152b97f86af"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-detach-bare-copy.json",
+      "sha256": "fd3780b879f3c1acce18702e07abc4a5678a09963fbdcb7ce7053cd88d94ae64"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-detach-lands-last.json",
+      "sha256": "1bd956abf47667b5874dd2dc3dd202943dc9ef4b3afaaf353ba45af5130cda18"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-detach-one-copy.json",
+      "sha256": "695c3f4735b4eb33ce9e811b371204a001385b9697ac8eb153c713c91bedf421"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-detach.json",
+      "sha256": "f39c4949c3386ef2f6243b5a8803dabf69649e7362ec46042c8af1d818aab00b"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-empty.json",
+      "sha256": "21c8fa511088157e780f8a48ec0b74d05919239fee54327c4f54f8461801e040"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-error-edit.json",
+      "sha256": "0cdca854788db216850d517ecbfce6545577a89996c971f00ae541f0ac2b138b"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-error-json.json",
+      "sha256": "b4f1e09f98cb27137866d46a3f94b969df005b588897b03c418b9ffcbfffd0e5"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-error-row.json",
+      "sha256": "dc3dd393e6f7c9bed51e97b7203297f1a5910826903ec433d2e4c58ca97e09de"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-join-across-categories.json",
+      "sha256": "8751ad7a24b1a988ba28e242c98509e6ff765502207d6496e6bd3f9a7a9f243d"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-join-bare-copy-round-trip.json",
+      "sha256": "697fbf2a590cab78356b7259b9a27ea13f8404b1e83ac1bc652b2752812cf14d"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-join-bare-copy.json",
+      "sha256": "e39372829924c2a41d7e62c3a2d653cc69cbce4d5bb609505fa54d3cd82cb1e5"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-join-combined-level.json",
+      "sha256": "fc73790c2ed338b72079773ada8c755df715d047426e663106898d68bc4eb005"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-join-hand-written-stack.json",
+      "sha256": "34a7431b16cedc73193875a557dcf7f313aaa6bc955e62f5e2f8179375368797"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-join-leaves-copies.json",
+      "sha256": "dc3f1d1d7ca54947ed3ac9d327b0d455b76794b19746039b207b78c8c74150ac"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-join-member-moves-one.json",
+      "sha256": "ca16d3a04bbd777953a0d3752cd39c64b3d1c4ca58a6c4b02f8527f3f53af6e2"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-join-one-copy.json",
+      "sha256": "be0dfffc8f923c3654e41c33bd721b94fa0796cec3001529b5a37e9352a804c7"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-join-onto-combined-level.json",
+      "sha256": "6d3fa95fd9eed81ad6982d9eb2ced4afb88a9bf7a7914f5581072c882dc8eba4"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-join-onto-stacked-chip.json",
+      "sha256": "e530802937544c766b5fff7a8d17d630bb307b16e4e210c55a74bb1e358c1c82"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-join-onto-stacked-cluster.json",
+      "sha256": "c15d26a1b17a7037f6b7c1f9026c00c03e266d21f201ba1339f88781e4d89b40"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-join-refused.json",
+      "sha256": "2bab9827037a03ace0b90b89aafdb9c8b9bd52b347f6ab6645f0821288dfacc8"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-join-round-trip.json",
+      "sha256": "3043bc3c26631007c1034dc12a97a4a59520e6c6937c7c2bcb29f2ad595af822"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-key-repair.json",
+      "sha256": "64795b5044b75694dc8b3fa8d8c56500bbe84cf5b63295863bc605c6f4101016"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-lifted-never-normalized.json",
+      "sha256": "eb0d381cbe9421dd17446f7c82e0934f31fbc396e63a39d5549d4cf03f262e6e"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-member-count-one.json",
+      "sha256": "962f54099fa84d90d630eeb65085cb33c144af62ccc471a890695bad83e0dc05"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-normalize-labels.json",
+      "sha256": "0aac2b6142849009e1c5d399a6d50f2240819155c8e838eaa164e5e6987f9653"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-problems-blankets-only.json",
+      "sha256": "1235461f6fceeb5f7a86b40528a8aeecb4f0724047ec93b6d4ecd3652e1eae80"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-problems.json",
+      "sha256": "bbe9eb9c3be3248f08c9d470400cfb0d28731c5c45970abc5361ad7a1d8ffcbb"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-remaining-badges.json",
+      "sha256": "6ac1e80bbed7844becc6ad3ea5b11f9d5e3e3ea41c34d67fb2c1fd3ce089ebd3"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-remove-item.json",
+      "sha256": "d0aa9b3711eaa08e2c170dc61aa1e4c32e6f88684859f281977557d6492abe11"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-remove-member.json",
+      "sha256": "b739fa64934c4da4e0930b56f5ed7e6264f63e0e1670f8d9b232b325a24df538"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-remove-one-as-drawn.json",
+      "sha256": "7586b33e3da89006735ba81cdcf1633c8fdc1f08c3d9b5674152f2b57a3e4123"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-remove-one-member.json",
+      "sha256": "e42446f8de7bc39af05495a68e6e1d414f5551792526f01126d31df905fe314c"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-remove-one-stack.json",
+      "sha256": "0435062f9d9d395d0a65aba84128befc76ca3bd5b4a8b8a2eaafbe7d97b0a5fa"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-resin-credit.json",
+      "sha256": "dbbdb22511aa9cd4ef5b7f67a80ef7f914d5a622414c5780e97dff0c6e3ce748"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-save-new.json",
+      "sha256": "870bef7969102dfa4a86ef6b17cd499951f1e88b67fbaa5708c008abca1cf31b"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-save-unchanged.json",
+      "sha256": "f7a1f92791697a4db561f112a13374445b24c7abf0198f76d43d20e7837fb01d"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-stack-cluster.json",
+      "sha256": "ffee0ac67ff93b5fb35edf0669377a70d7936a2956d111cb09ba8dcd5647f20a"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-stack-concrete.json",
+      "sha256": "4371eb3db148ef234e8ee9b7efb4cd96763664f4164f8ade8c1ee4ed2f8b02a3"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-stack-member.json",
+      "sha256": "9d6ed8c44dbb1c7e7a7ef8c05e2148ce5972408ed020b4c8267db84f1bce2cea"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-stack-total-grow-copy-floor.json",
+      "sha256": "47eb2eb017fed59619bf96284a075e4ed5b068102d5d0017542c8208ecb88709"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-stack-total.json",
+      "sha256": "4c7be852f656b805f2ca1ddae326e5cb0661317b8cd32cd035f72ee284c74299"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-stack-wildcard.json",
+      "sha256": "c03d2ea3523ba30ae74459aaa0037ffdc4d7cf3de6dde4d80328051de5b3d9c9"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-toggle-levels-copy-floor.json",
+      "sha256": "953ee8e2ac93d1df0807bc7d87fa9abe14ab8a4b9d7ce0b81a7f2534fbf52ed2"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-toggle-levels-off-copy-floor.json",
+      "sha256": "bbd637d3657e5891811bd4d399117250436afb5b6519de847b523c03bd48326f"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-toggle-levels.json",
+      "sha256": "bbe5d59166af0ad5a07217079e7aafe57deb45d9d9823764f98aadd5c4f70207"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-tour.json",
+      "sha256": "cd2e33841e352a5429fdda865ece1a6375e78f3d5de3a4713e3c7ce2d5b35f18"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-unreadable-row-labels.json",
+      "sha256": "40b0543f101360112d225f44cca5e7d1121988b69b05e39dee64f6103e943e66"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-unreadable-row-removed.json",
+      "sha256": "f500c991e2065414ca69e6090c7fd9a52e8da922adc600d69a5a1ba6b6f9edeb"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/board-unreadable-row.json",
+      "sha256": "c63196f579271c794b033fe9e59e75d85df45052f57dbe1bfd2031ab3d7ca1f1"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-change-count.json",
+      "sha256": "20b9d90707d8ea2b128dc2875d9d47bf6c57d75f2e33f8d141c24cc2c11a53a5"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-change-effect.json",
+      "sha256": "ad249a0e447cdb3fd07a607289cd988eeabf4063db0fe541709ffb6dc2b23b5d"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-change-item.json",
+      "sha256": "4ea5b56ac7c24abc6bc43a8217ff24195d124a89532245edcf063f25ae470579"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-error-draft.json",
+      "sha256": "716b47d64f1661d991625e832ea491f069a32e2370730e3541baaef634dd63eb"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-error-unreadable-row.json",
+      "sha256": "ac52b6c1b4a340a3f4725467f07a00427087cdceb3f4f6ef7aaf3451b938d1f5"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-open-blanket.json",
+      "sha256": "25fd218ea3e414df922fa96745d4def24e44509242f12216130a984ffa0e5fb7"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-open-member.json",
+      "sha256": "f602f6bebb8e5c5c59a32b003a31b126fb1a6b4fc1a4a33fb40d76ab5944359f"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-open-new.json",
+      "sha256": "00b205ccd57281a0a61ab848ecee4f435a9abca5dd73e8c220e4a61c1b351bc4"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-open-row.json",
+      "sha256": "a51e2df935fd6cea1bb71a650c07ae3ed83ab84531eb40675c1c0df6d9e564e9"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-resin-amount-invalid.json",
+      "sha256": "36ae46db6772e757576771d30c35b3e1eb8ed1e0005a6bb8016ebe4a03502dd5"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-resin-mage-wand.json",
+      "sha256": "1f3ce6c3f1293ff0d9dab2cc4b00b67bac699619db6e4e56056dee030577fdce"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-resin-open-new.json",
+      "sha256": "6697cf96db92b6006d95090832dca812f95352b4c5ddb0a59b97be418b0eeaaf"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-resin-open.json",
+      "sha256": "763b7c3bf512e6daa638dc736e875171455c69492374bf1f36b426dcc462dd86"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-resin-pick.json",
+      "sha256": "425a04513f1300f01b2540a6c32fbc4765babbbd6da8ba7e7966fb142cfc2d0c"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-resin-save-clear.json",
+      "sha256": "55f3ba848af36f09be0f379a7144cfe7f5e9fa6e127ca76e22d61d588a290c91"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-resin-save-set.json",
+      "sha256": "616b030b23205d30a3c0313345632832909a7ff0707558882c38e3ae24739626"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-resin-save-untouched.json",
+      "sha256": "f319a5510c69c00bae669a37856ff93ef1f702f776e0e3daaca2ea53d806be33"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-save-member.json",
+      "sha256": "ac5610604aa2d024ac72a4a8317fa387b246bd7818577538e8d15bf58a2bc4da"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-save-refused.json",
+      "sha256": "378600dbc6dc5fc55b96b336e47cfbd2f065f4f0caf13f6e79f907b1bec8a18b"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-save-untouched-repairs.json",
+      "sha256": "db2179860746c141593e3d50c00b1572e470b9b80dc35bd319fc25a8626165ac"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-save-untouched.json",
+      "sha256": "ccdf4f40cccad2c1040cffc82f940e2edd7f6fd54582e75e56662d3033eca595"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/editor/editor-save.json",
+      "sha256": "e0566df550bc964373ad9ecfafc38292cb5b24a74c1b632c1ba8496c77831cc7"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/main-floors-v4.0.2.json",
+      "sha256": "b7640db9702c2919090c7fb7a5ad351af9cd4dbd1dc42ae028a615212857ab54"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/map-contents.json",
+      "sha256": "fe49f89dd13409352754e5bf85cc0ac87edaeffa71217c9d5cb5f0037eeb8c24"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/probability-heldout.json",
+      "sha256": "fda19876cbf5ef154b300b3397f32ce1e0754b44548726952ae9bde4227aa90e"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/probability-overnight.json",
+      "sha256": "6ce030db785e7018f55386b7e5ca1fc04c441bd57da760d6e4ce4958b462137f"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/probability-random-heldout.json",
+      "sha256": "9a584efeddd8a97cf0054e0a98cf75b36a31138e0f4badfb87cb78a037fb8c46"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/probability-source-counts.json",
+      "sha256": "5c08d0573cd869a79afd4f4a7a95d2ed207d6b3b81e1a9f1bd6c3321525da266"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/probability-wand-profiles.json",
+      "sha256": "7d6a65dbc9e367507227e872df924926990c0fad7d1d52151ebb5d5e04b98ece"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/probability-wand-random.json",
+      "sha256": "1d78308b8b97d94d6b989b4f676c11b2a28090dc6bd98780e627222d7cf47097"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/probability-wand-rewards.json",
+      "sha256": "5ac493a7453c52d68c83cf5831bdb295a279cc0293be0749274136f4019a1e75"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/probability-wand-sweep.json",
+      "sha256": "6490e70d0898932113cc2c63ed59f06b597b1889ad379e860bb7b7beb2052d11"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/refinement-trinket-override.json",
+      "sha256": "097a4f69848992576bdbede021802deb55b50028f2dcb80e96d8bc57e4a64f9b"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/resin-blanket-floor.json",
+      "sha256": "a2468ad6021b813a0e1c534e5ea825932c720da18610168e5c24f282dfeb9542"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/resin-preparation.json",
+      "sha256": "6a00476bfa4ddb47a4370e3ebda15630e39244971435212450709c5dc13b0a03"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/results-export-v1-weapon-categories.json",
+      "sha256": "79547a05326d66a710d5ff5e5769465355f5a38673bc19da28b361969a0528bd"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/results-export-v1.json",
+      "sha256": "5015bb4c6792ceb4f3657e9df221aceba8f3b19c40bd266cf25ca070530181ce"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/results-export-wandmaker-quest.json",
+      "sha256": "41cf00ae5ddb0952036e2fddaf0b943cc1f82734ec7f18feeea4afd90a70e1a8"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/selected_trinkets.md",
+      "sha256": "170511e466b5ad186dfec0437be98698d30327976d5fabe275e6f8ffe71f346a"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/selected_trinkets_v4.0.2.json",
+      "sha256": "406ea3488eca3dff16bf070c6ed54bd015cd1817f07ad7853438c725ae63008e"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/v4-artifact-decks.txt",
+      "sha256": "d6882504221571e96374398976a55a3ce0a531be811ccd45f931b688e662a6dd"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/v4.0.2-artifacts.txt",
+      "sha256": "98d788902970b59252023d740c60031af4af8f8a89ae8c2e60f3f91ea67d2b41"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/v4.0.2-mob-retry-equipment.txt",
+      "sha256": "406bea78d6268072e9f4447f56fd605e509fe1cea8c136b76ac41cd6866bf972"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/vault-doors.json",
+      "sha256": "77509e322c8567a2374a761b3ada79f95b2f882a1c7e72868d4bd8c8b8b6fbce"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/vault-flames.json",
+      "sha256": "61296282b4c88ee862676087abe170f239f7149fb85d78dad5151992990b9d24"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/fixtures/vault-sentries.json",
+      "sha256": "e4c100b09c548c7f8677048de0876d85032bec9f3d0622580269c8447f1b3eb8"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/floor_requirements.rs",
+      "sha256": "4b71982a72f932f966d54286f02e5ff3938cf1245c079fd1bd1f170531d4c0d6"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/impossible_trinkets.rs",
+      "sha256": "e102c5649664ff538d2508cef302834a022b3af398f26ec8d907d6c1bc6d618f"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/level_maps.rs",
+      "sha256": "181cc0f7f9e3a12b8042018b3be0fea85ef4824880d99f646fa4541564763cf4"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/map_contents.rs",
+      "sha256": "9797e2e9263df4dd13cb5626016ca39155c8dd76e3f68059ee0903021412c58d"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/map_sentries.rs",
+      "sha256": "8c637ea61afa8d88dd4daebf4c51f33517b587cb9fea5e9faa47f9cb70010d04"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/probability_calibration.rs",
+      "sha256": "547eb9b7539efc3645a8e766914ce6d6d148f5ed53ef7e8f510257be9dc3b68a"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/probability_fuzz.rs",
+      "sha256": "f38a7989cc4cab560f57bf75b27d146010d762480c899b8299fa2219fecb7075"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/probability_tables.rs",
+      "sha256": "2326654a3f72a59d43b4f13f4d6da08f17d0cb0cf7f872af3f47de545693b3e1"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/probability_wand_repeats.rs",
+      "sha256": "5e11d3d65ae7736baeb14f9febef7930238e413f43391d4533348d229857c615"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/resin_blanket_probability.rs",
+      "sha256": "41c9edf8dec4d9cc4f4201737538ba5965353017d54e4109a72fd15c66b60bc5"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/resin_blankets.rs",
+      "sha256": "e88e1d16ec18fe0336564b52ad90d268708d95f518e14bfb779f5d5f9d2b1a30"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/resin_floor_probability.rs",
+      "sha256": "e05f27219c2b4761cf17b2724be2fbca6aa1eecfc11bdbe26c8be1f3fe2e7257"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/resin_preparation.rs",
+      "sha256": "eeac931352254d727f2c0c43e5d409bf6f2941145e3ecdc16e43d34ac714749c"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/resin_probability.rs",
+      "sha256": "d8627349c069ecfe5db5f3db05ab3ef2627ace4813bcd5a6eb0b0d4e71b9254b"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/selected_probability.rs",
+      "sha256": "180ab93e173c4d20a49cf2e5b774c9ebdf7db51077a6e077254ef9fbe01eb7ac"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/selected_trinket_fixtures.rs",
+      "sha256": "0acec469666ead06dead7a8bc58b52202d306df938f71e02b63b546a96ea37b0"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/thrown_differential.rs",
+      "sha256": "2a13bc7320ebd21ebd6032d2e2526d7725f33f169ac2b9404f4ca87c4a599f30"
+    },
+    {
+      "path": "crates/seedfinder-core/tests/trinket_transmutations.rs",
+      "sha256": "eb44fd837225417623a124e8afe40cc17f08847d8c14edce5694b893c2ee0d0d"
+    },
+    {
+      "path": "rust-runtime/COPYRIGHT-library.html",
+      "sha256": "5647be074c8edf7339fd863055923a8fc80bc5610a8d4661ec3b767b9d392c27"
+    },
+    {
+      "path": "rust-runtime/licenses/Apache-2.0.txt",
+      "sha256": "074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+    },
+    {
+      "path": "rust-runtime/licenses/BSD-2-Clause.txt",
+      "sha256": "f32fb3b417a194167cfad068223fc975ba96c5960513a10f66a3c28720aec1df"
+    },
+    {
+      "path": "rust-runtime/licenses/CC-BY-SA-4.0.txt",
+      "sha256": "23ee78c8bae49cf08ea2f0c84945c66b987ebe4520881fb51b3dad4fb43d07c2"
+    },
+    {
+      "path": "rust-runtime/licenses/GCC-exception-3.1.txt",
+      "sha256": "a3966c9410ef94a1efbfa9ec04e9c1994026a70623fbf0885ce36737bfba3b54"
+    },
+    {
+      "path": "rust-runtime/licenses/GPL-2.0-only.txt",
+      "sha256": "54b212ba1f97f6948fa5486239ab505dd820b02e50cbfd296b4062c8609a70af"
+    },
+    {
+      "path": "rust-runtime/licenses/GPL-3.0-or-later.txt",
+      "sha256": "05315fce6c35f79b8a35454828995fa26336f235895ac64557abc028f4ffcea2"
+    },
+    {
+      "path": "rust-runtime/licenses/ISC.txt",
+      "sha256": "0ff61769b238634e042ab759dddfd104a8e69d091e3600ae3410e401a6164381"
+    },
+    {
+      "path": "rust-runtime/licenses/LLVM-exception.txt",
+      "sha256": "e34c58338bd89d43e709e226610d8f32b3e3c47f4ad9a99a8dc1d4ac7842488e"
+    },
+    {
+      "path": "rust-runtime/licenses/MIT.txt",
+      "sha256": "b85dcd3e453d05982552c52b5fc9e0bdd6d23c6f8e844b984a88af32570b0cc0"
+    },
+    {
+      "path": "rust-runtime/licenses/NCSA.txt",
+      "sha256": "39cb0234065c92b9e6cee3830cbb52b1aa289aa8fe9ba2e66730fec5cf05c630"
+    },
+    {
+      "path": "rust-runtime/licenses/OFL-1.1.txt",
+      "sha256": "8eea8287e5876b539670cadb82e99f9a7afddec6f6730811be1daf25d2e9bcfd"
+    },
+    {
+      "path": "rust-runtime/licenses/Unicode-3.0.txt",
+      "sha256": "f5062c9a188d81dfe66b56db4182dcf9e4b17c0d9b0d311a8e20b3a1b075c443"
+    }
+  ],
+  "profile": "canonical-warrior-no-challenges-no-trinket",
+  "maximum_depth": 24,
+  "maximum_memory_bytes": 134217728,
+  "build": "cargo build --release --locked -p denghuo-forecast --target wasm32-unknown-unknown; CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS=-Clink-arg=--max-memory=134217728"
+}

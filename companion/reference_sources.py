@@ -19,6 +19,11 @@ def provenance(values,identity,owner):
             related.extend('com.shatteredpixel.shatteredpixeldungeon.'+tail for tail in ('items.dewdrop','actors.buffs.barrier'))
         if identity.startswith('items.food.'):
             related.append('com.shatteredpixel.shatteredpixeldungeon.actors.buffs.hunger')
+        if identity=='items.artifacts.sandalsofnature':
+            related.append('com.shatteredpixel.shatteredpixeldungeon.levels.features.highgrass')
+        if identity in ('actors.mobs.warlock','actors.mobs.dwarfking$dkwarlock','actors.mobs.scorpio','actors.mobs.spinner'):
+            buff='degrade' if 'warlock' in identity else 'cripple' if identity.endswith('scorpio') else 'poison'
+            related.append('com.shatteredpixel.shatteredpixeldungeon.actors.buffs.'+buff)
         if identity=='items.scrolls.scrollofupgrade':
             related.extend('com.shatteredpixel.shatteredpixeldungeon.'+tail for tail in
                            ('items.weapon.weapon','items.weapon.missiles.missileweapon','items.armor.armor','items.wands.wand','items.rings.ring'))

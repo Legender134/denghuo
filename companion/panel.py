@@ -4,7 +4,7 @@ import threading
 import time
 import webbrowser
 
-PAGES = {'overview','inventory','library','backups','manual','settings','workspace','help','play-settings','alchemy','migration'}
+PAGES = {'overview','inventory','scouting','library','backups','manual','settings','workspace','help','play-settings','alchemy','migration'}
 
 
 class BrowserOpenError(ValueError):

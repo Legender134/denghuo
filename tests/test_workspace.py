@@ -19,6 +19,47 @@ from companion.values_resources import water_drink
 
 
 class WorkspaceTests(unittest.TestCase):
+    def test_separate_sessions_cannot_acknowledge_overlapping_preference_writes(self):
+        other = Session(self.session.config_path)
+        first, second = self.session.play_preferences, other.play_preferences
+        entered, release = threading.Event(), threading.Event()
+        original_replace = Path.replace
+        receipts, errors = [], []
+        def replace(path, target):
+            if Path(target) == first.path:
+                entered.set()
+                if not release.wait(5):
+                    raise RuntimeError('test replacement release timed out')
+            return original_replace(path, target)
+        def save():
+            try:
+                receipts.append(self.session.update_play_settings({'settings': {'enabled': False}, 'revision': 0}))
+            except Exception as exc:
+                errors.append(exc)
+        worker = threading.Thread(target=save)
+        with patch.object(Path, 'replace', replace):
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                with self.assertRaisesRegex(ValueError, '另一个助手'):
+                    other.update_play_settings({'settings': {'font_scale': 1.5}, 'revision': 0})
+                self.assertEqual(second.generation, 0)
+            finally:
+                release.set()
+                worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(receipts), 1)
+        self.assertFalse(receipts[0]['settings']['enabled'])
+        with self.assertRaisesRegex(ValueError, '文件刚被修改'):
+            other.update_play_settings({'settings': {'font_scale': 1.5}, 'revision': 0})
+        from companion.workspace_service import reload_play
+        reload_play(other, {'revision': 0})
+        saved = other.update_play_settings({'settings': {'font_scale': 1.5}, 'revision': 1})
+        self.assertFalse(saved['settings']['enabled'])
+        self.assertEqual(saved['settings']['font_scale'], 1.5)
+        other.stop.set()
+
     def test_connection_receipt_keeps_its_normalized_values_after_a_later_write(self):
         original_refresh = self.session.refresh
         competing = False

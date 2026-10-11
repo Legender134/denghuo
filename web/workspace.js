@@ -284,7 +284,7 @@ function restoreNamedForm(selector,raw){
   const used={};for(const input of controls){const key=input.id||(input.dataset.binding?'binding.'+input.dataset.binding:input.name),index=used[key]||0;used[key]=index+1;const cell=raw[key]?.[index];if(cell){input.value=cell.value;input.checked=cell.checked;}}
 }
 let settingsRecoveryChoice=null;
-const settingsRecoveryLabels={'save-root':'存档目录','settings-slot':'槽位','source-mode':'局势来源','startup-surface':'启动入口','always-top':'管理窗口置顶',reveal:'地图显示','stop-at':'结束时间','play-enabled':'启用游玩显示','play-alerts':'新风险提醒','play-anchor':'显示角落','play-offset_x':'横向边距','play-offset_y':'纵向边距','play-font_scale':'字号倍率','play-opacity':'背景不透明度','play-notice_seconds':'短提醒时长'};
+const settingsRecoveryLabels={'save-root':'存档目录','settings-slot':'槽位','source-mode':'局势来源','startup-surface':'启动入口','always-top':'管理窗口置顶',reveal:'显示未鉴定物品的真实身份和数值（剧透模式）','stop-at':'结束时间','play-enabled':'启用游玩显示','play-alerts':'新风险提醒','play-anchor':'显示角落','play-offset_x':'横向边距','play-offset_y':'纵向边距','play-font_scale':'字号倍率','play-opacity':'背景不透明度','play-notice_seconds':'短提醒时长'};
 function settingRecoveryLabel(key){return settingsRecoveryLabels[key]||(key.startsWith('binding.')?(bindingLabels[key.slice(8)]||key.slice(8))+'快捷键':key);}
 function settingsRecoveryDisplay(value){return typeof value==='boolean'?(value?'启用':'关闭'):String(value);}
 function chooseSettingsRecovery(rows,legacy){

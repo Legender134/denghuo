@@ -354,7 +354,9 @@ class PlayerValuesTests(unittest.TestCase):
         rat=self.detail('actors.mobs.rat')
         rat_values={v['label']:v for b in rat['blocks'] for v in b.get('values',[])}
         self.assertEqual(rat_values['基础伤害范围']['unit'],'HP')
-        self.assertEqual((rat_values['通用随机掉落率']['value'],rat_values['通用随机掉落率']['unit']),('0','%'))
+        drops=next(b for b in rat['blocks'] if b['title']=='掉落物、数量与概率')
+        self.assertEqual(drops['rows'],[])
+        self.assertIn('没有常规自身物品掉落',drops['note'])
         aquatic=self.metrics('items.potions.elixirs.elixirofaquaticrejuvenation$aquahealing',max_hp=65,hp=60)
         self.assertEqual(aquatic['水中每回合实际恢复'],'1–2')
         self.assertEqual(aquatic['向上取整概率'],'30')

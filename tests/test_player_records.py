@@ -21,11 +21,51 @@ class PlayerRecordsTests(unittest.TestCase):
         return {'__className': PREFIX + 'journal.Notes$CustomRecord', 'type': 'SPECIFIC_ITEM',
                 'title': title, 'body': body, **fields}
 
-    def session(self, game):
-        snapshot = {'data': analyze(game, self.catalog), 'settings': {'mode': 'save', 'save_root': '/synthetic'},
+    def session(self, game, reveal=False):
+        snapshot = {'data': analyze(game, self.catalog, reveal=reveal), 'settings': {'mode': 'save', 'save_root': '/synthetic'},
                     'started': 1, 'active_slot': 1, 'revision': 1, 'modified': 1}
         knowledge = SimpleNamespace(generation=0, status=lambda: {'favorites': [], 'recent': [], 'plans': []})
         return SimpleNamespace(catalog=self.catalog, knowledge=knowledge, snapshot=lambda: snapshot), snapshot
+
+    def test_explicit_reveal_opens_item_calculation_without_changing_game_knowledge(self):
+        game=self.game()
+        game['hero']['inventory']=[{'__className':PREFIX+'items.rings.RingOfMight','quantity':1,
+            'level':3,'levelKnown':False,'cursedKnown':False,'cursed':False}]
+        original=copy.deepcopy(game)
+        hidden,off=self.session(game)
+        self.assertFalse(off['data']['items'][0]['identity_visible'])
+        self.assertNotIn('items.rings.ringofmight',[row['id'] for row in workspace_status(hidden)['current']])
+        shown,on=self.session(game,reveal=True)
+        item=on['data']['items'][0]
+        self.assertFalse(item['known'])
+        self.assertFalse(item['game_level_known'])
+        self.assertTrue(item['revealed'])
+        self.assertTrue(item['identity_visible'])
+        self.assertEqual(item['level'],3)
+        row=next(row for row in workspace_status(shown)['current'] if row['id']=='items.rings.ringofmight')
+        self.assertEqual(row['lookup_context']['params']['level'],3)
+        self.assertEqual(row['lookup_context']['level_origin'],'revealed')
+        self.assertIn('主动揭示',row['lookup_context']['field_origins']['level'])
+        from companion.rules import NumericRules
+        from companion.values import PlayerValues
+        result=PlayerValues(NumericRules(self.catalog)).detail(row['id'],row['lookup_context']['params'])
+        self.assertTrue(result['blocks'])
+        self.assertEqual(next(field['value'] for field in result['inputs'] if field['key']=='level'),3)
+        self.assertEqual(game,original)
+        self.assertEqual(self.session(game)[1]['data']['items'][0]['key'],'items.rings.ring')
+
+    def test_reveal_does_not_call_unknown_consumables_identified_or_import_them_as_known_resources(self):
+        game=self.game()
+        game['hero'].update(HP=3,HT=40)
+        game['hero']['inventory']=[{'__className':PREFIX+'items.potions.PotionOfHealing','quantity':1},
+            {'__className':PREFIX+'items.potions.PotionOfStrength','quantity':1},
+            {'__className':PREFIX+'items.scrolls.ScrollOfUpgrade','quantity':1}]
+        shown=analyze(game,self.catalog,reveal=True)
+        self.assertTrue(all(row['revealed'] and not row['known'] for row in shown['items']))
+        self.assertNotIn('strength_potion',[row['id'] for row in shown['tips']])
+        self.assertNotIn('upgrade_scroll',[row['id'] for row in shown['tips']])
+        critical=next(row for row in shown['tips'] if row['id']=='critical_hp')
+        self.assertNotIn('有已鉴定的治疗药剂',critical['body'])
 
     def test_exact_item_notes_distinguish_same_grade_and_survive_workspace_context(self):
         game = self.game()

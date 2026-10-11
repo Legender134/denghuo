@@ -23,7 +23,7 @@ def workspace_status(session):
     current = []
     data = {} if snap.get('error') else snap.get('data') or {}
     for item in data.get('items', []):
-        if not item.get('known') or item.get('available') is not True or item.get('key') not in entries:
+        if not (item.get('known') or item.get('revealed') is True) or item.get('available') is not True or item.get('key') not in entries:
             continue
         params = dict(context)
         if item.get('level') is not None:
@@ -35,7 +35,8 @@ def workspace_status(session):
         specific = skill_context(snap, item['key'])
         params.update(specific.get('params', {}))
         level_applies = item.get('level_applicable', item['key'].startswith(('items.weapon.', 'items.armor.', 'items.wands.', 'items.rings.', 'items.artifacts.', 'items.trinkets.')))
-        origin = 'not_applicable' if not level_applies else 'known' if item.get('level') is not None else 'unknown'
+        origin = ('not_applicable' if not level_applies else 'unknown' if item.get('level') is None else
+                  'revealed' if item.get('revealed') and not item.get('game_level_known') else 'known')
         current.append({**entries[item['key']], 'lookup_label': item['name'] + ' · ' + provenance['label'],
                         'lookup_context': {'params': params, 'stamp': stamp,
                                            'level_origin': origin, 'level_unknown': origin == 'unknown', 'level_applicable': level_applies,
@@ -43,9 +44,16 @@ def workspace_status(session):
                                            'source_label': provenance['label'],
                                            'conditions': ('角色总力量已按公开条件计算；其他加成仍需核对' if data.get('character_scene', {}).get('strength', {}).get('usable') else '基础力量参考；总力量条件尚未确认，请核对戒指、天赋与临时状态')}})
         base = current[-1]
+        if item.get('revealed'):
+            base['lookup_label'] += ' · 已主动揭示'
+            base['lookup_context']['conditions'] += '；已主动揭示存档中的物品资料，未改变游戏鉴定状态'
         if specific:
             base['lookup_context']['field_origins'] = specific.get('field_origins', {})
             base['lookup_context']['conditions'] += '；' + specific.get('conditions', '')
+        if item.get('revealed'):
+            origins=base['lookup_context'].setdefault('field_origins', {})
+            if origin=='revealed': origins['level']='已主动揭示的存档等级'
+            if 'tier' in params: origins['tier']='存档物品阶数 · 主动揭示模式'
         related = [{**row, 'lookup_label': row['name'] + ' · ' + provenance['label'],
                     'lookup_context': {**base['lookup_context'], 'params': dict(params), 'ignore_drafts': True, 'capture_context': True,
                                        'conditions': row['conditions']}} for row in item.get('related', [])]

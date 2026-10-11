@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 import json
 import hashlib
 import logging
+import os
 from pathlib import Path
 from queue import Queue
 import threading
@@ -164,6 +165,7 @@ class Session:
         self.settings_revision = uuid.uuid4().hex
         self.config_error = ""
         self.configuration_notice = ""
+        self._settings_disk_fingerprint = None
         try:
             count = len(self.exit_recovery.list())
             self.draft_recovery_notice = (f'找到 {count} 份之前或其他会话自动保留的未完成输入；'
@@ -216,6 +218,7 @@ class Session:
             # An offline/moved saved directory must never select another run.
             with self.config_path.open("rb") as stream:
                 raw = stream.read(65537)
+            self._settings_disk_fingerprint = self._settings_fingerprint(raw)
             if len(raw) > 65536:
                 raise ValueError("设置文件过大")
             self.settings.update(validate_settings(json.loads(raw.decode("utf-8-sig")), require_existing_root=False))
@@ -647,6 +650,44 @@ class Session:
         return message
 
     def _persist_settings(self, updated, context, publish, *, recovery=False):
+        with self._settings_storage_lock():
+            self._persist_settings_locked(updated, context, publish, recovery=recovery)
+
+    @staticmethod
+    def _settings_fingerprint(raw):
+        # Valid configuration bytes are fully covered. Oversized invalid files
+        # retain their bounded startup prefix; explicit repair backs up the full file.
+        return hashlib.sha256(raw[:65537]).digest() if raw is not None else None
+
+    @contextmanager
+    def _settings_storage_lock(self):
+        from .backups import unlinked
+        unlinked(self.config_path.parent).mkdir(exist_ok=True, parents=True)
+        target = self.config_path.with_name(self.config_path.name + '.lock')
+        with unlinked(target).open('a+b') as stream:
+            try:
+                stream.seek(0)
+                if os.name == 'nt':
+                    import msvcrt
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise SettingsConflict('另一个助手正在保存或重新读取连接设置，请稍后重试；当前草稿仍保留。') from exc
+            try:
+                if stream.seek(0, 2) == 0:
+                    stream.write(b'\0')
+                    stream.flush()
+                yield
+            finally:
+                stream.seek(0)
+                if os.name == 'nt':
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+    def _persist_settings_locked(self, updated, context, publish, *, recovery=False):
         """Prepare outside the state lock and roll back only bytes owned by this write."""
         from .backups import unlinked
         def read():
@@ -669,6 +710,8 @@ class Session:
         self._check_settings_commit(context)
         unlinked(self.config_path.parent).mkdir(exist_ok=True, parents=True)
         original = read()
+        if self._settings_fingerprint(original) != self._settings_disk_fingerprint:
+            raise SettingsConflict('磁盘上的连接设置已被另一个助手或程序更新，尚未覆盖；草稿仍保留，请点击「重新载入已保存设置」后核对。')
         submitted = json.dumps(updated, ensure_ascii=False, indent=2).encode('utf-8')
         temporary = self.config_path.with_name(f'{self.config_path.name}.{uuid.uuid4().hex}.pending')
         with unlinked(temporary).open('xb') as stream:
@@ -688,6 +731,7 @@ class Session:
             with self.lock:
                 self._check_settings_commit(context)
                 publish(backup)
+                self._settings_disk_fingerprint = self._settings_fingerprint(submitted)
         except Exception as exc:
             try:
                 current = read()
@@ -1071,6 +1115,58 @@ class Session:
             receipt = self._update_settings(clean, expected_revision=expected_revision)
         self.refresh()
         return receipt if return_receipt else receipt['settings_revision']
+
+    def reload_settings(self, *, expected_revision=None):
+        """Explicitly adopt saved settings, without writing or applying a form draft."""
+        from .backups import unlinked
+        from .backup_destination import manager_for
+        with self._backup_io(), self._settings_storage_lock():
+            with self.lock:
+                context = self._backup_context_state()
+                if expected_revision is not None and expected_revision != self.settings_revision:
+                    raise SettingsConflict('读取期间连接设置已变化，草稿仍保留，请重新读取并核对。')
+            self._check_settings_commit(context)
+            def read():
+                try:
+                    with unlinked(self.config_path).open('rb') as stream:
+                        return stream.read(65537)
+                except FileNotFoundError:
+                    return None
+            raw = read()
+            if raw is None and self._settings_disk_fingerprint is not None:
+                raise SettingsConflict('已保存的配置文件被移除，尚未改用默认设置；请核对原配置。')
+            try:
+                if raw is not None and len(raw) > 65536:
+                    raise ValueError('设置文件过大')
+                updated = {**DEFAULTS, **validate_settings(json.loads(raw.decode('utf-8-sig')),
+                    require_existing_root=False)} if raw is not None else dict(DEFAULTS)
+            except (ValueError, RecursionError) as exc:
+                raise ValueError('磁盘上的连接设置无法读取，当前草稿和原配置仍保留；请核对配置文件后重试。') from exc
+            updated['mode'] = 'save'
+            if updated['stop_at'] and datetime.fromisoformat(updated['stop_at']).timestamp() <= time.time():
+                updated['stop_at'] = ''
+            manager = manager_for(self.config_path, updated['backup_root'])
+            if read() != raw:
+                raise SettingsConflict('配置文件在读取期间变化，尚未载入；请重试并核对。')
+            with self.lock:
+                self._check_settings_commit(context)
+                self.settings = updated
+                self._settings_disk_fingerprint = self._settings_fingerprint(raw)
+                self.settings_revision = uuid.uuid4().hex
+                self.backups = manager
+                self.backup_context = uuid.uuid4().hex
+                self.config_error = self.error = ''
+                self.active_slot = None
+                self.last_valid_time = 0
+                self._missing_active_since = None
+                self.data = None
+                self.modified = 0
+                self.history = []
+                self._run_identity = self._run_duration = self._history_state = None
+                self._fingerprint = self._backup_health_cache = None
+                receipt = {'ok': True, 'settings': dict(self.settings), 'settings_revision': self.settings_revision}
+        self.refresh()
+        return receipt
 
     def _update_settings(self, clean, *, expected_revision=None, manual=None):
         with self.lock:

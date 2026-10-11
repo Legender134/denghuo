@@ -189,8 +189,16 @@ def migrate_data(destination, sources):
     from .backups import unlinked
     from .service import validate_settings
     destination = unlinked(Path(destination))
+    startup_log = retained_log_directory = destination_identity = None
     if destination.exists():
-        return None
+        # A failed first migration can create only this diagnostic file. It is
+        # not an initialized user library and must not suppress the retry.
+        if not destination.is_dir() or sorted(path.name for path in destination.iterdir()) != ['startup-error.log']:
+            return None
+        startup_log = _migration_digest(unlinked(destination/'startup-error.log'), 1024*1024)
+        attrs = destination.stat()
+        destination_identity = attrs.st_dev, attrs.st_ino
+        retained_log_directory = unlinked(destination.with_name(destination.name+'.startup-log-'+uuid.uuid4().hex))
     for source in sources:
         source = unlinked(Path(source))
         settings = unlinked(source/'settings.json')
@@ -361,6 +369,8 @@ def migrate_data(destination, sources):
                 pending_recovery.append(relative.as_posix())
         if recognition == 'verified-data' and _recognise_default_data(temporary) != 'verified-data':
             raise ValueError('迁移后的资料无法再次核对，旧原件仍保留，尚未迁移')
+        if startup_log is not None:
+            copy_file(destination/'startup-error.log', temporary/'startup-error.log', 1024*1024, expected=startup_log)
         report = {'source':str(source), 'copied_files':count, 'copied_bytes':total,
                   'copied_preferences':carried_preferences, 'original_preserved':True,
                   'copied_knowledge_generations':copied_knowledge,
@@ -371,6 +381,7 @@ def migrate_data(destination, sources):
                   'copied_exit_recovery': copied_recovery, 'unavailable_exit_recovery': unavailable_recovery,
                   'copied_preserved_recovery': copied_preserved,
                   'unavailable_preserved_recovery': unavailable_preserved,
+                  **({'preserved_startup_log_directory':str(retained_log_directory)} if startup_log is not None else {}),
                   'draft_notice': ('有草稿或恢复原件无法核对，未计为可载入的迁移；原始字节已保留，'
                                    '请按迁移记录中的位置核对并明确处理；未计算或应用。'
                                    if uncarried_drafts or unavailable_recovery or unavailable_preserved
@@ -384,8 +395,26 @@ def migrate_data(destination, sources):
                 or _backup_migration_files(source)!=backup_paths):
             raise ValueError('旧恢复资料在迁移期间已变化，原件仍保留，尚未迁移')
         unlinked(destination)
-        if destination.exists():
-            raise ValueError('目的资料目录已建立，原有资料仍保留，尚未迁移')
-        temporary.replace(destination)
+        if startup_log is None:
+            if destination.exists():
+                raise ValueError('目的资料目录已建立，原有资料仍保留，尚未迁移')
+            temporary.replace(destination)
+        else:
+            attrs = destination.stat()
+            if ((attrs.st_dev, attrs.st_ino) != destination_identity
+                    or sorted(path.name for path in destination.iterdir()) != ['startup-error.log']
+                    or _migration_digest(unlinked(destination/'startup-error.log'),1024*1024) != startup_log
+                    or retained_log_directory.exists()):
+                raise ValueError('启动错误记录目录在迁移期间已变化，原件仍保留，尚未迁移')
+            destination.rename(retained_log_directory)
+            try:
+                if (sorted(path.name for path in retained_log_directory.iterdir()) != ['startup-error.log']
+                        or _migration_digest(unlinked(retained_log_directory/'startup-error.log'),1024*1024) != startup_log):
+                    raise ValueError('启动错误记录目录在迁移期间已变化，尚未迁移')
+                temporary.replace(destination)
+            except Exception:
+                if not destination.exists():
+                    retained_log_directory.rename(destination)
+                raise
         return report
     return None

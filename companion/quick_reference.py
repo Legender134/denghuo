@@ -64,7 +64,7 @@ def peek_reference(session, snap, pinned=None):
             lines.append('用户记录：' + (item['user_note']['title'] or item['user_note']['body']))
         if item.get('available') is False:
             lines.append('遗落行囊：未确认可用，以下仅作基础参考。')
-        if not item['known']:
+        if not (item['known'] or item.get('revealed') is True):
             lines.append('尚未鉴定，隐藏效果与真实身份不展开。')
         else:
             from .values_decisions import equipment_metrics
@@ -85,6 +85,8 @@ def peek_reference(session, snap, pinned=None):
                 strength_note = ' 基础力量低于装备基础需求；若总力量仍不足，上述基础值未计力量不足惩罚。'
             if not item.get('level_known'):
                 lines.append('等级未知：以上为+0基础参考。')
+            elif item.get('revealed'):
+                lines.append('已主动揭示存档资料；游戏鉴定状态未改变。')
             if item.get('augmentation') not in (None, 'NONE') or item.get('mastery'):
                 lines.append('有强化/精通修正：此卡只列未修正基础值。')
     if tips:

@@ -107,7 +107,7 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
     for(const key of currentParameterKeys(identity))if(key in numericalDetail.context)numericalDetail.origins[key]=key in drafts?'手填保留':heroInputOrigin(key,numericalDetail.source);
     if('level' in params)numericalDetail.origins.level=keyOrigin(levelOrigin);
     if(levelOrigin==='unknown')numericalDetail.origins.level=keyOrigin(levelOrigin);
-    if('tier' in params)numericalDetail.origins.tier=['known','unknown'].includes(levelOrigin)?'物品已知阶数':'示例 · 请核对';
+    if('tier' in params)numericalDetail.origins.tier=levelOrigin==='revealed'?'存档物品阶数 · 主动揭示模式':['known','unknown'].includes(levelOrigin)?'物品已知阶数':'示例 · 请核对';
     for(const key of Object.keys(drafts))numericalDetail.origins[key]='手填保留';
     if(skill&&!('talent' in drafts))numericalDetail.origins.talent=skill.origin;
     for(const [key,label] of Object.entries(options.fieldOrigins||{}))if(key in params&&!(key in drafts))numericalDetail.origins[key]=label;
@@ -206,7 +206,7 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
     if(focusSelector&&(document.activeElement===document.body||previousForm.contains(document.activeElement)))($(focusSelector)||$('#values-use-latest'))?.focus({preventScroll:true});
   }}
 }
-function keyOrigin(origin){return origin==='known'?'物品已知等级':origin==='unknown'?'等级未知 · +0示例':'示例';}
+function keyOrigin(origin){return origin==='known'?'物品已知等级':origin==='revealed'?'已主动揭示的存档等级':origin==='unknown'?'等级未知 · +0示例':'示例';}
 function calculationStamp(){return state?.data?{modified:state.modified,slot:state.active_slot,mode:state.settings.mode,save_root:state.settings.save_root,revision:state.revision,started:state.started}:null;}
 function refreshNumericalOrigin(){
   const d=numericalDetail,freshness=$('#values-freshness'),source=$('#values-source');
