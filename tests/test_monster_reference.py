@@ -34,11 +34,111 @@ class MonsterReferenceTests(unittest.TestCase):
             with self.subTest(identity=identity):
                 detail = self.values.detail(identity)
                 self.assertEqual(detail['blocks'][0]['title'],'常规战斗数值')
-                self.assertEqual(len(detail['blocks'][0]['values']),9)
+                self.assertEqual(len(detail['blocks'][0]['values']),10)
                 self.assertEqual(detail['blocks'][1]['title'],'掉落物、数量与概率')
                 self.assertTrue(all(r['value'] not in ('None','') for r in detail['blocks'][0]['values']))
                 self.assertTrue(any('/items/Generator.java' in r['url'] for r in detail['provenance']['links']))
                 self.assertEqual(self.values.catalog.entry_index[identity]['type_label'],'敌人')
+
+    def test_swarm_generation_changes_experience_and_drop_conditions_together(self):
+        for generation,experience in ((0,'3'),(1,'0'),(2,'0')):
+            for hero in (5,30):
+                stats=self.stats('swarm',hero_level=hero,swarm_generation=generation)
+                self.assertEqual(stats['基础经验'],experience)
+                self.assertEqual(stats['所填等级可获经验'],experience if hero==5 else '0')
+
+    def test_normal_attack_delay_has_inherited_overrides_and_non_attackers(self):
+        for name in ('monk','ripperdemon','thief','bandit','dwarfking$dkmonk'):
+            self.assertEqual(self.stats(name)['普通攻击基础耗时'],'0.5')
+        self.assertEqual(self.stats('rat')['普通攻击基础耗时'],'1')
+        self.assertIn('所持武器',self.stats('statue')['普通攻击基础耗时'])
+        for name in ('necromancer','demonspawner','yogdzewa','pylon'):
+            self.assertEqual(self.stats(name)['普通攻击基础耗时'],'不使用普通攻击')
+
+    def test_gas_volumes_and_trickster_combo_branch_probabilities(self):
+        dm={v['label']:v['value'] for b in self.detail('dm200')['blocks'] for v in b.get('values',[])}
+        self.assertEqual(dm['排气后冷却计数'],'30')
+        self.assertEqual(dm['弹道路径每格播种毒气体积'],'20')
+        self.assertEqual(dm['弹道终点另播种毒气体积'],'100')
+        def combo(before):
+            detail=self.detail('gnolltrickster',trickster_combo=before)
+            self.assertIn('trickster_combo',{r['key'] for r in detail['inputs']})
+            return next(b for b in detail['blocks'] if b['title']=='豺狼诡术师本次命中连击效果')['rows']
+        first=combo(0);self.assertEqual(sum(r[1] for r in first),100)
+        self.assertEqual([r[2] for r in first],[1]*4)
+        self.assertEqual([r[3] for r in first],['不附加中毒或点燃']*2+['中毒基础持续参数 1 回合','中毒基础持续参数 2 回合'])
+        fourth=combo(3)
+        self.assertEqual([r[3] for r in fourth],['中毒基础持续参数 2 回合','中毒基础持续参数 3 回合','点燃','点燃'])
+        self.assertEqual([r[4] for r in fourth],['中毒基础持续参数 '+str(n)+' 回合' for n in (2,3,4,5)])
+
+    def defenses(self, name):
+        return next(block for block in self.detail(name)['blocks'] if block['title']=='固有抗性、免疫与防御条件')
+
+    def test_intrinsic_property_immunities_and_effect_specific_resistance(self):
+        # Fixed Char.Property / Skeleton / DM100 / Eye / Spinner source rules.
+        skeleton=self.defenses('skeleton')
+        immune={r[0] for r in skeleton['rows'] if r[1]=='免疫此类效果'}
+        self.assertEqual(immune,{'流血','毒气','中毒'})
+        dm100={r[0]:r[1] for r in self.defenses('dm100')['rows']}
+        self.assertEqual(dm100['雷霆法杖'],'效果系数 ×0.5')
+        self.assertEqual(dm100['中毒'],'免疫此类效果')
+        self.assertNotIn('解离法杖',dm100)
+        eye={r[0]:r[1] for r in self.defenses('eye')['rows']}
+        self.assertEqual(eye,{'死亡凝视':'效果系数 ×0.5','解离法杖':'效果系数 ×0.5','解离陷阱':'效果系数 ×0.5'})
+        spinner={r[0]:r[1] for r in self.defenses('spinner')['rows']}
+        self.assertEqual(spinner['中毒'],'效果系数 ×0.5')
+        self.assertEqual(spinner['蛛网'],'免疫此类效果')
+        self.assertNotIn('概率',skeleton['columns'])
+        self.assertIn('不是触发概率',skeleton['note'])
+        self.assertEqual(self.defenses('rat')['rows'],[])
+
+    def test_piranha_environmental_copy_preserves_electricity_and_freezing_exceptions(self):
+        for name in ('piranha','phantompiranha'):
+            effects=reference()['monsters']['actors.mobs.'+name]['defenses']['immunities']
+            self.assertIn('actors.blobs.blizzard',effects)
+            self.assertIn('actors.blobs.corrosivegas',effects)
+            self.assertIn('actors.buffs.burning',effects)
+            self.assertNotIn('actors.blobs.electricity',effects)
+            self.assertNotIn('actors.blobs.freezing',effects)
+            self.assertTrue(any('BlobImmunity.java' in r['url'] for r in self.detail(name)['provenance']['links']))
+        self.assertEqual(self.defenses('piranha')['rows'],self.defenses('phantompiranha')['rows'])
+
+    def test_phase_and_source_dependent_defenses_are_not_flattened_to_always_immune(self):
+        dm300=self.defenses('dm300')
+        self.assertTrue(any(r[0]=='所有伤害' and '超载期间' in r[2] for r in dm300['rows']))
+        king=self.defenses('dwarfking')
+        doom=next(r for r in king['rows'] if r[0]=='末日伤害加成')
+        self.assertIn('已有末日状态',doom[2])
+        self.assertIn('不是全程免疫',doom[2])
+        geomancer=self.defenses('gnollgeomancer')
+        self.assertTrue(any('所连接' in r[2] for r in geomancer['rows']))
+        self.assertTrue(any('镐子只绕过岩石护甲' in r[2] for r in geomancer['rows']))
+        fist=self.defenses('yogfist$burningfist')
+        self.assertTrue(any(r[0]=='所有伤害' and '4格以内' in r[2] for r in fist['rows']))
+
+    def test_elemental_weakness_and_vault_lightning_exception_are_conditioned(self):
+        fire=self.defenses('elemental$fireelemental')
+        self.assertIn(['冻结／冻伤状态施加','转为30–36 HP基础伤害',
+                       '不保留该状态；基础范围按此种普通最大生命计算，临时最大生命和其他承伤处理另计'],fire['rows'])
+        newborn=self.defenses('elemental$newbornfireelemental')
+        self.assertTrue(any(r[1]=='转为30–36 HP基础伤害' for r in newborn['rows']))
+        boss=self.defenses('quest.vault.vaultbosselemental')
+        lightning=[r for r in boss['rows'] if r[0]=='雷霆法杖']
+        self.assertEqual(len(lightning),1)
+        self.assertEqual(lightning[0][1],'效果系数 ×1')
+        self.assertIn('仅电光形态',lightning[0][2])
+        self.assertTrue(any(r[0]=='燃烧' and r[2]=='火焰形态' for r in boss['rows']))
+        self.assertTrue(any(r[0]=='冻结' and r[2]=='冰霜形态' for r in boss['rows']))
+
+    def test_every_reference_defense_effect_has_a_readable_label(self):
+        for identity in reference()['monsters']:
+            detail=self.values.detail(identity)
+            section=next(block for block in detail['blocks'] if block['title']=='固有抗性、免疫与防御条件')
+            for row in section['rows']:
+                self.assertEqual(len(row),3)
+                self.assertNotIn('%s',row[0])
+                self.assertNotIn('.class',row[0])
+                self.assertTrue(all(str(cell).strip() for cell in row))
 
     def test_bestiary_variants_do_not_fall_back_to_state_effects_or_parent_drops(self):
         for color in ('red','blue','purple'):
@@ -124,7 +224,32 @@ class MonsterReferenceTests(unittest.TestCase):
                     self.assertEqual(metrics['伪装首击命中值']['value'],'无限命中')
                     self.assertIn('目标未隐形',metrics['伪装首击命中值']['condition'])
                     self.assertIn('目标护甲',metrics['伪装首击基础伤害']['condition'])
-                    self.assertEqual(len(detail['blocks'][0]['values']),9)
+                    self.assertEqual(len(detail['blocks'][0]['values']),10)
+
+    def test_goo_half_health_and_pumped_attack_have_separate_source_values(self):
+        detail=self.detail('goo')
+        stages=next(row for row in detail['blocks'] if row['title']=='粘咕生命阶段与蓄力攻击')
+        self.assertEqual(stages['rows'],[['高于最大生命的50%','1–8','3–24','10','20','8'],
+                                         ['不超过最大生命的50%','1–12','3–36','15','30','12']])
+        special=next(row for row in detail['blocks'] if row['title']=='特殊攻击与机制')
+        values={row['label']:row for row in special['values']}
+        self.assertEqual([values[label]['value'] for label in ('高血量选择开始蓄力概率','半血选择开始蓄力概率','正常蓄力准备','蓄力攻击最大距离','攻击命中后施加淤泥概率','正常水中每次行动恢复')],['20','50','2','2','1/3','1'])
+        self.assertIn('不是每回合',values['高血量选择开始蓄力概率']['condition'])
+        self.assertIn('双方方向',values['蓄力攻击最大距离']['condition'])
+        self.assertIn('未命中不会保留',special['note'])
+        self.assertEqual(detail['blocks'][0]['values'][2]['value'],'1–8')
+
+    def test_great_crab_full_block_is_conditional_and_not_zero_evasion_guidance(self):
+        detail=self.detail('greatcrab')
+        special=next(row for row in detail['blocks'] if row['title']=='特殊攻击与机制')
+        values={row['label']:row for row in special['values']}
+        self.assertEqual(values['格挡当前目标时的闪避']['value'],'无限闪避')
+        for condition in ('未睡眠','未麻痹','非隐形','无限命中'):
+            self.assertIn(condition,values['格挡当前目标时的闪避']['condition'])
+        self.assertEqual(values['未满足格挡条件时的基础闪避']['value'],'0')
+        self.assertEqual(values['格挡法杖与牧师法术的直接伤害']['value'],'0')
+        self.assertIn('附加和环境效果另计',values['格挡法杖与牧师法术的直接伤害']['condition'])
+        self.assertIn('第3次',values['追近尝试中的原地停顿']['value'])
 
     def test_eye_gaze_and_dm100_shock_include_damage_timing_and_magic_conditions(self):
         # Fixed official4.0.2 Eye.deathGaze, Eye.doAttack, DM100.doAttack

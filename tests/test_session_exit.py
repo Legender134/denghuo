@@ -245,6 +245,8 @@ class RecoveryOriginalHTTPTests(unittest.TestCase):
 
     def close_server(self):
         self.server.shutdown(); self.server.server_close(); self.worker.join(timeout=3)
+        self.assertFalse(self.worker.is_alive())
+        self.assertTrue(self.session.exit_coordinator.flush_checkpoints(5), 'Pending draft preservation must finish before fixture cleanup')
 
     def request(self, payload, token=True):
         from http.client import HTTPConnection

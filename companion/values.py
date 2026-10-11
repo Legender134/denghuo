@@ -17,6 +17,7 @@ from .monster_reference import add_monster_values, monster_record
 INPUTS = {
     'loot_count': ('本局此类战利品已成功掉落次数', 0, 0, 1000),
     'swarm_generation': ('蝇群分裂代数（原始为0）', 0, 0, 1000),
+    'trickster_combo': ('豺狼诡术师本次命中前的连续命中数', 0, 0, 1000),
     'level': ('装备等级', 0, 0, 100),
     'hero_level': ('角色等级', 10, 1, 30),
     'max_hp': ('你的最大生命', 65, 1, 10000),
@@ -407,6 +408,10 @@ class PlayerValues:
                 'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{commit}/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/items/Generator.java#L746',
                 'kind':'official-game-source'})
             source_metadata['limits'].append('怪物表默认角色等级1、本局已掉落次数0；这是可调整的参考参数，不会推定本局的实际计数。已被神偷袖章取走的战利品不会再次进行普通掉落。')
+            for source in enemy_reference['defenses']['sources']:
+                source_metadata['links'].append({'label':'抗性与免疫来源',
+                    'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{commit}/{source["path"]}#L{source["line"]}',
+                    'kind':'official-game-source'})
         return {'id':identity,'name':entry['name'],'version':self.catalog.data['version'], 'status':'values',
                 'blocks':result, 'inputs':inputs, 'alchemy_recipes': alchemy_recipes,
                 **({'missing_inputs':healing_missing} if identity == 'actors.buffs.healing' else {}),
@@ -444,7 +449,9 @@ class PlayerValues:
             requested.add('max_hp');rows=[metric('祝福十字架复活生命',p['max_hp']//4,'HP'),metric('祝福复活无敌',self.duration('Invulnerability'),'回合'),metric('普通十字架复活生命',p['max_hp'],'HP','需要取回遗落行囊')]
         if identity=='items.brokenseal':
             requested.add('tier');result.append(table('纹章护盾',['钢铁意志天赋','护盾HP'],[[n,3+2*p['tier']+n] for n in range(3)],f'护甲阶数 {p["tier"]}；护甲等级不增加此护盾。'));rows=[metric('基础冷却',150,'回合'),metric('离开战斗后护盾收回',5,'回合'),metric('收回时最大冷却返还',75,'回合')]
-        if identity=='items.armor.glyphs.camouflage':requested.add('level');rows=[metric('踏草获得隐形',rounded(3+l/2),'回合','无奥术之戒等修正')]
+        if identity=='items.armor.glyphs.camouflage':
+            requested.add('level');rows=[metric('踏草获得隐形',0 if l<0 else rounded(3+l/2),'回合',
+                '普通角色、无奥术之戒及额外形态／光环；负护甲等级的刻印等级被取为−1，触发前即返回，不获得隐形' if l<0 else '普通角色、无奥术之戒及额外形态／光环')]
         if identity=='items.armor.glyphs.obfuscation':requested.add('level');rows=[metric('潜行值增益',1+l/3,'点','无奥术之戒等修正')]
         if identity in ('items.artifacts.driedrose','items.artifacts.driedrose$ghosthero'):
             requested.add('hero_level');result.append(table('幽灵属性',['玫瑰等级','最大生命HP','力量','无武器伤害HP'],[[f'+{n}',40+10*n,13+n//2,f'1–{5+n//2}'] for n in range(11)]));rows=[metric('幽灵基础命中',h+9,'点'),metric('幽灵基础闪避',h+4,'点'),metric('无敌人在场时回复到满血',500,'回合','近似平均时间；无能量戒指'),metric('从空到满的召唤充能',500,'回合','近似时间；允许自然恢复且无能量戒指')]

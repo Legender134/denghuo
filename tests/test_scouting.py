@@ -87,6 +87,17 @@ class ScoutingTests(unittest.TestCase):
         self.assertEqual(self.tree(),original)
         self.assertFalse(self.session.settings['reveal'])
 
+    def test_solid_non_wall_obstacles_have_named_coordinates(self):
+        self.level['map']=[1,13,23,25,26,27,28,33,34,35,36,39]
+        self.save()
+        result=inspect_saved(self.session,self.request())
+        obstacles={r['terrain']:r for r in result['features']}
+        self.assertEqual(obstacles[13]['name'],'路障')
+        self.assertEqual((obstacles[13]['x'],obstacles[13]['y']),(2,1))
+        self.assertEqual(obstacles[27]['name'],'书架')
+        self.assertEqual(obstacles[35]['name'],'矿晶')
+        self.assertEqual(obstacles[39]['name'],'水中实心装饰')
+
     def test_explicit_reveal_shows_secrets_traps_exact_contents_and_keeps_game_knowledge(self):
         original = self.tree()
         result = inspect_saved(self.session,self.request())
@@ -224,6 +235,11 @@ class ScoutingTests(unittest.TestCase):
         try:
             send({'action':'catalog'},403,False)
             listing=send({'action':'catalog'})
+            self.assertEqual(listing['source']['hero_level'],5)
+            self.assertIn('actors.mobs.crab',[r['id'] for r in listing['encounters']['rows']])
+            self.assertNotIn('actors.mobs.goldenmimic',[r['id'] for r in listing['encounters']['rows']])
+            self.assertNotIn('features',listing)
+            self.assertNotIn('heaps',listing)
             request={'action':'floor','depth':4,'branch':0,'expected':listing['source']['expected'],'reveal':True}
             send({**request,'reveal':False},400)
             result=send(request)

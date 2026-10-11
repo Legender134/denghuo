@@ -79,6 +79,86 @@ def _metric(label, value, unit='', condition=''):
     return {'label':label,'value':display(value) if isinstance(value,(int,float)) else str(value),'unit':unit,'condition':condition}
 
 
+def defense_block(values, identity, row):
+    """Intrinsic class/property rules; conditional defenses stay conditional."""
+    profile = row['defenses']
+    aliases = {
+        'actors.buffs.allybuff':'转化为盟友的状态', 'actors.buffs.sleep':'睡眠类状态',
+        'actors.buffs.speed':'速度改变状态', 'actors.mobs.eye$deathgaze':'死亡凝视',
+        'actors.blobs.vaultflametraps':'宝库火焰机关',
+        'actors.mobs.tengu$fireability$fireblob':'天狗的火焰能力',
+        'levels.rooms.special.magicalfireroom$eternalfire':'永恒之火',
+    }
+    def title(effect):
+        if effect in aliases: return aliases[effect]
+        name = values.catalog.entry_index.get(effect,{}).get('name') or values.catalog.messages[effect+'.name']
+        if effect.startswith('items.weapon.enchantments.'): name += '附魔'
+        elif effect.startswith('items.armor.glyphs.'): name += '刻印'
+        elif effect.startswith('actors.mobs.elemental$'): name += '造成的伤害'
+        return name
+    rows = []
+    def add_effects(effects,condition):
+        for kind in ('resistances','immunities'):
+            for effect in effects[kind]:
+                if identity.endswith('.vaultbosselemental') and condition=='电光形态' and effect=='items.wands.wandoflightning':
+                    rows.append([title(effect),'效果系数 ×1','仅电光形态，直接雷霆法杖伤害的抗性例外；形态承伤分支仍先加10点'])
+                else:
+                    rows.append([title(effect),'效果系数 ×0.5' if kind=='resistances' else '免疫此类效果',condition])
+    add_effects(profile,'固有；无额外装备、增益或挑战')
+    name = _family(identity)
+    if name=='quest.vault.vaultbosselemental':
+        for prop,form in [('FIERY','火焰形态'),('ICY','冰霜形态'),('ELECTRIC','电光形态')]:
+            add_effects(reference()['property_defenses'][prop],form)
+        rows.extend([
+            ['抗魔刻印所列魔法来源','输入伤害 ÷4，整数截断','火焰形态；直接法杖／牧师法术命中另减少特殊攻击冷却3、环境攻击冷却5'],
+            ['角色的投掷武器攻击','输入伤害 +10 HP','火焰形态；在普通承伤处理前增加'],
+            ['角色的投掷武器攻击','输入伤害 ÷4，整数截断','冰霜形态；投掷武器还会嵌在目标上'],
+            ['角色的非投掷普通攻击','输入伤害 +10 HP','冰霜形态；包括角色的徒手攻击'],
+            ['抗魔刻印所列魔法来源','输入伤害 +10 HP','电光形态；直接法杖／牧师法术另为所持法杖充能0.2'],
+            ['角色／其他生物的普通攻击','输入伤害 ÷4，整数截断','电光形态；角色使用投掷武器时不走此分支'],
+            ['冻结／冻伤状态施加','转为5–10 HP基础伤害','火焰形态；不保留该状态，抗性及其他承伤处理另计'],
+            ['燃烧状态施加','转为5–10 HP基础伤害','冰霜形态；不保留该状态，抗性及其他承伤处理另计'],
+        ])
+    if name in ('npcs.vaultsentry','npcs.vaultlaser'):
+        rows.append(['所有效果及伤害','免疫效果，且无敌','固定机关，不能作为可击杀的普通怪物'])
+    elif name=='dm300':
+        rows.append(['所有伤害','无敌','超载期间；普通难度共激活2座能量塔，需破坏当前供能塔解除'])
+    elif name=='dwarfking':
+        rows.extend([
+            ['所有伤害','无敌','第二阶段；其召唤物死亡触发的国王伤害类例外'],
+            ['末日伤害加成','免疫再次加成','第二／三阶段且已有末日状态时；不是全程免疫末日状态'],
+            ['伤害结算','转为延迟伤害','第三阶段；已延迟的伤害除外，不应把本次输入直接视为即时扣血'],
+        ])
+    elif name=='yogdzewa':
+        rows.append(['所有伤害','无敌','战斗尚未开始，或任意古神之拳仍存活时'])
+    elif name.startswith('yogfist$'):
+        rows.append(['所有伤害','无敌','距古神基座4格以内；按游戏八方向距离判断'])
+    elif name=='gnollgeomancer':
+        rows.extend([
+            ['所有伤害','无敌','该地卜师所连接的豺狼人爆破手仍存活时'],
+            ['非镐子来源的伤害','无敌','有岩石护甲时；镐子只绕过岩石护甲这一条件'],
+            ['外来状态施加','拒绝施加','仍睡眠时；自身岩石护甲和延迟落石除外'],
+        ])
+    elif name=='crystalspire':
+        rows.append(['非镐子来源的伤害','无敌','必须使用镐子破坏；固定免疫列表仍另行适用'])
+    elif name=='crystalguardian':
+        rows.append(['来自生物的伤害','有条件无敌','倒地恢复期间；角色和水晶尖塔来源例外，不能推定所有来源均无效'])
+    if name.startswith('elemental$') or name.startswith('quest.vault.vaultelemental$'):
+        fire = name.endswith(('$fireelemental','$newbornfireelemental','$fire'))
+        frost = name.endswith(('$frostelemental','$frost'))
+        if fire or frost:
+            health = row['stats']['HT']
+            rows.append(['冻结／冻伤状态施加' if fire else '燃烧状态施加',
+                         f'转为{health//2}–{health*3//5} HP基础伤害',
+                         '不保留该状态；基础范围按此种普通最大生命计算，临时最大生命和其他承伤处理另计'])
+    return {'title':'固有抗性、免疫与防御条件','columns':['效果或伤害来源','规则','条件'],
+            'rows':rows,'note':
+            ('表内 ×0.5 是抗性系数，不是触发概率。实际伤害按效果自己的结算顺序取整；状态的持续或强度如何使用抗性由该效果决定。'
+             '同一抗性类去重，不同父类同时匹配时系数相乘。免疫按效果来源类及其子类判断；附带效果分别结算。'
+             '临时增益、精英、装备刻印和其他未列分支另计。' if rows else
+             '此种敌人没有列出的固有抗性或免疫。普通护甲、闪避、临时状态与其他防御分支仍分别生效。')}
+
+
 def _category(name, depth, probability=1, *, floor_set=None):
     data = reference()
     if name == 'ALL':
@@ -232,15 +312,20 @@ def add_monster_values(values, identity, p, result, requested):
     stats = normal_stats(row,identity,depth)
     max_level = stats['maxLvl']
     exp = stats['EXP'] if max_level >= 1 else 0
+    exp_condition=f'角色等级不超过 {max_level} 级时' if max_level>=1 else '此种敌人通常不提供升级经验'
+    if name=='swarm':
+        if p['swarm_generation']>0: exp=0
+        exp_condition+=f'；所填分裂代数 {p["swarm_generation"]}；正代数分裂体不提供经验'
     stat_rows = [
         _metric('初始生命',stats['HP'],'HP'), _metric('初始最大生命',stats['HT'],'HP'),
         _metric('基础伤害范围',stats['damageRoll'],'HP','普通攻击；特殊攻击和状态效果不能按此范围估算'),
         _metric('基础命中',stats['attackSkill'],'点','这是命中值，不是最终命中概率'),
         _metric('基础闪避',stats['defenseSkill'],'点','伏击、麻痹等会改变实际闪避'),
         _metric('基础减伤范围',stats['drRoll'],'HP','无树肤等额外状态'),
-        _metric('基础经验',exp,'经验',f'角色等级不超过 {max_level} 级时' if max_level>=1 else '此种敌人通常不提供升级经验'),
+        _metric('基础经验',exp,'经验',exp_condition),
         _metric('所填等级可获经验',exp if hero<=max_level else 0,'经验',f'所填角色等级 {hero}；普通击杀，无飞升及坠落等特殊处理'),
         _metric('基础速度倍率',stats['baseSpeed'],'倍','攻击耗时和特殊状态另计'),
+        _metric('普通攻击基础耗时',stats['attackDelay'],'回合','无肾上腺素等修正；与移动速度分别计算，不保证固定攻击次数'),
     ]
     note = '普通敌人、正常状态，无挑战、精英、飞升、召唤盟友或其他状态修正。随机范围端点不表示等概率。'
     if row['dynamic']: note += f' 此表按生成时层数 {depth} 计算；已生成敌人的层数不会随玩家移动而改变。'
@@ -252,7 +337,23 @@ def add_monster_values(values, identity, p, result, requested):
                     'rows':[[r['name'],str(r['quantity']),display(100*r['probability'])+'%',r.get('condition','')] for r in loot],
                     'note':'按所填角色等级和本局累计掉落次数计算，默认无财富戒指、赏金猎人、遗忘碎片、幸运附魔或异晶饰品。物品池表已乘上该敌人的普通掉率；不代表本次一定掉落。神器池使用初始可用池参考，实际已生成神器会改变分布。' if loot else '此敌人没有常规自身物品掉落。任务奖励、已存容器、财富戒指和幸运附魔等额外机制按各自条件结算。'})
     abilities = []
-    if name in ('mimic','goldenmimic','ebonymimic','crystalmimic'):
+    if name == 'goo':
+        result.insert(2,{'title':'粘咕生命阶段与蓄力攻击','columns':['生命阶段','普通基础伤害HP','蓄力基础伤害HP','普通命中值','蓄力命中值','基础闪避值'],
+            'rows':[['高于最大生命的50%','1–8','3–24','10','20','8'],
+                    ['不超过最大生命的50%','1–12','3–36','15','30','12']],
+            'note':'正常难度；蓄力只是基础伤害乘3、命中值乘2，目标护甲和最终命中检定仍生效。半血判定包括恰好50%；水中恢复可能重新跨回高血量阶段。'})
+        abilities = [_metric('高血量选择开始蓄力概率',20,'%','可发动攻击且尚未蓄力时的选择概率；不是每回合固定概率'),
+                     _metric('半血选择开始蓄力概率',50,'%','生命不超过最大生命的50%，可发动攻击且尚未蓄力时'),
+                     _metric('正常蓄力准备',2,'次自身攻击行动','开始和继续准备各耗默认1回合，之后发射攻击再耗默认1回合；其他状态修正另计'),
+                     _metric('蓄力攻击最大距离',2,'格','需双方方向的攻击弹道都可达；实际墙角与光路以游戏为准'),
+                     _metric('攻击命中后施加淤泥概率','1/3','','目标抗性及免疫另计'),
+                     _metric('正常水中每次行动恢复',1,'HP','没有飞行、当前格是水且生命未满时；不是每个玩家行动必定恢复')]
+    elif name == 'greatcrab':
+        abilities = [_metric('格挡当前目标时的闪避','无限闪避','','已注意目标、未睡眠、未麻痹且攻击者为当前非隐形目标；无限命中也不能绕过无限闪避分支'),
+                     _metric('未满足格挡条件时的基础闪避',0,'点','随后仍有普通伏击和其他状态处理'),
+                     _metric('格挡法杖与牧师法术的直接伤害',0,'HP','已注意、未睡眠、未麻痹，且当前目标为非隐形玩家；附加和环境效果另计'),
+                     _metric('追近尝试中的原地停顿','每3次中的第3次','','前2次调用普通追近，第3次不移动；寻路、其他行动和状态仍会影响实际移动')]
+    elif name in ('mimic','goldenmimic','ebonymimic','crystalmimic'):
         level=_mimic_level(name,depth)
         damage=span(1+level,2+2*level) if name=='crystalmimic' else (2+2*level)*(2 if name=='ebonymimic' else 1)
         abilities=[_metric('伪装首击基础伤害',damage,'HP','尚在伪装状态时发动攻击；目标护甲等仍可减伤'),
@@ -271,6 +372,30 @@ def add_monster_values(values, identity, p, result, requested):
         abilities = [_metric('远程电击基础伤害','3–10','HP','目标非相邻，且魔法弹道可达目标时；相邻或弹道被阻挡时使用普通攻击'),
                      _metric('远程电击耗时',1,'回合','不扣普通护甲，抗性等另计'),
                      _metric('魔法命中掷骰倍率',2,'倍','基础命中11的随机掷骰乘2，再与目标闪避掷骰比较；不是必中或最终命中概率')]
+    elif name == 'dm200':
+        abilities=[_metric('排气行动耗时',1,'回合','敌人可见、不能普通攻击，且通过距离随机检定与可排气路径检查时'),
+                   _metric('排气后冷却计数',30,'次自身行动','每次自身行动开始减1；初始0，不是固定角色回合数'),
+                   _metric('排气选择检定','1 / ⌊100÷距敌距离⌋','','仅距离至少1且仍不能普通攻击时；通过检定不保证能排气，路径与冷却仍需满足'),
+                   _metric('弹道路径每格播种毒气体积',20,'体积','Ballistica.subPath(0,dist) 所列格；体积不是伤害或固定持续时间'),
+                   _metric('弹道终点另播种毒气体积',100,'体积','在路径播种之后添加；扩散、叠加、抗性与中毒伤害分别结算')]
+    elif name == 'dm201':
+        abilities=[_metric('腐蚀气体喷射耗时',1,'回合','受到符合条件的非腐化伤害后记为受威胁；目标在视野内才喷射，随后清除此标记'),
+                   _metric('目标格腐蚀气体体积',15,'体积','体积不是伤害或固定持续时间'),
+                   _metric('目标周围非实心格各播种体积',5,'体积','周围8格，实心格跳过'),
+                   _metric('腐蚀气体基础强度',8,'强度参数','环境气体与腐蚀状态分别更新；不按每次攻击8点伤害理解'),
+                   _metric('DM-200普通毒气排气','不使用','','此变体禁止普通排气及追近／逃离，不能套用DM-200的30次计数分支')]
+    elif name == 'gnolltrickster':
+        requested.add('trickster_combo')
+        combo=p['trickster_combo']+1
+        rows=[]
+        for roll in range(4):
+            effect=combo+roll
+            poison=f'中毒基础持续参数 {effect-2} 回合' if effect>2 else '不附加中毒或点燃'
+            rows.append([roll,25,combo,'点燃' if effect>=6 else poison,poison])
+        result.append({'title':'豺狼诡术师本次命中连击效果','columns':['随机整数','概率%','递增后连击数','目标尚未燃烧','目标已燃烧'],
+            'rows':rows,'note':'仅普通攻击成功进入命中效果处理后；连击先加1，再均匀抽取0–3并相加。调用追近／拉开路径时把连击重置为0；不把手填连击当当前存档状态。已有中毒、燃烧、抗性及免疫按效果自身规则结算。'})
+        abilities=[_metric('可燃目标格点燃时播种火焰体积',4,'体积','仅效果值至少6、目标尚未燃烧且当前格可燃时；角色仍尝试获得燃烧状态'),
+                   _metric('连击重置',0,'次','调用getCloser路径时，不要求最终实际移动成功')]
     elif name == 'warlock':
         abilities = [_metric('远程暗影弹基础伤害','12–18','HP','目标非相邻且魔法弹道可达时；不扣普通护甲，抗性等另计'),
                      _metric('远程暗影弹耗时',1,'回合'),
@@ -314,5 +439,8 @@ def add_monster_values(values, identity, p, result, requested):
         note = '正常难度，无飞升及额外状态修正。'
         if name == 'eye':
             note += ' 冷却结束、目标可见且光路可达时开始蓄力；光路遇实墙阻挡。可见目标可能重新瞄准，不能假定横移一格必定避开；以游戏实际瞄准和警告为准。'
+        elif name == 'goo':
+            note += ' 追近、后退或离开追击状态会取消蓄力；蓄力攻击尝试结束后也清除蓄力，未命中不会保留。'
         result.insert(2,{'title':'特殊攻击与机制','values':abilities,'note':note})
+    result.insert(3 if abilities else 2,defense_block(values,identity,row))
     return True

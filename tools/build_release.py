@@ -92,6 +92,7 @@ FILES = (
     "web/scouting.js",
     "tests/test_scouting.py",
     "tools/verify_scouting.js",
+    "companion/floor_guide.py", "web/floor-guide.js", "tests/test_floor_guide.py", "tools/verify_floor_guide.js",
     "tests/test_reference_handoff.py",
     "tests/test_external_destination_migration.py",
     "tests/test_workspace_liveness.py",

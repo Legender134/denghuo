@@ -18,6 +18,13 @@ class PlayerValuesTests(unittest.TestCase):
     def metrics(self, identity, **parameters):
         return {v['label']:v['value'] for b in self.detail(identity,**parameters)['blocks'] for v in b.get('values',[])}
 
+    def test_camouflage_negative_level_does_not_grant_invisibility(self):
+        for level,turns in ((-100,'0'),(-2,'0'),(-1,'0'),(0,'3'),(1,'4'),(2,'4')):
+            detail=self.values.detail('items.armor.glyphs.camouflage',{'level':level})
+            effect=next(v for b in detail['blocks'] for v in b.get('values',[]) if v['label']=='踏草获得隐形')
+            self.assertEqual(effect['value'],turns)
+            if level<0:self.assertIn('不获得隐形',effect['condition'])
+
     def test_retribution_rounds_each_java_float_operation_at_half_integer_boundaries(self):
         # Fixed 4.0.2 ScrollOfRetribution.doRead f32 vectors, independently
         # checked with struct and Math.fround; neither invokes this implementation.

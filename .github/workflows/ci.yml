@@ -57,6 +57,7 @@ jobs:
           node tools/verify_snapshot_refresh.js
           node tools/verify_public_skills.js
           node tools/verify_scouting.js
+          node tools/verify_floor_guide.js
           node tools/verify_forecast.js
       - name: Build source archive
         if: matrix.python == '3.13'
