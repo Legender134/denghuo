@@ -9,6 +9,7 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from zipfile import ZipFile
 
 from companion import global_history, global_progress
 from companion.native_manager import NativeManager
@@ -106,6 +107,48 @@ class GlobalExitTests(unittest.TestCase):
         self.assertEqual([row['slot'] for row in result['captured']], [1])
         self.assertFalse(result['global_progress']['protected'])
         self.assertIn('全局进度', result['error'])
+        self.assertEqual(self.originals(), before)
+
+    def test_slow_global_scan_leaves_time_for_real_slot_backup(self):
+        from companion.backups import check_capture_deadline
+        write_slot(self.root, hp=20)
+        before = self.originals()
+        monotonic = time.monotonic
+        offset = [0]
+        def clock():
+            return monotonic() + offset[0]
+        def slow_globals(manager, root, deadline=None):
+            offset[0] += max(0, deadline - clock()) + .001
+            check_capture_deadline(deadline)
+            self.fail('The global scan must stop at its deadline')
+        with (patch('companion.backups.time.monotonic', side_effect=clock),
+              patch('companion.global_history.capture', side_effect=slow_globals)):
+            result = self.session.backups.final_capture(self.root, clock() + 3)
+        self.assertEqual((result['ok'], result['state']), (False, 'partial'))
+        self.assertEqual(result['global_progress']['state'], 'timeout')
+        self.assertFalse(result['global_progress']['protected'])
+        self.assertEqual([row['slot'] for row in result['captured']], [1])
+        identity = result['captured'][0]['id']
+        with ZipFile(self.session.backups.scope(self.root) / (identity + '.zip')) as archive:
+            self.assertEqual({name: archive.read(name) for name in ('game.dat', 'depth2.dat')},
+                             {name: before[str(Path('game1') / name)] for name in ('game.dat', 'depth2.dat')})
+        self.assertEqual(self.originals(), before)
+
+    def test_globals_without_slots_can_use_the_full_exit_budget(self):
+        actual_capture = global_history.capture
+        monotonic = time.monotonic
+        offset = [0]
+        def clock():
+            return monotonic() + offset[0]
+        def slow_globals(manager, root, deadline=None):
+            offset[0] += 2
+            return actual_capture(manager, root, deadline=deadline)
+        before = self.originals()
+        with (patch('companion.backups.time.monotonic', side_effect=clock),
+              patch('companion.global_history.capture', side_effect=slow_globals)):
+            result = self.session.backups.final_capture(self.root, clock() + 3)
+        self.assertEqual((result['ok'], result['state']), (True, 'captured'))
+        self.assert_global_bytes(result)
         self.assertEqual(self.originals(), before)
 
     def test_paused_exit_does_not_create_global_history(self):

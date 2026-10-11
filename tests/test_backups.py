@@ -236,8 +236,10 @@ class BackupTests(unittest.TestCase):
     def test_link_attributes_are_checked_even_when_exists_returns_false(self):
         from types import SimpleNamespace
         import stat
-        with patch.object(Path,'exists',return_value=False),patch.object(Path,'lstat',return_value=SimpleNamespace(st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT)),patch.object(Path,'is_symlink',return_value=True):
-            with self.assertRaisesRegex(ValueError,'链接'):unlinked(self.root/'controlled-dangling-link')
+        for attrs in (SimpleNamespace(st_mode=stat.S_IFREG, st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT),
+                      SimpleNamespace(st_mode=stat.S_IFLNK, st_file_attributes=0)):
+            with self.subTest(attrs=attrs), patch.object(Path,'exists',return_value=False), patch.object(Path,'lstat',return_value=attrs):
+                with self.assertRaisesRegex(ValueError,'链接'):unlinked(self.root/'controlled-dangling-link')
 
     def test_health_for_selected_slot_cannot_borrow_newer_slot_save(self):
         self.clock=1700001000

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 import zipfile
@@ -196,6 +197,76 @@ class GlobalHistoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '字节变化'):
             self.restore(row)
         self.assertEqual({name: (self.saves/name).read_bytes() for name in files.FILES}, original)
+
+    def test_each_status_rechecks_object_bytes_even_when_size_and_mtime_are_unchanged(self):
+        row = self.tick()['history'][0]
+        original = {name: (self.saves/name).read_bytes() for name in files.FILES}
+        object_path = history.folder(self.session.backups, self.saves)/'objects'/(row['files']['badges.dat']['sha256']+'.dat')
+        raw = object_path.read_bytes()
+        stamp = object_path.stat()
+        object_path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+        os.utime(object_path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        status = self.session.global_history_status()
+        self.assertEqual(status['health']['state'], 'blocked')
+        self.assertEqual(status['history'][0]['files']['badges.dat']['integrity'], 'damaged')
+        object_path.write_bytes(raw)
+        os.utime(object_path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        self.assertTrue(self.session.global_history_status()['health']['protected'])
+        self.assertEqual({name: (self.saves/name).read_bytes() for name in files.FILES}, original)
+
+    def test_storage_change_during_last_manifest_read_is_not_reported_as_valid_history(self):
+        row = self.tick()['history'][0]
+        manager = self.session.backups
+        actual_read, actual_check = files.read, manager.ensure_storage
+        changed = [False]
+        def read_then_change(path):
+            raw = actual_read(path)
+            if path.name == row['id'] + '.json':
+                changed[0] = True
+            return raw
+        def check_storage():
+            if changed[0]:
+                raise ValueError('受控备份存储身份变化')
+            return actual_check()
+        with patch.object(files, 'read', side_effect=read_then_change), patch.object(manager, 'ensure_storage', side_effect=check_storage):
+            with self.assertRaisesRegex(ValueError, '存储身份变化'):
+                history.records(manager, self.saves)
+        self.assertTrue(self.session.global_history_status()['health']['protected'])
+
+    def test_bounded_confirmation_checks_bytes_instead_of_trusting_manifest_mtime(self):
+        old = self.tick()['history'][0]
+        self.write_globals(total=2)
+        current = self.tick()['history'][0]
+        directory = history.folder(self.session.backups, self.saves)
+        os.utime(directory/(old['id']+'.json'), (2000000000, 2000000000))
+        before = {name: (self.saves/name).read_bytes() for name in files.FILES}
+        result = history.capture(self.session.backups, self.saves, deadline=time.monotonic()+3)
+        self.assertTrue(result['protected'])
+        self.assertEqual(result['snapshot_id'], current['id'])
+        path = directory/'objects'/(current['files']['rankings.dat']['sha256']+'.dat')
+        raw, stamp = path.read_bytes(), path.stat()
+        path.write_bytes(bytes([raw[0] ^ 1])+raw[1:])
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError, '字节变化'):
+            history.capture(self.session.backups, self.saves, deadline=time.monotonic()+3)
+        self.assertEqual({name: (self.saves/name).read_bytes() for name in files.FILES}, before)
+
+    def test_bounded_current_copy_confirmation_does_not_hide_older_history_damage(self):
+        old = self.tick()['history'][0]
+        self.write_globals(total=2)
+        current = self.tick()['history'][0]
+        directory = history.folder(self.session.backups, self.saves)
+        damaged = directory/(old['id']+'.json')
+        damaged.write_bytes(b'{preserved damaged older manifest')
+        result = history.capture(self.session.backups, self.saves, deadline=time.monotonic()+3)
+        self.assertTrue(result['protected'])
+        self.assertEqual(result['snapshot_id'], current['id'])
+        self.assertEqual(history.raw_files(self.session.backups, self.saves, current),
+                         {name: (self.saves/name).read_bytes() for name in files.FILES})
+        status = self.session.global_history_status()
+        self.assertEqual(status['health']['state'], 'blocked')
+        self.assertEqual([row['id'] for row in status['damaged_rows']], [old['id']])
+        self.assertEqual(damaged.read_bytes(), b'{preserved damaged older manifest')
 
     def test_old_library_is_browsable_exportable_and_recovers_to_the_current_root_only(self):
         row = self.tick()['history'][0]

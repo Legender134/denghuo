@@ -56,7 +56,7 @@ def _directory(manager, library, archive_id=None):
     return archive_directory(manager, library, archive_id)
 
 
-def _record(manager, library, path):
+def _record(path, library_key):
     raw = files.read(path)
     if raw is None or len(raw) > 65536 or not ID.fullmatch(path.stem) or files.digest(raw) != path.stem:
         raise ValueError('全局历史清单校验失败，原始清单仍保留。')
@@ -66,7 +66,7 @@ def _record(manager, library, path):
         raise ValueError('全局历史清单损坏，原始清单仍保留。') from exc
     if (not isinstance(row, dict) or set(row) != {'format', 'kind', 'library', 'sequence', 'time', 'files'}
             or type(row['format']) is not int or row['format'] != 1 or row['kind'] != 'denghuo-global-history'
-            or row['library'] != manager.scope(library).name or type(row['sequence']) is not int or row['sequence'] < 1
+            or row['library'] != library_key or type(row['sequence']) is not int or row['sequence'] < 1
             or type(row['time']) not in (int, float) or not math.isfinite(row['time']) or row['time'] < 0
             or not isinstance(row['files'], dict) or not row['files'] or set(row['files'])-set(files.FILES)):
         raise ValueError('全局历史清单结构不兼容，原始清单仍保留。')
@@ -83,6 +83,7 @@ def _record(manager, library, path):
 
 def _scan(manager, library, archive_id=None, deadline=None):
     directory = _directory(manager, library, archive_id)
+    library_key = manager.scope(library).name
     paths = list(islice(directory.glob('*.json'), 4097))
     if len(paths) > 4096:
         raise ValueError('全局历史目录条目超过容量，全部原件仍保留。')
@@ -90,7 +91,7 @@ def _scan(manager, library, archive_id=None, deadline=None):
     for path in paths:
         check_capture_deadline(deadline)
         try:
-            result.append(_record(manager, library, path))
+            result.append(_record(path, library_key))
         except (OSError, ValueError) as exc:
             try:
                 raw = files.read(path)
@@ -98,6 +99,8 @@ def _scan(manager, library, archive_id=None, deadline=None):
                 raw = None
             damaged.append({'id': path.stem, 'bytes': len(raw) if raw is not None else None,
                             'sha256': files.digest(raw), 'error': str(exc), 'available': raw is not None})
+    manager.ensure_storage()
+    check_capture_deadline(deadline)
     return sorted(result, key=lambda row: (row['sequence'], row['time'], row['id']), reverse=True), damaged
 
 
@@ -117,8 +120,12 @@ def _names(row, selected_names):
 
 
 def raw_files(manager, library, row, selected_names=None, archive_id=None):
-    result = {}
     directory = _directory(manager, library, archive_id)
+    return _raw_files(directory, row, selected_names)
+
+
+def _raw_files(directory, row, selected_names=None):
+    result = {}
     for name in _names(row, selected_names):
         metadata = row['files'][name]
         raw = files.read(directory/'objects'/(metadata['sha256']+'.dat'))
@@ -129,6 +136,7 @@ def raw_files(manager, library, row, selected_names=None, archive_id=None):
 
 
 def _inspected_rows(manager, library, history, archive_id=None, deadline=None):
+    directory = _directory(manager, library, archive_id)
     result, cache = [], {}
     for row in history:
         entries = {}
@@ -137,7 +145,7 @@ def _inspected_rows(manager, library, history, archive_id=None, deadline=None):
             key = (name, metadata['sha256'], metadata['bytes'])
             if key not in cache:
                 try:
-                    raw = raw_files(manager, library, row, [name], archive_id)[name]
+                    raw = _raw_files(directory, row, [name])[name]
                 except (OSError, ValueError) as exc:
                     cache[key] = {'valid': False, 'integrity': 'damaged', 'summary': None, 'error': str(exc)}
                 else:
@@ -148,6 +156,8 @@ def _inspected_rows(manager, library, history, archive_id=None, deadline=None):
                         cache[key] = {'valid': False, 'integrity': 'verified', 'summary': None, 'error': str(exc)}
             entries[name] = {**metadata, **cache[key]}
         result.append({**row, 'files': entries})
+    manager.ensure_storage()
+    check_capture_deadline(deadline)
     return result
 
 
@@ -175,6 +185,31 @@ def _health(manager, root, state, **extra):
             'raw_retained': False, 'error': '', 'checked_at': manager.clock(), **extra}
 
 
+def _matching_current(directory, library_key, entries, deadline):
+    """Confirm an existing copy of current bytes; timestamps only prioritize reads."""
+    paths = list(islice(directory.glob('*.json'), 4097))
+    if len(paths) > 4096:
+        raise ValueError('全局历史目录条目超过容量，全部原件仍保留。')
+    candidates = []
+    for path in paths:
+        check_capture_deadline(deadline)
+        try:
+            candidates.append((path.lstat().st_mtime_ns, path))
+        except OSError:
+            continue
+    digests = {name: item['sha256'] for name, item in entries.items()}
+    for _, path in sorted(candidates, key=lambda item: item[0], reverse=True):
+        check_capture_deadline(deadline)
+        try:
+            row = _record(path, library_key)
+        except (OSError, ValueError):
+            continue
+        if {name: item['sha256'] for name, item in row['files'].items()} == digests:
+            _raw_files(directory, row)
+            return row
+    return None
+
+
 def capture(manager, root, deadline=None):
     """Read only the two game originals; slot validity and restores are independent."""
     check_capture_deadline(deadline)
@@ -198,13 +233,6 @@ def capture(manager, root, deadline=None):
         if identity != initial_identity or current != source:
             raise ValueError('全局进度正在变化，稍后自动重试；原件仍保留。')
         directory = folder(manager, root)
-        history, damaged = _scan(manager, root, deadline=deadline)
-        space = usage(directory)
-        if damaged:
-            raise ValueError('全局历史有损坏清单，已保留并暂停新增；健康记录仍可用，请预览本地保留归档后重建保护。')
-        inspected = _inspected_rows(manager, root, history, deadline=deadline)
-        if any(item['integrity'] == 'damaged' for row in inspected for item in row['files'].values()):
-            raise ValueError('全局历史原始副本缺失或字节变化，已暂停新增；请预览本地保留归档后重建保护。')
         entries = {}
         for name, raw in current.items():
             try:
@@ -213,6 +241,22 @@ def capture(manager, root, deadline=None):
                 summary, error = None, str(exc)[:1000]
             entries[name] = {'bytes': len(raw), 'sha256': files.digest(raw), 'valid': not error,
                              'summary': summary, 'error': error}
+        error = '；'.join(item['error'] for item in entries.values() if item['error'])
+        if deadline is not None:
+            row = _matching_current(directory, manager.scope(root).name, entries, deadline)
+            if row is not None:
+                manager.ensure_storage()
+                if _source(root, deadline) != (identity, current):
+                    raise ValueError('确认期间全局进度变化，稍后自动重试；尚未确认保护。')
+                return _health(manager, root, 'warning' if error else 'protected', raw_retained=True,
+                               error=error, snapshot_id=row['id'], files=entries)
+        history, damaged = _scan(manager, root, deadline=deadline)
+        space = usage(directory)
+        if damaged:
+            raise ValueError('全局历史有损坏清单，已保留并暂停新增；健康记录仍可用，请预览本地保留归档后重建保护。')
+        inspected = _inspected_rows(manager, root, history, deadline=deadline)
+        if any(item['integrity'] == 'damaged' for row in inspected for item in row['files'].values()):
+            raise ValueError('全局历史原始副本缺失或字节变化，已暂停新增；请预览本地保留归档后重建保护。')
         unchanged = bool(history and {k: v['sha256'] for k, v in history[0]['files'].items()}
                          == {k: v['sha256'] for k, v in entries.items()})
         if unchanged:
@@ -248,7 +292,6 @@ def capture(manager, root, deadline=None):
             row['id'] = files.digest(raw_record)
             check_capture_deadline(deadline)
             _publish(directory/(row['id']+'.json'), raw_record)
-        error = '；'.join(item['error'] for item in entries.values() if item['error'])
         manager.ensure_storage()
         if _source(root, deadline) != (identity, current):
             raise ValueError('确认期间全局进度变化，稍后自动重试；尚未确认保护。')
@@ -265,8 +308,11 @@ def status(manager, root, library, archive_id=None):
     space = usage(directory)
     archives = maintenance.archives(manager, library)
     retained = maintenance.retained_usage(manager, library)
-    active_rows, active_damaged = _scan(manager, library)
-    active_space = usage(folder(manager, library))
+    if archive_id is None:
+        active_rows, active_damaged, active_space = history, damaged, space
+    else:
+        active_rows, active_damaged = _scan(manager, library)
+        active_space = usage(folder(manager, library))
     space.update(active_count=len(active_rows)+len(active_damaged), active_bytes=active_space['bytes'],
         archived_count=sum(row['count'] or 0 for row in archives), **retained)
     space['archived_count_complete'] = all(row['count'] is not None for row in archives)

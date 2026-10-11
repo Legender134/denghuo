@@ -57,7 +57,7 @@ def unlinked(path):
             attrs = component.lstat()
         except FileNotFoundError:
             continue
-        if component.is_symlink() or getattr(attrs, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        if stat.S_ISLNK(attrs.st_mode) or getattr(attrs, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
             raise ValueError("存档或备份路径包含链接，已停止操作")
     return path
 
@@ -680,8 +680,13 @@ class BackupManager:
             from . import global_history
             try:
                 check_capture_deadline(deadline)
-                health = global_history.capture(self, root, deadline=deadline)
-                check_capture_deadline(deadline)
+                global_deadline = deadline
+                if any((Path(root) / f'game{slot}').exists() for slot in range(1, 7)):
+                    # A full global history must leave time for independent slot protection.
+                    now = time.monotonic()
+                    global_deadline = now + max(0, deadline - now) / 2
+                health = global_history.capture(self, root, deadline=global_deadline)
+                check_capture_deadline(global_deadline)
                 self.global_health = health
                 global_result = {
                     'state': health['state'], 'protected': health.get('protected') is True,
