@@ -293,6 +293,8 @@ class KnowledgeWorkspace:
             with self.path.open('rb') as stream:
                 raw = stream.read(MAX_BYTES+1)
         except FileNotFoundError:
+            if self._healthy_copies():
+                raise ValueError('收藏与方案库主文件缺失；现有副本仍保留，写入暂停，请在资料库预览并明确选择恢复来源') from None
             return {'format':1,'favorites':[],'recent':[],'plans':[]},None
         if len(raw)>MAX_BYTES:
             raise ValueError('收藏与方案库过大；原文件仍保留，请先导出或保留后重建')
@@ -422,6 +424,7 @@ class KnowledgeWorkspace:
             except (OSError,ValueError) as exc:
                 # Failure is visible without blocking unrelated session services.
                 return {'format':1,'favorites':[],'recent':[],'plans':[], 'available':False,
+                        'primary_missing':not self.path.exists(),
                         'error':str(exc) if isinstance(exc,ValueError) else '收藏与方案库暂时无法访问；原文件仍保留，请检查助手数据目录权限'}
 
     def _write(self,value,expected):
@@ -648,29 +651,47 @@ class KnowledgeWorkspace:
                    'root_error':root_error}
         return preview,recovered
 
+    def _recovery_stamp(self):
+        try:return hashlib.sha256(self._recovery_bytes()).hexdigest()
+        except FileNotFoundError:return 'missing'
+
     def _repair_candidate(self, source='current'):
         try:
             raw = self._recovery_bytes()
         except FileNotFoundError:
-            raise ValueError('收藏与方案库可以正常读取，无需恢复') from None
-        try:
-            if len(raw)>MAX_BYTES:raise ValueError('资料库超出读取上限')
-            self._validate(library_json(raw))
-        except (ValueError,TypeError,KeyError,AttributeError,RecursionError,OverflowError):
-            preview,recovered = self._recovery_candidate(raw)
-            try:copies = self._healthy_copies()
-            except (OSError,ValueError) as exc:
-                copies = []
-                preview['copy_warning'] = '健康副本暂不可核对：'+str(exc)+'；原件保留'
-            if source!='current':
-                selected = self._healthy_bytes(source)
-                selected_preview,recovered = self._recovery_candidate(selected)
-                preview = {**selected_preview, 'expected':hashlib.sha256(raw).hexdigest(), 'bytes':len(raw),
-                           'mode':'recover', 'can_export':True,
-                           'message':f"先完整保留当前损坏原件，再从所选健康副本恢复 {selected_preview['healthy_count']} 条记录"}
-            preview.update(source=source, healthy_copies=copies)
-            return raw,preview,recovered
-        raise ValueError('收藏与方案库可以正常读取，无需恢复')
+            raw = None
+        if raw is not None:
+            try:
+                if len(raw)>MAX_BYTES:raise ValueError('资料库超出读取上限')
+                self._validate(library_json(raw))
+            except (ValueError,TypeError,KeyError,AttributeError,RecursionError,OverflowError):
+                pass
+            else:
+                raise ValueError('收藏与方案库可以正常读取，无需恢复')
+        preview,recovered = self._recovery_candidate(raw if raw is not None else b'')
+        try:copies = self._healthy_copies()
+        except (OSError,ValueError) as exc:
+            if raw is None:raise ValueError('主文件缺失，健康副本暂不可核对；原件保留，请检查资料目录') from exc
+            copies = []
+            preview['copy_warning'] = '健康副本暂不可核对：'+str(exc)+'；原件保留'
+        if raw is None:
+            if not copies:raise ValueError('收藏与方案库可以正常读取，无需恢复')
+            preview.update(expected='missing', bytes=0, primary_missing=True,
+                           can_repair=not any(row['available'] for row in copies),root_error='',issues=[],
+                           categories={key:{'healthy':0,'invalid':0,'ambiguous':0,'blocked':False,'total':0}
+                                       for key in ('favorites','recent','plans')})
+            preview['message'] = ('当前主文件缺失，请明确选择一个健康副本，重新预览后恢复；尚未建立空资料库'
+                if not preview['can_repair'] else '当前主文件缺失，现有副本均无法核验；确认后建立空资料库，全部现有副本原字节仍保留')
+        if source!='current':
+            selected = self._healthy_bytes(source)
+            selected_preview,recovered = self._recovery_candidate(selected)
+            preview = {**selected_preview, 'expected':hashlib.sha256(raw).hexdigest() if raw is not None else 'missing',
+                       'bytes':len(raw) if raw is not None else 0, 'primary_missing':raw is None,
+                       'mode':'recover', 'can_export':True, 'can_repair':True,
+                       'message':(('当前主文件缺失，现有健康副本仍保留；' if raw is None else '先完整保留当前损坏原件，再')+
+                                  f"从所选健康副本恢复 {selected_preview['healthy_count']} 条记录")}
+        preview.update(source=source, healthy_copies=copies)
+        return raw,preview,recovered
 
     def repair_preview(self, source='current'):
         with self.lock:
@@ -692,28 +713,34 @@ class KnowledgeWorkspace:
             if expected!=preview['expected']:
                 raise ValueError('原资料库刚被修改，请重新预览；尚未导出')
             if not preview['can_export']:
-                raise ValueError('没有可证明健康的记录可以导出；原文件仍保留')
+                raise ValueError('没有可证明健康的记录可以导出；现有原件与副本不会改动')
             raw = self._recovery_document(recovered)
-            if hashlib.sha256(self._recovery_bytes()).hexdigest()!=expected:
+            if self._recovery_stamp()!=expected:
                 raise ValueError('原资料库刚被修改，请重新预览；尚未导出')
+            if source!='current' and library_json(self._healthy_bytes(source))!=recovered:
+                raise ValueError('所选健康副本已变化，尚未导出')
             return raw
 
     def repair(self,expected,confirmed,source='current'):
         if confirmed is not True:
-            raise ValueError('请先确认完整保留原文件并恢复收藏与方案库')
+            raise ValueError('请先核对恢复预览并明确确认；尚未恢复资料库')
         with self.lock, self._storage_lock():
             raw,preview,recovered = self._repair_candidate(source)
             if expected!=preview['expected']:
                 raise ValueError('原资料库刚被修改，请重新预览；尚未重建')
-            if hashlib.sha256(self._recovery_bytes()).hexdigest()!=expected:
+            if self._recovery_stamp()!=expected:
                 raise ValueError('原资料库刚被修改，请重新预览；尚未重建')
+            if preview.get('can_repair') is False:
+                raise ValueError('主文件缺失，请先选择一个健康副本并重新预览；尚未建立空资料库')
             recovered_raw = self._recovery_document(recovered)
-            preserved = self.path.with_name(self.path.stem+'.preserved-'+uuid.uuid4().hex+'.json')
-            with preserved.open('xb') as stream:
-                stream.write(raw)
-                stream.flush()
-            if preserved.read_bytes()!=raw:
-                raise ValueError('原件保留副本校验失败；尚未恢复资料库')
+            preserved = None
+            if raw is not None:
+                preserved = self.path.with_name(self.path.stem+'.preserved-'+uuid.uuid4().hex+'.json')
+                with preserved.open('xb') as stream:
+                    stream.write(raw)
+                    stream.flush()
+                if preserved.read_bytes()!=raw:
+                    raise ValueError('原件保留副本校验失败；尚未恢复资料库')
             pending = self.path.with_name(self.path.name+'.'+uuid.uuid4().hex+'.pending')
             try:
                 with pending.open('xb') as stream:
@@ -723,14 +750,21 @@ class KnowledgeWorkspace:
                 if len(staged)>MAX_BYTES or library_json(staged)!=recovered:
                     raise ValueError('恢复资料库校验失败；原文件未替换')
                 self._validate(library_json(staged))
-                if hashlib.sha256(self._recovery_bytes()).hexdigest()!=expected:
-                    raise ValueError('原资料库刚被修改，保留副本已建立，但尚未重建；请刷新')
+                if self._recovery_stamp()!=expected:
+                    raise ValueError('原资料库刚被修改'+('，保留副本已建立' if preserved is not None else '')+'，尚未恢复；请刷新后重新预览')
                 if source!='current' and library_json(self._healthy_bytes(source))!=recovered:
                     raise ValueError('所选健康副本已变化，尚未恢复')
-                pending.replace(self.path)
+                if raw is None:
+                    # Publish only if absent: a non-cooperating writer must not be overwritten.
+                    try:os.link(pending,self.path)
+                    except FileExistsError:
+                        raise ValueError('主文件已重新出现，未覆盖；请重新预览') from None
+                else:
+                    pending.replace(self.path)
                 self.generation += 1
                 self._checkpoint_saved(recovered_raw)
             finally:
                 if pending.exists():pending.unlink()
-            return {'preserved_file':preserved.name,'mode':preview['mode'],'source':source,
+            return {'preserved_file':preserved.name if preserved is not None else None,
+                    'primary_missing':raw is None,'mode':preview['mode'],'source':source,
                     'recovered_count':preview['healthy_count'],'categories':preview['categories']}
