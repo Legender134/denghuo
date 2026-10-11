@@ -92,6 +92,40 @@ def _preserved_migration_files(directory, *, recognised=False):
     return paths
 
 
+def _knowledge_migration_files(source):
+    from .backups import unlinked
+    from .knowledge import HEALTHY_ID, MAX_BYTES
+    directory = unlinked(source/'knowledge-healthy')
+    if not directory.exists():return []
+    if not directory.is_dir():raise ValueError('旧健康副本目录类型不正确，原件仍保留，尚未迁移')
+    paths,total = [],0
+    for path in sorted(directory.glob('*.json')):
+        if not HEALTHY_ID.fullmatch(path.stem):continue
+        total += _migration_size(path,16*MAX_BYTES)
+        paths.append(path)
+        if len(paths)>12000 or total>600*1024*1024:
+            raise ValueError('旧健康副本超过迁移限制，原件仍保留，尚未迁移')
+    return paths
+
+
+def _backup_migration_files(source):
+    from .backups import unlinked
+    from .backup_destination import CONTAINERS
+    paths,total = [],0
+    for name in CONTAINERS:
+        directory = unlinked(source/name)
+        if not directory.exists():continue
+        if not directory.is_dir():raise ValueError('旧备份目录类型不正确，原件仍保留，尚未迁移')
+        for path in directory.rglob('*'):
+            unlinked(path)
+            if path.is_dir():continue
+            total += _migration_size(path,600*1024*1024)
+            paths.append(path)
+            if len(paths)>12000 or total>600*1024*1024:
+                raise ValueError('旧备份及保留副本合计超过迁移限制，请在旧版内导出重要记录')
+    return paths
+
+
 def _recognise_default_data(source):
     """Recognise owned records, without trusting raw originals as usable forms."""
     from .backups import unlinked
@@ -105,6 +139,13 @@ def _recognise_default_data(source):
             KnowledgeWorkspace(knowledge, None)._read()
             return 'verified-data'
         except ValueError:
+            pass
+    workspace = KnowledgeWorkspace(knowledge,None)
+    for path in _knowledge_migration_files(source):
+        try:
+            workspace._healthy_bytes(path.stem)
+            return 'verified-data'
+        except (OSError,ValueError,TypeError,KeyError,AttributeError,RecursionError,OverflowError):
             pass
     drafts = ExitDraftStore(source/'exit-drafts')
     for path in sorted(unlinked(drafts.directory).glob('*.json')):
@@ -132,20 +173,11 @@ def _recognise_default_data(source):
             return 'verified-data'
         except (ValueError, FileNotFoundError):
             pass
-    backup = unlinked(source/'backups')
-    count, total = 0, 0
-    for path in backup.rglob('*'):
-        unlinked(path)
-        if path.is_dir():
-            continue
-        total += _migration_size(path, 600*1024*1024)
-        count += 1
-        if count > 12000 or total > 600*1024*1024:
-            raise ValueError('旧备份超过迁移限制，请在旧版内导出重要记录')
-        if (path.suffix == '.zip' and re.fullmatch(r'[0-9a-f]{64}', path.stem)
+    for path in _backup_migration_files(source):
+        if (path.suffix == '.zip' and re.fullmatch(r'[0-9a-f]{64}(?:-[0-9]+)?', path.stem)
                 and re.fullmatch(r'[0-9a-f]{24}', path.parent.name)):
             try:
-                read_archive(path, identity=path.stem)
+                read_archive(path, identity=path.stem.split('-')[0])
                 return 'verified-data'
             except ValueError:
                 pass
@@ -209,6 +241,7 @@ def migrate_data(destination, sources):
             carried_preferences.append(REGISTRY)
         # Retain corrupt but bounded originals too; their readers report the error
         # without preventing unrelated save monitoring or backup work.
+        knowledge_present = unlinked(source/'knowledge.json').exists()
         for name, maximum in (('knowledge.json', 16*1024*1024), ('play-mode.json', 16*1024*1024)):
             previous = unlinked(source/name)
             if previous.is_file():
@@ -216,6 +249,13 @@ def migrate_data(destination, sources):
                     raise ValueError('旧收藏、方案或游玩设置过大，原文件仍保留，尚未迁移')
                 copy_file(previous, temporary/name, maximum)
                 carried_preferences.append(name)
+        knowledge_paths = _knowledge_migration_files(source)
+        for previous in knowledge_paths:
+            target = temporary/'knowledge-healthy'/previous.name
+            target.parent.mkdir(exist_ok=True)
+            copy_file(previous,target,16*1024*1024)
+        from .knowledge import KnowledgeWorkspace
+        copied_knowledge = KnowledgeWorkspace(temporary/'knowledge.json',None)._healthy_copies()
         from .session_exit import ExitDraftStore, DRAFT_ID, MAX_DRAFT_FILE
         drafts = ExitDraftStore(source/'exit-drafts')
         copied_drafts, uncarried_drafts = [], []
@@ -300,25 +340,32 @@ def migrate_data(destination, sources):
                         4096 if path.suffix == '.json' else MAX_DRAFT_FILE, expected=fingerprints[path])
                 target_recovery.read_preserved(identity)
                 copied_preserved.append(identity)
-        backup = unlinked(source/'backups')
-        count, total = 0, 0
-        if backup.is_dir():
-            for path in backup.rglob('*'):
-                unlinked(path)
-                if path.is_dir():
-                    continue
-                if not path.is_file():
-                    raise ValueError('旧备份包含不支持的文件，尚未迁移')
-                count += 1; total += path.stat().st_size
-                if count > 12000 or total > 600*1024*1024:
-                    raise ValueError('旧备份超过迁移限制，请在旧版内导出重要记录')
-                target = temporary/'backups'/path.relative_to(backup)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                copy_file(path, target, 600*1024*1024)
+        backup_paths = _backup_migration_files(source)
+        count,total = len(backup_paths),0
+        for previous in backup_paths:
+            target = temporary/previous.relative_to(source)
+            target.parent.mkdir(parents=True,exist_ok=True)
+            size,_ = copy_file(previous,target,600*1024*1024)
+            total += size
+        from .backups import BackupLibrary, BackupManager
+        from .backup_workflows import automatic_recovery_plan
+        pending_recovery = []
+        for previous in backup_paths:
+            relative = previous.relative_to(source)
+            if (len(relative.parts)==3 and relative.parts[0]=='backups'
+                    and re.fullmatch(r'[0-9a-f]{24}',relative.parts[1])
+                    and relative.name=='automatic-retention-pending.json'):
+                library = BackupLibrary(relative.parts[1])
+                for parent in (source,temporary):
+                    automatic_recovery_plan(BackupManager(parent/'backups'),library)
+                pending_recovery.append(relative.as_posix())
         if recognition == 'verified-data' and _recognise_default_data(temporary) != 'verified-data':
             raise ValueError('迁移后的资料无法再次核对，旧原件仍保留，尚未迁移')
         report = {'source':str(source), 'copied_files':count, 'copied_bytes':total,
                   'copied_preferences':carried_preferences, 'original_preserved':True,
+                  'copied_knowledge_generations':copied_knowledge,
+                  'copied_backup_containers':sorted({path.relative_to(source).parts[0] for path in backup_paths}),
+                  'verified_pending_retention':pending_recovery,
                   'copied_exit_drafts': copied_drafts, 'unavailable_exit_drafts': uncarried_drafts,
                   'settings_copied': settings_copied, 'source_recognition': recognition,
                   'copied_exit_recovery': copied_recovery, 'unavailable_exit_recovery': unavailable_recovery,
@@ -332,6 +379,10 @@ def migrate_data(destination, sources):
         for previous, (maximum, fingerprint) in copied_sources.items():
             if _migration_digest(previous, maximum) != fingerprint:
                 raise ValueError('旧资料在迁移期间已变化，原件仍保留，尚未迁移')
+        if (unlinked(source/'knowledge.json').exists()!=knowledge_present
+                or _knowledge_migration_files(source)!=knowledge_paths
+                or _backup_migration_files(source)!=backup_paths):
+            raise ValueError('旧恢复资料在迁移期间已变化，原件仍保留，尚未迁移')
         unlinked(destination)
         if destination.exists():
             raise ValueError('目的资料目录已建立，原有资料仍保留，尚未迁移')

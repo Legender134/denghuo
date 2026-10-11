@@ -30,6 +30,115 @@ class LibraryRecoveryTests(unittest.TestCase):
             {'hp':3,'max_hp':30,'hero_level':5}, note='独立备注\n原条件')
         self.healthy = json.loads(self.store.export())['plans'][0]
 
+    def missing_primary(self):
+        self.store.favorite('items.waterskin', True)
+        self.store.remember('actors.buffs.healing')
+        copies = {path.name:path.read_bytes() for path in self.store._healthy_directory().glob('*.json')}
+        self.assertEqual(len(copies), 3)
+        held = self.directory/'original-held.json'
+        self.store.path.replace(held)
+        return held, copies, hashlib.sha256(held.read_bytes()).hexdigest()
+
+    def test_missing_primary_preserves_generations_during_views_and_requires_selected_restore(self):
+        held, copies, source = self.missing_primary()
+        reopened = KnowledgeWorkspace(self.store.path, self.session)
+        reopened.ensure_protection()
+        self.assertFalse(reopened.status()['available'])
+        self.assertTrue(reopened.status()['primary_missing'])
+        for entry in ('items.waterskin','actors.buffs.healing','items.potions.potionofhealing'):
+            with self.assertRaisesRegex(ValueError,'主文件缺失'):reopened.remember(entry)
+        with self.assertRaisesRegex(ValueError,'主文件缺失'):reopened.favorite('items.waterskin',True)
+        preview = reopened.repair_preview()
+        self.assertFalse(preview['can_repair'])
+        self.assertEqual(preview['issues'], [])
+        with self.assertRaisesRegex(ValueError,'先选择'):reopened.repair(preview['expected'],True)
+        self.assertFalse(reopened.path.exists())
+        selected = reopened.repair_preview(source)
+        exported = reopened.repair_export(selected['expected'],source)
+        self.assertEqual(json.loads(exported),json.loads(held.read_bytes()))
+        self.assertFalse(reopened.path.exists())
+        receipt = reopened.repair(selected['expected'],True,source)
+        self.assertIsNone(receipt['preserved_file'])
+        self.assertTrue(receipt['primary_missing'])
+        self.assertEqual(reopened.reopen(self.healthy['id'])['plan']['note'],'独立备注\n原条件')
+        self.assertEqual({path.name:path.read_bytes() for path in reopened._healthy_directory().glob('*.json')},copies)
+        restored = reopened.path.read_bytes()
+        with self.assertRaisesRegex(ValueError,'无需恢复'):reopened.repair(selected['expected'],True,source)
+        self.assertEqual(reopened.path.read_bytes(),restored)
+
+    def test_missing_primary_confirmation_refuses_a_reappeared_primary_or_changed_source(self):
+        held, copies, source = self.missing_primary()
+        preview = self.store.repair_preview(source)
+        self.store.path.write_bytes(held.read_bytes())
+        for operation in (self.store.repair_export,lambda expected,selected:self.store.repair(expected,True,selected)):
+            with self.assertRaisesRegex(ValueError,'无需恢复'):operation(preview['expected'],source)
+        self.assertEqual(self.store.path.read_bytes(),held.read_bytes())
+        self.store.path.replace(self.directory/'reappeared-held.json')
+        selected = self.store._healthy_directory()/(source+'.json')
+        selected.write_bytes(b'{changed-source')
+        for operation in (self.store.repair_export,lambda expected,selected:self.store.repair(expected,True,selected)):
+            with self.assertRaisesRegex(ValueError,'字节已变化'):operation(preview['expected'],source)
+        self.assertFalse(self.store.path.exists())
+        self.assertEqual(held.read_bytes(),copies[source+'.json'])
+
+    def test_missing_primary_publication_never_overwrites_a_late_writer(self):
+        import os
+        held, copies, source = self.missing_primary()
+        preview = self.store.repair_preview(source)
+        competing = b'{"format":1,"favorites":["items.waterskin"],"recent":[],"plans":[]}'
+        link = os.link
+        def race(staged,target):
+            Path(target).write_bytes(competing)
+            return link(staged,target)
+        with patch('companion.knowledge.os.link',side_effect=race):
+            with self.assertRaisesRegex(ValueError,'重新出现'):self.store.repair(preview['expected'],True,source)
+        self.assertEqual(self.store.path.read_bytes(),competing)
+        self.assertEqual({path.name:path.read_bytes() for path in self.store._healthy_directory().glob('*.json')},copies)
+        self.assertEqual(list(self.directory.glob('knowledge.json.*.pending')),[])
+        self.assertEqual(self.store.generation,3)
+
+    def test_missing_primary_publication_failure_keeps_all_generations_and_absence(self):
+        held, copies, source = self.missing_primary()
+        preview = self.store.repair_preview(source)
+        with patch('companion.knowledge.os.link',side_effect=OSError('controlled publication failure')):
+            with self.assertRaisesRegex(OSError,'controlled'):self.store.repair(preview['expected'],True,source)
+        self.assertFalse(self.store.path.exists())
+        self.assertEqual({path.name:path.read_bytes() for path in self.store._healthy_directory().glob('*.json')},copies)
+        self.assertEqual(list(self.directory.glob('knowledge.json.*.pending')),[])
+
+    def test_missing_primary_export_rechecks_a_source_changed_during_serialization(self):
+        held, copies, source = self.missing_primary()
+        preview = self.store.repair_preview(source)
+        serialize = self.store._recovery_document
+        def changed(value):
+            (self.store._healthy_directory()/(source+'.json')).write_bytes(b'{changed-during-export')
+            return serialize(value)
+        with patch.object(self.store,'_recovery_document',side_effect=changed):
+            with self.assertRaisesRegex(ValueError,'字节已变化'):self.store.repair_export(preview['expected'],source)
+        self.assertFalse(self.store.path.exists())
+        self.assertEqual(held.read_bytes(),copies[source+'.json'])
+
+    def test_missing_primary_without_any_verifiable_generation_can_explicitly_start_empty(self):
+        held, copies, source = self.missing_primary()
+        for name in copies:(self.store._healthy_directory()/name).write_bytes(b'{unavailable-'+name.encode())
+        unavailable = {path.name:path.read_bytes() for path in self.store._healthy_directory().glob('*.json')}
+        preview = self.store.repair_preview()
+        self.assertTrue(preview['can_repair'])
+        self.assertFalse(preview['can_export'])
+        with self.assertRaisesRegex(ValueError,'确认'):self.store.repair(preview['expected'],False)
+        receipt = self.store.repair(preview['expected'],True)
+        self.assertEqual(receipt['mode'],'empty')
+        self.assertIsNone(receipt['preserved_file'])
+        self.assertEqual(json.loads(self.store.export()),{'format':1,'favorites':[],'recent':[],'plans':[]})
+        for name,raw in unavailable.items():self.assertEqual((self.store._healthy_directory()/name).read_bytes(),raw)
+
+    def test_genuinely_new_workspace_remains_ready_without_configuration(self):
+        store = KnowledgeWorkspace(self.directory/'new'/'knowledge.json',self.session)
+        self.assertTrue(store.status()['available'])
+        store.remember('items.waterskin')
+        store.favorite('items.waterskin',True)
+        self.assertEqual(store.status()['favorites'],['items.waterskin'])
+
     def damaged(self, **changes):
         bad = {**copy.deepcopy(self.healthy),'id':'b'*32,'name':''}
         value = {'format':1,'favorites':['items.waterskin'],

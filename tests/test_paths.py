@@ -12,6 +12,137 @@ from companion.paths import data_directory, migrate_data
 
 
 class DataPathTests(unittest.TestCase):
+    def test_first_install_carries_healthy_generations_for_damaged_or_missing_default_library(self):
+        from companion.service import DEFAULTS,Session
+        for configured in (False,True):
+            for missing in (False,True):
+                with self.subTest(configured=configured,missing=missing),tempfile.TemporaryDirectory(prefix='denghuo-generation-migration-') as directory:
+                    root=Path(directory);source=root/'old';source.mkdir();saves=root/'synthetic-saves';saves.mkdir()
+                    if configured:
+                        (source/'settings.json').write_text(json.dumps({'save_root':str(saves),'slot':'auto','mode':'save','reveal':False}),encoding='utf-8')
+                    with patch.dict(DEFAULTS,{'save_root':str(saves)}):session=Session(source/'settings.json')
+                    plan=session.knowledge.save('原始局势','manual',None,{'hp':3,'ht':30,'buffs':['Poison']})
+                    session.knowledge.favorite('items.waterskin',True);session.knowledge.remember('actors.buffs.healing')
+                    healthy=session.knowledge.path.read_bytes();identity=hashlib.sha256(healthy).hexdigest()
+                    if missing:session.knowledge.path.replace(root/'held-original.json')
+                    else:session.knowledge.path.write_bytes(healthy[:32])
+                    unavailable=source/'knowledge-healthy'/('f'*64+'.json');unavailable.write_bytes(b'{unavailable original')
+                    originals={path.relative_to(source):path.read_bytes() for path in source.rglob('*') if path.is_file()}
+                    destination=root/'new';report=migrate_data(destination,[source])
+                    self.assertEqual(sum(row['available'] for row in report['copied_knowledge_generations']),3)
+                    self.assertEqual((destination/unavailable.relative_to(source)).read_bytes(),unavailable.read_bytes())
+                    with patch.dict(DEFAULTS,{'save_root':str(saves)}):restarted=Session(destination/'settings.json')
+                    self.assertFalse(restarted.knowledge.status()['available'])
+                    self.assertEqual(restarted.knowledge.path.exists(),not missing)
+                    for name,raw in originals.items():self.assertEqual((source/name).read_bytes(),raw)
+                    preview=restarted.knowledge.repair_preview(identity)
+                    receipt=restarted.knowledge.repair(preview['expected'],True,identity)
+                    self.assertEqual(restarted.knowledge.reopen(plan['id'])['result']['hero']['hp'],3)
+                    self.assertEqual(json.loads(restarted.knowledge.path.read_bytes()),json.loads(healthy))
+                    self.assertEqual(receipt['primary_missing'],missing)
+                    self.assertEqual(report['settings_copied'],configured)
+
+    def migration_backup_fixture(self,root):
+        from companion.backups import BackupManager
+        source=root/'old';source.mkdir();saves=root/'synthetic-saves';saves.mkdir()
+        (source/'settings.json').write_text(json.dumps({'save_root':str(saves),'slot':'auto','mode':'save','reveal':False}),encoding='utf-8')
+        clock=[1700000000]
+        manager=BackupManager(source/'backups',clock=lambda:clock[0],closed_check=lambda:None)
+        def capture(hp):
+            clock[0]+=120;folder=saves/'game1';folder.mkdir(exist_ok=True)
+            game={'depth':2,'version':920,'seed':11,'generated_levels':[2],
+                  'hero':{'class':'MAGE','HP':hp,'HT':30,'STR':10,'lvl':2,'inventory':[],'buffs':[]}}
+            level={'__className':'com.shatteredpixel.shatteredpixeldungeon.levels.SewerLevel','version':920,
+                   'width':4,'height':4,'map':[4]*16,'visited':[False]*16,'mapped':[False]*16}
+            for name,value in (('game.dat',game),('depth2.dat',{'level':level})):
+                path=folder/name;path.write_bytes(gzip.compress(json.dumps(value).encode(),mtime=0));os.utime(path,(clock[0],clock[0]))
+            return manager.capture(saves,1)
+        return source,saves,manager,capture
+
+    def test_first_install_carries_retained_names_times_and_quarantine_originals(self):
+        from companion.backups import BackupManager
+        with tempfile.TemporaryDirectory(prefix='denghuo-retained-migration-') as directory:
+            root=Path(directory);source,saves,manager,capture=self.migration_backup_fixture(root)
+            first=capture(29);capture(28)
+            named=next(row for row in manager.history(saves) if row['id']==first['id'])
+            manager.manage(saves,{'slot':1,'id':first['id'],'label':'重要节点','expected_metadata_revision':named['metadata_revision']})
+            manager.remove(saves,{'slot':1,'id':first['id'],'confirm':'移出备份 1'})
+            retained,=manager.retained_status(saves)
+            quarantine=source/'backup-quarantine'/manager.scope(saves).name/'original.zip'
+            quarantine.parent.mkdir(parents=True);quarantine.write_bytes(b'bounded corrupt original')
+            quarantine.with_suffix('.json').write_bytes(b'{bounded unavailable metadata')
+            originals={path.relative_to(source):path.read_bytes() for path in source.rglob('*') if path.is_file()}
+            destination=root/'new';report=migrate_data(destination,[source])
+            self.assertEqual(report['copied_backup_containers'],['backup-quarantine','backup-recycle','backups'])
+            migrated=BackupManager(destination/'backups',closed_check=lambda:None)
+            self.assertEqual(migrated.retained_status(saves),[retained])
+            for name,raw in originals.items():
+                self.assertEqual((source/name).read_bytes(),raw)
+                if name.parts[0] in ('backups','backup-recycle','backup-quarantine'):self.assertEqual((destination/name).read_bytes(),raw)
+
+    def test_first_install_preserves_and_validates_pending_retention_as_one_unit(self):
+        from companion.backups import BackupManager
+        from companion import backup_workflows as flows
+        class Crash(BaseException):pass
+        for absent in (False,True):
+            with self.subTest(absent=absent),tempfile.TemporaryDirectory(prefix='denghuo-pending-retention-migration-') as directory:
+                root=Path(directory);source,saves,manager,capture=self.migration_backup_fixture(root)
+                for hp in (29,28,27,26):capture(hp)
+                preview=flows.automatic_preview(manager,saves)
+                flows.automatic_save(manager,saves,{'expected_policy':preview['policy']['expected'],'expected':preview['expected'],'confirmed':True},enabled=True)
+                replace=Path.replace
+                def interrupted(path,target):
+                    result=replace(path,target)
+                    if path.suffix=='.zip' and Path(target).parent.parent.name=='backup-recycle':raise Crash()
+                    return result
+                with patch.object(flows,'AUTOMATIC_KEEP',1),patch('companion.backups.MAX_HISTORY',4),patch.object(Path,'replace',interrupted):
+                    with self.assertRaises(Crash):capture(25)
+                pending=manager.scope(saves)/'automatic-retention-pending.json'
+                self.assertTrue(pending.exists())
+                retained,=(source/'backup-recycle').rglob('*.zip')
+                if absent:retained.replace(root/'held-retained.zip')
+                originals={path.relative_to(source):path.read_bytes() for path in source.rglob('*') if path.is_file()}
+                destination=root/'new'
+                if absent:
+                    with self.assertRaises(FileNotFoundError):migrate_data(destination,[source])
+                    self.assertFalse(destination.exists())
+                else:
+                    report=migrate_data(destination,[source])
+                    self.assertEqual(report['verified_pending_retention'],[pending.relative_to(source).as_posix()])
+                    migrated=BackupManager(destination/'backups',closed_check=lambda:None)
+                    self.assertIsNotNone(flows.automatic_recovery_plan(migrated,saves))
+                    self.assertFalse(flows.automatic_status(migrated,saves)['enabled'])
+                    self.assertIsNotNone(migrated.capture(saves,1))
+                    self.assertFalse((migrated.scope(saves)/pending.name).exists())
+                for name,raw in originals.items():self.assertEqual((source/name).read_bytes(),raw)
+
+    def test_first_install_refuses_primary_reappearance_and_combined_retained_capacity(self):
+        from companion.paths import _migration_size
+        from companion.service import Session
+        for race in (True,False):
+            with self.subTest(race=race),tempfile.TemporaryDirectory(prefix='denghuo-migration-boundary-') as directory:
+                root=Path(directory);source,saves,manager,capture=self.migration_backup_fixture(root)
+                session=Session(source/'settings.json');session.knowledge.favorite('items.waterskin',True)
+                healthy=session.knowledge.path.read_bytes();session.knowledge.path.replace(root/'held-primary.json')
+                copy=shutil.copy2
+                def competing(previous,target):
+                    result=copy(previous,target)
+                    if Path(previous).parent.name=='knowledge-healthy':session.knowledge.path.write_bytes(healthy)
+                    return result
+                destination=root/'new'
+                if race:
+                    with patch('companion.paths.shutil.copy2',side_effect=competing):
+                        with self.assertRaisesRegex(ValueError,'已变化'):migrate_data(destination,[source])
+                    self.assertEqual(session.knowledge.path.read_bytes(),healthy)
+                else:
+                    first=capture(29);capture(28);manager.remove(saves,{'slot':1,'id':first['id'],'confirm':'移出备份 1'})
+                    def bounded(path,maximum):
+                        actual=_migration_size(path,maximum)
+                        return 600*1024*1024 if Path(path).parent.parent.name=='backup-recycle' else actual
+                    with patch('companion.paths._migration_size',side_effect=bounded):
+                        with self.assertRaisesRegex(ValueError,'合计超过'):migrate_data(destination,[source])
+                self.assertFalse(destination.exists())
+
     def test_default_session_without_settings_migrates_favorites_and_both_draft_kinds(self):
         from companion.service import Session
         with tempfile.TemporaryDirectory(prefix='denghuo-default-data-migration-') as directory:

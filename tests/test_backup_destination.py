@@ -119,6 +119,11 @@ class BackupDestinationTests(unittest.TestCase):
         other=BackupManager(self.target/'backups',clock=lambda:self.now,closed_check=lambda:None)
         rows,_=self.interrupted_retention(other,'move')
         self.capture(28)
+        # This case merges labels for the same archive bytes. Independent captures
+        # can have different ZIP timestamps; their byte conflict is tested separately.
+        original=other.scope(self.saves)/(rows[1]['id']+'.zip')
+        other.checked_archive(self.saves,rows[1]['id'],1)
+        (self.session.backups.scope(self.saves)/original.name).write_bytes(original.read_bytes())
         selected=self.session.backups.selected(self.saves,rows[1])
         self.session.backups.manage(self.saves,{'slot':1,'id':rows[1]['id'],'label':'Source title','expected_metadata_revision':selected['metadata_revision']})
         preview=self.preview();self.assertEqual(preview['retention_recovery'][0]['base'],str(self.target))
