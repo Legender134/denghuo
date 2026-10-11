@@ -12,8 +12,11 @@ from .values_resources import add_resource_values
 from .reference_sources import provenance
 from .game_math import augmented_damage, float32, healing_tick, healing_pool_with_vial, potion_healing_pool
 from .public_source_data import MISSILE_PUBLIC_TYPES
+from .monster_reference import add_monster_values, monster_record
 
 INPUTS = {
+    'loot_count': ('本局此类战利品已成功掉落次数', 0, 0, 1000),
+    'swarm_generation': ('蝇群分裂代数（原始为0）', 0, 0, 1000),
     'level': ('装备等级', 0, 0, 100),
     'hero_level': ('角色等级', 10, 1, 30),
     'max_hp': ('你的最大生命', 65, 1, 10000),
@@ -210,6 +213,9 @@ class PlayerValues:
         signed_equipment = (identity in MISSILE_PUBLIC_TYPES or identity.startswith(('items.weapon.melee.', 'items.armor.'))) and '$' not in identity and not identity.endswith('.ability') and not any(part in identity for part in ('.glyphs.', '.curses.'))
         signed_equipment = signed_equipment or identity == 'items.scrolls.scrollofupgrade' or identity.startswith(('items.weapon.enchantments.', 'items.weapon.curses.', 'items.armor.glyphs.', 'items.armor.curses.')) and '$' not in identity
         raw = dict(raw or {})
+        enemy_reference = monster_record(self.catalog,identity)
+        if enemy_reference:
+            raw = {'depth':1, 'hero_level':1, **raw}
         healing_fields = ('power', 'healing_percent', 'healing_flat', 'vial')
         healing_missing = [key for key in healing_fields if key not in raw or raw[key] in ('', None)] if identity == 'actors.buffs.healing' else []
         talent_reference = identity.startswith('actors.hero.talent.')
@@ -248,6 +254,8 @@ class PlayerValues:
         # Keep only evaluated values from the old engine. Never return summary formulas or members.
         if owner and not entry.get('ability_owner') and not identity.startswith(('actors.hero.talent.', 'actors.hero.heroclass.', 'actors.hero.herosubclass.', 'mechanics.')):
             for example in self.rules.examples(owner, p['level']):
+                if enemy_reference and example['title'] in ('基础属性','基础战斗数值'):
+                    continue
                 if example['title']=='戒指效果表':
                     continue
                 copied = dict(example)
@@ -328,6 +336,8 @@ class PlayerValues:
         add_advanced_values(self, identity, p, result, requested)
         add_operation_values(identity, p, result, requested)
         add_resource_values(identity, p, result, requested)
+        if enemy_reference:
+            add_monster_values(self,identity,p,result,requested)
         # State entries show the reviewed numeric effects of the associated skill.
         # This is a reference calculation, never a guess at an unseen active state.
         spell_states = {
@@ -387,12 +397,22 @@ class PlayerValues:
         if identity in power_labels:
             for input_value in inputs:
                 if input_value['key']=='power':input_value['label']=power_labels[identity]
+        if identity=='actors.mobs.eye':
+            for input_value in inputs:
+                if input_value['key']=='damage':input_value['label']='进入蓄力承伤分支的整数伤害'
+        source_metadata = provenance(self, identity, owner)
+        if enemy_reference:
+            commit = self.catalog.data['commit']
+            source_metadata['links'].append({'label':'掉落物品池与楼层权重',
+                'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{commit}/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/items/Generator.java#L746',
+                'kind':'official-game-source'})
+            source_metadata['limits'].append('怪物表默认角色等级1、本局已掉落次数0；这是可调整的参考参数，不会推定本局的实际计数。已被神偷袖章取走的战利品不会再次进行普通掉落。')
         return {'id':identity,'name':entry['name'],'version':self.catalog.data['version'], 'status':'values',
                 'blocks':result, 'inputs':inputs, 'alchemy_recipes': alchemy_recipes,
                 **({'missing_inputs':healing_missing} if identity == 'actors.buffs.healing' else {}),
                 'notice': '回合指游戏时间，不是现实秒数。小数最多显示六位有效数字。',
                 'no_fixed_values':not result, 'non_numeric':self.non_numeric(identity),
-                'provenance':provenance(self, identity, owner)}
+                'provenance':source_metadata}
 
     @staticmethod
     def non_numeric(identity):
@@ -432,11 +452,11 @@ class PlayerValues:
             requested.add('damage');result.append(table('荆棘披风等级效果',['神器等级','承伤转充能%','激活持续回合'],[[f'+{n}',50+5*n,10+n] for n in range(11)]));rows=[metric('激活期间本次随机反弹',f'0–{p["damage"]}','HP','只反弹相邻攻击者；同量伤害减免')]
         if identity in ('items.artifacts.timekeepershourglass','items.artifacts.timekeepershourglass$timefreeze'):
             result.append(table('沙漏容量与时间静止',['显示等级','最大充能','满充能最多静止回合'],[[f'+{2*n}',5+n,2*(5+n)] for n in range(6)],'攻击、施法等可提前结束。每消耗1充能抵消2回合。'));rows=[metric('诅咒时每回合额外耗时概率',10,'%'),metric('一次额外耗时',1,'回合')]
-        if identity=='items.artifacts.alchemiststoolkit':result.append(table('炼金工具箱',['等级','重新准备所需回合','再升一级能量成本'],[[f'+{n}',(10-n)**2,6 if n<10 else '已满级'] for n in range(11)]))
+        if identity=='items.artifacts.alchemiststoolkit':result.append(table('炼金工具箱',['等级','名义准备回合（不含首次更新）','再升一级能量成本'],[[f'+{n}',(10-n)**2,6 if n<10 else '已满级'] for n in range(11)],'刚装备时首次更新仅将剩余准备量从101设为100，之后每回合推进100÷名义准备回合。等级不变、无诅咒且无魔法免疫时推进；浮点进度可能令实际完成多一次更新。满级在下一次更新直接就绪。'))
         if identity in ('items.artifacts.talismanofforesight','items.artifacts.talismanofforesight$foresight'):
             result.append(table('预知护符',['等级','每回合充能%','发现单位显示回合','升级所需探索经验'],[[f'+{n}',display(.05+.005*n),5+2*n,100+50*n if n<10 else '已满级'] for n in range(11)],'无能量戒指；1个未探索格获得1经验，发现陷阱10、暗门100。'))
         if identity=='items.artifacts.hornofplenty':rows=[metric('每充能通常恢复饱食',90,'点'),metric('饥饿游戏每充能恢复',30,'点')]
-        if identity=='items.artifacts.etherealchains':result.append(table('虚空锁链储能目标',['等级','自然恢复充能目标'],[[f'+{n}',5+2*n] for n in range(11)],'这个目标不是硬性上限，可通过升级和其他效果超过。每拉动1格消耗1充能。'))
+        if identity=='items.artifacts.etherealchains':result.append(table('虚空锁链储能目标',['显示等级','自然恢复充能目标'],[[f'+{2*n}',5+2*n] for n in range(6)],'这是游戏显示等级；满级 +10 的目标为15。目标不是硬性上限，可通过升级和其他效果超过。每拉动1格消耗1充能。'))
         if identity in ('items.wands.wandoflivingearth','items.wands.wandoflivingearth$earthguardian'):
             requested.update(('level','hero_level','depth'));ev=(h+4)//2;rows=[metric('守卫最大生命',16+8*l,'HP'),metric('守卫命中',2*ev+5,'点'),metric('守卫闪避',ev,'点'),metric('守卫攻击伤害',f'2–{4+d//2}','HP'),metric('守卫普通减伤',f'{l}–{3+3*l}','HP'),metric('守卫信念护体减伤',f'{l}–{2+l}','HP')]
         if identity in ('items.potions.potionoftoxicgas','actors.blobs.toxicgas','actors.blobs.stenchgas'):
@@ -708,7 +728,8 @@ class PlayerValues:
             rows.append(metric('转换后本次伤害',math.ceil(float32(p['damage']*factor)) if factor is not None else 0,'HP',
                 '随后仍可进行护甲等减伤；双方有效值同时为0时实际传递0伤害，不套常规减伤百分比'))
         if identity=='items.artifacts.chaliceofblood':
-            result.append(table('圣杯升级风险与恢复',['当前等级','下一次刺伤范围HP','平均恢复1HP所需回合'],[[f'+{n}',f'{math.ceil(3+2.5*n*n)}–{math.floor(7+3.5*n*n)}' if n<10 else '已满级',display(10-1.33-.667*n)] for n in range(11)],'刺伤可由护甲/护盾减伤；没有能量戒指和盐晶等恢复修正。诅咒时每15回合恢复1HP。'))
+            result.append(table('圣杯升级风险与恢复',['当前等级','下一次刺伤基础范围HP','平均恢复1HP所需回合'],[[f'+{n}',f'{math.ceil(3+2.5*n*n)}–{math.floor(7+3.5*n*n)}' if n<10 else '已满级',display(10-1.33-.667*n)] for n in range(11)],'刺伤可由护甲/护盾减伤；护甲等处理后若不足1，仍会向角色承伤处理传入1点，之后护盾等仍可改变实际生命损失。没有能量戒指和盐晶等恢复修正。诅咒时每15回合恢复1HP。'))
+            result.append(block('圣杯刺伤条件',[metric('护甲减伤后的刺伤下限',1,'HP','不等于必定损失1生命：后续护盾、抗性等角色承伤处理另计'),metric('每次刺伤耗时',1,'回合')]))
         if identity in ('items.artifacts.cloakofshadows','items.artifacts.cloakofshadows$cloakstealth'):
             result.append(table('暗影斗篷',['斗篷等级','最大充能','每次充能维持隐形'],[[f'+{n}',min(3+n,10),'4回合'] for n in range(11)]))
         if identity=='items.artifacts.hornofplenty':result.append(table('丰饶之角容量',['神器等级','最大充能'],[[f'+{n}',5+n//2] for n in range(11)]))
@@ -716,7 +737,28 @@ class PlayerValues:
 
     def artifacts(self, identity, p, result, requested):
         """Evaluated capacity, recovery and active costs of the remaining artifacts."""
-        if identity=='items.artifacts.holytome':
+        if identity=='items.artifacts.sandalsofnature':
+            labels=['+0','+3','+7','+10']
+            result.append(table('自然之履成长与踩草充能',
+                ['显示等级','本阶段升级需要不同种子数','每次踩踏高草的基础充能'],
+                [[labels[n],3+3*n if n<3 else '已满级',gain] for n,gain in enumerate(['0.5','5/6','7/6','1.5'])],
+                '已装备、无诅咒、无魔法免疫且未充满；未计入能量戒指。各阶段喂入3、6、9种不同种子后升级并清空记录，下一阶段可再次使用此前阶段的种类。满级后喂种子只更换当前效果，不能重复喂当前效果的同种种子。'))
+            result.append(table('自然之履踩草掉落概率',['显示等级','种子判定概率%','露珠判定概率%'],
+                [['未装备',display(100/25),display(100/6)]]+
+                [[labels[n],display(100/(25-4*(n+1))),display(100/(6-(n+1)/2))] for n in range(4)],
+                '踩踏尚未践踏的高草；无挑战、无诅咒、无石化种子等饰品修正。两项分别判定；种子种类仍受生成牌堆影响。植被密集层的露珠概率再减半；蘑菇矿井的两项概率均降至1/3；小恶魔金库的种子概率降至1/3。已践踏草地不能重复刷取。'))
+            seed_costs=[('rotberry',8),('firebloom',20),('swiftthistle',20),('sungrass',80),
+                        ('icecap',20),('stormvine',20),('sorrowmoss',20),('mageroyal',12),
+                        ('earthroot',40),('starflower',40),('fadeleaf',12),('blindweed',12)]
+            result.append(table('自然之履种子效果成本',['当前种子效果','每次激活消耗充能'],
+                [[self.rules.entries['plants.'+name+'$seed']['name'],cost] for name,cost in seed_costs],
+                '喂入种子消耗该种子并替换当前效果；主动激活不会再消耗种子。直接触发对应植物效果，实际作用需结合目标、地形、职业和挑战核对植物资料。'))
+            result.append(block('自然之履使用条件',[
+                metric('最大充能',100,'充能'),metric('每单位神器充能效果恢复',2,'充能','无诅咒、无魔法免疫，不超过容量'),
+                metric('主动施放最大距离',3,'格','目标格必须在当前视野内'),metric('主动施放耗时',1,'回合'),
+                metric('每次喂种子耗时',1,'回合')],
+                '喂入和施放均要求已装备、无诅咒、无魔法免疫；施放还要求已有当前种子效果且充能足够，并会解除隐形。踩草累积的小数充能会保留。'))
+        elif identity=='items.artifacts.holytome':
             requested.add('hero_level');h=p['hero_level'];rows=[]
             for n in range(11):
                 cap=min(n+3,10);extra=5*(n-7)/3 if n>7 else 0

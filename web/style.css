@@ -47,3 +47,8 @@ textarea{font:inherit;color:var(--text);background:#121915;border:1px solid #364
 .overview-urgent{margin:0 0 20px}.overview-urgent p{margin:5px 0;font-size:13px}.overview-urgent a{font-size:12px}
 
 .workspace-character>summary{cursor:pointer;font-weight:700}.workspace-character[open]>summary{margin-bottom:18px}
+
+/* Saved-floor scouting */
+#view-scouting .panel{margin-bottom:20px}.scout-map-scroll{overflow:auto;margin:16px 0;max-height:650px}.scout-map-scroll canvas{display:block;max-width:100%;height:auto;image-rendering:pixelated}.scout-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-top:12px}.scout-card{border:1px solid var(--border);border-radius:8px;padding:14px}.scout-card h3{font-size:14px;margin:0 0 8px}.scout-card button{display:block;margin-top:10px;text-align:left}#scout-map-text{white-space:pre;overflow:auto;max-height:480px;font-size:12px;line-height:1.25}#scout-features,#scout-traps{max-height:400px;overflow:auto}
+
+.forecast-item{padding:.65rem 0;border-top:1px solid var(--border)}.forecast-item .muted{margin:.4rem 0 0}.forecast-item button{max-width:100%;text-align:left;white-space:normal}

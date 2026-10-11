@@ -12,6 +12,54 @@ from companion.paths import data_directory, migrate_data
 
 
 class DataPathTests(unittest.TestCase):
+    def test_failed_first_migration_retries_after_startup_diagnostic(self):
+        from companion.diagnostics import report_failure
+        from companion.service import Session
+        import io
+        with tempfile.TemporaryDirectory(prefix='denghuo-migration-retry-') as folder:
+            root=Path(folder);old=root/'old';old.mkdir();saves=root/'synthetic-saves';saves.mkdir()
+            config=old/'settings.json';config.write_text('{broken',encoding='utf-8')
+            destination=root/'new'
+            with self.assertRaises(ValueError): migrate_data(destination,[old])
+            with patch('companion.paths.data_directory',return_value=destination),patch('sys.stderr',io.StringIO()):
+                report_failure(ValueError('旧设置损坏'))
+            log=(destination/'startup-error.log').read_bytes()
+            config.write_text(json.dumps({'save_root':str(saves),'slot':1,'mode':'save','reveal':False}),encoding='utf-8')
+            previous=Session(config);previous.knowledge.favorite('items.waterskin',True)
+            original=(old/'knowledge.json').read_bytes()
+            report=migrate_data(destination,[old])
+            self.assertEqual((destination/'knowledge.json').read_bytes(),original)
+            self.assertEqual((old/'knowledge.json').read_bytes(),original)
+            self.assertEqual((destination/'startup-error.log').read_bytes(),log)
+            retained=Path(report['preserved_startup_log_directory'])
+            self.assertEqual((retained/'startup-error.log').read_bytes(),log)
+            self.assertEqual(Session(destination/'settings.json').knowledge.status()['favorites'],['items.waterskin'])
+
+    def test_startup_log_retry_refuses_new_destination_data_and_restores_on_commit_failure(self):
+        for concurrent in (True,False):
+            with self.subTest(concurrent=concurrent),tempfile.TemporaryDirectory(prefix='denghuo-log-retry-') as folder:
+                root=Path(folder);old=root/'old';old.mkdir();saves=root/'synthetic-saves';saves.mkdir()
+                (old/'settings.json').write_text(json.dumps({'save_root':str(saves),'slot':1,'mode':'save','reveal':False}),encoding='utf-8')
+                destination=root/'new';destination.mkdir();(destination/'startup-error.log').write_bytes(b'original error')
+                original_copy=shutil.copy2
+                original_replace=Path.replace
+                def copy(source,target):
+                    result=original_copy(source,target)
+                    if concurrent and Path(source).name=='settings.json':
+                        (destination/'knowledge.json').write_bytes(b'new user data')
+                    return result
+                def replace(path,target):
+                    if not concurrent and path.name.startswith('new.migration-'):
+                        raise OSError('simulated publication failure')
+                    return original_replace(path,target)
+                with patch('companion.paths.shutil.copy2',side_effect=copy),patch.object(Path,'replace',replace):
+                    with self.assertRaises((ValueError,OSError)): migrate_data(destination,[old])
+                self.assertEqual((destination/'startup-error.log').read_bytes(),b'original error')
+                if concurrent:
+                    self.assertEqual((destination/'knowledge.json').read_bytes(),b'new user data')
+                else:
+                    self.assertEqual(sorted(path.name for path in destination.iterdir()),['startup-error.log'])
+
     def test_first_install_carries_healthy_generations_for_damaged_or_missing_default_library(self):
         from companion.service import DEFAULTS,Session
         for configured in (False,True):
@@ -152,6 +200,7 @@ class DataPathTests(unittest.TestCase):
             saved = session.save_exit_draft('web-12345678', 'workspace', '原始输入', {'raw': '未计算'})
             session.report_exit_surface('web-12345678', 1, True, draft={'raw': '  -unfinished\t'},
                                         kind='web', label='自动原始输入')
+            self.assertTrue(session.exit_coordinator.flush_checkpoints(timeout=5))
             originals = {str(path.relative_to(source)): path.read_bytes()
                          for path in source.rglob('*') if path.is_file()}
             self.assertFalse(session.config_path.exists())

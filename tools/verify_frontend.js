@@ -575,7 +575,7 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   dashboard.context.location={hash:''};dashboard.context.history={replaceState(_state,_title,url){dashboard.context.location.hash=url;},pushState(_state,_title,url){dashboard.context.location.hash=url;}};
   dashboard.context.crypto={randomUUID:()=> '0123456789abcdef'};
   dashboard.context.setInterval=()=>0;dashboard.context.setTimeout=()=>0;dashboard.context.clearTimeout=()=>{};
-  dashboard.context.fetch=async url=>({ok:true,json:async()=>url==='/api/status'?structuredClone(waiting):{}});
+  dashboard.context.fetch=async url=>({ok:true,json:async()=>['/api/status','/api/settings/reload'].includes(url)?structuredClone(waiting):{}});
   dashboard.get('#calc-level').value='0';dashboard.get('#calc-tier').value='3';
   dashboard.load('backups.js');dashboard.load('app.js');
   await new Promise(resolve=>setImmediate(resolve));
@@ -643,7 +643,7 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert.equal(dashboard.get('#empty-title').textContent,'助手连接已中断');
   assert(dashboard.get('#backup-health').textContent.includes('服务未连接'));
   assert(!dashboard.get('#backup-health').textContent.includes('最近保存已备份'));
-  dashboard.context.fetch=async url=>({ok:true,json:async()=>url==='/api/status'?structuredClone(waiting):{}});
+  dashboard.context.fetch=async url=>({ok:true,json:async()=>['/api/status','/api/settings/reload'].includes(url)?structuredClone(waiting):{}});
   await dashboard.run('poll()');
   assert.equal(dashboard.get('#empty-title').textContent,'已就绪，直接开始游戏');
   dashboard.run("navigate('settings')");
@@ -670,7 +670,7 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert.equal(submittedSettings.expected_revision,'connection-1');
   // Another panel changes the slot while this panel retains its unsaved root.
   waiting.settings_revision='connection-3';waiting.settings.slot=2;
-  dashboard.context.post=async(path,payload)=>{if(path!=='/api/settings')return {};submittedSettings=payload;const error=new Error('连接设置已在其他位置更新，草稿仍保留');error.status=409;throw error;};
+  dashboard.context.post=async(path,payload)=>{if(path==='/api/settings/reload')return structuredClone(waiting);if(path!=='/api/settings')return {};submittedSettings=payload;const error=new Error('连接设置已在其他位置更新，草稿仍保留');error.status=409;throw error;};
   await dashboard.get('#settings-form').listeners.submit({preventDefault(){}});
   assert.equal(submittedSettings.expected_revision,'connection-2');
   assert.equal(saveRoot.value,'/synthetic/new-edit');assert(dashboard.run('settingsConflict'));
@@ -697,10 +697,10 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert.equal(saveRoot.value,'/synthetic/saved-next');assert.equal(dashboard.run('settingsRevision'),'connection-5');
   // Explicit reload obtains fresh values and preserves edits made during its request.
   let finishSettingsReload;
-  dashboard.context.fetch=()=>new Promise(resolve=>finishSettingsReload=resolve);
+  dashboard.context.post=async(path,payload)=>{assert.equal(path,'/api/settings/reload');assert.equal(payload.expected_revision,dashboard.run('state.settings_revision'));return new Promise(resolve=>finishSettingsReload=resolve);};
   const reload=dashboard.get('#settings-reset').listeners.click();
   saveRoot.value='/synthetic/typed-during-reload';dashboard.get('#settings-form').listeners.input({target:saveRoot});
-  finishSettingsReload({ok:true,json:async()=>structuredClone(waiting)});await reload;
+  finishSettingsReload(structuredClone(waiting));await reload;
   assert.equal(saveRoot.value,'/synthetic/typed-during-reload');assert(dashboard.run('settingsDrafts.size')>0);
   assert(dashboard.get('#settings-error').textContent.includes('新修改'));
 
@@ -1325,6 +1325,15 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   // Recovered settings retain their original scope and compare actual saved values,
   // even when a new process starts its preference generation at zero again.
   dashboard.load('workspace.js');
+  // A recovered spoiler preference must describe what it reveals before loading.
+  const revealChoice=dashboard.run("chooseSettingsRecovery([{key:'reveal',original:false,current:false,draft:true,conflict:true}],false)");
+  const revealRecoveryHTML=dashboard.get('#settings-recovery-fields').innerHTML;
+  assert.match(revealRecoveryHTML,/<legend>[^<]*未鉴定物品[^<]*身份[^<]*数值[^<]*剧透/);
+  assert.match(revealRecoveryHTML,/aria-label="[^"]*未鉴定物品[^"]*剧透[^"]*载入选择"/);
+  assert(!revealRecoveryHTML.includes('地图显示'));
+  assert.equal(dashboard.get('#reveal').checked,false,'opening recovery must not enable spoilers');
+  dashboard.run("finishSettingsRecoveryChoice({reveal:'current'})");await revealChoice;
+
   let recoveryConnection={settings_revision:'recovery-original',settings:{save_root:'/synthetic/original',slot:'auto',mode:'save',startup_surface:'native',always_on_top:false,reveal:false,stop_at:''}};
   dashboard.context.recoveryConnection=recoveryConnection;dashboard.run('loadSettings(true,recoveryConnection)');
   dashboard.get('#always-top').checked=true;dashboard.get('#settings-form').listeners.input({target:dashboard.get('#always-top')});

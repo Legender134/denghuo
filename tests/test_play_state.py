@@ -1,5 +1,6 @@
 import copy
 import json
+import multiprocessing
 from pathlib import Path
 import tempfile
 import unittest
@@ -19,7 +20,80 @@ FIRE = {'id':'burning','title':'燃烧','severity':'warning'}
 CRITICAL = {'id':'critical_hp','title':'危险血量','severity':'critical'}
 
 
+def save_preferences_while_held(directory, ready, release, results):
+    try:
+        preferences = PlayPreferences(directory)
+        calls = 0
+        def check():
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                ready.set()
+                if not release.wait(10):
+                    raise RuntimeError('test owner release timed out')
+        result = preferences.update({'enabled': False}, expected_generation=0, check_current=check)
+        results.put(('saved', result))
+    except Exception as exc:
+        results.put(('error', repr(exc)))
+
+
 class PlayStateTests(unittest.TestCase):
+    def test_independent_owners_reject_busy_and_stale_saves_then_reload(self):
+        with tempfile.TemporaryDirectory() as folder:
+            first, second = PlayPreferences(folder), PlayPreferences(folder)
+            draft = {'font_scale': 1.5}
+            before = second.published()
+            with first._storage_lock():
+                with self.assertRaisesRegex(ValueError, '另一个助手'):
+                    second.update(draft, expected_generation=0)
+                with self.assertRaisesRegex(ValueError, '另一个助手'):
+                    second.reload(expected_generation=0)
+                self.assertEqual(second.published(), before)
+                self.assertFalse(first.path.exists())
+            first.update({'enabled': False}, expected_generation=0)
+            saved = first.path.read_bytes()
+            with self.assertRaisesRegex(ValueError, '文件刚被修改'):
+                second.update(draft, expected_generation=0)
+            self.assertEqual(second.published(), before)
+            self.assertEqual(first.path.read_bytes(), saved)
+            self.assertEqual(draft, {'font_scale': 1.5})
+            second.reload(expected_generation=0)
+            second.update(draft, expected_generation=1)
+            reopened = PlayPreferences(folder)
+            self.assertFalse(reopened.values['enabled'])
+            self.assertEqual(reopened.values['font_scale'], 1.5)
+
+    def test_separate_process_owner_holds_lock_through_final_replacement(self):
+        with tempfile.TemporaryDirectory() as folder:
+            second = PlayPreferences(folder)
+            ctx = multiprocessing.get_context('spawn')
+            ready, release, results = ctx.Event(), ctx.Event(), ctx.Queue()
+            owner = ctx.Process(target=save_preferences_while_held, args=(folder, ready, release, results))
+            owner.start()
+            try:
+                self.assertTrue(ready.wait(10), 'first owner must reach its final commit check')
+                with self.assertRaisesRegex(ValueError, '另一个助手'):
+                    second.update({'font_scale': 1.5}, expected_generation=0)
+                self.assertEqual(second.generation, 0)
+                self.assertFalse(second.path.exists())
+            finally:
+                release.set()
+                owner.join(10)
+            self.assertFalse(owner.is_alive())
+            self.assertEqual(owner.exitcode, 0)
+            status, result = results.get(timeout=3)
+            results.close()
+            results.join_thread()
+            self.assertEqual(status, 'saved', result)
+            self.assertEqual(result['revision'], 1)
+            with self.assertRaisesRegex(ValueError, '文件刚被修改'):
+                second.update({'font_scale': 1.5}, expected_generation=0)
+            second.reload(expected_generation=0)
+            second.update({'font_scale': 1.5}, expected_generation=1)
+            reopened = PlayPreferences(folder)
+            self.assertFalse(reopened.values['enabled'])
+            self.assertEqual(reopened.values['font_scale'], 1.5)
+
     def test_preferences_reject_invalid_or_duplicate_bindings(self):
         for patch in ({'font_scale':float('nan')},{'opacity':.1},{'offset_x':True}, {'enabled':1},
                       {'anchor':'center'}, {'bindings':{'quick':'Ctrl+Alt+L'}}, {'unexpected':1}):

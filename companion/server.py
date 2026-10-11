@@ -9,6 +9,7 @@ import secrets
 from urllib.parse import parse_qs, urlsplit
 from .backups import MAX_TOTAL
 from .service import SettingsConflict
+from .scouting import ScoutingConflict
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 
@@ -38,7 +39,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         self.end_headers()
         try:
             self.wfile.write(raw)
@@ -93,6 +94,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_data(self.server.session.catalog.search(args.get("q", [""])[0][:200], args.get("category", ["全部"])[0], offset=offset))
             except ValueError:
                 self.send_data({"error": "页码不正确"}, 400)
+        elif url.path == '/api/forecast':
+            from .forecast import information
+            try:
+                self.send_data(information(self.server.session.catalog))
+            except (OSError, ValueError):
+                self.send_data({'error': '本地预测资料缺失，请完整解压助手。'}, 503)
+        elif url.path == '/forecast.wasm':
+            try:
+                self.send_data((WEB/'forecast.wasm').read_bytes(), mime='application/wasm')
+            except OSError:
+                self.send_data({'error': '本地预测模块缺失'}, 404)
         elif url.path == "/api/values":
             args = parse_qs(url.query)
             try:
@@ -180,7 +192,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_data(result)
             except (OSError, ValueError) as exc:
                 self.send_data({'error': str(exc)}, 400)
-        elif url.path in ("/", "/index.html", "/app.js", "/backups.js", "/rules.js", "/compare.js", "/workspace.js", "/help.js", "/play.js", "/backup-workflows.js", "/backup-libraries.js", "/backup-destination.js", "/global-history.js", "/migration.js", "/alchemy.js", "/character.js", "/style.css", "/icon.svg"):
+        elif url.path in ("/", "/index.html", "/app.js", "/backups.js", "/rules.js", "/compare.js", "/workspace.js", "/help.js", "/play.js", "/backup-workflows.js", "/backup-libraries.js", "/backup-destination.js", "/global-history.js", "/migration.js", "/alchemy.js", "/character.js", "/scouting.js", "/forecast.js", "/forecast-worker.js", "/style.css", "/icon.svg"):
             path = WEB / ("index.html" if url.path == "/" else url.path[1:])
             try:
                 mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
@@ -380,6 +392,20 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     raise ValueError('不支持的面板操作')
                 return
+            if path == '/api/forecast':
+                from .forecast import read_seed
+                self.send_data(read_seed(self.server.session, payload))
+                return
+            if path == '/api/scouting':
+                from .scouting import inspect_saved
+                self.send_data(inspect_saved(self.server.session, payload))
+                return
+            if path == '/api/settings/reload':
+                if (not isinstance(payload, dict) or set(payload) != {'expected_revision'}
+                        or not isinstance(payload['expected_revision'], str) or not payload['expected_revision']):
+                    raise ValueError('请先读取当前连接设置，再重新载入。')
+                self.send_data(self.server.session.reload_settings(expected_revision=payload['expected_revision']))
+                return
             if path == "/api/settings":
                 patch = dict(payload)
                 revision = patch.pop('expected_revision', None)
@@ -402,7 +428,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_data({"error": "Not found"}, 404)
                 return
             self.send_data({"ok": True})
-        except SettingsConflict as exc:
+        except (SettingsConflict, ScoutingConflict) as exc:
             self.send_data({'error': str(exc)}, 409)
         except (ValueError, OSError, KeyError, RecursionError, OverflowError) as exc:
             self.send_data({"error": str(exc) if isinstance(exc, (ValueError, OSError)) else '请求参数或资料不正确'}, 400)

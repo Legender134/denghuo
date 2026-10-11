@@ -5,8 +5,10 @@ import json
 import copy
 import math
 import hashlib
+import os
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 import time
 
@@ -73,8 +75,36 @@ class PlayPreferences:
         generation, values, error = self._published
         return {'revision': generation, 'settings': copy.deepcopy(values), 'error': error}
 
+    @contextmanager
+    def _storage_lock(self):
+        from .backups import unlinked
+        unlinked(self.path.parent).mkdir(parents=True, exist_ok=True)
+        target = self.path.with_name(self.path.name + '.lock')
+        with unlinked(target).open('a+b') as stream:
+            try:
+                stream.seek(0)
+                if os.name == 'nt':
+                    import msvcrt
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise ValueError('另一个助手正在保存或重新读取游玩设置，请稍后重试；当前草稿仍保留') from exc
+            try:
+                if stream.seek(0, 2) == 0:
+                    stream.write(b'\0')
+                    stream.flush()
+                yield
+            finally:
+                stream.seek(0)
+                if os.name == 'nt':
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
     def update(self, patch, expected_generation=None, *, check_current=None):
-        with self.lock:
+        with self.lock, self._storage_lock():
             if check_current:
                 check_current()
             if expected_generation is not None and (type(expected_generation) is not int or expected_generation != self.generation):
@@ -114,7 +144,7 @@ class PlayPreferences:
             return {'settings': copy.deepcopy(clean), 'revision': self.generation}
 
     def reload(self, *, expected_generation=None, check_current=None):
-        with self.lock:
+        with self.lock, self._storage_lock():
             if expected_generation is not None and expected_generation != self.generation:
                 raise ValueError('游玩设置刚在另一窗口修改；当前草稿仍保留，请重新读取。')
             saved = type(self)(self.path.parent)

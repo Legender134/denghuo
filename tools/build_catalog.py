@@ -6,6 +6,7 @@ import re
 from numeric_catalog import enrich
 from build_numeric_rules import build, attach_catalog, UPSTREAM, COMMIT, VERSION, VERSION_CODE
 from alchemy_catalog import attach as attach_alchemy
+from build_monster_reference import build as build_monsters
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = UPSTREAM / "core/src/main/java/com/shatteredpixel/shatteredpixeldungeon"
@@ -76,6 +77,8 @@ def main():
             continue
         stem = key[:-5]
         desc = messages.get(stem + ".desc", "")
+        if stem == "items.artifacts.sandalsofnature":
+            desc = messages.get(stem + ".desc_1", desc)
         modifier = any(part in stem for part in (".enchantments.", ".glyphs.", ".curses."))
         if not desc or ("%" in name and not modifier):
             continue
@@ -108,9 +111,13 @@ def main():
             "tiers": tiers, "terrain": terrain, "entries": entries, "exotic_to_regular": exotic_to_regular,
             "artifact_caps": artifact_caps, "class_armors": sorted(class_armors)}
     alchemy_count = attach_alchemy(data, UPSTREAM)
+    monsters = build_monsters(rules, data, UPSTREAM)
+    entries.extend(dict(row) for row in monsters['extra_catalog_entries'])
+    data['enemy_ids'] = sorted(monsters['monsters'])
     # Alchemy adds canonical seed entries; attach every final entry to its source.
     attach_catalog(entries, messages, rules)
     (ROOT / "data/numeric_rules.json").write_text(json.dumps(rules, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    (ROOT / "data/monster_reference.json").write_text(json.dumps(monsters, ensure_ascii=False, sort_keys=True, separators=(',', ':'))+'\n', encoding='utf-8', newline='\n')
     output = ROOT / "data/catalog.json"
     output.parent.mkdir(exist_ok=True)
     output.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")

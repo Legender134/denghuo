@@ -91,9 +91,11 @@ class Catalog:
         self.tiers = self.data["tiers"]
         self.entries = [{**row, "description": clean_text(row["description"]), "name": clean_text(row["name"])} for row in self.data["entries"]]
         self.entry_index = {row['id']: row for row in self.entries}
+        enemies = set(self.data.get('enemy_ids', []))
         for row in self.entries:
             identity = row['id']
-            row['type_label'] = ('牧师法术' if identity.startswith('actors.hero.spells.') else
+            row['type_label'] = ('敌人' if identity in enemies else
+                '牧师法术' if identity.startswith('actors.hero.spells.') else
                 '角色天赋' if identity.startswith('actors.hero.talent.') else
                 '职业技能' if identity.startswith('actors.hero.abilities.') else
                 '武器技能' if identity.endswith('.ability') else
@@ -107,7 +109,8 @@ class Catalog:
         if short_class(obj) == "Berserk":
             state = {"NORMAL": "angered", "BERSERK": "berserk", "RECOVERING": "recovering"}.get(obj.get("state"))
             return clean_text(self.messages.get(self.key(obj) + "." + state, "狂战士状态")) if state else "狂战士状态"
-        return clean_text(self.messages.get(self.key(obj) + ".name", short_class(obj) or fallback))
+        key = self.key(obj)
+        return clean_text(self.messages.get(key + ".name", self.entry_index.get(key, {}).get('name', short_class(obj) or fallback)))
 
     def search(self, query="", category="全部", limit=80, offset=0):
         from .knowledge_search import search
@@ -177,6 +180,8 @@ class Catalog:
         public = {"name": name, "kind": kind if visible else "Unknown" + base.title(),
                 "key": key if visible else f"items.{family}.{base}", "quantity": max(1, int(number(item.get("quantity"), 1))),
                 "location": location, "known": known, "level_known": level_known,
+                "revealed": bool(reveal), "identity_visible": visible,
+                "game_level_known": bool(item.get('levelKnown')), "game_curse_known": bool(item.get('cursedKnown')),
                 "level": display_level if level_known and level_applicable else None,
                 "level_applicable": level_applicable, "is_upgradable": scroll_upgradable(key), "cursed": bool(item.get("cursed")) if cursed_known else None,
                 "tier": tier, "strength_requirement": requirement, "details": details, "description": description,
@@ -301,7 +306,7 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
     total_strength = character["strength"]["effective"] if character["strength"]["usable"] else number(hero.get("STR"), 10)
     inventory_counts = {}
     for item in items:
-        if item["available"] and (item["known"] or reveal):
+        if item["available"] and item["known"]:
             inventory_counts[item["kind"]] = inventory_counts.get(item["kind"], 0) + item["quantity"]
     challenge_mask = int(number(game.get("challenges")))
     tips = []

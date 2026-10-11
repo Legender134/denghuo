@@ -37,12 +37,12 @@ git -C .research/player-upstream-4.0.2 status --porcelain
 ```powershell
 .venv/Scripts/python.exe tools/build_catalog.py
 .venv/Scripts/python.exe tools/verify_rules.py
-git diff --stat -- data/catalog.json data/numeric_rules.json
+git diff --stat -- data/catalog.json data/numeric_rules.json data/monster_reference.json
 .venv/Scripts/python.exe -m unittest discover -s tests -v
 node tools/verify_frontend.js
 ```
 
-`build_catalog.py` 同时生成中文目录、配方元数据与规则索引。独立核对会检查源码提交、文件、内容哈希和字面量覆盖，把证据写入 `.local/`。未修改生成器且使用固定源码时，资料应无差异；有差异先检查版本、源码与换行，不直接接受批量数据变化。
+`build_catalog.py` 同时生成中文目录、配方元数据、规则索引与怪物资料。`build_monster_reference.py` 从同一固定源码和规则索引生成 `data/monster_reference.json`，校验所用原始文件的内容哈希，以官方 Bestiary 的五个敌人分类核对覆盖，并保留数值不同的召唤体及宝库变体。不能直接求值的条件规则使用经过核对的正常状态分支；未覆盖的表达式会停止生成，不填入猜测值。独立核对会检查源码提交、文件、内容哈希和字面量覆盖，把证据写入 `.local/`。未修改生成器且使用固定源码时，资料应无差异；有差异先检查版本、源码与换行，不直接接受批量数据变化。
 
 参数化计算在 `companion/values*.py` 和 `game_math.py`；修改索引不会自动实现新计算。更新游戏版本要同时核对固定提交、元数据、兼容判断、计算逻辑及测试。
 
@@ -104,3 +104,17 @@ $innoDirectory = 'C:/Program Files (x86)/Inno Setup 7'
 ## 替换 LGPL 托盘库
 
 pystray 使用未修改的 LGPL 源码。替换时在上述虚拟环境安装兼容许可的修改版，再构建目录程序；字节码未签名或锁定。依赖版本变化也要核对打包脚本的安装目录与许可路径，并保留署名。
+
+
+## 离线种子模块
+
+玩家使用随包的 `web/forecast.wasm`，不需要安装Rust。开发者重建需要 Rust 1.99.0、`wasm32-unknown-unknown` 标准库和主机链接器；Cargo按对应源码中的锁文件下载依赖。固定引擎源码与许可位于 `third_party/seed_seeker/engine-source.zip`，逐文件摘要和模块摘要见 `source.json`。
+
+```powershell
+rustup toolchain install 1.99.0
+rustup target add wasm32-unknown-unknown --toolchain 1.99.0
+rustup run 1.99.0 python tools/build_forecast.py
+node tools/verify_forecast.js
+```
+
+默认重建只核对结果摘要，不覆盖已交付模块。需要检查不同工具链的产物时，传 `--output 新的候选文件.wasm`；目标已存在会拒绝覆盖。构建在独立临时目录中完成，固定128 MiB最大内存；模块不导入宿主接口，页面通过可取消的本地Worker执行一次有界计算。该引擎的适用条件见 README；构建或CLI回归通过不代表当前存档未来已被确定或完成真实游戏/界面验收。
