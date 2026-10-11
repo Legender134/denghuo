@@ -25,6 +25,152 @@ class MonsterReferenceTests(unittest.TestCase):
     def chance(self, name, item, **params):
         return sum(r['probability'] for r in self.loot(name,**params) if r.get('id') == item)
 
+    def mechanisms(self, name, **params):
+        block=next(row for row in self.detail(name,**params)['blocks'] if row['title']=='特殊攻击与机制')
+        return {row['label']:row for row in block['values']}
+
+    def test_slime_compression_has_source_thresholds_and_separate_input_stage(self):
+        # Slime.java's explicit threshold examples, plus the values immediately
+        # below each boundary. CausticSlime inherits the same damage method.
+        cases=((0,0),(4,4),(5,5),(6,5),(7,6),(9,6),(10,7),(13,7),
+               (14,8),(18,8),(19,9),(24,9),(25,10))
+        for name in ('slime','causticslime'):
+            for damage,expected in cases:
+                detail=self.detail(name,damage=damage)
+                metrics=self.mechanisms(name,damage=damage)
+                self.assertEqual(metrics['所填输入经史莱姆压缩后']['value'],str(expected))
+                self.assertIn('不是保证扣血',metrics['所填输入经史莱姆压缩后']['condition'])
+                field=next(row for row in detail['inputs'] if row['key']=='damage')
+                self.assertEqual(field['label'],'进入敌人承伤分支的整数伤害')
+            self.assertTrue(any('5点起压缩' in r[1] for r in self.defenses(name)['rows']))
+            self.assertFalse(any(b['title']=='其他明确数值' for b in self.detail(name)['blocks']))
+
+    def test_phantom_piranha_source_distance_and_java_half_rounding(self):
+        for damage,expected in ((0,0),(1,1),(2,1),(11,6),(20,10),(25,13)):
+            metrics=self.mechanisms('phantompiranha',damage=damage)
+            self.assertEqual(metrics['非相邻或无法定位来源的所填伤害']['value'],str(expected))
+            self.assertEqual(metrics['相邻已定位来源的所填伤害']['value'],str(damage))
+            self.assertIn('法杖或牧师法术按玩家位置',metrics['非相邻或无法定位来源的所填伤害']['condition'])
+        self.assertTrue(any('四舍五入' in r[1] and '八方向相邻' in r[2] for r in self.defenses('phantompiranha')['rows']))
+
+    def test_wealth_conditions_scale_pools_and_cap_only_after_limited_drop_counts(self):
+        # Mob.lootChance multiplies by 1.2 ** effective bonus; Scorpio chooses
+        # uniformly from ten eligible potions after its ordinary drop succeeds.
+        for bonus,chance in ((0,.5),(1,.6),(-1,5/12),(10,1)):
+            rows=self.loot('scorpio',wealth_bonus=bonus)
+            self.assertAlmostEqual(sum(r['probability'] for r in rows),chance,places=6)
+            self.assertTrue(all(abs(r['probability']-chance/10)<1e-7 for r in rows))
+        self.assertAlmostEqual(sum(r['probability'] for r in self.loot('skeleton',loot_count=1,wealth_bonus=2)),.080016,places=6)
+        self.assertAlmostEqual(self.chance('swarm','items.potions.potionofhealing',swarm_generation=1,loot_count=1,wealth_bonus=1),.08,places=6)
+        self.assertEqual(self.chance('crab','items.food.mysterymeat',hero_level=12,wealth_bonus=100),0)
+        detail=self.detail('scorpio',wealth_bonus=1)
+        field=next(r for r in detail['inputs'] if r['key']=='wealth_bonus')
+        self.assertEqual((field['value'],field['min'],field['step']),(1,-100,1))
+        self.assertIn('不是戒指等级',detail['blocks'][1]['note'])
+        self.assertIn('不计算财富额外战利品',detail['blocks'][1]['note'])
+        for invalid in (True,1.5,'NaN',101,-101):
+            with self.assertRaises(ValueError):self.detail('scorpio',wealth_bonus=invalid)
+
+    def test_wealth_does_not_scale_fixed_extras_or_vault_constant_overrides(self):
+        for bonus in (-10,10):
+            self.assertEqual(self.chance('causticslime','items.quest.gooblob',wealth_bonus=bonus),1)
+            self.assertEqual(self.chance('dm201','items.quest.metalshard',wealth_bonus=bonus),1)
+            self.assertEqual(self.chance('rotheart','plants.rotberry$seed',wealth_bonus=bonus),1)
+            self.assertAlmostEqual(sum(r['probability'] for r in self.loot('gnollexile',wealth_bonus=bonus)),1)
+        for name in ('vaultdm200','vaultgolem','vaultshaman','vaultskeleton'):
+            identity='quest.vault.'+name
+            self.assertEqual(self.chance(identity,'items.quest.dwarftoken',wealth_bonus=-1),1)
+            self.assertNotIn('wealth_bonus',{r['key'] for r in self.detail(identity)['inputs']})
+        for name in ('vaultdm100','vaultghoul','vaultelemental$fire'):
+            self.assertAlmostEqual(self.chance('quest.vault.'+name,'items.quest.dwarftoken',wealth_bonus=-1),5/6,places=6)
+
+    def test_acidic_keeps_scorpio_attacks_and_ooze_action_order(self):
+        for depth,expected in ((5,'1'),(6,'2'),(24,'5'),(25,'6')):
+            metrics=self.mechanisms('acidic',depth=depth)
+            self.assertEqual(metrics['远程攻击基础伤害']['value'],'30–40')
+            self.assertEqual(metrics['攻击命中后施加残废概率']['value'],'50')
+            self.assertEqual(metrics['攻击命中后施加淤泥概率']['value'],'100')
+            self.assertEqual(metrics['相邻攻击者触发淤泥概率']['value'],'100')
+            self.assertEqual(metrics['淤泥初始持续参数']['value'],'20')
+            self.assertEqual(metrics['所填等效层数的淤泥单次基础伤害']['value'],expected)
+            self.assertIn('第一次仍先结算一次',metrics['水中洗掉淤泥的顺序']['condition'])
+        for name in ('goo','fetidrat','causticslime'):
+            metrics=self.mechanisms(name,depth=4)
+            self.assertEqual(metrics['所填等效层数的淤泥单次基础伤害']['value'],'1（剩余持续参数为偶数时）')
+        urls=[r['url'] for r in self.detail('acidic')['provenance']['links']]
+        for filename in ('Acidic','Scorpio','Ooze','Cripple','RingOfWealth','Ring'):
+            self.assertTrue(any('/'+filename+'.java' in url for url in urls),filename)
+
+    def test_bleeding_parameters_are_distinct_from_first_tick_and_total_damage(self):
+        albino=self.mechanisms('albino')
+        self.assertEqual(albino['传给流血状态的强度范围']['value'],'2–3')
+        self.assertEqual(albino['新流血首次强度范围']['value'],'1–3')
+        self.assertIn('伤害必须大于0',albino['命中后施加流血概率']['condition'])
+        for name in ('ripperdemon','yogdzewa$yogripper'):
+            ripper=self.mechanisms(name)
+            self.assertEqual(ripper['命中时传给流血的强度']['value'],'11.25–18.75')
+            self.assertEqual(ripper['新流血首次强度范围']['value'],'5.625–18.75')
+            self.assertEqual(ripper['新流血首跳基础伤害']['value'],'6–19')
+            self.assertIn('不能作为固定总伤害',ripper['新流血首跳基础伤害']['condition'])
+            self.assertIn('部分跳跃取消',ripper['跳跃重新设置的冷却']['condition'])
+
+    def test_ooze_and_fetid_gas_do_not_share_probability_or_volume_units(self):
+        caustic=self.mechanisms('causticslime');fetid=self.mechanisms('fetidrat')
+        self.assertEqual(caustic['攻击命中后施加淤泥概率']['value'],'50')
+        self.assertIn('不额外要求',caustic['攻击命中后施加淤泥概率']['condition'])
+        self.assertEqual(fetid['攻击命中后施加淤泥概率']['value'],'1/3')
+        self.assertEqual(fetid['受攻击时播种恶臭气体体积']['unit'],'体积')
+        self.assertIn('每次进入防御',fetid['受攻击时播种恶臭气体体积']['condition'])
+
+    def test_healing_uses_post_armor_attack_values_and_barrier_is_not_additive(self):
+        bat=self.mechanisms('bat');succubus=self.mechanisms('succubus')
+        self.assertIn('目标护甲已影响',bat['命中后的吸血恢复']['condition'])
+        self.assertIn('生命已满则恢复0',bat['正常基础攻击可提供的恢复额度']['condition'])
+        self.assertEqual(succubus['魅惑基础持续参数']['value'],'5')
+        self.assertIn('任何魅惑状态',succubus['命中已魅惑目标的恢复额度']['condition'])
+        self.assertIn('取较大值，不反复累加',succubus['恢复超额的屏障']['condition'])
+
+    def test_rotberry_and_seed_drops_warn_that_burning_skips_normal_death(self):
+        heart=self.loot('rotheart')
+        seed=next(row for row in heart if row.get('id')=='plants.rotberry$seed')
+        self.assertEqual(seed['probability'],1)
+        self.assertIn('燃烧伤害',seed['condition']);self.assertIn('无法获得',seed['condition'])
+        self.assertTrue(all('燃烧直接摧毁' in row['condition'] for row in self.loot('rotlasher')))
+        self.assertEqual(self.mechanisms('rotlasher')['攻击命中后残废基础持续']['value'],'2')
+        self.assertIn('5–29',self.mechanisms('rotheart')['受攻击时播种毒气体积']['condition'])
+
+    def test_monk_focus_and_senior_move_reduction_keep_inheritance_and_conditions(self):
+        for name,extra in (('monk','0.67'),('senior','2.33'),('dwarfking$dkmonk','0.67')):
+            metrics=self.mechanisms(name)
+            self.assertEqual(metrics['每次正常移动额外扣除冷却']['value'],extra)
+            self.assertIn('未麻痹且未睡眠',metrics['专注时的闪避']['condition'])
+            self.assertIn('不是固定6–7次角色行动',metrics['消耗专注后的冷却']['condition'])
+
+    def test_ghoul_links_can_transfer_and_need_not_use_original_partner(self):
+        for name in ('ghoul','dwarfking$dkghoul','quest.vault.vaultghoul'):
+            metrics=self.mechanisms(name)
+            self.assertEqual(metrics['正常复活生命']['value'],'5')
+            self.assertIn('不局限原配对',metrics['可继续连接的宿主']['condition'])
+            self.assertIn('宿主参与决斗时暂停',metrics['第n次倒地的复活等待']['condition'])
+
+    def test_mining_enemy_attack_and_linked_defense_do_not_use_generic_melee_values(self):
+        wisp=self.mechanisms('crystalwisp')
+        self.assertEqual(wisp['远程光束基础伤害']['value'],'5–10')
+        self.assertEqual(wisp['魔法命中掷骰倍率']['value'],'2')
+        guard=self.mechanisms('gnollguard',damage=15)
+        self.assertEqual(guard['非相邻目标的长矛基础伤害']['value'],'16–22')
+        self.assertEqual(guard['相邻目标基础伤害']['value'],'6–12')
+        self.assertEqual(guard['连接爆破手存活时所填伤害']['value'],'3')
+        self.assertIn('连接解除后不除4',guard['连接爆破手存活时所填伤害']['condition'])
+
+    def test_mechanism_source_links_include_underlying_state_rules(self):
+        for name,sources in (('albino',('Bleeding','Char')),('ripperdemon',('Bleeding','Char')),
+                             ('succubus',('Charm','Barrier','ShieldBuff')),('fetidrat',('Ooze','StenchGas')),
+                             ('causticslime',('Slime','Ooze')),('senior',('Monk','Char'))):
+            urls=[row['url'] for row in self.detail(name)['provenance']['links']]
+            for source in sources:
+                self.assertTrue(any('/'+source+'.java' in url for url in urls),(name,source))
+
     def test_every_enemy_has_complete_stats_and_drop_reference(self):
         roster = {identity for group in reference()['bestiary_groups'].values() for identity in group}
         self.assertEqual(len(roster),85)
@@ -52,7 +198,7 @@ class MonsterReferenceTests(unittest.TestCase):
             self.assertEqual(self.stats(name)['普通攻击基础耗时'],'0.5')
         self.assertEqual(self.stats('rat')['普通攻击基础耗时'],'1')
         self.assertIn('所持武器',self.stats('statue')['普通攻击基础耗时'])
-        for name in ('necromancer','demonspawner','yogdzewa','pylon'):
+        for name in ('necromancer','demonspawner','yogdzewa','pylon','rotheart'):
             self.assertEqual(self.stats(name)['普通攻击基础耗时'],'不使用普通攻击')
 
     def test_gas_volumes_and_trickster_combo_branch_probabilities(self):
@@ -101,7 +247,10 @@ class MonsterReferenceTests(unittest.TestCase):
             self.assertNotIn('actors.blobs.electricity',effects)
             self.assertNotIn('actors.blobs.freezing',effects)
             self.assertTrue(any('BlobImmunity.java' in r['url'] for r in self.detail(name)['provenance']['links']))
-        self.assertEqual(self.defenses('piranha')['rows'],self.defenses('phantompiranha')['rows'])
+        base=self.defenses('piranha')['rows'];phantom=self.defenses('phantompiranha')['rows']
+        self.assertEqual(phantom[:len(base)],base)
+        self.assertEqual(len(phantom),len(base)+1)
+        self.assertIn('非相邻或无法定位',phantom[-1][0])
 
     def test_phase_and_source_dependent_defenses_are_not_flattened_to_always_immune(self):
         dm300=self.defenses('dm300')

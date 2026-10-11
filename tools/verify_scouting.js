@@ -53,6 +53,20 @@ function enable(h){h.get('#scout-reveal').checked=true;h.get('#scout-reveal').li
   assert.equal(terrain.get('#scout-map-text').textContent,'  1 .XXXXX#~U');
   assert(terrain.fills.slice(1,6).every(color=>color!==terrain.fills[0]));
   assert.notEqual(terrain.fills[8],terrain.fills[0]);
+  // The public overview must distinguish obstacles too; it must not silently
+  // paint unsupported terrain as ordinary floor or expose secret identities.
+  const overview=harness(),app=fs.readFileSync(path.join(__dirname,'../web/app.js'),'utf8');
+  overview.run(app.slice(app.indexOf('function renderMapText('),app.indexOf('function itemSnapshotReference(')));
+  overview.context.testMap={width:10,height:1,tiles:[1,13,25,27,35,39,4,29,255,-1],hero:null};
+  overview.run('renderMap(testMap)');
+  assert(overview.fills.slice(2,7).every(color=>color!==overview.fills[1]));
+  assert.notEqual(overview.fills[9],overview.fills[1]);
+  assert.equal(overview.get('#map-coordinate-list').children.length,9);
+  assert.match(overview.get('#map-coordinate-list').children[8].textContent,/未知地形.*255.*通行情况未确认/);
+  overview.context.testMap={width:4,height:1,tiles:[16,17,38,14],hero:3};
+  overview.run('renderMap(testMap)');
+  const labels=overview.get('#map-coordinate-list').children.map(row=>row.textContent).join('\n');
+  assert.match(labels,/墙壁/);assert.match(labels,/锁住的门/);assert.doesNotMatch(labels,/隐藏门|陷阱/);
   map.mobs=[{name:'螃蟹',x:2,y:1,hp:15,ht:15,items:[],reference:{id:'actors.mobs.crab'}}];terrain.run('renderScouting(testResult)');
   const mob=terrain.get('#scout-mobs').children[0];assert.equal(mob.tagName,'DETAILS');assert.equal(mob.children[0].tagName,'SUMMARY');
   terrain.context.testCatalog=catalog();terrain.run('renderScoutingCatalog(testCatalog)');assert.match(terrain.get('#scout-source').textContent,/槽位 1.*第 4 层.*4.0.2/);

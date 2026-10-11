@@ -15,6 +15,7 @@ from .public_source_data import MISSILE_PUBLIC_TYPES
 from .monster_reference import add_monster_values, monster_record
 
 INPUTS = {
+    'wealth_bonus': ('财富有效加成（不是戒指等级，无效果填0）', 0, -100, 100),
     'loot_count': ('本局此类战利品已成功掉落次数', 0, 0, 1000),
     'swarm_generation': ('蝇群分裂代数（原始为0）', 0, 0, 1000),
     'trickster_combo': ('豺狼诡术师本次命中前的连续命中数', 0, 0, 1000),
@@ -360,7 +361,7 @@ class PlayerValues:
             self.talent(entry,result,p,requested)
         else:
             # These are already numeric facts in the official descriptions. Surface them as cells.
-            facts=[] if identity.startswith('actors.hero.spells.lifelinkspell') else description_numbers(entry.get('description',''))
+            facts=[] if identity.startswith('actors.hero.spells.lifelinkspell') or identity in ('actors.mobs.slime','actors.mobs.causticslime') else description_numbers(entry.get('description',''))
             if facts: result.append(block('其他明确数值',facts))
         requested.update(self.special_inputs(identity))
         validate_health_parameters(p, requested)
@@ -398,15 +399,20 @@ class PlayerValues:
         if identity in power_labels:
             for input_value in inputs:
                 if input_value['key']=='power':input_value['label']=power_labels[identity]
-        if identity=='actors.mobs.eye':
+        if identity in ('actors.mobs.eye','actors.mobs.slime','actors.mobs.causticslime','actors.mobs.gnollguard','actors.mobs.phantompiranha'):
+            label = '进入蓄力承伤分支的整数伤害' if identity=='actors.mobs.eye' else '进入敌人承伤分支的整数伤害'
             for input_value in inputs:
-                if input_value['key']=='damage':input_value['label']='进入蓄力承伤分支的整数伤害'
+                if input_value['key']=='damage':input_value['label']=label
         source_metadata = provenance(self, identity, owner)
         if enemy_reference:
             commit = self.catalog.data['commit']
             source_metadata['links'].append({'label':'掉落物品池与楼层权重',
                 'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{commit}/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/items/Generator.java#L746',
                 'kind':'official-game-source'})
+            for filename,label in (('RingOfWealth','财富普通掉率与额外掉落的区别'),('Ring','戒指有效加成与诅咒条件')):
+                source_metadata['links'].append({'label':label,
+                    'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{commit}/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/items/rings/{filename}.java',
+                    'kind':'official-game-source'})
             source_metadata['limits'].append('怪物表默认角色等级1、本局已掉落次数0；这是可调整的参考参数，不会推定本局的实际计数。已被神偷袖章取走的战利品不会再次进行普通掉落。')
             for source in enemy_reference['defenses']['sources']:
                 source_metadata['links'].append({'label':'抗性与免疫来源',

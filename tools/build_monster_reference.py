@@ -228,7 +228,7 @@ def build(index, catalog, upstream):
         if name.startswith('dwarfking$dk'):
             # Summoning.act sets maxLvl after construction, before GameScene.add.
             stats['maxLvl'] = -2
-        if name in ('pylon', 'crystalspire', 'fungalcore', 'demonspawner', 'necromancer', 'spectralnecromancer', 'yogdzewa'):
+        if name in ('pylon', 'crystalspire', 'fungalcore', 'demonspawner', 'necromancer', 'spectralnecromancer', 'yogdzewa', 'rotheart'):
             stats['damageRoll'] = '不使用普通攻击'
         if stats.get('damageRoll')=='不使用普通攻击' or dynamic=='sentry':
             stats['attackDelay']='不使用普通攻击'
@@ -331,12 +331,33 @@ def build(index, catalog, upstream):
     source(GAME_PATH+'Dungeon.java')
     source(GAME_PATH+'levels/MiningLevel.java')
     source(GAME_PATH+'levels/VaultLevel.java')
+    # Floor condition profiles in companion.floor_guide also depend on these
+    # version-bound room, quest and container rules, outside MobSpawner.
+    condition_sources = [GAME_PATH+tail for tail in (
+        'actors/mobs/npcs/Ghost.java','actors/mobs/npcs/Wandmaker.java','actors/mobs/npcs/Blacksmith.java',
+        'actors/mobs/DwarfKing.java','actors/mobs/YogDzewa.java','actors/mobs/DemonSpawner.java',
+        'actors/mobs/Piranha.java','actors/mobs/Statue.java','actors/mobs/Wraith.java',
+        'levels/RegularLevel.java','levels/SewerLevel.java','levels/HallsLevel.java',
+        'levels/rooms/special/PoolRoom.java','levels/rooms/special/StatueRoom.java','levels/rooms/special/SentryRoom.java','levels/rooms/special/CrystalVaultRoom.java',
+        'levels/rooms/secret/SecretRoom.java','levels/rooms/secret/SecretHoneypotRoom.java',
+        'levels/rooms/quest/MassGraveRoom.java','levels/rooms/quest/RotGardenRoom.java','levels/rooms/quest/RitualSiteRoom.java',
+        'levels/rooms/quest/MineLargeRoom.java','levels/rooms/quest/MineGiantRoom.java',
+        'items/Heap.java','items/quest/CorpseDust.java','items/quest/CeremonialCandle.java')]
+    for path in condition_sources: source(path)
+    # Player-facing special mechanisms and the ordinary loot modifier use
+    # these state rules in addition to each enemy's own class hierarchy.
+    for tail in ('actors/buffs/Bleeding.java','actors/buffs/Ooze.java','actors/buffs/Charm.java',
+                 'actors/buffs/Barrier.java','actors/buffs/ShieldBuff.java','actors/buffs/Cripple.java',
+                 'actors/buffs/Burning.java','actors/buffs/AscensionChallenge.java',
+                 'actors/blobs/StenchGas.java','actors/blobs/ToxicGas.java',
+                 'items/rings/Ring.java','items/rings/RingOfWealth.java'):
+        source(GAME_PATH+tail)
     return {'format': 1, 'version': catalog['version'], 'commit': catalog['commit'], 'license': 'GPL-3.0-or-later',
             'scope': 'normal enemy reference without challenges, ascension, champions, equipment or status modifiers',
             'bestiary_groups': groups, 'bestiary_conversions': conversions, 'extra_catalog_entries': extra_entries,
             'monsters': monsters, 'categories': categories, 'category_weights': category_weights,
             'property_defenses':{prop:{kind:sorted(ids) for kind,ids in groups.items()} for prop,groups in property_effects.items()},
-            'encounters':{'rotations':rotations,'rare_additions':rare,'alternatives':alternatives,'selectors':selectors},
+            'encounters':{'rotations':rotations,'rare_additions':rare,'alternatives':alternatives,'selectors':selectors,'condition_sources':condition_sources},
             'tier_weights': [[0,75,20,4,1], [0,25,50,20,5], [0,0,40,50,10], [0,0,20,40,40], [0,0,0,20,80]],
             'verified_source_files': dict(sorted(verified.items()))}
 
