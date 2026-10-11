@@ -101,6 +101,33 @@ test('pending automatic checkpoint report cannot own status polling',async()=>{
   pending.resolve({exit:{id:null,phase:'idle',participants:[]}});await new Promise(setImmediate);
   assert.equal(f.run('webExitState.phase'),'finished');assert.equal(f.run('webExitBusy'),false);
 });
+test('global-only final capture names the verified files after disconnect',async()=>{
+  const global={state:'protected',protected:true,raw_retained:true,snapshot_id:'c'.repeat(64),files:['rankings.dat'],error:''};
+  const result={ok:true,state:'captured',captured:[],global_progress:global,error:''},f=setup();
+  await f.run('handleWebExitState('+JSON.stringify({...success,backup_result:result})+')');await f.run('poll()');
+  assert.match(f.get('#backup-status').textContent,/最后备份已完成.*全局进度：排行（cccccccccccc）/);
+  assert(!f.get('#backup-status').textContent.includes('成就'));assert(!f.get('#backup-status').textContent.includes('没有游戏存档'));
+  assert(!f.get('#backup-health').className.includes('error'));
+});
+test('partial final capture retains global success alongside slot failure',async()=>{
+  const global={state:'protected',protected:true,raw_retained:true,snapshot_id:'c'.repeat(64),files:['badges.dat','rankings.dat'],error:''};
+  const result={ok:false,state:'partial',captured:[],global_progress:global,error:'槽位 2 检查超时'},f=setup();
+  await f.run('handleWebExitState('+JSON.stringify({...success,backup_result:result})+')');await f.run('poll()');
+  assert.match(f.get('#backup-status').textContent,/槽位 2 检查超时.*已完成的备份.*全局进度：成就、排行/);
+  assert(f.get('#backup-health').className.includes('error'));
+});
+test('unsupported retained global bytes are never presented as verified recovery',async()=>{
+  const global={state:'warning',protected:false,raw_retained:true,snapshot_id:'d'.repeat(64),files:['badges.dat'],error:'不支持的内容'};
+  const result={ok:false,state:'partial',captured:[],global_progress:global,error:'全局进度格式未确认'},f=setup();
+  await f.run('handleWebExitState('+JSON.stringify({...success,backup_result:result})+')');
+  assert.match(f.get('#backup-status').textContent,/已保留原始副本.*全局进度：成就.*内容可恢复性尚未确认/);
+  assert(!f.get('#backup-status').textContent.includes('最后备份已完成'));
+});
+test('malformed slot or global capture cannot claim success or crash receipt',async()=>{
+  const result={ok:true,state:'captured',captured:[{slot:1,id:null}],global_progress:{state:'protected',protected:true,raw_retained:true,snapshot_id:'bad',files:['rankings.dat']},error:''},f=setup();
+  await f.run('handleWebExitState('+JSON.stringify({...success,backup_result:result})+')');
+  assert.match(f.get('#backup-status').textContent,/结果尚未确认/);assert(f.get('#backup-health').className.includes('error'));
+});
 test('cancel bypasses initial confirming report and ignores its late reply',async()=>{
   const pending=deferred(),f=setup();
   f.context.post=async(url,payload)=>{f.requests.push({payload:plain(payload)});if(payload.action==='report')return pending.promise;assert.equal(payload.decision,'cancel');return {exit:{...confirming,phase:'cancelled'}};};

@@ -82,19 +82,33 @@ class NativeManager:
                      and isinstance(row.get('id'), str) and len(row['id']) == 64
                      and all(char in '0123456789abcdef' for char in row['id'])]
         slots = '、'.join(f"槽位 {row['slot']}（{row['id'][:12]}）" for row in completed)
+        global_result = result.get('global_progress') or {}
+        global_id = global_result.get('snapshot_id')
+        names = global_result.get('files')
+        valid_global = (isinstance(global_id, str) and len(global_id) == 64
+                        and all(char in '0123456789abcdef' for char in global_id)
+                        and isinstance(names, list) and bool(names)
+                        and all(name in ('badges.dat', 'rankings.dat') for name in names)
+                        and global_result.get('raw_retained') is True)
+        global_completed = valid_global and global_result.get('state') == 'protected' and global_result.get('protected') is True
+        global_label = ('全局进度：' + '、'.join('成就' if name == 'badges.dat' else '排行' for name in names)
+                        + '（' + global_id[:12] + '）') if valid_global else ''
+        completed_text = '、'.join(part for part in (slots, global_label if global_completed else '') if part)
         error = state.get('error') or result.get('error')
         if error or result.get('ok') is False:
             message = error or '最后备份未完成；已有备份与活动存档原件仍保留。'
-            if slots:
-                message += ' 已完成的槽位：' + slots + '。'
-        elif result.get('ok') is True and result.get('state') == 'captured' and slots:
-            message = '最后备份已完成：' + slots + '。'
+            if completed_text:
+                message += ' 已完成的备份：' + completed_text + '。'
+        elif result.get('ok') is True and result.get('state') == 'captured' and completed_text:
+            message = '最后备份已完成：' + completed_text + '。'
         elif result.get('ok') is True and result.get('state') == 'no-save':
             message = '本次没有游戏存档需要备份。'
         elif result.get('ok') is True and result.get('state') == 'paused':
             message = '自动备份已暂停，本次结束未执行最后备份。'
         else:
             message = '最后备份结果尚未确认，请在下次启动核对退出回执。'
+        if valid_global and not global_completed:
+            message += ' 已保留原始副本：' + global_label + '；内容可恢复性尚未确认。'
         if result.get('receipt_error'):
             message += ' ' + result['receipt_error']
         return '本次辅助已结束。' + message + ' 明确保存的未完成草稿可在下次启动后找回。'

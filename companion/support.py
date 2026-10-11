@@ -26,6 +26,13 @@ def help_status(session, snapshot=None):
     snap = snapshot if snapshot is not None else session.snapshot()
     data = snap.get('data') or {}
     backup = snap.get('backup_health') or {}
+    global_backup = backup.get('global_progress') or {}
+    backup_states = ('unknown', 'waiting', 'paused', 'working', 'protected', 'warning',
+                     'blocked', 'failed', 'timeout', 'unavailable')
+    backup_state = backup.get('state') if backup.get('state') in backup_states else 'unknown'
+    global_state = global_backup.get('state') if global_backup.get('state') in backup_states else 'unknown'
+    backup_problem = bool(backup.get('error')) or backup_state in ('failed', 'blocked', 'warning', 'timeout', 'unavailable')
+    global_problem = bool(global_backup.get('error')) or global_state in ('failed', 'blocked', 'warning', 'timeout', 'unavailable')
     caps = getattr(session,'ui_capabilities',{})
     native_accessibility = caps.get('native_accessibility')
     if not isinstance(native_accessibility, dict):
@@ -45,8 +52,10 @@ def help_status(session, snapshot=None):
         steps.append({'title':'更新手动局势或恢复自动读取','body':'手填信息不会跟随游戏，局势改变后重新提交。','page':'manual'})
     elif reading=='saved-stale':
         steps.append({'title':'在游戏中保存','body':'当前是旧快照，保存后等待灯火更新，再参考建议。','page':'overview'})
-    if backup.get('error') or backup.get('state') in ('failed','blocked'):
+    if backup_problem:
         steps.append({'title':'查看备份问题','body':'在存档时光机中查看原因和恢复入口，已有备份会保留。','page':'backups'})
+    if global_problem:
+        steps.append({'title':'核对成就与排行的保护','body':'在存档时光机的全局历史中查看故障、损坏原件或活动容量；槽位备份与全局文件的保护状态分别核对。','page':'backups'})
     if data.get('compatibility_warning'):
         steps.append({'title':'核对游戏与资料版本','body':'当前存档版本与资料版本不同，计算按资料版本提供。','page':'library'})
     if caps.get('hotkeys_unavailable'):
@@ -59,8 +68,10 @@ def help_status(session, snapshot=None):
         'connection':{'mode':mode,'state':reading,'active_slot':snap.get('active_slot'),
                       'readable_slots':sum(1 for row in snap.get('slots',[]) if row.get('valid')),
                       'snapshot_age_seconds':age,'version_mismatch':bool(data.get('compatibility_warning'))},
-        'backup':{'state':backup.get('state','unknown'), 'has_problem':bool(backup.get('error')),
-                  'last_save_protected':bool(backup.get('last_save_protected'))},
+        'backup':{'state':backup_state, 'has_problem':backup_problem,
+                  'last_save_protected':backup.get('last_save_protected') is True,
+                  'global_history':{'state':global_state, 'has_problem':global_problem,
+                                    'last_save_protected':global_backup.get('protected') is True}},
         'desktop':{'manager_available':bool(snap.get('manager_reuse')),
                    'play_available':caps.get('play_available'), 'tray_available':caps.get('tray_available'),
                    'hotkeys_ready':caps.get('hotkeys_ready'),

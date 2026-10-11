@@ -7,9 +7,15 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 import zipfile
+
+# Set both profile roots before importing application modules; never discover a real save root.
+_profile = tempfile.TemporaryDirectory(prefix='lamp-global-history-profile-')
+os.environ['APPDATA'] = str(Path(_profile.name)/'roaming')
+os.environ['LOCALAPPDATA'] = str(Path(_profile.name)/'local')
 
 from companion import global_history as history, global_progress as files
 from companion.service import Session
@@ -192,6 +198,76 @@ class GlobalHistoryTests(unittest.TestCase):
             self.restore(row)
         self.assertEqual({name: (self.saves/name).read_bytes() for name in files.FILES}, original)
 
+    def test_each_status_rechecks_object_bytes_even_when_size_and_mtime_are_unchanged(self):
+        row = self.tick()['history'][0]
+        original = {name: (self.saves/name).read_bytes() for name in files.FILES}
+        object_path = history.folder(self.session.backups, self.saves)/'objects'/(row['files']['badges.dat']['sha256']+'.dat')
+        raw = object_path.read_bytes()
+        stamp = object_path.stat()
+        object_path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+        os.utime(object_path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        status = self.session.global_history_status()
+        self.assertEqual(status['health']['state'], 'blocked')
+        self.assertEqual(status['history'][0]['files']['badges.dat']['integrity'], 'damaged')
+        object_path.write_bytes(raw)
+        os.utime(object_path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        self.assertTrue(self.session.global_history_status()['health']['protected'])
+        self.assertEqual({name: (self.saves/name).read_bytes() for name in files.FILES}, original)
+
+    def test_storage_change_during_last_manifest_read_is_not_reported_as_valid_history(self):
+        row = self.tick()['history'][0]
+        manager = self.session.backups
+        actual_read, actual_check = files.read, manager.ensure_storage
+        changed = [False]
+        def read_then_change(path):
+            raw = actual_read(path)
+            if path.name == row['id'] + '.json':
+                changed[0] = True
+            return raw
+        def check_storage():
+            if changed[0]:
+                raise ValueError('受控备份存储身份变化')
+            return actual_check()
+        with patch.object(files, 'read', side_effect=read_then_change), patch.object(manager, 'ensure_storage', side_effect=check_storage):
+            with self.assertRaisesRegex(ValueError, '存储身份变化'):
+                history.records(manager, self.saves)
+        self.assertTrue(self.session.global_history_status()['health']['protected'])
+
+    def test_bounded_confirmation_checks_bytes_instead_of_trusting_manifest_mtime(self):
+        old = self.tick()['history'][0]
+        self.write_globals(total=2)
+        current = self.tick()['history'][0]
+        directory = history.folder(self.session.backups, self.saves)
+        os.utime(directory/(old['id']+'.json'), (2000000000, 2000000000))
+        before = {name: (self.saves/name).read_bytes() for name in files.FILES}
+        result = history.capture(self.session.backups, self.saves, deadline=time.monotonic()+3)
+        self.assertTrue(result['protected'])
+        self.assertEqual(result['snapshot_id'], current['id'])
+        path = directory/'objects'/(current['files']['rankings.dat']['sha256']+'.dat')
+        raw, stamp = path.read_bytes(), path.stat()
+        path.write_bytes(bytes([raw[0] ^ 1])+raw[1:])
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        with self.assertRaisesRegex(ValueError, '字节变化'):
+            history.capture(self.session.backups, self.saves, deadline=time.monotonic()+3)
+        self.assertEqual({name: (self.saves/name).read_bytes() for name in files.FILES}, before)
+
+    def test_bounded_current_copy_confirmation_does_not_hide_older_history_damage(self):
+        old = self.tick()['history'][0]
+        self.write_globals(total=2)
+        current = self.tick()['history'][0]
+        directory = history.folder(self.session.backups, self.saves)
+        damaged = directory/(old['id']+'.json')
+        damaged.write_bytes(b'{preserved damaged older manifest')
+        result = history.capture(self.session.backups, self.saves, deadline=time.monotonic()+3)
+        self.assertTrue(result['protected'])
+        self.assertEqual(result['snapshot_id'], current['id'])
+        self.assertEqual(history.raw_files(self.session.backups, self.saves, current),
+                         {name: (self.saves/name).read_bytes() for name in files.FILES})
+        status = self.session.global_history_status()
+        self.assertEqual(status['health']['state'], 'blocked')
+        self.assertEqual([row['id'] for row in status['damaged_rows']], [old['id']])
+        self.assertEqual(damaged.read_bytes(), b'{preserved damaged older manifest')
+
     def test_old_library_is_browsable_exportable_and_recovers_to_the_current_root_only(self):
         row = self.tick()['history'][0]
         original_root = self.saves
@@ -255,6 +331,226 @@ class GlobalHistoryTests(unittest.TestCase):
         undo = self.session.backups.undo_status(self.saves)[0]
         self.session.backups.undo(self.saves, {'slot': 1, 'id': undo['id'], 'confirm': '撤回槽位 1'})
         self.assertEqual({name: (self.saves/name).read_bytes() for name in files.FILES}, originals)
+
+    def test_real_512_limit_local_retention_restores_quota_and_keeps_archive_usable(self):
+        from companion import global_history_maintenance as maintenance
+        self.tick()
+        first = history.records(self.session.backups, self.saves)[0]
+        directory = history.folder(self.session.backups, self.saves)
+        template = {key: first[key] for key in ('format', 'kind', 'library', 'sequence', 'time', 'files')}
+        for sequence in range(2, history.MAX_SNAPSHOTS+1):
+            raw = files.encode({**template, 'sequence': sequence, 'time': self.now+sequence})
+            (directory/(files.digest(raw)+'.json')).write_bytes(raw)
+        originals = slot_fixtures.BackupDestinationTests.files(directory)
+        self.write_globals('BOSS_SLAIN_2', 2)
+        with self.assertRaisesRegex(ValueError, '512份'):
+            history.capture(self.session.backups, self.saves)
+        preview = history.maintenance_preview(self.session.backups, self.saves, self.saves)
+        self.assertEqual(preview['records'], 512)
+        self.assertEqual(preview['disk_bytes_released'], 0)
+        self.assertEqual(len(preview['originals']), 514)
+        result = history.maintain(self.session.backups, self.saves, self.saves,
+            {'expected': preview['expected'], 'confirmed': True}, lambda: None)
+        self.assertTrue(result['health']['protected'])
+        self.assertEqual(result['active_after']['count'], 1)
+        self.assertEqual(result['disk_bytes_released'], 0)
+        archived = maintenance.archive_directory(self.session.backups, self.saves, result['archive_id'])
+        self.assertEqual(slot_fixtures.BackupDestinationTests.files(archived), originals)
+        status = history.status(self.session.backups, self.saves, self.saves)
+        self.assertEqual(status['storage']['active_count'], 1)
+        self.assertEqual(status['storage']['archived_count'], 512)
+        self.assertGreater(status['storage']['total_local_bytes'], sum(map(len, originals.values())))
+        archive_view = history.status(self.session.backups, self.saves, self.saves, result['archive_id'])
+        self.assertEqual(len(archive_view['history']), 512)
+        self.assertEqual(archive_view['storage']['active_count'], 1)
+        raw, _ = history.archive_export(self.session.backups, self.saves, result['archive_id'])
+        with zipfile.ZipFile(BytesIO(raw)) as archive:
+            for name, value in originals.items():
+                self.assertEqual(archive.read('history/'+name), value)
+        raw, _ = history.export(self.session.backups, self.saves, first['id'], ['rankings.dat'], result['archive_id'])
+        with zipfile.ZipFile(BytesIO(raw)) as archive:
+            self.assertIn('global/rankings.dat', archive.namelist())
+        view = history.preview(self.session.backups, self.saves, self.saves, first['id'],
+                               ['rankings.dat'], result['archive_id'])
+        history.restore(self.session.backups, self.saves, self.saves, {'id': first['id'],
+            'selected': ['rankings.dat'], 'archive': result['archive_id'], 'expected': view['expected'],
+            'confirmed': True, 'version': files.VERSION, 'version_confirmed': True,
+            'choices': {'rankings.dat': 'replace'}}, lambda: None)
+        self.assertEqual((self.saves/'rankings.dat').read_bytes(),
+                         history.raw_files(self.session.backups, self.saves, first, ['rankings.dat'], result['archive_id'])['rankings.dat'])
+        self.assertEqual(slot_fixtures.BackupDestinationTests.files(archived), originals)
+        self.assertFalse(list(self.saves.glob('game*')))
+
+    def test_damaged_manifest_is_visible_without_blocking_healthy_rows_and_rebuild_retains_it(self):
+        first = self.tick()['history'][0]
+        self.write_globals('BOSS_SLAIN_2', 2)
+        second = self.tick()['history'][0]
+        directory = history.folder(self.session.backups, self.saves)
+        damaged_raw = b'{original manifest deliberately damaged'
+        (directory/(first['id']+'.json')).write_bytes(damaged_raw)
+        status = self.session.global_history_status()
+        self.assertEqual([row['id'] for row in status['history']], [second['id']])
+        self.assertEqual(status['damaged_rows'][0]['id'], first['id'])
+        self.assertFalse(status['health']['protected'])
+        raw, _ = history.export(self.session.backups, self.saves, second['id'])
+        self.assertTrue(zipfile.is_zipfile(BytesIO(raw)))
+        raw, _ = history.damaged_export(self.session.backups, self.saves, first['id'])
+        with zipfile.ZipFile(BytesIO(raw)) as archive:
+            self.assertEqual(archive.read('damaged-manifest/'+first['id']+'.json'), damaged_raw)
+        with self.assertRaisesRegex(ValueError, '损坏清单'):
+            history.capture(self.session.backups, self.saves)
+        view = history.maintenance_preview(self.session.backups, self.saves, self.saves)
+        self.assertGreater(view['damaged_count'], 0)
+        result = history.maintain(self.session.backups, self.saves, self.saves,
+            {'expected': view['expected'], 'confirmed': True}, lambda: None)
+        self.assertTrue(result['health']['protected'])
+        retained = history.status(self.session.backups, self.saves, self.saves, result['archive_id'])
+        self.assertEqual(retained['damaged_rows'][0]['sha256'], files.digest(damaged_raw))
+        raw, _ = history.damaged_export(self.session.backups, self.saves, first['id'], result['archive_id'])
+        self.assertTrue(zipfile.is_zipfile(BytesIO(raw)))
+
+    def test_selected_healthy_rankings_survives_bad_badge_object_for_all_actions(self):
+        from companion import migration
+        row = self.tick()['history'][0]
+        original = {name: (self.saves/name).read_bytes() for name in files.FILES}
+        object_path = history.folder(self.session.backups, self.saves)/'objects'/(row['files']['badges.dat']['sha256']+'.dat')
+        damaged = b'bad badge object retained exactly'
+        object_path.write_bytes(damaged)
+        self.write_globals('BOSS_SLAIN_2', 2)
+        current_badges = (self.saves/'badges.dat').read_bytes()
+        status = self.session.global_history_status()
+        actual = status['history'][0]['files']
+        self.assertFalse(actual['badges.dat']['valid'])
+        self.assertEqual(actual['badges.dat']['integrity'], 'damaged')
+        self.assertTrue(actual['rankings.dat']['valid'])
+        with self.assertRaisesRegex(ValueError, '字节变化'):
+            history.export(self.session.backups, self.saves, row['id'])
+        raw, _ = self.session.global_history_action(self.request('export', row, selected=['rankings.dat']))
+        with zipfile.ZipFile(BytesIO(raw)) as archive:
+            self.assertEqual(archive.read('global/rankings.dat'), original['rankings.dat'])
+            self.assertNotIn('global/badges.dat', archive.namelist())
+        raw, _ = self.session.global_history_action(self.request('portable-export', row,
+            selected=['rankings.dat'], version=files.VERSION, version_confirmed=True))
+        self.assertEqual([entry['key'] for entry in migration.import_preview(self.session, raw)['rows']], ['global:rankings.dat'])
+        view = self.session.global_history_action(self.request('restore-preview', row, selected=['rankings.dat']))
+        self.session.global_history_action(self.request('restore', row, selected=['rankings.dat'],
+            expected=view['expected'], confirmed=True, version=files.VERSION, version_confirmed=True,
+            choices={'rankings.dat': 'replace'}))
+        self.assertEqual((self.saves/'rankings.dat').read_bytes(), original['rankings.dat'])
+        self.assertEqual((self.saves/'badges.dat').read_bytes(), current_badges)
+        self.assertEqual(object_path.read_bytes(), damaged)
+        with self.assertRaisesRegex(ValueError, '字节变化'):
+            history.preview(self.session.backups, self.saves, self.saves, row['id'], ['badges.dat'])
+
+    def test_maintenance_confirmation_binds_all_originals_current_source_and_directory_identity(self):
+        self.tick()
+        manager = self.session.backups
+        view = history.maintenance_preview(manager, self.saves, self.saves)
+        self.write_globals('BOSS_SLAIN_2', 2)
+        with self.assertRaisesRegex(ValueError, '重新预览'):
+            history.maintain(manager, self.saves, self.saves, {'expected': view['expected'], 'confirmed': True}, lambda: None)
+        view = history.maintenance_preview(manager, self.saves, self.saves)
+        directory = history.folder(manager, self.saves)
+        object_path = next((directory/'objects').iterdir())
+        object_path.write_bytes(b'externally changed original')
+        with self.assertRaisesRegex(ValueError, '重新预览'):
+            history.maintain(manager, self.saves, self.saves, {'expected': view['expected'], 'confirmed': True}, lambda: None)
+        view = history.maintenance_preview(manager, self.saves, self.saves)
+        original_identity = directory.stat().st_ino
+        retained = directory.with_name('retained-test-original')
+        directory.rename(retained)
+        directory.mkdir()
+        self.assertNotEqual(directory.stat().st_ino, original_identity)
+        with self.assertRaises(ValueError):
+            history.maintain(manager, self.saves, self.saves, {'expected': view['expected'], 'confirmed': True}, lambda: None)
+        self.assertEqual((retained/'objects'/object_path.name).read_bytes(), b'externally changed original')
+
+    def test_capture_deadline_and_pending_restore_are_checked_before_empty_source(self):
+        import time
+        manager = self.session.backups
+        with self.assertRaises(TimeoutError):
+            history.capture(manager, self.saves, deadline=time.monotonic()-1)
+        for path in self.saves.iterdir():
+            path.unlink()
+        with patch.object(files, 'pending', return_value={'state': 'pending'}):
+            with self.assertRaisesRegex(ValueError, '未完成的全局进度恢复'):
+                history.capture(manager, self.saves)
+            self.assertEqual(history.status(manager, self.saves, self.saves)['health']['state'], 'blocked')
+
+    def test_completed_archives_survive_actual_destination_copy_and_need_fresh_restore_preview(self):
+        first = self.tick()['history'][0]
+        source_bytes = {name: (self.saves/name).read_bytes() for name in files.FILES}
+        request = {'library': first['library'], 'context': self.session.backup_context}
+        preview = self.session.global_history_action({**request, 'action': 'maintenance-preview'})
+        result = self.session.global_history_action({**request, 'action': 'maintenance',
+            'expected': preview['expected'], 'confirmed': True})
+        self.assertTrue(result['health']['protected'])
+        archive_id = result['archive_id']
+        old_directory = history._directory(self.session.backups, self.saves, archive_id)
+        originals = slot_fixtures.BackupDestinationTests.files(old_directory)
+        old_preview = self.session.global_history_action({**request, 'action': 'restore-preview',
+            'id': first['id'], 'archive': archive_id, 'selected': ['rankings.dat']})
+        target = self.base/'copied-backup-disk'
+        target.mkdir()
+        destination_request = {'backup_root': str(target), 'context': self.session.backup_context,
+                               'expected_settings_revision': self.session.settings_revision}
+        destination_preview = self.session.backup_destination_action({**destination_request, 'action': 'preview'})
+        self.session.backup_destination_action({**destination_request, 'action': 'apply',
+            'expected': destination_preview['expected'], 'confirmed': True})
+        self.session.backups.closed_check = Mock()
+        request['context'] = self.session.backup_context
+        current_directory = history._directory(self.session.backups, self.saves, archive_id)
+        self.assertNotEqual(current_directory.stat().st_ino, old_directory.stat().st_ino)
+        status = self.session.global_history_status(first['library'], archive=archive_id)
+        self.assertEqual(status['history'][0]['id'], first['id'])
+        self.assertEqual(slot_fixtures.BackupDestinationTests.files(old_directory), originals)
+        self.assertEqual(slot_fixtures.BackupDestinationTests.files(current_directory), originals)
+        raw, _ = self.session.global_history_action({**request, 'action': 'archive-export', 'archive': archive_id})
+        self.assertTrue(zipfile.is_zipfile(BytesIO(raw)))
+        new_preview = self.session.global_history_action({**request, 'action': 'restore-preview',
+            'id': first['id'], 'archive': archive_id, 'selected': ['rankings.dat']})
+        self.assertNotEqual(old_preview['expected'], new_preview['expected'])
+        self.write_globals('BOSS_SLAIN_2', 2)
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            self.session.global_history_action({**request, 'action': 'restore', 'id': first['id'],
+                'archive': archive_id, 'selected': ['rankings.dat'], 'expected': old_preview['expected'],
+                'confirmed': True, 'version': files.VERSION, 'version_confirmed': True,
+                'choices': {'rankings.dat': 'replace'}})
+        new_preview = self.session.global_history_action({**request, 'action': 'restore-preview',
+            'id': first['id'], 'archive': archive_id, 'selected': ['rankings.dat']})
+        self.session.global_history_action({**request, 'action': 'restore', 'id': first['id'],
+            'archive': archive_id, 'selected': ['rankings.dat'], 'expected': new_preview['expected'],
+            'confirmed': True, 'version': files.VERSION, 'version_confirmed': True,
+            'choices': {'rankings.dat': 'replace'}})
+        self.assertEqual((self.saves/'rankings.dat').read_bytes(), source_bytes['rankings.dat'])
+        self.assertEqual(slot_fixtures.BackupDestinationTests.files(current_directory), originals)
+
+    def test_bad_archive_receipt_is_isolated_from_active_history_and_other_archives(self):
+        from companion import global_history_maintenance as maintenance
+        self.tick()
+        archive_ids = []
+        for _ in range(2):
+            view = history.maintenance_preview(self.session.backups, self.saves, self.saves)
+            result = history.maintain(self.session.backups, self.saves, self.saves,
+                {'expected': view['expected'], 'confirmed': True}, lambda: None)
+            archive_ids.append(result['archive_id'])
+        bad_journal = self.session.backups.scope(self.saves)/maintenance.ARCHIVES/archive_ids[0]/'journal.json'
+        bad_journal.write_bytes(b'original broken journal bytes')
+        status = self.session.global_history_status()
+        self.assertTrue(status['health']['protected'])
+        self.assertEqual({row['state'] for row in status['archives']}, {'completed', 'damaged'})
+        damaged = next(row for row in status['archives'] if row['state'] == 'damaged')
+        self.assertIsNone(damaged['count'])
+        self.assertIsNone(damaged['bytes'])
+        self.assertFalse(status['storage']['archived_count_complete'])
+        self.assertGreater(status['storage']['total_local_bytes'], status['storage']['active_bytes'])
+        healthy = self.session.global_history_status(archive=archive_ids[1])
+        self.assertEqual(len(healthy['history']), 1)
+        raw, _ = history.archive_export(self.session.backups, self.saves, archive_ids[1])
+        self.assertTrue(zipfile.is_zipfile(BytesIO(raw)))
+        with self.assertRaises(ValueError):
+            history.archive_export(self.session.backups, self.saves, archive_ids[0])
+        self.assertEqual(bad_journal.read_bytes(), b'original broken journal bytes')
 
     def test_http_routes_serve_read_only_history_and_exact_zip_export(self):
         from companion.server import Server

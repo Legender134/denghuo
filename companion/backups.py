@@ -57,7 +57,7 @@ def unlinked(path):
             attrs = component.lstat()
         except FileNotFoundError:
             continue
-        if component.is_symlink() or getattr(attrs, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        if stat.S_ISLNK(attrs.st_mode) or getattr(attrs, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
             raise ValueError("存档或备份路径包含链接，已停止操作")
     return path
 
@@ -640,31 +640,70 @@ class BackupManager:
         self.register(root, row)
         return row
 
-    def final_capture(self, root, deadline, *, allow_missing_default=False, on_capture=None):
+    def final_capture(self, root, deadline, *, allow_missing_default=False, on_capture=None, on_global_capture=None):
         """A last stable capture, with retries and a shared monotonic deadline."""
         remaining = max(0, deadline - time.monotonic())
         if not self.lock.acquire(timeout=remaining):
             return {'ok': False, 'state': 'timeout', 'captured': [],
                     'error': '最后一次备份未完成：备份任务仍在处理；已有备份与活动存档原件仍保留。'}
         captured = []
+        global_result = {'state': 'unknown', 'protected': False, 'raw_retained': False,
+                         'snapshot_id': None, 'files': [], 'error': ''}
+
+        def finish(ok, state, error='', **extra):
+            global_problem = global_result['error'] or (
+                '全局进度的最后保护结果尚未确认' if global_result['state'] == 'unknown' else '')
+            if global_problem:
+                ok = False
+                error = '；'.join(part for part in (error, '全局进度：' + global_problem) if part)
+            if not ok and (captured or global_result['raw_retained']):
+                state = 'partial'
+            elif ok and (captured or global_result['protected']):
+                state = 'captured'
+            return {'ok': ok, 'state': state, 'captured': captured, 'error': error,
+                    'global_progress': dict(global_result), **extra}
+
         try:
             if not self._preferences_loaded:
                 self.ensure_storage()
             if not self.enabled:
-                return {'ok': True, 'state': 'paused', 'captured': [], 'error': '',
-                        'notice': '自动备份已由用户暂停，结束时没有重新开启。'}
+                global_result['state'] = 'paused'
+                return finish(True, 'paused', notice='自动备份已由用户暂停，结束时没有重新开启。')
             self.ensure_storage()
+            if not Path(root).is_dir():
+                if (allow_missing_default is True and not Path(root).exists()
+                        and not self.has_protected_progress(root)):
+                    global_result['state'] = 'waiting'
+                    return finish(True, 'no-save', notice='默认存档目录尚未创建，本次没有游戏进度需要备份。')
+                global_result.update(state='unavailable', error='存档目录暂时不可用，未确认全局进度保护')
+                return finish(False, 'unavailable', '最后一次备份未完成：存档目录暂时不可用；已有备份与原件仍保留。')
+            from . import global_history
+            try:
+                check_capture_deadline(deadline)
+                global_deadline = deadline
+                if any((Path(root) / f'game{slot}').exists() for slot in range(1, 7)):
+                    # A full global history must leave time for independent slot protection.
+                    now = time.monotonic()
+                    global_deadline = now + max(0, deadline - now) / 2
+                health = global_history.capture(self, root, deadline=global_deadline)
+                check_capture_deadline(global_deadline)
+                self.global_health = health
+                global_result = {
+                    'state': health['state'], 'protected': health.get('protected') is True,
+                    'raw_retained': health.get('raw_retained') is True,
+                    'snapshot_id': health.get('snapshot_id'),
+                    'files': [name for name in ('badges.dat', 'rankings.dat') if name in health.get('files', {})],
+                    'error': health.get('error', ''),
+                }
+            except (OSError, ValueError) as exc:
+                global_result.update(state='timeout' if isinstance(exc, TimeoutError) else 'failed', error=str(exc))
+                self.global_health = global_history._health(self, root, 'blocked', error=str(exc))
+            if on_global_capture is not None:
+                on_global_capture(dict(global_result))
             recovery = self.recovery_status(root)
             if not recovery['available']:
                 raise ValueError(recovery['error'] or '有未完成的回档或撤回，请先核对恢复关联；最后备份未执行')
             blocked = set(recovery['blocked_slots'])
-            if not Path(root).is_dir():
-                if (allow_missing_default is True and not Path(root).exists()
-                        and not self.has_protected_progress(root)):
-                    return {'ok': True, 'state': 'no-save', 'captured': [], 'error': '',
-                            'notice': '默认存档目录尚未创建，本次没有游戏进度需要备份。'}
-                return {'ok': False, 'state': 'unavailable', 'captured': [],
-                        'error': '最后一次备份未完成：存档目录暂时不可用；已有备份与原件仍保留。'}
             check_capture_deadline(deadline)
             slots = list_slots(Path(root))
             pending = []
@@ -719,12 +758,11 @@ class BackupManager:
             error = '；'.join(failures)
             if error:
                 self.error = error
-                return {'ok': False, 'state': 'partial' if captured else 'failed', 'captured': captured,
-                        'error': '最后一次备份未完成：' + error + '；已有备份与活动存档原件仍保留。本次最后备份重试已结束；下次启动助手后，请检查存档历史与备份状态。'}
-            return {'ok': True, 'state': 'captured' if captured else 'no-save', 'captured': captured, 'error': ''}
+                return finish(False, 'failed', '最后一次备份未完成：' + error + '；已有备份与活动存档原件仍保留。本次最后备份重试已结束；下次启动助手后，请检查存档历史与备份状态。')
+            return finish(True, 'no-save')
         except (OSError, ValueError) as exc:
-            return {'ok': False, 'state': 'partial' if captured else 'failed', 'captured': captured,
-                    'error': '最后一次备份未完成：' + str(exc) + '；已有备份与活动存档原件仍保留。'}
+            return finish(False, 'timeout' if isinstance(exc, TimeoutError) else 'failed',
+                          '最后一次备份未完成：' + str(exc) + '；已有备份与活动存档原件仍保留。')
         finally:
             self.lock.release()
 
@@ -737,7 +775,10 @@ class BackupManager:
             return (bool(self.history(root, discover=False)) or bool(self.events(root))
                     or bool(self.journals(root)) or any(scope.glob('*.zip'))
                     or bool(self.recovery_status(root)['blocked_slots'])
-                    or bool(self.retained_status(root)))
+                    or bool(self.retained_status(root))
+                    or unlinked(scope / 'global-history').exists()
+                    or unlinked(scope / 'global-history-archives').exists()
+                    or unlinked(scope / 'global-progress-pending.json').exists())
 
     def tick(self, root, force=False):
         with self.lock:
