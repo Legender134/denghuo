@@ -6,19 +6,25 @@ This persistence implementation is project-specific, not copied GUI infrastructu
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import threading
 import time
 import uuid
 
+from .backups import unlinked
+
 MAX_BYTES = 1024*1024
 MAX_FAVORITES, MAX_RECENT, MAX_PLANS = 64, 30, 200
 KEY = re.compile(r'[a-z0-9_.\-$]{1,300}\Z')
 RECORD_ID = re.compile(r'[a-f0-9]{32}\Z')
+HEALTHY_ID = re.compile(r'[a-f0-9]{64}\Z')
+HEALTHY_GENERATIONS = 3
 
 
 def library_json(raw):
@@ -174,6 +180,113 @@ class KnowledgeWorkspace:
         self.path, self.session = Path(path), session
         self.lock = threading.RLock()
         self.generation = 0
+        self.recovery_warning = ''
+        self._protection_checked = False
+
+    @contextmanager
+    def _storage_lock(self):
+        unlinked(self.path.parent).mkdir(parents=True, exist_ok=True)
+        with unlinked(self.path.with_name(self.path.stem+'.lock')).open('a+b') as stream:
+            try:
+                stream.seek(0)
+                if os.name == 'nt':
+                    import msvcrt
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise ValueError('另一个窗口正在保存资料库，请稍后重试') from exc
+            try:
+                if stream.seek(0, 2) == 0:
+                    stream.write(b'\0'); stream.flush()
+                yield
+            finally:
+                stream.seek(0)
+                if os.name == 'nt':msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+    def _healthy_directory(self):
+        return unlinked(self.path.with_name(self.path.stem+'-healthy'))
+
+    def _healthy_bytes(self, identity):
+        if not isinstance(identity, str) or not HEALTHY_ID.fullmatch(identity):
+            raise ValueError('请选择清单中的健康副本')
+        path = unlinked(self._healthy_directory()/(identity+'.json'))
+        with path.open('rb') as stream:raw = stream.read(MAX_BYTES+1)
+        if len(raw)>MAX_BYTES or hashlib.sha256(raw).hexdigest()!=identity:
+            raise ValueError('健康副本字节已变化或无法核验，原件仍保留；请重新预览')
+        self._validate(library_json(raw))
+        return raw
+
+    def _healthy_copies(self):
+        directory = self._healthy_directory()
+        if not directory.exists():return []
+        rows = []
+        for path in directory.glob('*.json'):
+            if not HEALTHY_ID.fullmatch(path.stem):continue
+            row = {'id':path.stem, 'available':False, 'error':''}
+            try:
+                raw = self._healthy_bytes(path.stem)
+                value = library_json(raw)
+                row.update(available=True, bytes=len(raw), time=path.stat().st_mtime, time_ns=path.stat().st_mtime_ns,
+                           counts={key:len(value[key]) for key in ('favorites','recent','plans')})
+            except (OSError,ValueError,TypeError,KeyError,AttributeError,RecursionError,OverflowError) as exc:
+                row['error'] = str(exc) or '副本无法核验，原件仍保留'
+            rows.append(row)
+        return sorted(rows, key=lambda row:(row.get('time_ns',0),row['id']), reverse=True)
+
+    def _retain_healthy(self, raw):
+        """Called only after a successful primary commit, while holding the storage lock."""
+        self._validate(library_json(raw))
+        if len(raw)>MAX_BYTES:raise ValueError('健康副本超过资料库容量')
+        identity = hashlib.sha256(raw).hexdigest()
+        directory = self._healthy_directory(); directory.mkdir(exist_ok=True)
+        target = unlinked(directory/(identity+'.json'))
+        pending = unlinked(directory/(identity+'.'+uuid.uuid4().hex+'.pending'))
+        try:
+            if target.exists():
+                if self._healthy_bytes(identity)!=raw:raise ValueError('健康副本已变化')
+            else:
+                with pending.open('xb') as stream:
+                    stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+                if pending.read_bytes()!=raw:raise ValueError('健康副本写入校验失败')
+                # Keep two existing healthy generations before publishing another.
+                # Failed rotation must not accumulate unbounded new healthy files.
+                healthy = [row for row in self._healthy_copies() if row['available']]
+                for row in healthy[HEALTHY_GENERATIONS-1:]:
+                    self._healthy_bytes(row['id'])
+                    unlinked(directory/(row['id']+'.json')).unlink()
+                pending.replace(target)
+                self._healthy_bytes(identity)
+            target.touch()  # Reusing A after A -> B -> A makes A the latest successful generation.
+            healthy = [row for row in self._healthy_copies() if row['available'] and row['id']!=identity]
+            for row in healthy[HEALTHY_GENERATIONS-1:]:
+                self._healthy_bytes(row['id'])
+                unlinked(directory/(row['id']+'.json')).unlink()
+            self.recovery_warning = ''
+        finally:
+            if pending.exists():pending.unlink()
+
+    def _checkpoint_saved(self, raw):
+        try:self._retain_healthy(raw)
+        except (OSError,ValueError,TypeError,KeyError,AttributeError,RecursionError,OverflowError) as exc:
+            self.recovery_warning = '资料库已保存，但健康副本尚未完成：'+str(exc)+'。请检查助手数据目录；当前资料库和已有副本仍保留。'
+
+    def ensure_protection(self):
+        """Protect an existing valid library once on first use, outside Session.lock."""
+        with self.lock:
+            if self._protection_checked:return
+            self._protection_checked = True
+            try:
+                _,stamp = self._read()
+                if stamp is None:return
+                with self._storage_lock():
+                    raw = self._recovery_bytes()
+                    if hashlib.sha256(raw).hexdigest()!=stamp:raise ValueError('资料库已由其他窗口修改，请重新读取')
+                    self._checkpoint_saved(raw)
+            except (OSError,ValueError) as exc:
+                self.recovery_warning = '健康副本尚未完成：'+str(exc)
 
     def _read(self):
         try:
@@ -298,8 +411,14 @@ class KnowledgeWorkspace:
     def status(self):
         with self.lock:
             try:
-                value,_ = self._read()
-                return {**copy.deepcopy(value), 'plans':[self.record_view(row) for row in value['plans']], 'available':True,'error':''}
+                value,stamp = self._read()
+                try:copies = self._healthy_copies()
+                except (OSError,ValueError) as exc:
+                    copies = []
+                    self.recovery_warning = '资料库可读取，但健康副本暂不可核对：'+str(exc)
+                warning = self.recovery_warning or ('当前资料库健康副本尚未完成；已有资料仍可使用。' if stamp and not any(row['available'] and row['id']==stamp for row in copies) else '')
+                return {**copy.deepcopy(value), 'plans':[self.record_view(row) for row in value['plans']], 'available':True,'error':'',
+                        'recovery_warning':warning, 'healthy_copy_count':sum(row['available'] for row in copies)}
             except (OSError,ValueError) as exc:
                 # Failure is visible without blocking unrelated session services.
                 return {'format':1,'favorites':[],'recent':[],'plans':[], 'available':False,
@@ -315,11 +434,13 @@ class KnowledgeWorkspace:
             with pending.open('xb') as stream:
                 stream.write(raw)
                 stream.flush()
-            _,current = self._read()
-            if current!=expected:
-                raise ValueError('收藏与方案库刚被其他操作修改，请刷新后重试；已有记录仍保留')
-            pending.replace(self.path)
-            self.generation += 1
+            with self._storage_lock():
+                _,current = self._read()
+                if current!=expected:
+                    raise ValueError('收藏与方案库刚被其他操作修改，请刷新后重试；已有记录仍保留')
+                pending.replace(self.path)
+                self.generation += 1
+                self._checkpoint_saved(raw)
         finally:
             if pending.exists():pending.unlink()
 
@@ -527,7 +648,7 @@ class KnowledgeWorkspace:
                    'root_error':root_error}
         return preview,recovered
 
-    def _repair_candidate(self):
+    def _repair_candidate(self, source='current'):
         try:
             raw = self._recovery_bytes()
         except FileNotFoundError:
@@ -536,12 +657,24 @@ class KnowledgeWorkspace:
             if len(raw)>MAX_BYTES:raise ValueError('资料库超出读取上限')
             self._validate(library_json(raw))
         except (ValueError,TypeError,KeyError,AttributeError,RecursionError,OverflowError):
-            return raw,*self._recovery_candidate(raw)
+            preview,recovered = self._recovery_candidate(raw)
+            try:copies = self._healthy_copies()
+            except (OSError,ValueError) as exc:
+                copies = []
+                preview['copy_warning'] = '健康副本暂不可核对：'+str(exc)+'；原件保留'
+            if source!='current':
+                selected = self._healthy_bytes(source)
+                selected_preview,recovered = self._recovery_candidate(selected)
+                preview = {**selected_preview, 'expected':hashlib.sha256(raw).hexdigest(), 'bytes':len(raw),
+                           'mode':'recover', 'can_export':True,
+                           'message':f"先完整保留当前损坏原件，再从所选健康副本恢复 {selected_preview['healthy_count']} 条记录"}
+            preview.update(source=source, healthy_copies=copies)
+            return raw,preview,recovered
         raise ValueError('收藏与方案库可以正常读取，无需恢复')
 
-    def repair_preview(self):
+    def repair_preview(self, source='current'):
         with self.lock:
-            return self._repair_candidate()[1]
+            return self._repair_candidate(source)[1]
 
     @staticmethod
     def _recovery_document(value):
@@ -553,9 +686,9 @@ class KnowledgeWorkspace:
             raise ValueError('健康记录仍超过资料库容量；原文件未替换，不能截断恢复')
         return raw
 
-    def repair_export(self, expected):
+    def repair_export(self, expected, source='current'):
         with self.lock:
-            _,preview,recovered = self._repair_candidate()
+            _,preview,recovered = self._repair_candidate(source)
             if expected!=preview['expected']:
                 raise ValueError('原资料库刚被修改，请重新预览；尚未导出')
             if not preview['can_export']:
@@ -565,11 +698,11 @@ class KnowledgeWorkspace:
                 raise ValueError('原资料库刚被修改，请重新预览；尚未导出')
             return raw
 
-    def repair(self,expected,confirmed):
+    def repair(self,expected,confirmed,source='current'):
         if confirmed is not True:
             raise ValueError('请先确认完整保留原文件并恢复收藏与方案库')
-        with self.lock:
-            raw,preview,recovered = self._repair_candidate()
+        with self.lock, self._storage_lock():
+            raw,preview,recovered = self._repair_candidate(source)
             if expected!=preview['expected']:
                 raise ValueError('原资料库刚被修改，请重新预览；尚未重建')
             if hashlib.sha256(self._recovery_bytes()).hexdigest()!=expected:
@@ -592,9 +725,12 @@ class KnowledgeWorkspace:
                 self._validate(library_json(staged))
                 if hashlib.sha256(self._recovery_bytes()).hexdigest()!=expected:
                     raise ValueError('原资料库刚被修改，保留副本已建立，但尚未重建；请刷新')
+                if source!='current' and library_json(self._healthy_bytes(source))!=recovered:
+                    raise ValueError('所选健康副本已变化，尚未恢复')
                 pending.replace(self.path)
                 self.generation += 1
+                self._checkpoint_saved(recovered_raw)
             finally:
                 if pending.exists():pending.unlink()
-            return {'preserved_file':preserved.name,'mode':preview['mode'],
+            return {'preserved_file':preserved.name,'mode':preview['mode'],'source':source,
                     'recovered_count':preview['healthy_count'],'categories':preview['categories']}

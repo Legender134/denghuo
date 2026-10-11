@@ -72,6 +72,7 @@ class BackupDestinationTests(unittest.TestCase):
     def test_zero_configuration_default_and_explicit_workflow_validation(self):
         self.assertEqual(self.session.settings['backup_root'], '')
         self.assertEqual(self.session.backups.directory, self.config.parent / 'backups')
+
         before = self.config.read_bytes()
         with self.assertRaisesRegex(ValueError, '预览'):
             self.session.update_settings({'backup_root': str(self.target)})
@@ -88,6 +89,33 @@ class BackupDestinationTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), before)
         self.assertEqual(self.files(self.target), {})
 
+    def test_copied_automatic_policy_does_not_reauthorize_the_new_destination(self):
+        from companion import backup_workflows as flows
+        self.capture()
+        preview = flows.automatic_preview(self.session.backups,self.saves)
+        flows.automatic_save(self.session.backups,self.saves,{'expected_policy':preview['policy']['expected'],
+            'expected':preview['expected'],'confirmed':True},enabled=True)
+        original_path = self.session.backups.scope(self.saves)/'retention-policy.json'
+        original = original_path.read_bytes()
+        self.assertIn('授权不会随复制重新绑定',self.preview()['message'])
+        self.switch()
+        self.assertFalse(flows.automatic_status(self.session.backups,self.saves)['enabled'])
+        self.assertEqual(original_path.read_bytes(),original)
+
+    def test_destination_keeps_its_own_automatic_policy_when_source_also_has_one(self):
+        from companion.backups import BackupManager
+        from companion import backup_workflows as flows
+        self.capture()
+        target_manager = BackupManager(self.target/'backups')
+        for manager in (self.session.backups,target_manager):
+            preview = flows.automatic_preview(manager,self.saves)
+            flows.automatic_save(manager,self.saves,{'expected_policy':preview['policy']['expected'],
+                'expected':preview['expected'],'confirmed':True},enabled=True)
+        target_path = target_manager.scope(self.saves)/'retention-policy.json'
+        original = target_path.read_bytes()
+        self.switch()
+        self.assertEqual(target_path.read_bytes(),original)
+        self.assertTrue(flows.automatic_status(self.session.backups,self.saves)['enabled'])
     def test_switch_copies_all_libraries_and_retained_evidence_and_resumes_after_restart(self):
         first = self.capture(20)
         self.capture(19)

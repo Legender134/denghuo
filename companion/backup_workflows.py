@@ -4,13 +4,18 @@ Default retention is preserve-all. Physical reclamation requires an exact previe
 verified external originals and explicit confirmation; active undo copies stay protected.
 """
 from io import BytesIO
+import base64
+import gzip
+from contextlib import contextmanager
 from itertools import chain
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
+import threading
 import uuid
 from zipfile import ZipFile, ZipInfo, ZIP_STORED, ZIP_DEFLATED, BadZipFile
 
@@ -18,6 +23,250 @@ from .backups import MAX_TOTAL, STAGE_NAME, BackupLibrary, unlinked
 from .backup_archive import IDENTITY, read_archive, player_summary, valid_time
 
 MAX_BATCH = 32
+AUTOMATIC_KEEP = 20
+AUTOMATIC_TARGET = 384 * 1048576
+
+
+@contextmanager
+def _automatic_lock(manager, root):
+    # Capture, metadata edits and policy consent share this destination lock.
+    # Reentrant calls on one manager stay under its existing thread lock.
+    with manager.lock:
+        if getattr(manager,'_library_write_owner',None)==threading.get_ident():
+            yield
+            return
+        manager.ensure_storage()
+        directory = unlinked(manager.directory); directory.mkdir(parents=True,exist_ok=True)
+        stream = unlinked(directory.parent/'.backup-library-write.lock').open('a+b')
+    with stream:
+        try:
+            stream.seek(0)
+            if os.name == 'nt':
+                import msvcrt
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise ValueError('另一窗口正在处理备份或自动保留策略，请稍后重试') from exc
+        try:
+            if stream.seek(0,2)==0:stream.write(b'\0');stream.flush()
+            manager._library_write_owner = threading.get_ident()
+            yield
+        finally:
+            manager._library_write_owner = None
+            stream.seek(0)
+            if os.name == 'nt':msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _automatic_policy(raw):
+    def pairs(items):
+        value = {}
+        for key,item in items:
+            if key in value:raise ValueError('自动保留设置含重复字段')
+            value[key] = item
+        return value
+    if len(raw)>8192:raise ValueError('自动保留设置过大')
+    value = json.loads(raw, object_pairs_hook=pairs)
+    if (not isinstance(value,dict) or set(value)!={'format','scope','root','destination','enabled','revision'}
+            or type(value['format']) is not int or value['format']!=1 or type(value['enabled']) is not bool
+            or not isinstance(value['scope'],str) or not re.fullmatch('[0-9a-f]{24}',value['scope'])
+            or not isinstance(value['revision'],str) or not re.fullmatch('[0-9a-f]{32}',value['revision'])
+            or any(not isinstance(value[key],str) or len(value[key])>2000 or not Path(value[key]).is_absolute() for key in ('root','destination'))):
+        raise ValueError('自动保留设置格式不正确')
+    return value
+
+
+def automatic_status(manager, root):
+    scope = manager.scope(root)
+    binding = {'scope':scope.name, 'root':str(Path(root).resolve()).casefold(),
+               'destination':str(manager.directory.resolve()).casefold()}
+    result = {**binding, 'enabled':False, 'available':True, 'writable':True, 'expected':None,
+              'revision':None, 'error':'', 'keep_per_slot':AUTOMATIC_KEEP, 'target_bytes':AUTOMATIC_TARGET,
+              'note':'默认全部保留。明确启用后，仅活动额度不足时将本库较旧记录移入可重新加入的保留目录；不释放物理磁盘空间。'}
+    try:
+        path = unlinked(scope/'retention-policy.json')
+        with path.open('rb') as stream:raw = stream.read(8193)
+    except FileNotFoundError:return result
+    except (OSError,ValueError) as exc:return {**result,'available':False,'writable':False,'error':'自动保留设置暂不可读取，自动整理关闭：'+str(exc)}
+    result['expected'] = hashlib.sha256(raw).hexdigest()
+    try:value = _automatic_policy(raw)
+    except (ValueError,TypeError,KeyError,RecursionError) as exc:
+        return {**result,'available':False,'writable':False,'error':'自动保留设置无法核验，原件保留，自动整理关闭：'+str(exc)}
+    result['revision'] = value['revision']
+    if any(value[key]!=binding[key] for key in binding):
+        return {**result,'available':False,'error':'这是其他存档目录或备份位置的授权副本；自动整理关闭，请在当前位置重新预览启用。'}
+    return {**result,'enabled':value['enabled']}
+
+
+def _automatic_inventory(manager, root):
+    manager.events(root)  # A damaged timeline cannot be bypassed.
+    rows = manager.history(root, discover=False)
+    protected = protected_records(manager,root,rows)
+    recent = set()
+    for slot in range(1,7):
+        own = sorted((row for row in rows if row['slot']==slot),key=lambda row:row['last_seen'],reverse=True)
+        if own:
+            boundary = own[min(AUTOMATIC_KEEP,len(own))-1]['last_seen']
+            recent.update((row['slot'],row['id']) for row in own if row['last_seen']>=boundary)
+    candidates,kept = [],[]
+    for row in sorted(rows,key=lambda row:(row['last_seen'],row['slot'],row['id'])):
+        attrs = unlinked(manager.scope(root)/(row['id']+'.zip')).stat()
+        item = {**row,'bytes':attrs.st_size,'file_revision':[attrs.st_size,attrs.st_mtime_ns]}
+        reason = protected.get((row['slot'],row['id'])) or ('每槽最近保留范围内（同时间记录一起保留）' if (row['slot'],row['id']) in recent else '')
+        (kept if reason else candidates).append({**item,'reason':reason or '容量不足时可移入保留目录'})
+    return rows,candidates,kept
+
+
+def automatic_preview(manager, root):
+    with manager.lock:
+        policy = automatic_status(manager,root)
+        if not policy['writable']:raise ValueError(policy['error'])
+        rows,candidates,kept = _automatic_inventory(manager,root)
+        signature = {'binding':[policy[key] for key in ('scope','root','destination','expected')],
+                     'rules':[AUTOMATIC_KEEP,AUTOMATIC_TARGET],
+                     'rows':[(row['slot'],row['id'],row['metadata_revision'],row['file_revision'],row['reason']) for row in candidates+kept]}
+        try:disk_free = shutil.disk_usage(manager.directory if manager.directory.exists() else manager.directory.parent).free
+        except OSError:disk_free = None
+        return {'policy':policy,'expected':digest(signature),'candidates':candidates,'kept':kept,'disk_free_bytes':disk_free,
+                'active_zip_bytes':manager.storage(),'current_library_bytes':sum(row['bytes'] for row in candidates+kept),
+                'note':f'持续授权仅绑定这个库与备份位置。每槽至少保留最近 {AUTOMATIC_KEEP} 份以及固定、最新、撤回和中断关联；容量不足时向 384 MiB 活动目标整理。其他库不处理，原 ZIP 完整移入保留目录，不释放物理空间。'}
+
+
+def automatic_save(manager, root, payload, *, enabled):
+    from .backups import atomic_json
+    with manager.lock, _automatic_lock(manager,root):
+        current = automatic_status(manager,root)
+        if not current['writable']:raise ValueError(current['error'])
+        if payload.get('expected_policy')!=current['expected']:
+            raise ValueError('自动保留策略已由其他窗口修改，请重新读取；尚未更改')
+        if enabled:
+            preview = automatic_preview(manager,root)
+            if payload.get('confirmed') is not True or payload.get('expected')!=preview['expected']:
+                raise ValueError('请重新预览当前保留范围，并明确确认持续授权')
+        path = manager.scope(root)/'retention-policy.json'
+        path.parent.mkdir(parents=True,exist_ok=True)
+        if not current['available'] and path.exists():
+            preserved = unlinked(path.with_name('retention-policy.preserved-'+uuid.uuid4().hex+'.json'))
+            with preserved.open('xb') as stream:stream.write(path.read_bytes())
+        atomic_json(path,{'format':1,**{key:current[key] for key in ('scope','root','destination')},
+                          'enabled':enabled,'revision':uuid.uuid4().hex})
+        return {'policy':automatic_status(manager,root),'archived':0,'deleted':0,
+                'message':'已启用本库自动保留策略，容量不足时才整理；原 ZIP 始终保留。' if enabled else '已关闭自动整理，继续保留全部活动记录。'}
+
+
+def automatic_remove_intent(manager, root, source, target, indexes, identity, after_indexes):
+    """Keep enough exact evidence to roll back one interrupted automatic move."""
+    from .backups import atomic_json
+    scope = manager.scope(root)
+    path = unlinked(scope/'automatic-retention-pending.json')
+    if path.exists():raise ValueError('上一项自动整理尚未核对，请等待下一次捕获恢复原件')
+    records = {}
+    for name,raw in indexes.items():
+        after_raw = json.dumps(after_indexes[name],ensure_ascii=True,indent=2).replace('\n',os.linesep).encode('utf-8')
+        records[name] = {'before':hashlib.sha256(raw).hexdigest() if raw is not None else None,
+                         'after':hashlib.sha256(after_raw).hexdigest(),
+                         'original':base64.b64encode(gzip.compress(raw,mtime=0)).decode('ascii') if raw is not None else None}
+    raw = source.read_bytes()
+    value = {'format':1,'scope':scope.name,'id':identity,'target':target.name,
+             'sha256':hashlib.sha256(raw).hexdigest(),'indexes':records}
+    if len(json.dumps(value,ensure_ascii=True,indent=2).encode())>8*1048576:
+        raise ValueError('自动整理中断保护记录过大，尚未移出任何副本，请使用手动整理')
+    atomic_json(path,value)
+    return path
+
+
+def automatic_recover(manager, root, *, deadline=None):
+    from .backups import atomic_json, check_capture_deadline
+    scope = manager.scope(root); path = unlinked(scope/'automatic-retention-pending.json')
+    if not path.exists():return
+    check_capture_deadline(deadline)
+    with path.open('rb') as stream:raw = stream.read(8*1048576+1)
+    if len(raw)>8*1048576:raise ValueError('自动整理中断记录过大，原件保留，请核对备份目录')
+    value = json.loads(raw)
+    if (not isinstance(value,dict) or set(value)!={'format','scope','id','target','sha256','indexes'}
+            or type(value['format']) is not int or value['format']!=1 or value['scope']!=scope.name
+            or not isinstance(value['id'],str) or not IDENTITY.fullmatch(value['id'])
+            or not isinstance(value['sha256'],str) or not IDENTITY.fullmatch(value['sha256'])
+            or not isinstance(value['target'],str) or not re.fullmatch(re.escape(value['id'])+r'-[0-9]+\.zip',value['target'])
+            or not isinstance(value['indexes'],dict) or set(value['indexes'])!={'history.json','timeline.json'}):
+        raise ValueError('自动整理中断记录无法核验，全部原件保留，请核对备份目录')
+    restored = {}
+    for name,record in value['indexes'].items():
+        index = unlinked(scope/name)
+        current = manager._index_bytes(index)
+        signature = hashlib.sha256(current).hexdigest() if current is not None else None
+        if not isinstance(record,dict) or set(record)!={'before','after','original'} or signature not in (record['before'],record['after']):
+            raise ValueError('自动整理中断后索引已被其他操作修改；原 ZIP 和中断记录保留，未自动覆盖')
+        if signature==record['after']:
+            original = None
+            if record['original'] is not None:
+                if not isinstance(record['original'],str):raise ValueError('中断索引原件无法核验')
+                with gzip.GzipFile(fileobj=BytesIO(base64.b64decode(record['original'],validate=True))) as stream:
+                    original = stream.read(32*1048576+1)
+                if len(original)>32*1048576:raise ValueError('中断索引原件过大')
+            if (hashlib.sha256(original).hexdigest() if original is not None else None)!=record['before']:
+                raise ValueError('中断索引原件无法核验，全部副本保留')
+            restored[name] = original
+    source = unlinked(scope/(value['id']+'.zip'))
+    target = unlinked(manager.directory.parent/'backup-recycle'/scope.name/value['target'])
+    available = source if source.exists() else target
+    if source.exists() and target.exists():raise ValueError('中断整理两端均有副本，未自动覆盖；请核对原件')
+    with available.open('rb') as stream:archive = stream.read(MAX_TOTAL+1)
+    if len(archive)>MAX_TOTAL or hashlib.sha256(archive).hexdigest()!=value['sha256']:
+        raise ValueError('自动整理保留原件已变化，未自动覆盖')
+    check_capture_deadline(deadline)
+    if available==target:target.replace(source)
+    for name,original in restored.items():manager._restore_index_bytes(scope/name,original)
+    path.unlink()
+    manager.scanned.discard(str(scope));manager._storage_cache=None
+    manager._set_notice(root,'已将中断的自动整理退回活动库，完整原 ZIP 和原记录保留；接下来重新核对容量。')
+
+
+def automatic_headroom(manager, root, slot, identity, incoming, *, deadline=None):
+    from .backups import MAX_HISTORY, MAX_STORAGE, check_capture_deadline
+    with manager.lock:
+        rows = manager.history(root,discover=False)
+        delta = int(not any(row['slot']==slot and row['id']==identity for row in rows))
+        used = manager.storage()
+        needed_bytes = max(0,used+incoming-MAX_STORAGE)
+        needed_rows = max(0,len(rows)+delta-MAX_HISTORY)
+        if not needed_bytes and not needed_rows:return 0
+        policy = automatic_status(manager,root)
+        if not policy['enabled']:
+            if policy['error']:raise ValueError(policy['error']+'；本次容量不足，已有原件保留')
+            return 0
+        with _automatic_lock(manager,root):
+            check_capture_deadline(deadline)
+            index_bytes = sum(path.stat().st_size for path in (manager.scope(root)/'history.json',manager.scope(root)/'timeline.json') if path.exists())
+            if shutil.disk_usage(manager.directory).free < incoming+2*index_bytes+4096:
+                raise ValueError('物理磁盘空间不足，自动移出不能释放磁盘空间；尚未整理，全部副本保留')
+            if automatic_status(manager,root)['expected']!=policy['expected']:
+                raise ValueError('自动保留授权已变化，尚未整理，请重试')
+            rows,candidates,_ = _automatic_inventory(manager,root)
+            if sum(row['bytes'] for row in candidates)<needed_bytes or len(candidates)<needed_rows:
+                raise ValueError('本库可整理旧记录不足；最近、固定或关联记录受保护，其他库未获授权。请核对活动额度和物理空间；所有原件保留')
+            target = max(needed_bytes,used+incoming-AUTOMATIC_TARGET) if needed_bytes else 0
+            chosen=[]; freed=0
+            for row in candidates:
+                if freed>=target and len(chosen)>=needed_rows:break
+                chosen.append(row);freed+=row['bytes']
+            # A soft target may be unattainable; satisfying hard capacity still permits capture.
+            for row in chosen:
+                check_capture_deadline(deadline)
+                manager.checked_archive(root,row['id'],row['slot'])
+            archived=0
+            try:
+                for row in chosen:
+                    check_capture_deadline(deadline)
+                    manager.remove(root,{'slot':row['slot'],'id':row['id'],'confirm':f"移出备份 {row['slot']}"},discover=False)
+                    archived+=1
+            except (OSError,ValueError,TimeoutError) as exc:
+                manager._set_notice(root,f'自动整理已移出 {archived} 份完整副本，后续停止：{exc}；保留目录中的原 ZIP 可重新加入。')
+                raise
+            manager._set_notice(root,f'自动保留策略已将 {archived} 份较旧备份移入保留目录；原 ZIP 可重新加入，物理空间未释放。')
+            return archived
 MEMBER = re.compile(r'backups/slot[1-6]-[0-9a-f]{64}\.zip\Z')
 BEFORE = re.compile(r'\.denghuo-before-([1-6])-\d+-[0-9a-f]{8}\Z')
 RETAINED = re.compile(r'[0-9a-f]{64}-\d+\.zip\Z')
@@ -222,6 +471,7 @@ def _storage_inventory(manager, root):
                     {'kind':'before','title':'回档与撤回前目录','rows':before,'directory':str(Path(root))},
                     {'kind':'stage','title':'中断回档暂存','rows':stages,'directory':str(Path(root))}],
                 'totals':manager.storage_breakdown(root),
+                'automatic_retention':automatic_status(manager,root),
                 'scope_note':'清单针对当前连接目录；总占用中的活动、移出和隔离项还包含此前连接目录。不会自动整理其他目录。'}
 
 

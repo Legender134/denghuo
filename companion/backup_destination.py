@@ -250,6 +250,10 @@ def _index_merge(relative, source, target):
             if key in value and value[key] != row:
                 raise ValueError('目标暂存来源冲突，尚未复制；原件仍保留')
             value[key] = row
+    elif name == 'retention-policy.json':
+        # Authorization remains bound to the target's own library/destination.
+        # The source original stays in its previous location; never merge consent.
+        return unlinked(target / relative).read_bytes()
     elif name == 'restores-pending.json':
         from .backup_recovery import records
         value = records(b, reference)
@@ -346,6 +350,7 @@ def plan(session, backup_root, *, start_new=False):
             'message': '确认后复制现有备份、保留区和隔离区，切换后持续写入目标目录。原目录全部保留；已有目标记录的名称和固定状态保留。'}
     if start_new:
         view['message'] = '原备份磁盘暂不可用：本次不会读取或复制旧历史。确认后在新位置继续备份，旧目的地与身份记录全部保留；请重新连接旧磁盘后再预览合并历史。'
+    view['message'] += ' 自动保留授权不会随复制重新绑定：目标已有策略保持目标自己的授权；复制来的旧位置策略在新位置关闭，须重新预览启用。'
     return view, binding, merged, preferences
 
 

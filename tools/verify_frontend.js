@@ -25,6 +25,24 @@ function harness(){
 }
 function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revision:1,started:90,stale:false,
   data:{hero:{level:1,ht:20,hp:10,strength:10},depth:1,items:[]}};}
+async function verifyAutomaticRetention(){
+  const h=harness(),pending=[],receipts=[],messages=[];
+  Object.assign(h.context,{state:{backup_context:'auto-current',settings:{save_root:'/synthetic/current'}},backupState:{save_root:'/synthetic/current'},
+    inlineError:(node,text)=>node.textContent=text,toast:text=>messages.push(text),post:(url,payload)=>new Promise((resolve,reject)=>pending.push({url,payload,resolve,reject}))});
+  h.load('backup-workflows.js');h.run("backupFlow.context='auto-current'");h.context.recordBackupReceipt=(...args)=>receipts.push(args);
+  const policy={enabled:false,available:true,writable:true,expected:null},preview={context:'auto-current',policy,expected:'preview-1',note:'持续规则',current_library_bytes:100,active_zip_bytes:200,disk_free_bytes:100000,candidates:[],kept:[]};
+  await h.run('saveAutomaticRetention(true)');assert.equal(pending.length,0);
+  const reading=h.run('previewAutomaticRetention()');pending.shift().resolve(preview);await reading;
+  assert(!h.get('#backup-automatic-review').hidden);assert(h.get('#backup-automatic-enable').disabled);assert.match(h.get('#backup-automatic-summary').textContent,/物理可用空间/);
+  h.get('#backup-automatic-confirm').checked=true;const enabling=h.run('saveAutomaticRetention(true)');assert.equal(pending[0].payload.action,'automatic-enable');assert.equal(pending[0].payload.expected_policy,null);assert.equal(pending[0].payload.expected,'preview-1');
+  pending.shift().resolve({context:'auto-current',policy:{...policy,enabled:true,expected:'saved-1'},message:'已启用'});await enabling;
+  assert(h.get('#backup-automatic-review').hidden);assert(!h.get('#backup-automatic-confirm').checked);assert.equal(receipts.length,1);
+  const disabling=h.run('saveAutomaticRetention(false)');assert.equal(pending[0].payload.expected_policy,'saved-1');h.context.state.backup_context='other-root';
+  pending.shift().resolve({context:'auto-current',policy:{...policy,expected:'saved-2'},message:'旧目录已关闭'});await disabling;
+  assert.equal(receipts.length,2);assert.equal(receipts[1][1].root,'/synthetic/current');assert.equal(receipts[1][4],true);assert(!messages.includes('旧目录已关闭'));
+  h.context.state.backup_context='auto-current';const stale=h.run('previewAutomaticRetention()');h.context.state.backup_context='other-root';pending.shift().resolve(preview);await stale;assert.equal(h.run('backupFlow.automaticDraft'),null);
+  console.log(JSON.stringify({automatic_retention_explicit_consent:true,default_preserve_all:true,old_context_preview_ignored:true,submitted_receipt_retained:true}));
+}
 async function verifyGlobalHistory(){
   const h=harness(),writes=[],reads=[],inputs=[element(),element()],portableInputs=[element(),element()];
   inputs[0].dataset={globalRestoreName:'badges.dat',invalid:'false'};inputs[1].dataset={globalRestoreName:'rankings.dat',invalid:'true'};
@@ -1375,5 +1393,6 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert.throws(()=>recoveredPlay.run('applySettingsRecovery(preparedPlay)'),/新设置编辑/);assert.equal(recoveredPlay.get('#play-offset_y').value,'999');
   await recoveredPlay.run('loadPlaySettings(true)');
   recoveredPlay.get('#play-offset_x').value='778';recoveredPlay.get('#play-form').listeners.input();recoveredPlay.get('#play-offset_x').value='333';recoveredPlay.get('#play-form').listeners.input();assert(!recoveredPlay.run('playDirty'),'editing then reverting a settings form must become clean');
+  await verifyAutomaticRetention();
   console.log('PASS: existing first-launch, numeric draft, comparison and backup checks; C-01 raw/empty/partial/out-of-range draft reopening and computed-result isolation; fixed saved numeric parameters and origins; input-only plan payload; manual reopen without submission; navigation and dialog response races; explicit plan updates and retained errors; strict diagnostic redaction; all play fields, concurrent draft preservation and explicit disk reload');
 })().catch(error=>{console.error(error);process.exitCode=1;});

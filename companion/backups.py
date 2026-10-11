@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from functools import wraps
 from dataclasses import dataclass
 from io import BytesIO
 from itertools import islice
@@ -39,6 +40,24 @@ def backup_metadata_revision(row):
 def check_capture_deadline(deadline):
     if deadline is not None and time.monotonic() >= deadline:
         raise TimeoutError('结束前的备份检查超时；未覆盖活动存档原件')
+
+
+def library_write(function):
+    """Serialize backup mutations and discovery with persistent retention consent."""
+    @wraps(function)
+    def coordinated(self, root, *args, **kwargs):
+        if function.__name__=='history' and (kwargs.get('discover') is False or isinstance(root,BackupLibrary)):
+            with self.lock:return function(self,root,*args,**kwargs)
+        from .backup_workflows import _automatic_lock
+        try:
+            with self.lock, _automatic_lock(self,root):
+                return function(self,root,*args,**kwargs)
+        except (OSError,ValueError) as exc:
+            if function.__name__=='tick' and not kwargs.get('force',args[0] if args else False):
+                self.error = self.tick_failure = str(exc)
+                return
+            raise
+    return coordinated
 
 
 class TimelineRecordsError(ValueError):
@@ -275,6 +294,7 @@ class BackupManager:
             raise ValueError('保留备份的观察时间记录损坏，原件仍保留，请通过导入功能校验原ZIP')
         return {**{k:row[k] for k in ('id','slot','label','first_seen')}, 'last_seen':last_seen}
 
+    @library_write
     def rejoin(self, root, payload):
         name = payload.get('file')
         if not isinstance(name, str) or not re.fullmatch(r'[0-9a-f]{64}-\d+\.zip', name):
@@ -322,6 +342,7 @@ class BackupManager:
             row['metadata_revision'] = backup_metadata_revision(row)
         return rows
 
+    @library_write
     def history(self, root, *, discover=True):
         if isinstance(root, BackupLibrary):
             discover = False
@@ -361,13 +382,14 @@ class BackupManager:
             row['metadata_revision'] = backup_metadata_revision(row)
         return rows
 
-    def _check_history_capacity(self, root, slot, identity):
-        rows = self.history(root)
+    def _check_history_capacity(self, root, slot, identity, *, discover=True):
+        rows = self.history(root, discover=discover)
         if len(rows) >= MAX_HISTORY and not any(row['slot'] == slot and row['id'] == identity for row in rows):
             raise ValueError(f'备份历史已满（{MAX_HISTORY}项），请先导出并移出旧记录；尚未新增备份，原件仍保留')
 
-    def register(self, root, row, retained=None, transfer=None, imported=False):
-        rows = self.history(root)
+    @library_write
+    def register(self, root, row, retained=None, transfer=None, imported=False, *, discover=True):
+        rows = self.history(root, discover=discover)
         existing = next((r for r in rows if r['slot'] == row['slot'] and r['id'] == row['id']), None)
         if existing and imported:
             # Importing an existing object is not a new observation of live gameplay.
@@ -402,20 +424,21 @@ class BackupManager:
         atomic_json(self.scope(root) / 'history.json', rows)
         return existing if existing is not None else rows[-1]
 
-    def selected(self, root, payload):
+    def selected(self, root, payload, *, discover=True):
         slot, identity = payload.get('slot'), payload.get('id')
         if type(slot) is not int or slot not in range(1, 7):
             raise ValueError('槽位不正确')
         # A damaged timeline must never be silently bypassed by a second index.
         events = self.events(root)
-        row = next((r for r in self.history(root) if r['slot'] == slot and r['id'] == identity), None)
+        row = next((r for r in self.history(root, discover=discover) if r['slot'] == slot and r['id'] == identity), None)
         if row is None and any(r['slot'] == slot and r['id'] == identity for r in events):
             self.scanned.discard(str(self.scope(root)))
-            row = next((r for r in self.history(root) if r['slot'] == slot and r['id'] == identity), None)
+            row = next((r for r in self.history(root, discover=discover) if r['slot'] == slot and r['id'] == identity), None)
         if row is None:
             raise ValueError('备份不属于当前目录或槽位')
         return row
 
+    @library_write
     def manage(self, root, payload):
         with self.lock:
             selected = self.selected(root, payload)
@@ -436,6 +459,7 @@ class BackupManager:
             self._set_notice(root, '备份名称与保留设置已保存')
             return {key: target[key] for key in ('id', 'slot', 'label', 'locked', 'metadata_revision')}
 
+    @library_write
     def validate(self, root):
         with self.lock:
             errors = []
@@ -477,6 +501,7 @@ class BackupManager:
                 raise ValueError('导出的备份超过大小限制')
             return raw, f"denghuo-slot{row['slot']}-{row['id'][:12]}.zip"
 
+    @library_write
     def import_archive(self, root, raw, retained=None):
         with self.lock:
             if not isinstance(raw, bytes) or not 1 < len(raw) <= MAX_TOTAL:
@@ -513,14 +538,15 @@ class BackupManager:
                 if incoming.exists():
                     unlinked(incoming).unlink()
 
-    def remove(self, root, payload):
+    @library_write
+    def remove(self, root, payload, *, discover=True):
         """Recoverable removal from the active library; never delete the archive."""
         with self.lock:
-            row = self.selected(root, payload)
+            row = self.selected(root, payload, discover=discover)
             if row.get('locked'):
                 raise ValueError('此备份已永久保留，请先取消固定')
             from .backup_workflows import protected_records
-            if (row['slot'],row['id']) in protected_records(self,root,self.history(root)):
+            if (row['slot'],row['id']) in protected_records(self,root,self.history(root, discover=discover)):
                 raise ValueError('此备份关联当前可撤回的回档，请先核对撤回记录；尚未移出')
             if payload.get('confirm') != f"移出备份 {row['slot']}":
                 raise ValueError('请明确确认移出备份')
@@ -529,9 +555,15 @@ class BackupManager:
             recycle.mkdir(parents=True, exist_ok=True)
             source = unlinked(scope / (row['id'] + '.zip'))
             target = unlinked(recycle / (row['id'] + '-' + str(time.time_ns()) + '.zip'))
-            rows, events = self.history(root), self.events(root)
+            rows, events = self.history(root, discover=discover), self.events(root)
             indexes = {name: unlinked(scope / name).read_bytes() if (scope / name).exists() else None
                        for name in ('history.json', 'timeline.json')}
+            intent = None
+            if not discover:
+                from .backup_workflows import automatic_remove_intent
+                intent = automatic_remove_intent(self,root,source,target,indexes,row['id'],
+                    {'history.json':[r for r in rows if r['id']!=row['id']],
+                     'timeline.json':[r for r in events if r['id']!=row['id']]})
             source.replace(target)
             try:
                 atomic_json(target.with_suffix('.json'), {'id':row['id'], 'slot':row['slot'],
@@ -539,6 +571,7 @@ class BackupManager:
                             'last_seen':row['last_seen'], 'locked':row.get('locked',False)})
                 atomic_json(scope / 'history.json', [r for r in rows if r['id'] != row['id']])
                 atomic_json(scope / 'timeline.json', [r for r in events if r['id'] != row['id']])
+                if intent is not None:intent.unlink()
             except OSError:
                 target.replace(source)
                 # Roll back the first index too if the second index could not be published.
@@ -558,7 +591,10 @@ class BackupManager:
             self._set_notice(root, '备份已移出活动库；可在下方保留副本中校验并重新加入，原名称会保留。没有删除文件。')
             self.last_tick = self.clock()  # Do not immediately recreate the same current state.
 
+    @library_write
     def capture(self, root, slot, *, deadline=None):
+        from .backup_workflows import automatic_recover
+        automatic_recover(self,root,deadline=deadline)
         check_capture_deadline(deadline)
         self._recovery_guard(root, slot)
         root = unlinked(Path(root)).resolve()
@@ -602,7 +638,7 @@ class BackupManager:
         identity = snapshot_identity(hashes, slot)
         scope = self.scope(root)
         scope.mkdir(parents=True, exist_ok=True)
-        self._check_history_capacity(root, slot, identity)
+        self.history(root)  # Discover once before controlled capture/retention.
         target = unlinked(scope / f"{identity}.zip")
         if target.exists():
             try:
@@ -620,24 +656,34 @@ class BackupManager:
                     'sha256':hashlib.sha256(original).hexdigest() if len(original)<=MAX_TOTAL else None,
                     'summary':player_summary(game, modified), 'reason':'应用校验失败后隔离原件'})
                 target.replace(isolated)
+                self._storage_cache = None
                 self._set_notice(root, '发现损坏备份，已单独保留原文件并重新备份当前有效进度。')
         if not target.exists():
-            used = self.storage()
-            if used + total > MAX_STORAGE:
-                raise ValueError("备份目录已接近 512 MiB 上限；请保留所需备份后整理目录")
             metadata = {"format": 2, "slot": slot, "files": hashes, "saved": modified,
                         "stamps": {name: stamp[0] for name, stamp in stamps.items()},
                         "depth": game["depth"], "class": game["hero"]["class"], "version": game.get("version")}
-            pending = unlinked(target.with_suffix(".pending"))
-            with ZipFile(pending, "w", ZIP_DEFLATED) as archive:
+            content = BytesIO()
+            with ZipFile(content, "w", ZIP_DEFLATED) as archive:
                 archive.writestr("manifest.json", json.dumps(metadata, ensure_ascii=True))
                 for name, data in payloads.items():
                     archive.writestr(name, data)
+            raw = content.getvalue()
+            from .backup_workflows import automatic_headroom
+            automatic_headroom(self,root,slot,identity,len(raw),deadline=deadline)
+            self._check_history_capacity(root,slot,identity,discover=False)
+            if self.storage()+len(raw)>MAX_STORAGE:
+                raise ValueError("备份目录已接近 512 MiB 上限；请核对活动额度、可选自动保留策略和物理空间，已有原件仍保留")
+            pending = unlinked(target.with_suffix(".pending"))
+            pending.write_bytes(raw)
             check_capture_deadline(deadline)
             pending.replace(target)
             self.checked_archive(root, identity, slot)
+        else:
+            from .backup_workflows import automatic_headroom
+            automatic_headroom(self,root,slot,identity,0,deadline=deadline)
+            self._check_history_capacity(root,slot,identity,discover=False)
         row = {**player_summary(game, modified), "time": self.clock(), "slot": slot, "id": identity}
-        self.register(root, row)
+        self.register(root, row, discover=False)
         return row
 
     def final_capture(self, root, deadline, *, allow_missing_default=False, on_capture=None, on_global_capture=None):
@@ -780,6 +826,7 @@ class BackupManager:
                     or unlinked(scope / 'global-history-archives').exists()
                     or unlinked(scope / 'global-progress-pending.json').exists())
 
+    @library_write
     def tick(self, root, force=False):
         with self.lock:
             now = self.clock()
@@ -803,6 +850,7 @@ class BackupManager:
                 self.global_health = global_history._health(self, root, 'blocked', error=str(exc))
             try:
                 rows = self.events(root)
+                observations = []
                 recovery = self.recovery_status(root)
                 blocked = recovery['blocked_slots']
                 errors = [recovery['error']] if recovery['error'] else []
@@ -823,7 +871,7 @@ class BackupManager:
                         continue
                     try:
                         row = self.capture(root, slot["id"])
-                        rows.append({key: row[key] for key in ('id','slot','time','saved','depth','class','version')})
+                        observations.append({key: row[key] for key in ('id','slot','time','saved','depth','class','version')})
                         captured_saved.append(row['saved'])
                         captured += 1
                         self.slot_health[slot['id']] = {'error': '', 'saved': row['saved'], 'last_success': now}
@@ -831,6 +879,8 @@ class BackupManager:
                         errors.append(str(exc))
                         self.slot_health[slot['id']] = {'error': str(exc), 'saved': 0, 'last_success': 0}
                 if captured:
+                    active = {(row['slot'],row['id']) for row in self.history(root,discover=False)}
+                    rows = [row for row in self.events(root)+observations if (row['slot'],row['id']) in active]
                     # Keep one predecessor for every slot at the one-hour edge.
                     old = {slot: max((r for r in rows if r["slot"] == slot and r["time"] < now - 3660),
                                     key=lambda r: r["time"], default=None) for slot in range(1, 7)}
@@ -1079,6 +1129,7 @@ class BackupManager:
         with self.lock:
             return self._history_repair_data(root)[0]
 
+    @library_write
     def repair_history(self, root, payload):
         if not isinstance(payload, dict) or payload.get('confirm') != '恢复备份历史':
             raise ValueError('请明确确认保留原件并恢复备份历史')
@@ -1158,6 +1209,7 @@ class BackupManager:
             os.fsync(stream.fileno())
         temporary.replace(path)
 
+    @library_write
     def repair_timeline(self, root, payload):
         """Rebuild only the damaged observation index, preserving every source object."""
         if not isinstance(payload, dict) or payload.get('confirm') != '恢复时间记录':
@@ -1287,6 +1339,7 @@ class BackupManager:
         with self.lock:
             return preview(self, root, payload)
 
+    @library_write
     def recovery_execute(self, root, payload):
         from .backup_recovery import execute
         with self.lock:
@@ -1296,6 +1349,7 @@ class BackupManager:
         from .backup_recovery import guard
         guard(self, root, slot)
 
+    @library_write
     def restore(self, root, payload):
         with self.lock:
             self._stage_attempt = None
@@ -1457,6 +1511,7 @@ class BackupManager:
                     'original_existed': row['existed'], 'expected_current': before[2],
                     'same_run': bool(target.get('run_id') and target.get('run_id') == current.get('run_id'))}
 
+    @library_write
     def undo(self, root, payload):
         with self.lock:
             slot = payload.get('slot')

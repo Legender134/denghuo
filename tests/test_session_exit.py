@@ -229,6 +229,10 @@ class RecoveryOriginalHTTPTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix='denghuo-raw-original-http-')
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
+        save_root = self.directory / 'synthetic-saves'
+        save_root.mkdir()
+        self.original_settings = json.dumps({'save_root': str(save_root)}).encode('utf-8')
+        (self.directory / 'settings.json').write_bytes(self.original_settings)
         self.session = Session(self.directory / 'settings.json')
         self.server = Server(self.session)
         self.worker = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -252,6 +256,37 @@ class RecoveryOriginalHTTPTests(unittest.TestCase):
         result = response.status, dict(response.getheaders()), response.read()
         connection.close()
         return result
+
+    def test_http_exit_requires_a_reported_current_web_draft(self):
+        surface = 'web-aaaaaaaa'
+        payload = {'action': 'request', 'surface_id': surface, 'revision': 0}
+        self.assertEqual(self.request(payload)[0], 400)
+        self.assertEqual(self.session.exit_status()['phase'], 'idle')
+        self.session.exit_coordinator.register(surface, kind='web')
+        self.assertEqual(self.request(payload)[0], 400)
+        draft = {'manual': {'hp': {'value': '-', 'checked': False}}}
+        self.session.report_exit_surface(surface, 1, True, draft=draft, kind='web')
+        self.assertEqual(self.request(payload)[0], 400)
+        status, _, raw = self.request({**payload, 'revision': 1})
+        self.assertEqual(status, 200)
+        exit_state = json.loads(raw)['exit']
+        self.assertEqual(exit_state['phase'], 'confirming')
+        self.assertEqual(exit_state['participants'][0]['surface_id'], surface)
+        self.assertTrue(exit_state['participants'][0]['dirty'])
+
+    def test_http_exit_cannot_impersonate_trusted_native_shutdown(self):
+        self.session.register_exit_surface('native', kind='native')
+        self.session.report_exit_surface('native', 1, False, draft={}, kind='native')
+        self.assertEqual(self.request({'action': 'request', 'surface_id': 'native', 'revision': 1})[0], 400)
+        self.assertEqual(self.session.exit_status()['phase'], 'idle')
+
+    def test_http_exit_cannot_use_a_closed_window_report(self):
+        surface = 'web-bbbbbbbb'
+        draft = {'manual': {'hp': '-'}}
+        self.session.report_exit_surface(surface, 1, True, draft=draft, kind='web')
+        self.session.unregister_exit_surface(surface, 1, True, draft=draft)
+        self.assertEqual(self.request({'action': 'request', 'surface_id': surface, 'revision': 1})[0], 400)
+        self.assertEqual(self.session.exit_status()['phase'], 'idle')
 
     def test_confirmed_original_download_is_byte_exact_authenticated_and_never_loads_a_form(self):
         status, _, raw = self.request({'action': 'draft-list'})
@@ -283,7 +318,7 @@ class RecoveryOriginalHTTPTests(unittest.TestCase):
             'expected_revision': archived['state_revision']})[0], 400)
         Path(archived['path']).write_bytes(b'replaced archived original')
         self.assertEqual(self.request(download)[0], 400)
-        self.assertFalse((self.directory / 'settings.json').exists())
+        self.assertEqual((self.directory / 'settings.json').read_bytes(), self.original_settings)
 
     def test_recovery_migration_notice_distinguishes_unusable_originals_from_verified_drafts(self):
         from companion.service import Session
