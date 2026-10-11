@@ -565,6 +565,42 @@ class MigrationTests(unittest.TestCase):
         for secret in (b'C:\\', b'/home/private', b'private-token'):
             self.assertNotIn(secret, knowledge)
 
+    def test_portable_zip_redacts_complete_values_and_preserves_public_links(self):
+        cases = [
+            ('password="correct horse battery staple"; ordinary=yes', ['correct horse', 'battery staple']),
+            ("password='two words'; ordinary=yes", ['two words']),
+            ('Cookie: alpha=AAA; beta=BBB', ['AAA', 'BBB']),
+            ('Authorization: Basic ABCDEF==; ordinary=yes', ['Basic', 'ABCDEF']),
+            ('Authorization: Bearer AUTH; ordinary=yes', ['Bearer', 'AUTH']),
+            ('"password": "two words", "note": "ordinary"', ['two words']),
+            ('credentials={"u":"SYNTHETIC","p":"two words"}; ordinary=yes', ['SYNTHETIC', 'two words']),
+            ('path=C:\\Users\\Synthetic Reviewer\\notes.txt; ordinary=yes', ['Reviewer', 'notes.txt']),
+            ('path="C:\\Users\\Synthetic Reviewer\\notes.txt"; ordinary=yes', ['Reviewer', 'notes.txt']),
+            ("path=C:\\Users\\O'Brien\\notes.txt; ordinary=yes", ["O'Brien", 'notes.txt']),
+            ('path=/home/Synthetic Reviewer/notes.txt; ordinary=yes', ['Reviewer', 'notes.txt']),
+            ('path=\\\\server\\Shared Folder\\notes.txt; ordinary=yes', ['Shared Folder', 'notes.txt']),
+        ]
+        plans=[]
+        for index,(note,_) in enumerate(cases):
+            plans.append(self.source.knowledge.save('合成脱敏 '+str(index),'manual',None,self.plan['params'],note=note))
+        public='参考 https://github.com/00-Evan/shattered-pixel-dungeon 与 http://example.com/rules'
+        link=self.source.knowledge.save('公开参考','manual',None,self.plan['params'],note=public)
+        draft_note='password="correct horse battery staple"; Cookie: alpha=AAA; beta=BBB; path=C:\\Users\\Synthetic Reviewer\\notes.txt'
+        draft=self.source.exit_drafts.save('web-'+'c'*32,'web-session','合成备注',{'note':draft_note})
+        originals={path:path.read_bytes() for path in (self.source.knowledge.path,Path(draft['path']))}
+        raw=self.bundle(['plan:'+plan['id'] for plan in plans]+['plan:'+link['id'],'draft:'+draft['id']])
+        with ZipFile(BytesIO(raw)) as archive:
+            notes={row['id']:row['note'] for row in migration.read_json(archive.read('knowledge.json'))['plans']}
+            exported_draft=migration.read_json(archive.read('exit-drafts.json'))['records'][0]['draft']['note']
+        for plan,(original,removed) in zip(plans,cases):
+            with self.subTest(note=original):
+                for secret in removed:self.assertNotIn(secret,notes[plan['id']])
+                if 'ordinary=yes' in original:self.assertIn('ordinary=yes',notes[plan['id']])
+        self.assertEqual(notes[link['id']],public)
+        for secret in ('horse battery staple','beta=BBB','Reviewer\\notes.txt'):
+            self.assertNotIn(secret,exported_draft)
+        for path,original in originals.items():self.assertEqual(path.read_bytes(),original)
+
     def test_one_unavailable_inner_backup_does_not_fake_full_success(self):
         raw = self.bundle()
         def damage(contents, manifest):

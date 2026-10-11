@@ -16,7 +16,7 @@ import uuid
 from types import SimpleNamespace
 
 from .engine import Catalog, CLASSES, analyze, number
-from .saves import SaveError, default_root, list_slots, read_slot
+from .saves import EndedRun, SaveError, default_root, list_slots, read_slot
 from .rules import NumericRules
 from .paths import ROOT, data_directory
 
@@ -1242,6 +1242,9 @@ class Session:
                 state._run_identity, state._run_duration = identity, duration
             state.warning = " ".join(text for text in (warning, state.data["compatibility_warning"]) if text)
         except (SaveError, OSError, TypeError, ValueError, KeyError, OverflowError, RecursionError) as exc:
+            if isinstance(exc, EndedRun):
+                state._run_identity = state._run_duration = state._history_state = None
+                state.history = []
             state.data = None
             state._fingerprint = None
             state.warning = ""
