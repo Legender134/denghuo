@@ -317,7 +317,16 @@ class Session:
             result = self.report_exit_surface(surface, payload.get('revision'), payload.get('dirty'),
                 draft=payload.get('draft'), label=payload.get('label'), kind='web')
         elif action == 'request':
-            result = self.request_exit(surface or 'web', payload.get('reason', '结束本次辅助'))
+            from .session_exit import ONLINE_SECONDS
+            # HTTP callers report their current draft before requesting exit.
+            # Trusted native shutdown paths call request_exit directly.
+            with self.exit_coordinator.lock:
+                own = self.exit_coordinator.surfaces.get(surface) if isinstance(surface, str) else None
+                if (own is None or own['kind'] != 'web' or own['closed'] or own['draft'] is None
+                        or self.exit_coordinator.clock() - own['last_seen'] > ONLINE_SECONDS
+                        or type(payload.get('revision')) is not int or payload['revision'] != own['revision']):
+                    raise ValueError('当前网页草稿尚未成功上报，请重试；尚未请求退出')
+                result = self.request_exit(surface, payload.get('reason', '结束本次辅助'))
         elif action == 'ack':
             result = self.acknowledge_exit(payload.get('request_id'), surface, payload.get('decision'), payload.get('revision'))
         elif action == 'unregister':
@@ -464,7 +473,9 @@ class Session:
         with self.lock:
             if self._knowledge is None:
                 self._knowledge = KnowledgeWorkspace(self.config_path.parent / 'knowledge.json', self)
-            return self._knowledge
+            workspace = self._knowledge
+        workspace.ensure_protection()
+        return workspace
 
     @property
     def play_preferences(self):
@@ -812,6 +823,10 @@ class Session:
         with self._backup_operation() as context:
             return status(context)
 
+    def choose_directory(self, payload):
+        from .native_host import choose_directory
+        return choose_directory(payload,lambda:self.stop.is_set() or self._shutdown_requested.is_set())
+
     def backup_destination_action(self, payload):
         from . import backup_destination
         from . import backup_destination_recovery
@@ -998,7 +1013,7 @@ class Session:
         payload = {} if payload is None else payload
         if not isinstance(payload, dict):
             raise ValueError('备份工作流请求格式不正确')
-        with self._backup_operation(mutating=action in ('stage-retry', 'batch-import', 'archive-retention', 'reclaim-execute')):
+        with self._backup_operation(mutating=action in ('stage-retry', 'batch-import', 'archive-retention', 'reclaim-execute', 'automatic-enable', 'automatic-disable', 'automatic-repair')):
             if self.config_error:
                 raise ValueError('请先恢复连接设置，再操作存档备份')
             self.check_backup_context(context if context is not None else payload.get('context'))
@@ -1026,6 +1041,14 @@ class Session:
                 manager._storage_cache = None
             elif action == 'retention-preview':
                 result = flows.retention_preview(manager, root, payload)
+            elif action == 'automatic-preview':
+                result = flows.automatic_preview(manager, root)
+            elif action == 'automatic-repair-preview':
+                result = flows.automatic_repair_preview(manager,root)
+            elif action == 'automatic-repair':
+                result = flows.automatic_repair(manager,root,payload)
+            elif action in ('automatic-enable', 'automatic-disable'):
+                result = flows.automatic_save(manager, root, payload, enabled=action=='automatic-enable')
             elif action == 'archive-retention':
                 result = flows.archive_retention(manager, root, payload)
                 manager._storage_cache = None

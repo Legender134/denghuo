@@ -69,9 +69,105 @@ class BackupDestinationTests(unittest.TestCase):
         return self.session.backup_destination_action(self.request('apply', target,
             expected=preview['expected'], confirmed=True))
 
+    def interrupted_retention(self, manager, landing='move'):
+        from companion import backup_workflows as flows
+        class Crash(BaseException):pass
+        rows=[]
+        for hp in (29,28,27,26):
+            self.now+=20;self.write_save(hp);rows.append(manager.capture(self.saves,1))
+        scope=manager.scope(self.saves)
+        original={path.name:path.read_bytes() for path in scope.glob('*') if path.is_file() and (path.suffix=='.zip' or path.name in ('history.json','timeline.json'))}
+        preview=flows.automatic_preview(manager,self.saves)
+        flows.automatic_save(manager,self.saves,{'expected_policy':preview['policy']['expected'],'expected':preview['expected'],'confirmed':True},enabled=True)
+        replace,unlink=Path.replace,Path.unlink
+        def moved(path,target):
+            result=replace(path,target)
+            if landing=='move' and path.suffix=='.zip' and Path(target).parent==manager.directory.parent/'backup-recycle'/scope.name:raise Crash()
+            return result
+        def finished(path,*args,**kwargs):
+            if landing=='finish' and path==scope/'automatic-retention-pending.json':raise Crash()
+            return unlink(path,*args,**kwargs)
+        self.now+=20;self.write_save(25)
+        with patch.object(flows,'AUTOMATIC_KEEP',1),patch('companion.backups.MAX_HISTORY',4),patch.object(Path,'replace',moved),patch.object(Path,'unlink',finished):
+            with self.assertRaises(Crash):manager.capture(self.saves,1)
+        return rows,original
+
+    def test_pending_source_destination_preview_is_read_only_and_confirmation_only_recovers(self):
+        for landing in ('move','finish'):
+            with self.subTest(landing=landing):
+                if landing=='finish':
+                    # Previous case has already switched; choose a fresh empty target.
+                    self.target=self.base/'next-target';self.target.mkdir()
+                manager=self.session.backups
+                _,original=self.interrupted_retention(manager,landing)
+                scope=manager.scope(self.saves);before=self.files(self.base);revision=self.session.settings_revision
+                preview=self.preview()
+                self.assertEqual(self.files(self.base),before)
+                self.assertEqual(len(preview['retention_recovery']),1)
+                result=self.session.backup_destination_action(self.request('apply',expected=preview['expected'],confirmed=True))
+                self.assertFalse(result['copied']);self.assertTrue(result['recovery_complete'])
+                self.assertEqual(self.session.settings_revision,revision);self.assertIs(self.session.backups,manager)
+                self.assertFalse((scope/'automatic-retention-pending.json').exists())
+                for name,raw in original.items():self.assertEqual((scope/name).read_bytes(),raw)
+                self.assertFalse(list(self.target.rglob('*.zip')))
+                preview=self.preview();self.assertNotIn('retention_recovery',preview)
+                receipt=self.session.backup_destination_action(self.request('apply',expected=preview['expected'],confirmed=True))
+                self.assertTrue(receipt['copied'])
+
+    def test_target_pending_recovery_keeps_existing_label_and_requires_new_copy_preview(self):
+        from companion.backups import BackupManager
+        other=BackupManager(self.target/'backups',clock=lambda:self.now,closed_check=lambda:None)
+        rows,_=self.interrupted_retention(other,'move')
+        self.capture(28)
+        selected=self.session.backups.selected(self.saves,rows[1])
+        self.session.backups.manage(self.saves,{'slot':1,'id':rows[1]['id'],'label':'Source title','expected_metadata_revision':selected['metadata_revision']})
+        preview=self.preview();self.assertEqual(preview['retention_recovery'][0]['base'],str(self.target))
+        result=self.session.backup_destination_action(self.request('apply',expected=preview['expected'],confirmed=True))
+        self.assertEqual(result['success_count'],1);self.assertFalse(result['copied'])
+        selected=other.selected(self.saves,rows[1]);other.manage(self.saves,{'slot':1,'id':rows[1]['id'],'label':'Target title','expected_metadata_revision':selected['metadata_revision']})
+        self.switch()
+        self.assertEqual(self.session.backups.selected(self.saves,rows[1])['label'],'Target title')
+        self.capture(24)
+
+    def test_pending_recovery_stale_marker_or_conflicting_indexes_preserves_all_originals(self):
+        self.interrupted_retention(self.session.backups)
+        preview=self.preview()
+        marker=self.target/destinations.MARKER;marker.write_text(json.dumps({'format':1,'id':'a'*32}))
+        before=self.files(self.base)
+        with self.assertRaisesRegex(ValueError,'变化'):
+            self.session.backup_destination_action(self.request('apply',expected=preview['expected'],confirmed=True))
+        self.assertEqual(self.files(self.base),before)
+        path=self.session.backups.scope(self.saves)/'history.json';path.write_bytes(path.read_bytes()+b'\n')
+        before=self.files(self.base)
+        with self.assertRaisesRegex(ValueError,'中断自动整理暂不可核验'):self.preview()
+        self.assertEqual(self.files(self.base),before)
+
+    def test_two_pending_libraries_partial_recovery_reports_actual_results_without_switch(self):
+        from companion.backups import BackupManager
+        from companion import backup_workflows as flows
+        self.interrupted_retention(self.session.backups)
+        other=BackupManager(self.target/'backups',clock=lambda:self.now,closed_check=lambda:None)
+        self.interrupted_retention(other)
+        preview=self.preview();self.assertEqual(len(preview['retention_recovery']),2)
+        recover=flows.automatic_recover;count=0;revision=self.session.settings_revision
+        def interrupted(manager,root):
+            nonlocal count
+            count+=1
+            if count==2:raise OSError('controlled second recovery failure')
+            return recover(manager,root)
+        with patch.object(flows,'automatic_recover',interrupted):
+            result=self.session.backup_destination_action(self.request('apply',expected=preview['expected'],confirmed=True))
+        self.assertEqual((result['success_count'],result['failure_count']),(1,1))
+        self.assertFalse(result['copied']);self.assertFalse(result['recovery_complete'])
+        self.assertEqual(self.session.settings_revision,revision)
+        self.assertFalse((self.session.backups.scope(self.saves)/'automatic-retention-pending.json').exists())
+        self.assertTrue((other.scope(self.saves)/'automatic-retention-pending.json').exists())
+        self.assertEqual(len(self.preview()['retention_recovery']),1)
+
     def test_zero_configuration_default_and_explicit_workflow_validation(self):
         self.assertEqual(self.session.settings['backup_root'], '')
         self.assertEqual(self.session.backups.directory, self.config.parent / 'backups')
+
         before = self.config.read_bytes()
         with self.assertRaisesRegex(ValueError, '预览'):
             self.session.update_settings({'backup_root': str(self.target)})
@@ -88,6 +184,33 @@ class BackupDestinationTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), before)
         self.assertEqual(self.files(self.target), {})
 
+    def test_copied_automatic_policy_does_not_reauthorize_the_new_destination(self):
+        from companion import backup_workflows as flows
+        self.capture()
+        preview = flows.automatic_preview(self.session.backups,self.saves)
+        flows.automatic_save(self.session.backups,self.saves,{'expected_policy':preview['policy']['expected'],
+            'expected':preview['expected'],'confirmed':True},enabled=True)
+        original_path = self.session.backups.scope(self.saves)/'retention-policy.json'
+        original = original_path.read_bytes()
+        self.assertIn('授权不会随复制重新绑定',self.preview()['message'])
+        self.switch()
+        self.assertFalse(flows.automatic_status(self.session.backups,self.saves)['enabled'])
+        self.assertEqual(original_path.read_bytes(),original)
+
+    def test_destination_keeps_its_own_automatic_policy_when_source_also_has_one(self):
+        from companion.backups import BackupManager
+        from companion import backup_workflows as flows
+        self.capture()
+        target_manager = BackupManager(self.target/'backups')
+        for manager in (self.session.backups,target_manager):
+            preview = flows.automatic_preview(manager,self.saves)
+            flows.automatic_save(manager,self.saves,{'expected_policy':preview['policy']['expected'],
+                'expected':preview['expected'],'confirmed':True},enabled=True)
+        target_path = target_manager.scope(self.saves)/'retention-policy.json'
+        original = target_path.read_bytes()
+        self.switch()
+        self.assertEqual(target_path.read_bytes(),original)
+        self.assertTrue(flows.automatic_status(self.session.backups,self.saves)['enabled'])
     def test_switch_copies_all_libraries_and_retained_evidence_and_resumes_after_restart(self):
         first = self.capture(20)
         self.capture(19)

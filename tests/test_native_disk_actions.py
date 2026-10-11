@@ -1,8 +1,10 @@
 """Real native dispatch/poll stays responsive across held service and file I/O."""
 import copy
 import json
+from io import BytesIO
 from pathlib import Path
 from queue import Queue
+import subprocess
 import tempfile
 import threading
 from types import SimpleNamespace
@@ -14,6 +16,81 @@ from companion.native_manager import NativeManager
 from companion.native_settings import PlaySettings
 from companion.service import Session
 from tests.test_native_controllers import Host, Root
+
+
+class DirectoryPickerTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary=tempfile.TemporaryDirectory(prefix='lamp-picker-');self.addCleanup(self.temporary.cleanup)
+        self.base=Path(self.temporary.name).resolve();saves=self.base/'synthetic-saves';saves.mkdir()
+        self.config=self.base/'settings.json';self.config.write_text(json.dumps({'save_root':str(saves)}),encoding='utf-8')
+        self.session=Session(self.config)
+
+    def picker(self, result=None):
+        process=Mock(returncode=0)
+        process.stdin=BytesIO();process.stdout=BytesIO(json.dumps(result or {'cancelled':False,'path':str(self.base)},ensure_ascii=False).encode())
+        process.stderr=BytesIO();process.poll.return_value=0;process.wait.return_value=0
+        return process
+
+    def test_selected_and_cancelled_paths_never_apply_settings_or_create_backups(self):
+        before={path.name:path.read_bytes() for path in self.base.iterdir() if path.is_file()}
+        for kind,result in (('save',{'cancelled':False,'path':str(self.base)}),('backup',{'cancelled':False,'path':str(self.base)}),('save',{'cancelled':True,'path':''})):
+            process=self.picker(result)
+            with self.subTest(kind=kind,result=result),patch('companion.native_host.sys.platform','win32'),patch.dict('os.environ',{'LAMP_NATIVE_HELPER':str(self.config)}),patch('companion.native_host.subprocess.Popen',return_value=process) as launch:
+                actual=self.session.choose_directory({'kind':kind,'initial':'  raw draft  '})
+                self.assertEqual(actual,result)
+                self.assertEqual(launch.call_args.args[0],[str(self.config),'--choose-directory',kind,'  raw draft  '])
+                self.assertNotIn('shell',launch.call_args.kwargs)
+                self.assertTrue(process.stdin.closed and process.stdout.closed and process.stderr.closed)
+        self.assertEqual({path.name:path.read_bytes() for path in self.base.iterdir() if path.is_file()},before)
+        self.assertFalse((self.base/'backups').exists())
+
+    def test_invalid_requests_unavailable_helper_and_busy_dialog_are_actionable(self):
+        from companion import native_host
+        with patch('companion.native_host.sys.platform','win32'),patch('companion.native_host.subprocess.Popen') as launch:
+            for payload in ({},None,{'kind':'save','initial':0},{'kind':'save','initial':'\0'},{'kind':'other','initial':''},{'kind':[],'initial':''}):
+                with self.subTest(payload=payload),self.assertRaises(ValueError):self.session.choose_directory(payload)
+            with patch.dict('os.environ',{'LAMP_NATIVE_HELPER':str(self.base/'missing.exe')}),self.assertRaisesRegex(ValueError,'控件缺失'):
+                self.session.choose_directory({'kind':'backup','initial':''})
+            with native_host._directory_picker_lock,self.assertRaisesRegex(ValueError,'已有文件夹'):
+                self.session.choose_directory({'kind':'save','initial':''})
+            launch.assert_not_called()
+
+    def test_exit_closes_only_owned_picker_and_releases_single_dialog_lock(self):
+        from companion.native_host import choose_directory,_directory_picker_lock
+        process=self.picker();process.poll.return_value=None
+        process.wait.side_effect=[subprocess.TimeoutExpired('owned picker',1),0]
+        with patch('companion.native_host.sys.platform','win32'),patch.dict('os.environ',{'LAMP_NATIVE_HELPER':str(self.config)}),patch('companion.native_host.subprocess.Popen',return_value=process):
+            with self.assertRaisesRegex(ValueError,'正在结束'):
+                choose_directory({'kind':'save','initial':''},Mock(side_effect=[False,True]))
+        process.terminate.assert_called_once();self.assertTrue(process.stdin.closed)
+        self.assertFalse(_directory_picker_lock.locked())
+
+    def test_invalid_or_disappeared_selected_folder_does_not_apply(self):
+        for result in ({'cancelled':'false','path':str(self.base)},{'cancelled':False,'path':str(self.base/'gone')},{'error':'controlled dialog failure'}):
+            with self.subTest(result=result),patch('companion.native_host.sys.platform','win32'),patch.dict('os.environ',{'LAMP_NATIVE_HELPER':str(self.config)}),patch('companion.native_host.subprocess.Popen',return_value=self.picker(result)):
+                with self.assertRaises(ValueError):self.session.choose_directory({'kind':'save','initial':''})
+
+    def test_http_picker_requires_mutation_token_and_returns_only_draft_path(self):
+        from http.client import HTTPConnection
+        from companion.server import Server
+        server=Server(self.session,0);thread=threading.Thread(target=server.serve_forever);thread.start()
+        before=self.config.read_bytes()
+        try:
+            with patch.object(self.session,'choose_directory',return_value={'cancelled':False,'path':str(self.base)}) as choose:
+                for token,expected in ((False,403),(True,200)):
+                    connection=HTTPConnection('127.0.0.1',server.server_port,timeout=3)
+                    headers={'Content-Type':'application/json'}
+                    if token:headers['X-Companion-Token']=server.token
+                    try:
+                        connection.request('POST','/api/select-directory',json.dumps({'kind':'save','initial':''}),headers)
+                        response=connection.getresponse();self.assertEqual(response.status,expected);data=json.loads(response.read())
+                        if token:self.assertEqual(data['path'],str(self.base))
+                    finally:connection.close()
+                choose.assert_called_once_with({'kind':'save','initial':''})
+            self.assertEqual(self.config.read_bytes(),before)
+        finally:
+            server.shutdown();thread.join(3);server.server_close()
+        self.assertFalse(thread.is_alive())
 
 
 class NativeDiskActionsTests(unittest.TestCase):

@@ -165,7 +165,7 @@ async function verifyHistorySelectionAndFocus(){
   for(const selector of ['[data-global-history-preview]','[data-global-history-export]','[data-global-history-file]','[data-global-history-portable]','[data-global-damaged-export]']){
     for(const identity of h.query(selector).map(button=>plain(button.dataset))){
       const original=h.query(selector).find(button=>JSON.stringify(button.dataset)===JSON.stringify(identity));original.focus();await read(h,{...saved,history:[{...row,files:{...row.files,'badges.dat':{valid:true,summary:{badges:3}}}}]});
-      assert.notEqual(h.context.document.activeElement,original,'focus follows the replacement node');assert.deepEqual(plain(h.context.document.activeElement.dataset),identity);
+      assert.equal(h.context.document.activeElement,original,'identical polling preserves the focused node');assert.deepEqual(plain(h.context.document.activeElement.dataset),identity);
     }
   }
   h.get('#global-history-search').focus();await read(h,saved);assert.equal(h.context.document.activeElement,h.get('#global-history-search'),'outside focus is not stolen');

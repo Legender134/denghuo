@@ -310,6 +310,9 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError('请求格式需要是一个对象')
             path = urlsplit(self.path).path
+            if path == '/api/select-directory':
+                self.send_data({'ok':True,**self.server.session.choose_directory(payload)})
+                return
             if path == '/api/session-exit':
                 if payload.get('action') == 'draft-original-download':
                     value, original = self.server.session.exit_recovery.original(

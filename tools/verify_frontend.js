@@ -25,6 +25,33 @@ function harness(){
 }
 function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revision:1,started:90,stale:false,
   data:{hero:{level:1,ht:20,hp:10,strength:10},depth:1,items:[]}};}
+async function verifyAutomaticRetention(){
+  const h=harness(),pending=[],receipts=[],messages=[];
+  Object.assign(h.context,{state:{backup_context:'auto-current',settings:{save_root:'/synthetic/current'}},backupState:{save_root:'/synthetic/current'},
+    inlineError:(node,text)=>node.textContent=text,toast:text=>messages.push(text),post:(url,payload)=>new Promise((resolve,reject)=>pending.push({url,payload,resolve,reject}))});
+  h.load('backup-workflows.js');h.run("backupFlow.context='auto-current'");h.context.recordBackupReceipt=(...args)=>receipts.push(args);
+  const policy={enabled:false,available:true,writable:true,expected:null},preview={context:'auto-current',policy,expected:'preview-1',note:'持续规则',current_library_bytes:100,active_zip_bytes:200,disk_free_bytes:100000,candidates:[],kept:[]};
+  await h.run('saveAutomaticRetention(true)');assert.equal(pending.length,0);
+  const reading=h.run('previewAutomaticRetention()');pending.shift().resolve(preview);await reading;
+  assert(!h.get('#backup-automatic-review').hidden);assert(h.get('#backup-automatic-enable').disabled);assert.match(h.get('#backup-automatic-summary').textContent,/物理可用空间/);
+  h.get('#backup-automatic-confirm').checked=true;const enabling=h.run('saveAutomaticRetention(true)');assert.equal(pending[0].payload.action,'automatic-enable');assert.equal(pending[0].payload.expected_policy,null);assert.equal(pending[0].payload.expected,'preview-1');
+  pending.shift().resolve({context:'auto-current',policy:{...policy,enabled:true,expected:'saved-1'},message:'已启用'});await enabling;
+  assert(h.get('#backup-automatic-review').hidden);assert(!h.get('#backup-automatic-confirm').checked);assert.equal(receipts.length,1);
+  const disabling=h.run('saveAutomaticRetention(false)');assert.equal(pending[0].payload.expected_policy,'saved-1');h.context.state.backup_context='other-root';
+  pending.shift().resolve({context:'auto-current',policy:{...policy,expected:'saved-2'},message:'旧目录已关闭'});await disabling;
+  assert.equal(receipts.length,2);assert.equal(receipts[1][1].root,'/synthetic/current');assert.equal(receipts[1][4],true);assert(!messages.includes('旧目录已关闭'));
+  h.context.state.backup_context='auto-current';const stale=h.run('previewAutomaticRetention()');h.context.state.backup_context='other-root';pending.shift().resolve(preview);await stale;assert.equal(h.run('backupFlow.automaticDraft'),null);
+  h.context.state.backup_context='auto-current';h.context.badPolicy={enabled:false,writable:false,repairable:true,expected:'bad-1',error:'策略损坏'};h.run('renderAutomaticRetention(badPolicy)');
+  assert(!h.get('#backup-automatic-repair-preview').hidden);const repairPreview={context:'auto-current',path:'/synthetic/retention-policy.json',bytes:30,sha256:'exact-bad-sha',expected:'repair-1',message:'保留原件，重建关闭'};
+  const repairReading=h.run('previewAutomaticRepair()');pending.shift().resolve(repairPreview);await repairReading;
+  assert.match(h.get('#backup-automatic-repair-summary').textContent,/exact-bad-sha/);assert(h.get('#backup-automatic-repair').disabled);
+  await h.run('repairAutomaticRetention()');assert.equal(pending.length,0);
+  h.get('#backup-automatic-repair-confirm').checked=true;const repair=h.run('repairAutomaticRetention()');assert.equal(pending[0].payload.action,'automatic-repair');assert.equal(pending[0].payload.expected,'repair-1');
+  pending.shift().resolve({context:'auto-current',policy:{...policy,repairable:false,expected:'rebuilt-disabled'},preserved_path:'/synthetic/preserved.json',message:'保留原件，已关闭'});await repair;
+  assert(h.get('#backup-automatic-repair-review').hidden);assert(!h.get('#backup-automatic-repair-confirm').checked);assert(!h.run('backupFlow.automaticStatus.enabled'));assert.equal(receipts.length,3);
+  h.run('renderAutomaticRetention(badPolicy)');const oldRepair=h.run('previewAutomaticRepair()');h.context.badPolicy.expected='bad-2';h.run('renderAutomaticRetention(badPolicy)');pending.shift().resolve(repairPreview);await oldRepair;assert.equal(h.run('backupFlow.automaticRepairDraft'),null);
+  console.log(JSON.stringify({automatic_retention_explicit_consent:true,default_preserve_all:true,old_context_preview_ignored:true,submitted_receipt_retained:true}));
+}
 async function verifyGlobalHistory(){
   const h=harness(),writes=[],reads=[],inputs=[element(),element()],portableInputs=[element(),element()];
   inputs[0].dataset={globalRestoreName:'badges.dat',invalid:'false'};inputs[1].dataset={globalRestoreName:'rankings.dat',invalid:'true'};
@@ -311,6 +338,16 @@ async function verifyBackupDestinationDrafts(){
   assert.equal(writes[count+1].payload.start_new,true);assert.equal(writes[count+1].payload.expected,'offline');
   writes[count+1].resolve({settings:{backup_root:'/synthetic/new-disk'},directory:'new-disk/backups',settings_revision:'r3',context:'c3',message:'旧历史未复制，已在新位置继续'});await offlineApply;
   assert(!h.get('#backup-destination-start-new').checked);assert(!h.run('backupDestinationDirty()'));
+  edit('  /synthetic/recover-target  ');const recoveryIndex=writes.length;
+  const retentionPreview=h.get('#backup-destination-form').listeners.submit({preventDefault(){}});
+  const interrupted=[{directory:'/synthetic/source/backups/lib',from:'/synthetic/source/recycle/original.zip',to:'/synthetic/source/backups/lib/original.zip',bytes:100}];
+  writes[recoveryIndex].resolve({backup_root:'/synthetic/recover-target',retention_recovery:interrupted,expected:'recover-only',settings_revision:'r3',context:'c3',message:'先恢复中断整理'});await retentionPreview;
+  assert.match(h.get('#backup-destination-confirm-text').textContent,/当前位置保持/);assert.match(h.get('#backup-destination-summary').textContent,/recycle\/original.zip/);
+  h.get('#backup-destination-confirm').checked=true;const retained=h.get('#backup-destination-apply').listeners.click();
+  writes[recoveryIndex+1].resolve({settings:{backup_root:'/synthetic/new-disk'},directory:'new-disk/backups',settings_revision:'r3',context:'c3',retention_recovery:interrupted,copied:false,failure_count:1,message:'恢复1项，未完成1项；未复制或切换'});await retained;
+  assert.equal(h.get('#backup-destination-root').value,'  /synthetic/recover-target  ');assert(h.run('backupDestinationDirty()'));
+  assert(h.get('#backup-destination-preview').hidden);assert(!h.get('#backup-destination-confirm').checked);assert.match(h.get('#backup-destination-error').textContent,/未完成1项/);
+  await h.get('#backup-destination-apply').listeners.click();assert.equal(writes.length,recoveryIndex+2,'recovery receipt requires a new copy preview');
   h.context.badDraft={backup_root:'x',start_new:'true'};assert.throws(()=>h.run('checkedBackupDestinationDraft(badDraft)'),/格式不正确/);
   const r=harness(),recoveryWrites=[];
   let recoveryStatus={backup_root:'',directory:'default/backups',available:true,settings_revision:'recovery-r1',context:'recovery-c1',
@@ -341,6 +378,30 @@ async function verifyBackupDestinationDrafts(){
   assert.match(r.get('#backup-destination-recovery-summary').textContent,/关联损坏/);assert(r.get('#backup-destination-recovery-cancel').disabled);
   console.log(JSON.stringify({destination_interruption_discovery:true,explicit_continue_and_cancel:true,changed_original_stops:true,new_draft_retained:true}));
   console.log(JSON.stringify({backup_destination_default_and_delayed_preview:true,apply_receipt_keeps_new_raw_draft:true,stale_read_and_recovery:true}));
+}
+async function verifyDirectoryPickerDrafts(){
+  const h=harness(),writes=[],saved={backup_root:'',directory:'default/backups',available:true,settings_revision:'r1',context:'c1'};
+  Object.assign(h.context,{state:{settings_revision:'r1'},settingsDrafts:new Set(),settingsWriteGeneration:0,
+    Event:class{constructor(type){this.type=type;}},inlineError:(node,text)=>node.textContent=text,poll:async()=>{},
+    getJSON:async()=>structuredClone(saved),post:(url,payload)=>new Promise((resolve,reject)=>writes.push({url,payload,resolve,reject}))});
+  const app=fs.readFileSync(path.join(root,'web/app.js'),'utf8');h.run(app.slice(app.indexOf('let settingsRevision='),app.indexOf("$('#settings-reset').addEventListener")));
+  h.load('backup-destination.js');await h.run('loadBackupDestination()');
+  for(const id of ['save-root','backup-destination-root'])h.get('#'+id).dispatchEvent=event=>id==='save-root'?h.get('#settings-form').listeners.input({target:h.get('#'+id)}):h.get('#'+id).listeners[event.type]();
+  h.get('#save-root').value='  original raw  ';const selecting=h.get('#save-root-select').listeners.click();
+  assert(h.get('#save-root-select').disabled&&h.get('#backup-destination-select').disabled);
+  await h.get('#backup-destination-select').listeners.click();assert.equal(writes.length,1);
+  writes[0].resolve({cancelled:false,path:'/synthetic/chosen-save'});await selecting;
+  assert.equal(h.get('#save-root').value,'/synthetic/chosen-save');assert(h.run("settingsDrafts.has('save-root')"));assert.equal(h.run('settingsFormGeneration'),1);
+  h.get('#backup-destination-root').value='  old backup raw  ';const cancelling=h.get('#backup-destination-select').listeners.click();writes[1].resolve({cancelled:true,path:''});await cancelling;assert.equal(h.get('#backup-destination-root').value,'  old backup raw  ');
+  const choosing=h.get('#backup-destination-select').listeners.click();h.get('#backup-destination-root').value=' newer target ';h.get('#backup-destination-root').listeners.input();writes[2].resolve({cancelled:false,path:'/synthetic/late-target'});await choosing;
+  assert.equal(h.get('#backup-destination-root').value,' newer target ');assert.match(h.get('#backup-destination-error').textContent,/保留最新输入/);
+  const selected=h.get('#backup-destination-select').listeners.click();writes[3].resolve({cancelled:false,path:'/synthetic/chosen-backup'});await selected;
+  assert.equal(h.get('#backup-destination-root').value,'/synthetic/chosen-backup');assert(h.run('backupDestinationDirty()'));assert.equal(h.run('backupDestinationPreview'),null);
+  const changed=h.get('#save-root-select').listeners.click();h.context.state.settings_revision='other-window';writes[4].resolve({cancelled:false,path:'/synthetic/stale'});await changed;
+  assert.equal(h.get('#save-root').value,'/synthetic/chosen-save');
+  const failing=h.get('#save-root-select').listeners.click();writes[5].reject(new Error('controlled picker error'));await failing;
+  assert.match(h.get('#settings-error').textContent,/controlled picker error/);assert(!h.get('#save-root-select').disabled);assert(writes.every(row=>row.url==='/api/select-directory'));
+  console.log(JSON.stringify({folder_picker_only_updates_raw_draft:true,cancel_and_failure_preserve_input:true,late_choice_preserves_new_edit_and_other_window:true,single_dialog:true}));
 }
 async function verifyNestedBuffReference(){
   const h=harness(),requests=[];Object.assign(h.context,{navigationSerial:0,numericalRequest:0,inlineError:(target,text)=>target.textContent=text,
@@ -495,6 +556,7 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   await verifyInventoryEntrySnapshots();
   await verifyNumericalSaveTransitions();
   await verifyBackupDestinationDrafts();
+  await verifyDirectoryPickerDrafts();
   await verifyGlobalHistory();
   await verifyNestedBuffReference();
   await verifyComparisonPlanOpenings();
@@ -1375,5 +1437,6 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert.throws(()=>recoveredPlay.run('applySettingsRecovery(preparedPlay)'),/新设置编辑/);assert.equal(recoveredPlay.get('#play-offset_y').value,'999');
   await recoveredPlay.run('loadPlaySettings(true)');
   recoveredPlay.get('#play-offset_x').value='778';recoveredPlay.get('#play-form').listeners.input();recoveredPlay.get('#play-offset_x').value='333';recoveredPlay.get('#play-form').listeners.input();assert(!recoveredPlay.run('playDirty'),'editing then reverting a settings form must become clean');
+  await verifyAutomaticRetention();
   console.log('PASS: existing first-launch, numeric draft, comparison and backup checks; C-01 raw/empty/partial/out-of-range draft reopening and computed-result isolation; fixed saved numeric parameters and origins; input-only plan payload; manual reopen without submission; navigation and dialog response races; explicit plan updates and retained errors; strict diagnostic redaction; all play fields, concurrent draft preservation and explicit disk reload');
 })().catch(error=>{console.error(error);process.exitCode=1;});

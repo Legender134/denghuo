@@ -221,7 +221,8 @@ class NumericLookup:
         self.submitted = None
         self.show_text('正在读取数值…')
         try:
-            self.owner.manager.session.workspace_action({'action': 'remember', 'entry': self.identity})
+            receipt = self.owner.manager.session.workspace_action({'action': 'remember', 'entry': self.identity})
+            self.workspace_error = receipt.get('recovery_warning', '')
         except (ValueError, OSError) as exc:
             self.workspace_error = str(exc)
         self.emit()
@@ -395,8 +396,8 @@ class NumericLookup:
                 raise ValueError('先选择资料，再收藏。')
             session = self.owner.manager.session
             enabled = self.identity not in session.workspace_status()['favorite_ids']
-            session.workspace_action({'action': 'favorite', 'entry': self.identity, 'enabled': enabled})
-            self.origin.text = '已收藏；重启后保留。' if enabled else '已取消收藏。'
+            receipt = session.workspace_action({'action': 'favorite', 'entry': self.identity, 'enabled': enabled})
+            self.origin.text = ('已收藏；重启后保留。' if enabled else '已取消收藏。') + receipt.get('recovery_warning', '')
         except (ValueError, OSError) as exc:
             self.origin.text = str(exc)
         self.emit()
@@ -420,14 +421,15 @@ class NumericLookup:
         if update and self.saved_plan:
             payload.update(record_id=self.saved_plan['id'], expected_record_revision=self.saved_plan['record_revision'])
         try:
-            self.saved_plan = self.owner.manager.session.workspace_action(payload)['plan']
+            receipt = self.owner.manager.session.workspace_action(payload)
+            self.saved_plan = receipt['plan']
             if self.context:
                 self.context.pop('imported_latest', None)
             self.note.value = self.saved_plan.get('note', '')
             self.pending_save = None
             self.plan_error, self.draft_modified = '', False
             self.refresh_text()
-            self.origin.text = ('已更新原方案「' if update else '已保存「')+name+'」；重启后保留。'
+            self.origin.text = ('已更新原方案「' if update else '已保存「')+name+'」；重启后保留。'+receipt.get('recovery_warning', '')
             self.emit()
             return True
         except (ValueError, OSError) as exc:

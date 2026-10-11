@@ -594,6 +594,21 @@ namespace Denghuo.Native {
 
     static class Program {
         [STAThread] static void Main(string[] args) {
+            if (args.Length == 3 && args[0] == "--choose-directory" && (args[1] == "save" || args[1] == "backup") && args[2].Length <= 1000) {
+                // Parent owns this dialog. EOF closes it without changing any settings.
+                new Thread(new ThreadStart(delegate { try { Console.OpenStandardInput().ReadByte(); } catch { } Environment.Exit(0); })) { IsBackground = true }.Start();
+                Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
+                object result;
+                try {
+                    using (var picker = new FolderBrowserDialog { Description = args[1] == "save" ? "选择包含 game1、game2 等文件夹的存档目录；选定后仍需保存设置" : "选择已有本地备份文件夹；选定后仍需预览并确认", ShowNewFolderButton = false }) {
+                        if (Directory.Exists(args[2])) picker.SelectedPath = args[2];
+                        bool accepted = picker.ShowDialog() == DialogResult.OK;
+                        result = Data.Map("cancelled", !accepted, "path", accepted ? picker.SelectedPath : "");
+                    }
+                } catch (Exception error) { result = Data.Map("error", error.Message); }
+                using (var output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false))) { output.WriteLine(new JavaScriptSerializer().Serialize(result)); }
+                return;
+            }
             if (args.Length != 1 || args[0].Length != 32) return;
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new Helper(args[0]));

@@ -201,8 +201,8 @@ function showDetail(title,text,category,meta){showDetailContext('');cancelNumeri
 function showRelatedReferences(rows,context={}){const target=$('#detail-related');if(!target)return;target.replaceChildren();for(const row of rows||[]){const button=document.createElement('button');button.className='secondary';button.textContent='查看 '+row.name;button.addEventListener('click',()=>showReference({...row,lookup_context:row.lookup_context||{...context,ignore_drafts:true,capture_context:true,conditions:row.conditions}}));target.append(button);}}
 function showItem(item,reference=itemSnapshotReference()){
   showDetail(item.name,item.description,item.location,item.details.join(' · ')+(item.known?'':' · 未鉴定物品保留未知身份')+(item.available===false?' · 当前记录中不可用；仅供阅读参考':''));showItemNote(item.user_note);
-  if(item.known){const params={...(typeof visibleCalculationContext==='function'?visibleCalculationContext():{}),...(item.level==null?{}:{level:item.level}),...(item.tier?{tier:item.tier}:{}),...(Number.isInteger(item.volume)&&item.volume>=0&&item.volume<=20?{dew_volume:item.volume}:{})},origin=item.level_applicable===false?'not_applicable':item.level==null?'unknown':'known',stamp=reference.stamp;
-    if(typeof setDetailEntry==='function')setDetailEntry(item.key);const context={params,level_origin:origin,stamp:stamp?[stamp.started,stamp.save_root,stamp.mode,stamp.slot,stamp.revision,stamp.modified]:undefined};loadNumericalDetail(item.key,params,origin,{capturedContext:true,...(typeof lookupCalculationOptions==='function'?lookupCalculationOptions(context):{})});showRelatedReferences(item.related,context);
+  if(item.known){const params={...(typeof visibleCalculationContext==='function'?visibleCalculationContext(item.key):{}),...(item.level==null?{}:{level:item.level}),...(item.tier?{tier:item.tier}:{}),...(Number.isInteger(item.volume)&&item.volume>=0&&item.volume<=20?{dew_volume:item.volume}:{})},origin=item.level_applicable===false?'not_applicable':item.level==null?'unknown':'known',stamp=reference.stamp;
+    if(typeof setDetailEntry==='function')setDetailEntry(item.key);const skill=typeof currentSkillContext==='function'?currentSkillContext(item.key):null,context={params,conditions:skill?.conditions,skill_state:skill?.state,level_origin:origin,stamp:stamp?[stamp.started,stamp.save_root,stamp.mode,stamp.slot,stamp.revision,stamp.modified]:undefined};loadNumericalDetail(item.key,params,origin,{capturedContext:true,...(typeof lookupCalculationOptions==='function'?lookupCalculationOptions(context):{})});showRelatedReferences(item.related,context);
     if(item.available===true&&typeof comparisonFamily==='function'&&comparisonFamily(item.key)){const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent='比较这件装备与升级预算';button.addEventListener('click',()=>compareInventoryItem(item,reference));$('#detail-related')?.append(button);}
   }
 }
@@ -245,6 +245,23 @@ $('#slot').addEventListener('change',()=>action(()=>postSettings({slot:$('#slot'
 const settingsDrafts=new Set();
 let settingsRevision=null,settingsConflict=false,settingsFormGeneration=0,settingsRequestSerial=0,settingsBaseline=null;
 const settingsChecks=new Set(['always-top','reveal']);
+let directoryPickerBusy=false;
+async function chooseLocalDirectory(kind){
+  if(directoryPickerBusy)return;
+  const save=kind==='save',input=$(save?'#save-root':'#backup-destination-root'),error=$(save?'#settings-error':'#backup-destination-error');
+  const identity=()=>JSON.stringify(save?[settingsFormGeneration,settingsRequestSerial,settingsRevision,state?.settings_revision]:[backupDestinationGeneration,backupDestinationState?.settings_revision,backupDestinationState?.context,state?.settings_revision]);
+  const captured=identity(),initial=input.value;
+  directoryPickerBusy=true;$('#save-root-select').disabled=true;$('#backup-destination-select').disabled=true;inlineError(error,'');
+  try{
+    const result=await post('/api/select-directory',{kind,initial});
+    if(result.cancelled)return;
+    if(identity()!==captured||input.value!==initial){inlineError(error,'选择期间设置或草稿已变化，保留最新输入；需要时请重新选择。');return;}
+    input.value=result.path;input.dispatchEvent(new Event('input',{bubbles:true}));
+  }catch(failure){inlineError(error,failure.message);}
+  finally{directoryPickerBusy=false;$('#save-root-select').disabled=false;$('#backup-destination-select').disabled=false;}
+}
+$('#save-root-select').addEventListener('click',()=>chooseLocalDirectory('save'));
+$('#backup-destination-select').addEventListener('click',()=>chooseLocalDirectory('backup'));
 function settingsFormValues(){return Object.fromEntries(['save-root','settings-slot','source-mode','startup-surface','always-top','reveal','stop-at'].map(id=>[id,$('#'+id)[settingsChecks.has(id)?'checked':'value']]));}
 function settingsSavedValues(settings){return {'save-root':settings.save_root,'settings-slot':String(settings.slot),'source-mode':settings.mode,'startup-surface':settings.startup_surface||'panel','always-top':settings.always_on_top,reveal:settings.reveal,'stop-at':settings.stop_at.slice(0,16)};}
 function captureSettingsDraft(){return {format:2,raw:settingsFormValues(),baseline:settingsBaseline?{...settingsBaseline}:null,changed:Array.from(settingsDrafts)};}

@@ -18,14 +18,36 @@ function setup(exit=null,latest=success,options={}){
     post:async(url,payload)=>{requests.push({url,payload:plain(payload)});if(options.postError&&payload.action==='save-draft')throw new Error('controlled save failure');if(payload.action==='report')return {exit:options.reported||confirming};if(payload.action==='save-draft'){if(options.changeOnSave)options.changed=true;return {saved:{id:'preserved-copy'}};}if(payload.action==='ack')return {exit:options.acknowledged||backing};throw new Error('forbidden terminal mutation');},
     fetch:async()=>{throw new Error('service stopped');},syncBackupContext(){},renderBackupHealth:()=>{get('#backup-health').textContent='自动备份状态尚未确认。';},render:()=>{get('#connection-banner').textContent='普通运行状态';},renderInventory(){},followPanelRequest:async()=>{},
     polling:false,settingsWriteGeneration:0,view:'overview',lastRender:'',slotsSignature:'',initialPanelPlanHandled:true,initialPanelPlan:null,restoreTarget:null,backupState:null,backupViewKeys:new Map()});
-  vm.runInContext('let webExitState='+JSON.stringify(exit)+',webExitCompletionWatch=null,webExitHandling=false,webExitBusy=false,webEditingFrozen=false,webExitGeneration=0,webExitDecision=null;',context);
-  for(const name of ['updateWebRecoveryStatus','renderWebExitReceipt','watchWebExitCompletion','reportWebExitSurface','handleWebExitState','renderWebExitConfirmation','decideWebExit']){if(!workspace.includes('function '+name+'('))continue;vm.runInContext(extract(workspace,name),context);}
+  vm.runInContext('let webExitState='+JSON.stringify(exit)+',webExitCompletionWatch=null,webExitHandling=false,webExitBusy=false,webExitRequesting=false,webEditingFrozen=false,webExitGeneration=0,webExitDecision=null;',context);
+  for(const name of ['updateWebRecoveryStatus','renderWebExitReceipt','watchWebExitCompletion','reportWebExitSurface','requestWebSessionExit','handleWebExitState','renderWebExitConfirmation','decideWebExit']){if(!workspace.includes('function '+name+'('))continue;vm.runInContext(extract(workspace,name),context);}
   vm.runInContext(extract(app,'poll'),context);const run=code=>vm.runInContext(code,context);
   async function advance(){assert(timers.length,'termination observer must be scheduled');const timer=timers.shift();clock+=timer.delay;timer.callback();await new Promise(setImmediate);}
   async function settle(){for(let n=0;timers.length&&n<60;n++)await advance();await run('webExitCompletionWatch');}
   return {context,get,messages,requests,timers,captured,run,advance,settle};
 }
 const cases=[],test=(name,work)=>cases.push({name,work});
+test('first report failure keeps input and never requests exit',async()=>{
+  const f=setup(null,success,{dirty:true});f.context.post=async(url,payload)=>{f.requests.push({payload:plain(payload)});throw new Error('first report lost');};
+  await f.run('requestWebSessionExit()');assert.deepEqual(f.requests.map(row=>row.payload?.action),['report']);assert.equal(f.run('webExitRequesting'),false);assert.match(f.get('#draft-recovery-status').textContent,/退出尚未确认/);assert.equal(f.captured.draft.numeric[0].raw.level,'invalid');
+});
+test('exit waits for a required report while background reporting is busy and ignores duplicate clicks',async()=>{
+  const pending=deferred(),f=setup(null,success,{dirty:true});
+  f.context.post=async(url,payload)=>{f.requests.push({payload:plain(payload)});return payload.action==='report'?pending.promise:{exit:{id:'request',phase:'cancelled',participants:[]}};};
+  f.run('webExitBusy=true');const first=f.run('requestWebSessionExit()');await new Promise(setImmediate);await f.run('requestWebSessionExit()');
+  assert.deepEqual(f.requests.map(row=>row.payload?.action),['report']);
+  pending.resolve({exit:{phase:'idle',participants:[{surface_id:'synthetic',revision:7,dirty:true,has_reported_draft:true}]}});await first;
+  assert.deepEqual(f.requests.filter(row=>row.payload).map(row=>row.payload.action),['report','request']);assert.equal(f.requests.find(row=>row.payload?.action==='request').payload.revision,7);
+});
+test('editing during required report leaves session running',async()=>{
+  const pending=deferred(),options={dirty:true},f=setup(null,success,options);
+  f.context.post=async(url,payload)=>{f.requests.push({payload:plain(payload)});return pending.promise;};
+  const request=f.run('requestWebSessionExit()');await new Promise(setImmediate);options.changed=true;
+  pending.resolve({exit:{phase:'idle',participants:[{surface_id:'synthetic',revision:7,dirty:true,has_reported_draft:true}]}});await request;
+  assert.equal(f.requests.length,1);assert.match(f.messages[0].message,/有新编辑/);
+});
+test('unconfirmed own participant cannot authorize exit',async()=>{
+  const f=setup(null,success,{dirty:true,reported:{phase:'idle',participants:[]}});await f.run('requestWebSessionExit()');assert.equal(f.requests.filter(row=>row.payload).length,1);assert.match(f.messages[0].message,/尚未确认上报/);
+});
 test('dirty report exposes durable checkpoint failure in a persistent status',async()=>{
   const options={dirty:true,reported:{id:null,phase:'idle',participants:[{surface_id:'synthetic',dirty:true,recovery_error:'自动保留草稿尚未完成：disk full'}]}};
   const f=setup(null,success,options);await f.run('reportWebExitSurface()');

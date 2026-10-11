@@ -140,24 +140,24 @@ def workspace_action(session, payload):
             store.remember(entry)
         else:
             store.favorite(entry, payload.get('enabled'))
-        return {'revision': store.generation}
+        return {'revision': store.generation, 'recovery_warning': store.recovery_warning}
     if action == 'save':
         return {'plan': store.save(payload.get('name'), payload.get('kind'), payload.get('entry'),
                                    payload.get('params'), payload.get('source'), payload.get('record_id'),
                                    payload.get('expected_record_revision'), note=payload.get('note')),
-                'revision': store.generation}
+                'revision': store.generation, 'recovery_warning': store.recovery_warning}
     if action == 'remove':
         if payload.get('confirmed') is not True:
             raise ValueError('请确认移除所选方案；收藏、游戏与备份不会删除')
         store.remove(payload.get('id'), payload.get('expected_record_revision'))
         return {'revision': store.generation}
     if action == 'repair-preview':
-        return store.repair_preview()
+        return store.repair_preview(payload.get('source', 'current'))
     if action == 'repair-export':
-        return {'content':store.repair_export(payload.get('expected')).decode('utf-8'),
+        return {'content':store.repair_export(payload.get('expected'), payload.get('source', 'current')).decode('utf-8'),
                 'filename':'denghuo-healthy-knowledge.json'}
     if action == 'repair':
-        return store.repair(payload.get('expected'), payload.get('confirmed'))
+        return store.repair(payload.get('expected'), payload.get('confirmed'), payload.get('source', 'current'))
     raise ValueError('不支持的资料库操作')
 
 

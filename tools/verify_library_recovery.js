@@ -45,6 +45,17 @@ const event={preventDefault(){}};
 const submit=h=>h.get('#workspace-confirm-form').listeners.submit(event);
 (async()=>{
   let checks=0;
+  const copies=harness(),copyId='b'.repeat(64);copies.context.preview={...preview,source:'current',healthy_copies:[{id:copyId,available:true,time:123,counts:{plans:1,favorites:2,recent:0}}]};copies.run('showWorkspaceRecoveryPreview(preview)');
+  const sourceSelect=copies.details().children.find(row=>row.tagName==='LABEL').children[0];sourceSelect.value=copyId;copies.get('#workspace-confirm-check').checked=true;
+  const choosing=sourceSelect.listeners.change();assert(copies.get('#workspace-confirm-submit').disabled);assert(!copies.get('#workspace-confirm-check').checked);assert.equal(copies.pending[0].payload.source,copyId);
+  copies.pending.shift().resolve({...copies.context.preview,source:copyId});await choosing;
+  copies.get('#workspace-confirm-check').checked=true;const restoreCopy=submit(copies);assert.equal(copies.pending[0].payload.source,copyId);copies.pending.shift().resolve({mode:'recover',preserved_file:'bad.json',recovered_count:3});await restoreCopy;checks++;
+  const failedSource=harness();failedSource.context.preview=copies.context.preview;failedSource.run('showWorkspaceRecoveryPreview(preview)');
+  const failedSelect=failedSource.details().children.find(row=>row.tagName==='LABEL').children[0];failedSelect.value=copyId;const selecting=failedSelect.listeners.change();failedSource.pending.shift().reject(new Error('copy unavailable'));await selecting;
+  assert.equal(failedSelect.value,'current');assert(!failedSource.get('#workspace-confirm-check').checked);assert.match(failedSource.get('#workspace-confirm-error').textContent,/copy unavailable/);checks++;
+  const closedSource=harness();closedSource.context.preview=copies.context.preview;closedSource.run('showWorkspaceRecoveryPreview(preview)');
+  const closedSelect=closedSource.details().children.find(row=>row.tagName==='LABEL').children[0];closedSelect.value=copyId;const oldChoice=closedSelect.listeners.change();closedSource.get('#workspace-confirm').close();closedSource.pending.shift().resolve({...copies.context.preview,source:copyId});await oldChoice;
+  assert(!closedSource.get('#workspace-confirm').open);checks++;
   const normal=harness();normal.context.preview=preview;normal.run('showWorkspaceRecoveryPreview(preview)');
   assert.match(normal.get('#workspace-confirm-title').textContent,/恢复健康/);
   assert(normal.details().children.some(row=>/方案：健康 1，损坏 1，重复冲突 2/.test(row.textContent)));

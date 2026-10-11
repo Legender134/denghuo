@@ -1,5 +1,6 @@
 """Bounded partial recovery preserves originals and historical plan conditions."""
 import copy
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -38,6 +39,110 @@ class LibraryRecoveryTests(unittest.TestCase):
         raw = json.dumps(value,ensure_ascii=False,separators=(',',':')).encode('utf-8')
         self.store.path.write_bytes(raw)
         return raw
+
+    def test_clean_reopen_then_whole_json_damage_can_restore_last_saved_plans_and_favorites(self):
+        self.store.favorite('items.waterskin', True)
+        healthy = self.store.path.read_bytes()
+        source = hashlib.sha256(healthy).hexdigest()
+        reopened = KnowledgeWorkspace(self.store.path, self.session)
+        reopened.ensure_protection()
+        self.assertEqual(reopened.reopen(self.healthy['id'])['plan']['note'], '独立备注\n原条件')
+        damaged = healthy[:32]
+        self.store.path.write_bytes(damaged)
+        preview = reopened.repair_preview()
+        self.assertEqual(preview['mode'], 'empty')
+        self.assertIn(source, [row['id'] for row in preview['healthy_copies'] if row['available']])
+        selected = reopened.repair_preview(source)
+        self.assertEqual(selected['mode'], 'recover')
+        self.assertEqual(selected['categories']['plans']['healthy'], 1)
+        self.assertEqual(json.loads(reopened.repair_export(selected['expected'], source)), json.loads(healthy))
+        receipt = reopened.repair(selected['expected'], True, source)
+        self.assertEqual((self.directory/receipt['preserved_file']).read_bytes(), damaged)
+        self.assertEqual(json.loads(reopened.export()), json.loads(healthy))
+
+    def test_selected_healthy_copy_and_primary_are_both_checked_again(self):
+        source = hashlib.sha256(self.store.path.read_bytes()).hexdigest()
+        damaged = self.damaged(plans='invalid')
+        preview = self.store.repair_preview(source)
+        copy_path = self.store._healthy_directory()/(source+'.json')
+        original_copy = copy_path.read_bytes()
+        copy_path.write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError, '副本'):
+            self.store.repair(preview['expected'], True, source)
+        self.assertEqual(self.store.path.read_bytes(), damaged)
+        copy_path.write_bytes(original_copy)
+        self.store.path.write_bytes(damaged+b' ')
+        with self.assertRaisesRegex(ValueError, '刚被修改'):
+            self.store.repair(preview['expected'], True, source)
+        self.assertEqual(self.store.path.read_bytes(), damaged+b' ')
+
+    def test_healthy_generations_are_bounded_and_reused_current_hash_is_protected(self):
+        first = self.store.path.read_bytes()
+        value = json.loads(first)
+        for index in range(6):
+            _,stamp = self.store._read()
+            changed = copy.deepcopy(value)
+            changed['favorites'] = [f'items.synthetic{index}']
+            self.store._write(changed, stamp)
+        _,stamp = self.store._read()
+        self.store._write(value, stamp)
+        current = hashlib.sha256(self.store.path.read_bytes()).hexdigest()
+        copies = [row for row in self.store._healthy_copies() if row['available']]
+        self.assertEqual(len(copies), 3)
+        self.assertEqual(copies[0]['id'], current)
+        self.assertEqual(self.store._healthy_bytes(current), first)
+
+    def test_backup_failure_does_not_misreport_a_successful_primary_save(self):
+        generation = self.store.generation
+        with patch.object(self.store, '_retain_healthy', side_effect=OSError('synthetic disk full')):
+            self.store.favorite('items.waterskin', True)
+        self.assertEqual(self.store.generation, generation+1)
+        status = self.store.status()
+        self.assertTrue(status['available'])
+        self.assertIn('items.waterskin', status['favorites'])
+        self.assertIn('已保存', status['recovery_warning'])
+        reopened = KnowledgeWorkspace(self.store.path, self.session)
+        reopened.ensure_protection()
+        self.assertEqual(reopened.status()['recovery_warning'], '')
+
+    def test_rotation_failure_keeps_old_copies_and_does_not_accumulate_new_generations(self):
+        self.store.favorite('items.synthetic1', True)
+        self.store.favorite('items.synthetic2', True)
+        previous = {row['id'] for row in self.store._healthy_copies()}
+        original_unlink = Path.unlink
+        def fail_rotation(path, *args, **kwargs):
+            if path.parent == self.store._healthy_directory() and path.suffix == '.json':
+                raise OSError('synthetic rotation failure')
+            return original_unlink(path, *args, **kwargs)
+        with patch.object(Path, 'unlink', fail_rotation):
+            for index in range(3,6):self.store.favorite(f'items.synthetic{index}', True)
+        self.assertEqual({row['id'] for row in self.store._healthy_copies()}, previous)
+        self.assertIn('rotation failure', self.store.status()['recovery_warning'])
+        self.assertIn('items.synthetic5', self.store.status()['favorites'])
+
+    def test_healthy_empty_generation_is_an_explicit_exportable_restore_source(self):
+        empty = {'format':1, 'favorites':[], 'recent':[], 'plans':[]}
+        _,stamp = self.store._read(); self.store._write(empty, stamp)
+        source = hashlib.sha256(self.store.path.read_bytes()).hexdigest()
+        self.store.path.write_bytes(b'{damaged')
+        preview = self.store.repair_preview(source)
+        self.assertTrue(preview['can_export'])
+        self.assertEqual(preview['mode'], 'recover')
+        self.assertEqual(json.loads(self.store.repair_export(preview['expected'], source)), empty)
+        self.assertEqual(self.store.repair(preview['expected'], True, source)['recovered_count'], 0)
+
+    def test_cross_instance_storage_lock_and_cas_preserve_primary_and_recovery_copies(self):
+        other = KnowledgeWorkspace(self.store.path, self.session)
+        before = self.store.path.read_bytes()
+        with self.store._storage_lock():
+            with self.assertRaisesRegex(ValueError, '另一个窗口'):
+                other.favorite('items.waterskin', True)
+        self.assertEqual(self.store.path.read_bytes(), before)
+        value,stale = other._read()
+        self.store.favorite('items.waterskin', True)
+        with self.assertRaisesRegex(ValueError, '刚被其他操作修改'):
+            other._write(value, stale)
+        self.assertIn('items.waterskin', self.store.status()['favorites'])
 
     def test_mixed_preview_readonly_export_and_explicit_recovery_keep_exact_original(self):
         original = self.damaged()

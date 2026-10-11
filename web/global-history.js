@@ -2,6 +2,7 @@
 let globalHistoryState=null,globalHistoryPreview=null,globalHistoryBusy=false,globalHistoryRestoring=false,globalHistoryLoading=false;
 let globalHistoryRequest=0,globalHistoryPreviewRequest=0,globalHistoryLoadedAt=0,globalHistoryLimit=20;
 let globalHistoryRenderedSource=null;
+const globalHistoryContentKeys=new Map();
 let globalHistoryPortable=null,globalHistoryExporting=false;
 let globalHistoryMaintenance=null,globalHistoryMaintenanceRequest=0,globalHistoryMaintaining=false,globalHistoryOperation=0;
 const globalFileNames={'badges.dat':'成就记录','rankings.dat':'排行榜与每日记录'};
@@ -81,18 +82,23 @@ function renderGlobalHistory(){
   $('#global-history-archive').value=value.archive||'';
   $('#global-history-archive-export').hidden=!value.archive;
   $('#global-history-maintenance-pending').hidden=!value.pending_maintenance;
-  $('#global-history-damaged').innerHTML=filtered.damaged.map(row=>`<article class="backup-card"><h3>隔离的损坏历史清单 · ${escapeHTML(row.id.slice(0,12))}</h3><p>${escapeHTML(row.error)} · ${row.bytes==null?'字节数暂不可核对':globalHistoryBytes(row.bytes)}</p><p class="muted">该清单不能作为恢复依据；其他独立健康历史与健康文件仍可使用。${row.available===false?'此原件目前不可读取，未自动覆盖或移除。':'原始字节仍保留。'}</p><button type="button" class="secondary" data-global-damaged-export="${escapeHTML(row.id)}" data-invalid="${row.available===false}" ${row.available===false?'disabled':''}>导出损坏清单原件</button></article>`).join('');
-  $('#global-history-list').innerHTML=filtered.history.slice(0,globalHistoryLimit).map(row=>{
+  const damagedHTML=filtered.damaged.map(row=>`<article class="backup-card"><h3>隔离的损坏历史清单 · ${escapeHTML(row.id.slice(0,12))}</h3><p>${escapeHTML(row.error)} · ${row.bytes==null?'字节数暂不可核对':globalHistoryBytes(row.bytes)}</p><p class="muted">该清单不能作为恢复依据；其他独立健康历史与健康文件仍可使用。${row.available===false?'此原件目前不可读取，未自动覆盖或移除。':'原始字节仍保留。'}</p><button type="button" class="secondary" data-global-damaged-export="${escapeHTML(row.id)}" data-invalid="${row.available===false}" ${row.available===false?'disabled':''}>导出损坏清单原件</button></article>`).join('');
+  const historyHTML=filtered.history.slice(0,globalHistoryLimit).map(row=>{
     const entries=Object.entries(row.files),valid=entries.some(([,item])=>item.valid);
     return `<article class="backup-card"><h3>${escapeHTML(fmtTime(row.time))}</h3>${entries.map(([name,item])=>`<p>${escapeHTML(globalFileNames[name])} · ${escapeHTML(globalHistoryFileSummary(name,item))}${item.error?' · '+escapeHTML(item.error):''}${!item.valid?' · 此文件不可恢复，其他健康文件可独立使用':''}</p>`).join('')}<div class="form-actions"><button type="button" class="secondary" data-global-history-export="${escapeHTML(row.id)}">导出原始副本</button>${entries.filter(([,item])=>item.valid).map(([name])=>`<button type="button" class="secondary" data-global-history-file="${escapeHTML(row.id)}" data-file="${escapeHTML(name)}">仅导出${escapeHTML(globalFileNames[name])}原始副本</button>`).join('')}<button type="button" class="secondary" data-global-history-portable="${escapeHTML(row.id)}" data-invalid="${!valid}" ${valid?'':'disabled'}>选择文件导出搬机迁移包</button><button type="button" class="secondary" data-global-history-preview="${escapeHTML(row.id)}" data-invalid="${!valid}" ${valid?'':'disabled'}>预览健康文件恢复</button></div></article>`;
   }).join('')||(filtered.damaged.length?'':filtered.total?'<p class="muted">没有符合条件的历史。可修改搜索、筛选或清除条件；原历史仍保留。</p>':'<p class="muted">游戏产生全局文件后，灯火会自动保留历史。现有局内存档历史仍在下方。</p>');
+  const changed=[];
+  for(const [selector,html] of [['#global-history-damaged',damagedHTML],['#global-history-list',historyHTML]]){
+    const key=source+'\n'+html;
+    if(globalHistoryContentKeys.get(selector)!==key){const holder=$(selector);holder.innerHTML=html;globalHistoryContentKeys.set(selector,key);changed.push(holder);}
+  }
   $('#global-history-count').textContent=`当前库共 ${filtered.total} 份，符合条件 ${filtered.history.length+filtered.damaged.length} 份，已显示 ${Math.min(filtered.history.length,globalHistoryLimit)+filtered.damaged.length} 份。搜索与筛选覆盖当前所选库或归档的全部历史。`;
   $('#global-history-more').hidden=filtered.history.length<=globalHistoryLimit;
-  for(const button of $$('[data-global-history-export]'))button.addEventListener('click',()=>exportGlobalHistory(button.dataset.globalHistoryExport));
-  for(const button of $$('[data-global-history-preview]'))button.addEventListener('click',()=>previewGlobalHistory(button.dataset.globalHistoryPreview));
-  for(const button of $$('[data-global-history-portable]'))button.addEventListener('click',()=>openGlobalHistoryPortable(button.dataset.globalHistoryPortable));
-  for(const button of $$('[data-global-history-file]'))button.addEventListener('click',()=>exportGlobalHistory(button.dataset.globalHistoryFile,null,[button.dataset.file]));
-  for(const button of $$('[data-global-damaged-export]'))button.addEventListener('click',()=>exportGlobalHistory(button.dataset.globalDamagedExport,null,null,'damaged-export'));
+  for(const button of $$('[data-global-history-export]').filter(button=>changed.some(holder=>holder.contains(button))))button.addEventListener('click',()=>exportGlobalHistory(button.dataset.globalHistoryExport));
+  for(const button of $$('[data-global-history-preview]').filter(button=>changed.some(holder=>holder.contains(button))))button.addEventListener('click',()=>previewGlobalHistory(button.dataset.globalHistoryPreview));
+  for(const button of $$('[data-global-history-portable]').filter(button=>changed.some(holder=>holder.contains(button))))button.addEventListener('click',()=>openGlobalHistoryPortable(button.dataset.globalHistoryPortable));
+  for(const button of $$('[data-global-history-file]').filter(button=>changed.some(holder=>holder.contains(button))))button.addEventListener('click',()=>exportGlobalHistory(button.dataset.globalHistoryFile,null,[button.dataset.file]));
+  for(const button of $$('[data-global-damaged-export]').filter(button=>changed.some(holder=>holder.contains(button))))button.addEventListener('click',()=>exportGlobalHistory(button.dataset.globalDamagedExport,null,null,'damaged-export'));
   renderGlobalHistoryControls();
   globalHistoryRenderedSource=source;
   if(action){const [name,id]=action;const next=sameSource&&holders.flatMap(holder=>[...holder.querySelectorAll('button')]).find(button=>button.dataset[name]===id&&button.dataset.file===active.dataset.file&&!button.disabled);(next||$('#global-history-search')).focus({preventScroll:true});}
