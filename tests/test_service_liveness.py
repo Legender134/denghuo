@@ -95,7 +95,7 @@ class ServiceLivenessTests(unittest.TestCase):
         shutil.copytree(self.root / 'game1', self.root / 'game2')
         (self.root / 'game1' / 'game.dat').write_bytes(bytes([1]))
         self.session.update_settings({'slot': 2})
-        self.session.backups.tick(self.root, force=True)
+        self.session.backups.tick(Path(self.session.settings['save_root']), force=True)
         self.session.refresh()
         self.session.backup_health()
         health = self.assert_snapshot_returns()['backup_health']
