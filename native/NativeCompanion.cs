@@ -12,6 +12,7 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using System.Diagnostics;
 using System.Runtime.Versioning;
+using System.Runtime.InteropServices;
 
 [assembly: TargetFramework(".NETFramework,Version=v4.0")]
 
@@ -75,6 +76,7 @@ namespace Denghuo.Native {
             session = key;
             Manager = new ManagerForm(this); Lookup = new LookupForm(this);
             Settings = new SettingsForm(this); Plans = new PlansForm(this);
+            Manager.Mount("lookup", Lookup); Manager.Mount("settings", Settings); Manager.Mount("plans", Plans);
             foreach (BaseForm form in new BaseForm[] { Manager, Lookup, Settings, Plans }) { var handle = form.Handle; }
             Send("ready", "pid", Process.GetCurrentProcess().Id, "system_dpi", Manager.SystemDpi, "framework", Environment.Version.ToString());
             var read = new Thread(Read) { IsBackground = true, Name = "native-json-reader" }; read.Start();
@@ -118,6 +120,12 @@ namespace Denghuo.Native {
                         case "hide": HideSurface(Data.Text(d, "surface", "manager")); break;
                         case "minimize_manager": Manager.WindowState = FormWindowState.Minimized; break;
                         case "manager_state": Manager.Render(d); break;
+                        case "window_layout": Manager.LayoutRestored = Data.Flag(d, "restored"); Manager.ApplyLayout(Data.Object(d, "layout")); break;
+                        case "game_bounds": Manager.FollowGame(d); break;
+                        case "collapse": Manager.Collapse(); break;
+                        case "game_state": Manager.RenderTask(d); break;
+                        case "game_show": Manager.Expand(); Manager.ShowPage(Data.Text(d, "page", "inventory")); if (!Manager.Visible) Manager.Show(); Manager.Activate(); break;
+                        case "game_confirm": using (var dialog = new ActionForm("灯火 · 核对恢复进度", Data.Text(d, "text", ""))) { if (dialog.ShowDialog(Manager) == DialogResult.OK) Send("game_action", "page", "backups", "command", "backup_execute", "token", Data.Text(d, "token", "")); } break;
                         case "lookup_state": Lookup.Render(d); break;
                         case "settings_state": Settings.Render(d); break;
                         case "plans": Plans.Render(d); if (!Plans.Visible) ShowSurface("plans"); break;
@@ -139,13 +147,20 @@ namespace Denghuo.Native {
             }
         }
         public void Fail(string message) { Manager.Status.Text = message; if (Manager.Visible) Manager.Status.Focus(); else MessageBox.Show(message, "灯火 · 操作未完成", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
-        public void Visibility(BaseForm form) { Send("visibility", "surface", form.Surface, "visible", form.Visible, "hwnd", form.Handle.ToInt64()); }
+        public void Visibility(BaseForm form) { bool embedded = form == Lookup || form == Settings || form == Plans; Send("visibility", "surface", form.Surface, "visible", embedded ? Manager.Visible && !Manager.Collapsed && Manager.Page == form.Surface : form.Visible, "hwnd", embedded ? Manager.Handle.ToInt64() : form.Handle.ToInt64(), "collapsed", Manager != null && Manager.Collapsed); }
         public void ShowSurface(string surface) {
+            if (surface == "manager" || surface == "lookup" || surface == "settings" || surface == "plans") {
+                Manager.Expand(); if (surface != "manager") Manager.ShowPage(surface);
+                if (!Manager.Visible) Manager.Show(); if (Manager.WindowState == FormWindowState.Minimized) Manager.WindowState = FormWindowState.Normal;
+                Manager.Activate(); Visibility(Manager); Visibility(Lookup); Visibility(Settings); Visibility(Plans);
+                if (surface == "lookup") Lookup.FocusSearch(); return;
+            }
             BaseForm form = surface == "lookup" ? (BaseForm)Lookup : surface == "settings" ? (BaseForm)Settings : surface == "plans" ? (BaseForm)Plans : (BaseForm)Manager;
             if (!form.Visible) form.Show(); if (form.WindowState == FormWindowState.Minimized) form.WindowState = FormWindowState.Normal;
             form.Activate(); Visibility(form); if (surface == "lookup") Lookup.FocusSearch();
         }
         public void HideSurface(string surface) {
+            if (surface == "lookup" || surface == "settings" || surface == "plans") { Manager.Collapse(); Visibility(Lookup); Visibility(Settings); Visibility(Plans); return; }
             BaseForm form = surface == "lookup" ? (BaseForm)Lookup : surface == "settings" ? (BaseForm)Settings : surface == "plans" ? (BaseForm)Plans : (BaseForm)Manager;
             form.Hide(); Visibility(form); if (surface == "plans" && Lookup.Visible) Lookup.Activate();
         }
@@ -159,13 +174,13 @@ namespace Denghuo.Native {
             string id = Data.Text(state, "id", "");
             if (retry ? !exitRequests.IsCurrent(id) : !exitRequests.Begin(id)) return;
             CloseExitDialog();
-            Lookup.FlushEdit(); Settings.FlushEdit();
+            Lookup.FlushEdit(); Settings.FlushEdit(); Manager.FlushTasks();
             Frozen = true; SetFrozen(true);
             var lookup = Lookup.Raw(); var settings = Settings.Raw();
-            bool dirty = Lookup.Dirty || Settings.Dirty || SaveDraft != null || error.Length > 0;
+            bool dirty = Lookup.Dirty || Settings.Dirty || Manager.TasksDirty || SaveDraft != null || error.Length > 0;
             string decision = "clean";
             if (dirty) {
-                using (var dialog = new DecisionForm("退出灯火", (error.Length > 0 ? "保存副本未完成：" + error + "\n原始草稿仍保留。\n" : "") + "数值速查或游玩设置有未保存草稿。保存副本会保留全部草稿；取消可返回继续编辑。")) {
+                using (var dialog = new DecisionForm("退出灯火", (error.Length > 0 ? "保存副本未完成：" + error + "\n原始草稿仍保留。\n" : "") + "当前工作区有未保存草稿。保存副本会保留全部原始输入；取消可返回继续编辑。")) {
                     activeExit = dialog;
                     try {
                         dialog.ShowDialog(Manager.Visible ? (IWin32Window)Manager : Lookup.Visible ? (IWin32Window)Lookup : (IWin32Window)Settings);
@@ -174,7 +189,7 @@ namespace Denghuo.Native {
                 }
             }
             if (!exitRequests.IsCurrent(id)) return;
-            Send("exit_decision", "request_id", id, "decision", decision, "lookup", Lookup.Dirty || SaveDraft != null ? (object)lookup : null, "settings", Settings.Dirty ? (object)settings : null);
+            Send("exit_decision", "request_id", id, "decision", decision, "lookup", Lookup.Dirty || SaveDraft != null ? (object)lookup : null, "settings", Settings.Dirty ? (object)settings : null, "game", Manager.TaskRaw());
             if (decision == "cancel") { CloseExitDialog(); Frozen = false; SetFrozen(false); }
             else ExitWaiting(state, "正在保存草稿副本或确认放弃；磁盘等待期间仍可取消退出。", true);
         }
@@ -194,7 +209,7 @@ namespace Denghuo.Native {
             Lookup.FlushEdit(); Settings.FlushEdit();
             string surface = Data.Text(d, "surface", "lookup"), purpose = Data.Text(d, "purpose", "replace");
             using (var dialog = new DecisionForm(Data.Text(d, "title", "替换草稿"), Data.Text(d, "text", "请确认当前草稿"))) {
-                dialog.ShowDialog(surface == "settings" ? (IWin32Window)Settings : Lookup);
+                dialog.ShowDialog(Manager);
                 Send(purpose == "settings_reload" ? "settings_reload_decision" : "replace_decision", "surface", surface, "decision", dialog.Decision);
             }
         }
@@ -202,7 +217,7 @@ namespace Denghuo.Native {
             using (var dialog = new NameForm(Data.Text(d, "name", "参考方案"), Data.Text(d, "note", ""), Data.Flag(d, "existing"), Data.Object(d, "pending_save"))) {
                 activeName = dialog;
                 dialog.Changed = delegate { if (!Frozen) Send("save_dialog_edit", "surface", "lookup", "pending_save", dialog.Dirty ? (object)dialog.Raw() : null); };
-                try { if (dialog.ShowDialog(Lookup) == DialogResult.OK && !Frozen)
+                try { if (dialog.ShowDialog(Manager) == DialogResult.OK && !Frozen)
                     Send("save_named", "surface", "lookup", "name", dialog.PlanName, "note", dialog.Note, "update", dialog.UpdateOriginal);
                 } finally { activeName = null; if (!Frozen && !stopping) Send("save_dialog_closed", "surface", "lookup", "cancelled", dialog.DialogResult != DialogResult.OK); }
             }
@@ -214,13 +229,13 @@ namespace Denghuo.Native {
                 var list = UI.List("未完成草稿副本列表"); list.Dock = DockStyle.Fill;
                 var draftRows = new Dictionary<string, Dictionary<string, object>>();
                 foreach (object item in Data.Array(d, "rows")) {
-                    var row = (Dictionary<string, object>)item; string kind = Data.Text(row, "draft_kind", ""); string surface = kind == "numeric" ? "数值速查" : kind == "play-settings" ? "游玩设置" : kind == "offline-native" ? "离线原生副本" : "完整面板";
+                    var row = (Dictionary<string, object>)item; string kind = Data.Text(row, "draft_kind", ""); string surface = kind == "numeric" ? "数值速查" : kind == "play-settings" ? "游玩设置" : kind == "offline-native" ? "离线原生副本" : kind == "game-workspace" ? "游戏工作区" : "完整面板";
                     double savedAt; string when = Double.TryParse(Data.Text(row, "saved", ""), out savedAt) && savedAt >= 0 && savedAt <= 32503680000 ? new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(savedAt).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") : "保存时间不可用";
                     draftRows[Data.Text(row, "id", "")] = row;
                     string text = (Data.Text(row, "state", "active") == "archived" ? "[已归档] " : "[未完成] ") + Data.Text(row, "label", "无法读取的草稿") + " · " + surface + " · " + when + " · " + Data.Text(row, "id", "").Substring(0, 12); string error = Data.Text(row, "error", "");
                     object[] components = Data.Array(row, "components");
                     if (kind == "offline-native" && components.Length > 0 && error.Length == 0) {
-                        foreach (object part in components) { string component = Convert.ToString(part); list.Items.Add(new Choice(Data.Text(row, "id", ""), text + " · 载入" + (component == "numeric" ? "数值表单" : "游玩设置表单"), component)); }
+                        foreach (object part in components) { string component = Convert.ToString(part); list.Items.Add(new Choice(Data.Text(row, "id", ""), text + " · 载入" + (component == "numeric" ? "数值表单" : component == "game-workspace" ? "游戏工作区" : "游玩设置表单"), component)); }
                     } else list.Items.Add(new Choice(Data.Text(row, "id", ""), text + (error.Length > 0 ? " · " + error : "")));
                 }
                 var open = UI.Button("载入所选草稿（不自动应用）", delegate { var choice = list.SelectedItem as Choice; if (choice != null) { Send("load_draft", "id", choice.Id, "component", choice.Component); form.CloseForShutdown(); } });
@@ -264,7 +279,7 @@ namespace Denghuo.Native {
         void RecoverSettings(Dictionary<string, object> d) {
             Settings.FlushEdit();
             using (var dialog = new RecoveryForm(d)) {
-                dialog.ShowDialog(Settings);
+                dialog.ShowDialog(Manager);
                 Send("settings_recovery_decision", "surface", "settings", "decision", dialog.Decision,
                     "choices", dialog.Choices);
             }
@@ -272,17 +287,41 @@ namespace Denghuo.Native {
         void Shutdown() { stopping = true; timer.Stop(); foreach (BaseForm f in new BaseForm[] { Manager, Lookup, Settings, Plans }) f.CloseForShutdown(); outgoing.CompleteAdding(); ExitThread(); }
     }
 
+    sealed class LampCombo : ComboBox {
+        public LampCombo() { DrawMode = DrawMode.OwnerDrawFixed; DrawItem += delegate(object sender, DrawItemEventArgs e) { if (e.Bounds.Width <= 0) return; bool selected = (e.State & DrawItemState.Selected) != 0; using (var brush = new SolidBrush(selected ? UI.Border : UI.Panel)) e.Graphics.FillRectangle(brush, e.Bounds); string text = e.Index >= 0 && e.Index < Items.Count ? Items[e.Index].ToString() : Text; TextRenderer.DrawText(e.Graphics, text, Font, new Rectangle(e.Bounds.X+7, e.Bounds.Y, e.Bounds.Width-10, e.Bounds.Height), UI.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix); }; }
+        protected override void OnFontChanged(EventArgs e) { base.OnFontChanged(e); ItemHeight = Font.Height+9; }
+        protected override void WndProc(ref Message message) { base.WndProc(ref message); if (message.Msg == 15 && IsHandleCreated) { using (Graphics graphics = CreateGraphics()) { var area = new Rectangle(Width-22, 0, 22, Height); using (var brush = new SolidBrush(UI.Border)) graphics.FillRectangle(brush, area); using (var pen = new Pen(UI.Muted, 1.5F)) { int x = Width-12, y = Height/2; graphics.DrawLines(pen, new[] {new Point(x-4, y-2), new Point(x, y+2), new Point(x+4, y-2)}); } } } }
+    }
+
+    sealed class LampMenuRenderer : ToolStripProfessionalRenderer {
+        protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e) { using (var brush = new SolidBrush(e.Item.Selected ? UI.Border : UI.Panel)) e.Graphics.FillRectangle(brush, new Rectangle(Point.Empty, e.Item.Size)); }
+        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e) { }
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e) { e.TextColor = e.Item.Enabled ? UI.Text : UI.Muted; base.OnRenderItemText(e); }
+    }
+
     static class UI {
-        public static T Name<T>(T control, string name) where T : Control { control.AccessibleName = name; control.Name = name; control.Margin = new Padding(5); return control; }
-        public static Label Label(string text) { return Name(new Label { Text = text, AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, TabStop = false }, text); }
+        public static readonly Color Background = ColorTranslator.FromHtml("#121715"), Panel = ColorTranslator.FromHtml("#1a211d"), Border = ColorTranslator.FromHtml("#2c352f"), Text = ColorTranslator.FromHtml("#e9ede5"), Muted = ColorTranslator.FromHtml("#93a397"), Gold = ColorTranslator.FromHtml("#dec38c");
+        public static void Theme(Control control) {
+            control.BackColor = control is TextBoxBase || control is ListBox || control is TreeView ? Panel : Background; control.ForeColor = Text;
+            var button = control as Button; if (button != null) { button.FlatStyle = FlatStyle.Flat; button.FlatAppearance.BorderSize = 0; button.FlatAppearance.MouseOverBackColor = Border; button.FlatAppearance.MouseDownBackColor = ColorTranslator.FromHtml("#39473b"); button.BackColor = Panel; button.Padding = new Padding(8, 3, 8, 3); button.Cursor = Cursors.Hand; }
+            var combo = control as ComboBox; if (combo != null) { combo.FlatStyle = FlatStyle.Flat; combo.BackColor = Panel; }
+            var list = control as ListBox; if (list != null) list.BorderStyle = BorderStyle.None;
+            var read = control as RichTextBox; if (read != null) read.BorderStyle = BorderStyle.None;
+            var tree = control as TreeView; if (tree != null) { tree.BorderStyle = BorderStyle.None; tree.LineColor = Border; tree.ShowLines = false; tree.ItemHeight = Math.Max(26, tree.Font.Height + 9); }
+            foreach (Control child in control.Controls) Theme(child);
+        }
+        public static T Name<T>(T control, string name) where T : Control { control.AccessibleName = name; control.Name = name; control.Margin = new Padding(5); Theme(control); return control; }
+        public static Label Label(string text) { var label = Name(new Label { Text = text, AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, TabStop = false }, text); label.AccessibleName = null; return label; }
         public static TextBox Edit(string name) { return Name(new TextBox { Dock = DockStyle.Fill }, name); }
         public static RichTextBox Read(string name) { return Name(new RichTextBox { ReadOnly = true, Enabled = true, TabStop = true, Dock = DockStyle.Fill, WordWrap = true, DetectUrls = false, BorderStyle = BorderStyle.FixedSingle }, name); }
         public static ListBox List(string name) { return Name(new ListBox { IntegralHeight = false, HorizontalScrollbar = true, Dock = DockStyle.Fill }, name); }
         public static Button Button(string label, EventHandler clicked) { var b = Name(new Button { Text = label, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, MinimumSize = new Size(0, 30), Dock = DockStyle.Fill }, label.Replace("&", "")); b.Click += clicked; return b; }
         public static TableLayoutPanel Table(int cols) { var table = new TableLayoutPanel { ColumnCount = cols, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(7) }; for (int i = 0; i < cols; ++i) table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / cols)); return table; }
-        public static ComboBox Combo(string name, string[] choices) { var c = Name(new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill }, name); c.Items.AddRange(choices); if (choices.Length > 0) c.SelectedIndex = 0; return c; }
+        public static ComboBox Combo(string name, string[] choices) { var c = Name(new LampCombo { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill }, name); c.Items.AddRange(choices); if (choices.Length > 0) c.SelectedIndex = 0; return c; }
+        public static ContextMenuStrip Menu() { return new ContextMenuStrip { Renderer = new LampMenuRenderer(), BackColor = Panel, ForeColor = Text, Font = new Font("Microsoft YaHei UI", 10F) }; }
         public static FlowLayoutPanel Buttons(params Control[] controls) { var panel = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = true }; foreach (var control in controls) { control.Dock = DockStyle.None; panel.Controls.Add(control); } return panel; }
         public static void ReplaceText(RichTextBox field, string text) { if (field.Text == text) return; int start = field.SelectionStart, length = field.SelectionLength; field.Text = text; field.Select(Math.Min(start, field.TextLength), Math.Min(length, Math.Max(0, field.TextLength-start))); }
+        public static void Article(RichTextBox field, string text) { if (field.Text == text) return; ReplaceText(field, text); int start = 0; foreach (string paragraph in text.Split(new[] {"\n\n"}, StringSplitOptions.None)) { int newline = paragraph.IndexOf('\n'); if (newline > 0) { field.Select(start, newline); field.SelectionColor = Gold; field.SelectionFont = new Font(field.Font.FontFamily, field.Font.Size+1, FontStyle.Bold); } start += paragraph.Length+2; } field.Select(0, 0); }
         public static string Note(string text) { return text.Replace("\r\n", "\n").Replace("\r", "\n"); }
         public static string Multiline(string text) { return Note(text).Replace("\n", "\r\n"); }
     }
@@ -295,21 +334,24 @@ namespace Denghuo.Native {
         bool shutdown;
         public BaseForm(Helper host, string surface, string title, int width, int height) {
             Host = host; Surface = surface; Text = title; AccessibleName = title;
-            Font = new Font("Microsoft YaHei UI", 10F); AutoScaleMode = AutoScaleMode.Font;
-            AutoScaleDimensions = new SizeF(7F, 17F);
+            Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            BackColor = UI.Background; ForeColor = UI.Text;
+            Font = new Font("Microsoft YaHei UI", 10F); AutoScaleMode = AutoScaleMode.None;
             using (Graphics graphics = CreateGraphics()) SystemDpi = graphics.DpiX;
             float dpiScale = SystemDpi / 96F;
             Size = new Size((int)(width * dpiScale), (int)(height * dpiScale)); MinimumSize = new Size((int)(380 * dpiScale), (int)(300 * dpiScale));
             if (surface == "lookup" || surface == "settings" || surface == "plans") TopMost = true;
             StartPosition = FormStartPosition.CenterScreen; ShowInTaskbar = true; KeyPreview = true;
-            Shown += delegate { Rectangle area = Screen.FromControl(this).WorkingArea; Size = new Size(Math.Min(Width, area.Width-20), Math.Min(Height, area.Height-20)); Host.Visibility(this); };
+            Shown += delegate { DarkCaption(); Rectangle area = Screen.FromControl(this).WorkingArea; Size = new Size(Math.Min(Width, area.Width-20), Math.Min(Height, area.Height-20)); Host.Visibility(this); };
             FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!shutdown && Surface != "drafts") { e.Cancel = true; if (Surface == "lookup") Host.Send("hide", "surface", "lookup"); else Host.HideSurface(Surface); } };
             KeyDown += delegate(object sender, KeyEventArgs e) {
-                if (e.KeyCode == Keys.Escape && !Host.Frozen) { if (Surface == "drafts") CloseForShutdown(); else if (Surface == "lookup") Host.Send("hide", "surface", "lookup"); else Host.HideSurface(Surface); e.Handled = true; }
+                if (e.KeyCode == Keys.Escape && !Host.Frozen) { if (Surface == "drafts") CloseForShutdown(); else if (Surface == "manager") Host.Send("collapse"); else if (Surface == "lookup") Host.Send("hide", "surface", "lookup"); else Host.HideSurface(Surface); e.Handled = true; }
                 else if (e.KeyCode == Keys.F1) { Host.Send("panel", "page", "help"); e.Handled = true; }
             };
         }
         public void CloseForShutdown() { shutdown = true; Close(); }
+        [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int length);
+        void DarkCaption() { try { int enabled = 1; if (DwmSetWindowAttribute(Handle, 20, ref enabled, 4) != 0) DwmSetWindowAttribute(Handle, 19, ref enabled, 4); } catch (DllNotFoundException) { } catch (EntryPointNotFoundException) { } }
     }
 
     sealed class LookupForm : BaseForm {
@@ -321,18 +363,21 @@ namespace Denghuo.Native {
         readonly RichTextBox result = UI.Read("数值结果与适用条件");
         readonly RichTextBox status = UI.Read("数值参数与保存状态");
         readonly TextBox note = UI.Edit("用户用途/假设备注（未验证）");
-        readonly Dictionary<string, TextBox> edits = new Dictionary<string, TextBox>();
+        readonly Dictionary<string, Control> edits = new Dictionary<string, Control>();
         readonly Dictionary<string, Label> labels = new Dictionary<string, Label>();
         readonly ToolStripMenuItem sources = new ToolStripMenuItem("官方依据");
         readonly ToolStripMenuItem undo = new ToolStripMenuItem("撤回本次参数导入");
         readonly ToolStripMenuItem latest = new ToolStripMenuItem("带入最新角色状态");
         readonly Button more;
+        readonly Button conditions;
+        readonly TableLayoutPanel outer = UI.Table(1);
+        bool conditionsVisible, noteVisible;
         bool rendering, changed;
         long draftRevision;
         public bool Dirty;
         string fieldsSignature = "";
         public LookupForm(Helper host) : base(host, "lookup", "灯火 · 数值速查", 560, 740) {
-            var outer = UI.Table(1); outer.Dock = DockStyle.Fill; Editable = outer;
+            outer.Dock = DockStyle.Fill; outer.AutoSize = false; outer.Padding = new Padding(0); Editable = outer;
             var menu = new MenuStrip { Dock = DockStyle.Top }; var actions = new ToolStripMenuItem("资料操作(&O)");
             foreach (string[] pair in new string[][] { new[] { "收藏 / 取消收藏", "favorite" }, new[] { "保存 / 更新 / 另存方案", "save_plan" }, new[] { "打开已保存方案", "choose_plan" }, new[] { "重新读取当前方案", "reload_plan" }, new[] { "固定到游戏速查", "pin" }, new[] { "清除固定", "clear_pin" }, new[] { "来源与适用限制", "provenance" } }) {
                 string action = pair[1]; var item = new ToolStripMenuItem(pair[0]); item.AccessibleName = pair[0]; item.Click += delegate { FlushEdit(); Host.Send(action, "surface", "lookup"); }; actions.DropDownItems.Add(item);
@@ -340,19 +385,21 @@ namespace Denghuo.Native {
             undo.Click += delegate { Host.Send("undo_import", "surface", "lookup"); }; actions.DropDownItems.Add(undo); actions.DropDownItems.Add(sources);
             latest.Click += delegate { FlushEdit(); Host.Send("use_latest", "surface", "lookup"); }; actions.DropDownItems.Add(latest);
             var panel = new ToolStripMenuItem("完整资料库"); panel.Click += delegate { Host.Send("panel", "page", "workspace"); }; actions.DropDownItems.Add(panel);
-            foreach (string[] pair in new string[][] { new[] { "共享角色条件（网页）", "workspace" }, new[] { "装备比较（网页）", "inventory" }, new[] { "完整炼金规划（网页）", "alchemy" } }) {
-                string page = pair[1]; var item = new ToolStripMenuItem(pair[0]); item.AccessibleName = pair[0]; item.Click += delegate { FlushEdit(); Host.Send("panel", "page", page); }; actions.DropDownItems.Add(item);
+            foreach (string[] pair in new string[][] { new[] { "角色条件", "character" }, new[] { "装备比较", "equipment" }, new[] { "炼金规划", "alchemy" } }) {
+                string page = pair[1]; var item = new ToolStripMenuItem(pair[0]); item.AccessibleName = pair[0]; item.Click += delegate { FlushEdit(); Host.Send("game_page", "page", page); Host.Manager.ShowPage(page); }; actions.DropDownItems.Add(item);
             }
             menu.Items.Add(actions); MainMenuStrip = menu;
-            outer.RowCount = 10;
-            for (int i = 0; i < 10; ++i) outer.RowStyles.Add(new RowStyle(i == 2 ? SizeType.Absolute : i == 4 ? SizeType.Percent : i == 8 ? SizeType.Percent : i == 9 ? SizeType.Absolute : SizeType.AutoSize, i == 2 ? 90 : i == 4 ? 35 : i == 8 ? 65 : i == 9 ? 62 : 0));
-            outer.Controls.Add(UI.Label("搜索物品、敌人或技能"), 0, 0); outer.Controls.Add(search, 0, 1); outer.Controls.Add(rows, 0, 2);
+            outer.RowCount = 7;
+            outer.RowStyles.Add(new RowStyle(SizeType.AutoSize)); outer.RowStyles.Add(new RowStyle(SizeType.Absolute, Font.Height*4+16)); outer.RowStyles.Add(new RowStyle(SizeType.AutoSize)); outer.RowStyles.Add(new RowStyle(SizeType.Absolute, 0)); outer.RowStyles.Add(new RowStyle(SizeType.Absolute, 0)); outer.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); outer.RowStyles.Add(new RowStyle(SizeType.Absolute, Font.Height*2+12));
+            outer.Controls.Add(search, 0, 0); outer.Controls.Add(rows, 0, 1);
             more = UI.Button("显示更多结果", delegate { Host.Send("more", "surface", "lookup"); }); outer.Controls.Add(more, 0, 3);
-            parameters.Dock = DockStyle.Top; parameterScroll.Controls.Add(parameters); outer.Controls.Add(parameterScroll, 0, 4);
-            outer.Controls.Add(UI.Button("按所填参数计算(&C)", delegate { FlushEdit(); Host.Send("calculate", "surface", "lookup"); }), 0, 5);
-            outer.Controls.Add(UI.Label("用户用途/假设备注（未验证，可选）"), 0, 6); note.Multiline = true; note.AcceptsReturn = true; note.ScrollBars = ScrollBars.Vertical; note.MinimumSize = new Size(0, Font.Height*3+12); note.MaxLength = 1200; outer.Controls.Add(note, 0, 7);
-            outer.Controls.Add(result, 0, 8); outer.Controls.Add(status, 0, 9);
-            Controls.Add(outer); Controls.Add(menu);
+            conditions = UI.Button("编辑条件 ▾", delegate { ToggleConditions(); });
+            var calculate = UI.Button("计算", delegate { FlushEdit(); Host.Send("calculate", "surface", "lookup"); }); calculate.BackColor = UI.Gold; calculate.ForeColor = UI.Background;
+            actions.DropDown.Renderer = new LampMenuRenderer(); actions.DropDown.BackColor = UI.Panel; actions.DropDown.ForeColor = UI.Text;
+            outer.Controls.Add(UI.Buttons(calculate, conditions, more, UI.Button("资料 ⋯", delegate { actions.DropDown.Show(Cursor.Position); }), UI.Button("备注", delegate { noteVisible = !noteVisible; note.Visible = noteVisible; outer.RowStyles[4] = new RowStyle(SizeType.Absolute, noteVisible ? Font.Height*3+14 : 0); })), 0, 2);
+            parameters.Dock = DockStyle.Top; parameterScroll.Controls.Add(parameters); parameterScroll.Visible = false; outer.Controls.Add(parameterScroll, 0, 3);
+            note.Multiline = true; note.AcceptsReturn = true; note.ScrollBars = ScrollBars.Vertical; note.MaxLength = 1200; note.Visible = false; outer.Controls.Add(note, 0, 4);
+            outer.Controls.Add(result, 0, 5); outer.Controls.Add(status, 0, 6); Controls.Add(outer);
             search.MaxLength = 200; search.TextChanged += delegate { if (!rendering && !Host.Frozen) Host.Send("query", "surface", "lookup", "text", search.Text); };
             search.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.Enter) { Host.Send("first", "surface", "lookup"); e.SuppressKeyPress = true; } else if (e.KeyCode == Keys.Down) { rows.Focus(); if (rows.Items.Count > 0 && rows.SelectedIndex < 0) rows.SelectedIndex = 0; e.SuppressKeyPress = true; } };
             rows.SelectedIndexChanged += delegate { if (!rendering && !Host.Frozen) SendSelection(); };
@@ -360,9 +407,10 @@ namespace Denghuo.Native {
             note.TextChanged += delegate { Edited(); };
             KeyDown += delegate(object sender, KeyEventArgs e) { if (e.Control && e.KeyCode == Keys.F) { FocusSearch(); e.SuppressKeyPress = true; } };
         }
+        void ToggleConditions() { conditionsVisible = !conditionsVisible; parameterScroll.Visible = conditionsVisible; outer.RowStyles[3] = new RowStyle(conditionsVisible ? SizeType.Percent : SizeType.Absolute, conditionsVisible ? 50 : 0); conditions.Text = conditionsVisible ? "收起条件 ▴" : "编辑条件 ▾"; conditions.AccessibleName = conditionsVisible ? "收起条件" : "编辑条件"; }
         void Edited() { if (rendering || Host.Frozen) return; ++draftRevision; changed = Dirty = true; result.Text = "参数或备注已修改，请核对并重新计算。"; status.Text = "有未保存草稿。"; FlushEdit(); }
         public Dictionary<string, object> Raw() {
-            var values = new Dictionary<string, object>(); foreach (var pair in edits) values[pair.Key] = pair.Value.Text;
+            var values = new Dictionary<string, object>(); foreach (var pair in edits) { var choice = pair.Value as ComboBox; values[pair.Key] = choice == null ? pair.Value.Text : ((Choice)choice.SelectedItem).Id; }
             var raw = Data.Map("values", values, "note", UI.Note(note.Text), "draft_revision", draftRevision);
             Host.CaptureSaveDraft(raw); return raw;
         }
@@ -384,18 +432,23 @@ namespace Denghuo.Native {
                 string signature = String.Join("|", keys.ToArray());
                 if (signature != fieldsSignature) {
                     parameters.SuspendLayout(); parameters.Controls.Clear(); parameters.RowStyles.Clear(); edits.Clear(); labels.Clear(); parameters.RowCount = fields.Length; fieldsSignature = signature;
-                    for (int i = 0; i < fields.Length; ++i) { var field = (Dictionary<string, object>)fields[i]; string key = Data.Text(field, "key", ""); string label = Data.Text(field, "label", key); var text = UI.Edit(label); text.MaxLength = 80; text.AccessibleDescription = "来源与范围见相邻说明";
-                        text.TextChanged += delegate { Edited(); }; text.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.Enter) { FlushEdit(); Host.Send("calculate", "surface", "lookup"); e.SuppressKeyPress = true; } };
+                    for (int i = 0; i < fields.Length; ++i) { var field = (Dictionary<string, object>)fields[i]; string key = Data.Text(field, "key", ""); string label = key == "corrosion_public" ? "酸蚀计算依据" : Data.Text(field, "label", key); Control text;
+                        if (key == "corrosion_public") { var choice = UI.Combo(label, new string[0]); choice.Items.Add(new Choice("1", "游戏显示值（给范围）")); choice.Items.Add(new Choice("0", "手填精确假设")); choice.SelectedIndex = 0; choice.SelectedIndexChanged += delegate { Edited(); }; text = choice; }
+                        else { var edit = UI.Edit(label); edit.MaxLength = 80; edit.TextChanged += delegate { Edited(); }; text = edit; }
+                        text.AccessibleDescription = "来源与范围见相邻说明"; text.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.Enter) { FlushEdit(); Host.Send("calculate", "surface", "lookup"); e.SuppressKeyPress = true; } };
                         text.Enter += delegate { parameterScroll.ScrollControlIntoView(text); };
                         var heading = UI.Label(label); edits[key] = text; labels[key] = heading; parameters.RowStyles.Add(new RowStyle(SizeType.AutoSize)); parameters.Controls.Add(heading, 0, i); parameters.Controls.Add(text, 1, i);
                     }
                     parameters.ResumeLayout(true);
                 }
-                foreach (object raw in fields) { var field = (Dictionary<string, object>)raw; string key = Data.Text(field, "key", ""); string text = Data.Text(field, "raw", ""); if (edits[key].Text != text) edits[key].Text = text;
-                    labels[key].Text = Data.Text(field, "label", key) + "\n" + Data.Text(field, "origin", "") + " · " + Data.Text(field, "min", "") + "–" + Data.Text(field, "max", ""); edits[key].AccessibleDescription = labels[key].Text;
+                foreach (object raw in fields) { var field = (Dictionary<string, object>)raw; string key = Data.Text(field, "key", ""); string text = Data.Text(field, "raw", ""); var choice = edits[key] as ComboBox;
+                    if (choice != null) { int found = -1; for (int i = 0; i < choice.Items.Count; ++i) if (((Choice)choice.Items[i]).Id == text) found = i; if (found < 0) found = choice.Items.Add(new Choice(text, "需核对原始输入：" + text)); choice.SelectedIndex = found; }
+                    else if (edits[key].Text != text) edits[key].Text = text;
+                    labels[key].Text = (key == "corrosion_public" ? "酸蚀计算依据\n游戏显示值给范围；精确值仅为手填假设" : Data.Text(field, "label", key)) + "\n" + Data.Text(field, "origin", "") + (choice == null ? " · " + Data.Text(field, "min", "") + "–" + Data.Text(field, "max", "") : ""); edits[key].AccessibleDescription = labels[key].Text;
                 }
                 string noteText = UI.Multiline(Data.Text(d, "note", "")); if (note.Text != noteText) note.Text = noteText;
                 UI.ReplaceText(result, Data.Text(d, "result", "")); UI.ReplaceText(status, Data.Text(d, "status", ""));
+                conditions.Enabled = fields.Length > 0; if (fields.Length == 0 && conditionsVisible) ToggleConditions();
                 sources.DropDownItems.Clear(); int index = 0; string sourcesToken = Data.Text(d, "sources_token", ""); foreach (object raw in Data.Array(d, "sources")) { var link = (Dictionary<string, object>)raw; int selectedLink = index++; var item = new ToolStripMenuItem(Data.Text(link, "label", "官方依据")); item.Click += delegate { Host.Send("source_link", "surface", "lookup", "index", selectedLink, "token", sourcesToken); }; sources.DropDownItems.Add(item); }
                 sources.Enabled = sources.DropDownItems.Count > 0;
             } finally { rendering = false; }
@@ -413,7 +466,7 @@ namespace Denghuo.Native {
         public PlansForm(Helper host) : base(host, "plans", "灯火 · 打开已保存方案", 640, 450) {
             var table = UI.Table(1); table.Dock = DockStyle.Fill; Editable = table; table.RowCount = 6;
             table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); table.RowStyles.Add(new RowStyle(SizeType.Absolute, 58)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            table.Controls.Add(UI.Label("数值方案在此打开；角色条件、装备比较、手动局势及炼金方案将按所选身份交给完整网页面板。"), 0, 0); table.Controls.Add(search, 0, 1);
+            table.Controls.Add(UI.Label("数值、装备、炼金与角色方案在此工作区继续；手动局势在完整面板编辑。"), 0, 0); table.Controls.Add(search, 0, 1);
             var filters = UI.Table(4); filters.Dock = DockStyle.Fill; filters.Controls.Add(UI.Label("类型"), 0, 0); filters.Controls.Add(kind, 1, 0); filters.Controls.Add(UI.Label("排序"), 2, 0); filters.Controls.Add(order, 3, 0); table.Controls.Add(filters, 0, 2); table.Controls.Add(rows, 0, 3); table.Controls.Add(selected, 0, 4);
             open = UI.Button("打开所选方案(&O)", delegate { OpenSelected(); }); table.Controls.Add(open, 0, 5); Controls.Add(table);
             search.TextChanged += delegate { if (!rendering && !Host.Frozen) Host.Send("filter_plans", "surface", "lookup", "query", search.Text, "kind", kind.Text, "order", order.Text); };
@@ -422,12 +475,107 @@ namespace Denghuo.Native {
             rows.DoubleClick += delegate { OpenSelected(); }; rows.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.Enter) { OpenSelected(); e.SuppressKeyPress = true; } };
             search.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.Down) { rows.Focus(); e.SuppressKeyPress = true; } };
         }
-        void OpenSelected() { var row = rows.SelectedItem as Choice; if (row != null) { Host.Send("open_plan", "surface", "lookup", "id", row.Id); Host.HideSurface("plans"); } }
+        void OpenSelected() { var row = rows.SelectedItem as Choice; if (row != null) { Host.Send("open_plan", "surface", "lookup", "id", row.Id); } }
         public void Render(Dictionary<string, object> d) { rendering = true; var old = rows.SelectedItem as Choice; string id = old == null ? "" : old.Id; rows.BeginUpdate(); rows.Items.Clear(); int select = 0; foreach (object raw in Data.Array(d, "rows")) { var row = (Dictionary<string, object>)raw; var choice = new Choice(Data.Text(row, "id", ""), Data.Text(row, "text", "")); if (choice.Id == id) select = rows.Items.Count; rows.Items.Add(choice); } rows.ItemHeight = Font.Height + 8; if (rows.Items.Count > 0) rows.SelectedIndex = select; else selected.Text = "没有匹配方案；可更改搜索或类型。"; open.Enabled = rows.Items.Count > 0; rows.EndUpdate(); rendering = false; }
+    }
+
+    // A presentation surface only: public data, validation and saves remain in Python.
+    sealed class ActionForm : Form {
+        public ActionForm(string title, string message) { Text = title; AccessibleName = title; Font = new Font("Microsoft YaHei UI", 10F); Size = new Size(570, 430); StartPosition = FormStartPosition.CenterParent; MinimumSize = new Size(420, 300); TopMost = true;
+            var table = UI.Table(1); table.AutoSize = false; table.Dock = DockStyle.Fill; table.RowCount = 2; table.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); var text = UI.Read("当前与目标进度及恢复影响"); text.Text = message; table.Controls.Add(text, 0, 0); var cancel = UI.Button("取消", delegate { DialogResult = DialogResult.Cancel; }); table.Controls.Add(UI.Buttons(UI.Button("已关闭游戏，确认恢复", delegate { DialogResult = DialogResult.OK; }), cancel), 0, 1); Controls.Add(table); CancelButton = cancel; AcceptButton = cancel; UI.Theme(this);
+        }
+    }
+
+    sealed class SavedMap : Control {
+        Dictionary<string, object> data = new Dictionary<string, object>();
+        public SavedMap() { DoubleBuffered = true; Dock = DockStyle.Top; Height = 200; AccessibleName = "主动揭示的保存地图：金色为角色，绿色为楼梯，浅灰为地面，深灰为墙"; }
+        public void Render(Dictionary<string, object> value) { data = value; Visible = Data.Array(data, "tiles").Length > 0; Invalidate(); }
+        protected override void OnPaint(PaintEventArgs e) { base.OnPaint(e); int width = (int)Data.Number(data, "width"), height = (int)Data.Number(data, "height"); object[] tiles = Data.Array(data, "tiles"); if (width < 1 || height < 1 || tiles.Length != width*height) return; float size = Math.Min((float)Width/width, (float)Height/height); float left = (Width-width*size)/2, top = (Height-height*size)/2; for (int i = 0; i < tiles.Length; ++i) { int tile = Convert.ToInt32(tiles[i]); Color color = tile == 4 || tile == 0 || tile == 23 ? UI.Border : tile == 7 || tile == 8 ? Color.FromArgb(91, 146, 105) : tile == 16 || tile == 17 ? UI.Gold : Color.FromArgb(100, 116, 104); if (data.ContainsKey("hero") && data["hero"] != null && Convert.ToInt32(data["hero"]) == i) color = UI.Gold; using (var brush = new SolidBrush(color)) e.Graphics.FillRectangle(brush, left+(i%width)*size, top+(i/width)*size, Math.Max(1, size-0.5f), Math.Max(1, size-0.5f)); } }
+    }
+
+    sealed class TaskPane : Panel {
+        readonly Helper host; readonly string page;
+        readonly TableLayoutPanel table = UI.Table(1), fields = UI.Table(1);
+        readonly Panel scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
+        readonly RichTextBox result = UI.Read("结果、来源与适用条件");
+        readonly SavedMap map = new SavedMap();
+        readonly ListBox list = UI.List("工作区条目");
+        readonly FlowLayoutPanel actions = UI.Buttons();
+        readonly Button conditions;
+        readonly Dictionary<string, Control> edits = new Dictionary<string, Control>();
+        readonly Dictionary<string, bool> expanded = new Dictionary<string, bool>();
+        Dictionary<string, object> values = new Dictionary<string, object>();
+        readonly List<Dictionary<string, object>> rows = new List<Dictionary<string, object>>();
+        string signature = ""; bool rendering; long revision;
+        public bool Dirty;
+        public TaskPane(Helper owner, string name) {
+            host = owner; page = name; Dock = DockStyle.Fill; table.AutoSize = false; table.Dock = DockStyle.Fill; table.Padding = new Padding(0); table.RowCount = 5;
+            table.RowStyles.Add(new RowStyle(SizeType.Absolute, 0)); table.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.RowStyles.Add(new RowStyle(SizeType.Absolute, 0)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            conditions = UI.Button("编辑条件 ▾", delegate { SetConditions(!scroll.Visible); });
+            fields.Dock = DockStyle.Top; fields.Padding = new Padding(0); scroll.Controls.Add(fields); scroll.Visible = false;
+            var output = new Panel { Dock = DockStyle.Fill }; output.Controls.Add(result); output.Controls.Add(map); map.Visible = false;
+            table.Controls.Add(list, 0, 0); table.Controls.Add(output, 0, 1); table.Controls.Add(conditions, 0, 2); table.Controls.Add(scroll, 0, 3); table.Controls.Add(actions, 0, 4); Controls.Add(table);
+            list.SelectedIndexChanged += delegate { if (!rendering && !host.Frozen && list.SelectedIndex >= 0 && list.SelectedIndex < rows.Count) { var row = rows[list.SelectedIndex]; host.Send("game_select", "page", page, "id", Data.Text(row, "id", ""), "token", Data.Text(row, "token", "")); } };
+        }
+        void SetConditions(bool show) { scroll.Visible = show; table.RowStyles[3] = new RowStyle(show ? SizeType.Percent : SizeType.Absolute, show ? 68 : 0); table.RowStyles[1] = new RowStyle(SizeType.Percent, show ? 32 : 100); conditions.Text = show ? "收起条件 ▴" : "编辑条件 ▾"; conditions.AccessibleName = show ? "收起条件" : "编辑条件"; }
+        string Value(Control control) { var combo = control as ComboBox; if (combo != null) { var selected = combo.SelectedItem as Choice; return selected == null ? "" : selected.Id; } var check = control as CheckedListBox; if (check != null) { var selected = new List<string>(); foreach (Choice choice in check.CheckedItems) selected.Add(choice.Id); return String.Join("|", selected.ToArray()); } return control.Text; }
+        public Dictionary<string, object> Raw() { var raw = new Dictionary<string, object>(values); foreach (var pair in edits) raw[pair.Key] = Value(pair.Value); return raw; }
+        public void Flush() { if (edits.Count > 0) host.Send("game_edit", "page", page, "values", Raw(), "draft_revision", revision); }
+        void Edited(string key, bool structural) { if (rendering || host.Frozen) return; ++revision; Dirty = true; values = Raw(); host.Send("game_edit", "page", page, "values", values, "draft_revision", revision, "structure", structural); if (key != "name" && key != "note") result.Text = "条件已修改，请重新计算。原始输入已保留。"; }
+        public void Render(Dictionary<string, object> d) {
+            if (Data.Number(d, "draft_revision") < revision) return;
+            rendering = true;
+            try {
+                revision = Data.Number(d, "draft_revision"); Dirty = Data.Flag(d, "dirty"); values = new Dictionary<string, object>(Data.Object(d, "raw"));
+                var specs = Data.Array(d, "fields"); var shape = new List<string>();
+                foreach (object item in specs) { var spec = (Dictionary<string, object>)item; string key = Data.Text(spec, "key", ""); if (!values.ContainsKey(key)) values[key] = Data.Text(spec, "raw", ""); }
+                foreach (object item in specs) { var spec = (Dictionary<string, object>)item; shape.Add(Data.Text(spec, "key", "") + Data.Text(spec, "label", "") + new JavaScriptSerializer().Serialize(Data.Array(spec, "choices"))); }
+                string next = String.Join("\n", shape.ToArray());
+                string focusedKey = null; int caret = 0; foreach (var pair in edits) if (pair.Value.ContainsFocus) { focusedKey = pair.Key; var editText = pair.Value as TextBox; if (editText != null) caret = editText.SelectionStart; }
+                bool rebuilt = next != signature;
+                if (next != signature) {
+                    bool first = signature.Length == 0; Point position = scroll.AutoScrollPosition; fields.SuspendLayout(); var old = new List<Control>(); foreach (Control child in fields.Controls) old.Add(child); fields.Controls.Clear(); foreach (Control child in old) child.Dispose(); fields.RowStyles.Clear(); edits.Clear(); fields.RowCount = 0;
+                    string section = ""; int n = 0, fieldRow = 0; TableLayoutPanel groupFields = null;
+                    foreach (object item in specs) {
+                        var spec = (Dictionary<string, object>)item; string group = Data.Text(spec, "section", "条件"), key = Data.Text(spec, "key", ""), label = Data.Text(spec, "label", key);
+                        if (section != group) { section = group; groupFields = UI.Table(1); groupFields.Dock = DockStyle.Top; groupFields.Padding = new Padding(0); fieldRow = 0; bool open; if (!expanded.TryGetValue(group, out open)) open = group == "选择比较对象" || group == "共同条件" || group == "共享预算" || group.StartsWith("产出目标 1 ") || specs.Length < 12;
+                            groupFields.Visible = open; expanded[group] = open; var target = groupFields; string name = group; Button title = null; title = UI.Button(group + (open ? " ▴" : " ▾"), delegate { bool show = !target.Visible; target.Visible = show; expanded[name] = show; title.Text = name + (show ? " ▴" : " ▾"); title.AccessibleName = (show ? "收起" : "展开") + name; }); title.AccessibleName = (open ? "收起" : "展开") + group; title.ForeColor = UI.Gold; title.TextAlign = ContentAlignment.MiddleLeft; title.Margin = new Padding(5, 8, 5, 2); fields.Controls.Add(title, 0, n++); fields.RowStyles.Add(new RowStyle(SizeType.AutoSize)); fields.Controls.Add(groupFields, 0, n++); fields.RowStyles.Add(new RowStyle(SizeType.AutoSize)); }
+                        groupFields.Controls.Add(UI.Label(label), 0, fieldRow++); groupFields.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                        Control edit; object[] choices = Data.Array(spec, "choices");
+                        if (Data.Flag(spec, "multiple")) { var multi = UI.Name(new CheckedListBox { Dock = DockStyle.Fill, CheckOnClick = true, Height = Font.Height * 5, BorderStyle = BorderStyle.None }, label); foreach (object option in choices) { var c = (Dictionary<string, object>)option; if (Data.Text(c, "id", "").Length > 0) multi.Items.Add(new Choice(Data.Text(c, "id", ""), Data.Text(c, "text", ""))); } multi.ItemCheck += delegate { if (!rendering) BeginInvoke((MethodInvoker)delegate { Edited(key, false); }); }; edit = multi; }
+                        else if (choices.Length > 0) { var combo = UI.Combo(label, new string[0]); combo.DropDownWidth = Math.Max(320, Width); foreach (object option in choices) { var c = (Dictionary<string, object>)option; combo.Items.Add(new Choice(Data.Text(c, "id", ""), Data.Text(c, "text", ""))); } combo.SelectedIndexChanged += delegate { Edited(key, true); }; edit = combo; }
+                        else { var text = UI.Edit(label); text.MaxLength = 1200; text.TextChanged += delegate { Edited(key, false); }; edit = text; }
+                        edits[key] = edit; edit.Enter += delegate { scroll.ScrollControlIntoView(edit); }; groupFields.Controls.Add(edit, 0, fieldRow++); groupFields.RowCount = fieldRow; groupFields.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                    }
+                    fields.RowCount = n; fields.ResumeLayout(true); signature = next; scroll.AutoScrollPosition = new Point(-position.X, -position.Y); if (first && specs.Length > 0) SetConditions(true);
+                }
+                conditions.Visible = specs.Length > 0;
+                foreach (var pair in edits) {
+                    string raw = Data.Text(values, pair.Key, ""); var combo = pair.Value as ComboBox; var multi = pair.Value as CheckedListBox;
+                    if (combo != null) { int index = -1; for (int i = 0; i < combo.Items.Count; ++i) if (((Choice)combo.Items[i]).Id == raw) index = i; if (index < 0) { index = combo.Items.Add(new Choice(raw, "需核对的原始输入：" + raw)); } combo.SelectedIndex = index; }
+                    else if (multi != null) { var selected = new HashSet<string>(raw.Split('|')); foreach (string value in selected) { bool found = value.Length == 0; foreach (Choice choice in multi.Items) if (choice.Id == value) found = true; if (!found) multi.Items.Add(new Choice(value, "需核对原始实例："+value)); } for (int i = 0; i < multi.Items.Count; ++i) multi.SetItemChecked(i, selected.Contains(((Choice)multi.Items[i]).Id)); }
+                    else if (pair.Value.Text != raw) pair.Value.Text = raw;
+                }
+                if (rebuilt && focusedKey != null && edits.ContainsKey(focusedKey) && scroll.Visible) { Control focused = edits[focusedKey]; focused.Focus(); var editText = focused as TextBox; if (editText != null) editText.SelectionStart = Math.Min(caret, editText.TextLength); }
+                int oldTop = list.TopIndex; rows.Clear(); list.BeginUpdate(); list.Items.Clear(); int selectedRow = -1; foreach (object item in Data.Array(d, "rows")) { var row = (Dictionary<string, object>)item; if (Data.Text(row, "id", "") == Data.Text(d, "selected", "")) selectedRow = rows.Count; rows.Add(row); list.Items.Add(Data.Text(row, "text", "")); } list.SelectedIndex = selectedRow; list.ItemHeight = Font.Height + 12; if (list.Items.Count > 0) list.TopIndex = Math.Min(oldTop, list.Items.Count-1); list.EndUpdate();
+                table.RowStyles[0] = new RowStyle(rows.Count > 0 ? SizeType.Percent : SizeType.Absolute, rows.Count > 0 ? 40 : 0); list.Visible = rows.Count > 0;
+                UI.ReplaceText(result, Data.Text(d, "text", ""));
+                map.Render(Data.Object(d, "map"));
+                var oldActions = new List<Control>(); foreach (Control child in actions.Controls) oldActions.Add(child); actions.Controls.Clear(); foreach (Control child in oldActions) child.Dispose();
+                var extra = UI.Menu(); extra.BackColor = UI.Panel; extra.ForeColor = UI.Text;
+                foreach (object item in Data.Array(d, "actions")) { var action = (Dictionary<string, object>)item; string command = Data.Text(action, "id", ""); EventHandler clicked = delegate { if (!host.Frozen) { Flush(); host.Send("game_action", "page", page, "command", command, "values", Raw(), "draft_revision", revision); } };
+                    if (page == "alchemy" && (command.StartsWith("add_") || command.StartsWith("remove_") || command == "undo" || command == "update")) { var entry = extra.Items.Add(Data.Text(action, "text", "")); entry.Click += clicked; entry.Enabled = !Data.Flag(action, "disabled"); }
+                    else { var button = UI.Button(Data.Text(action, "text", ""), clicked); button.Enabled = !Data.Flag(action, "disabled"); if (command == "calculate") { button.ForeColor = UI.Background; button.BackColor = UI.Gold; } actions.Controls.Add(button); } }
+                if (extra.Items.Count > 0) { var more = UI.Button("更多操作 ⋯", delegate { extra.Show(Cursor.Position); }); more.Disposed += delegate { extra.Dispose(); }; actions.Controls.Add(more); } else extra.Dispose();
+                if (Data.Flag(d, "focus_result")) SetConditions(false);
+            } finally { rendering = false; }
+        }
     }
 
     sealed class ManagerForm : BaseForm {
         readonly RichTextBox summary = UI.Read("当前存档、生命、风险、资源与备份全文");
+        readonly Label life = UI.Label("等待有效存档"), statistics = UI.Label("保存游戏后会显示生命与局势");
+        readonly TableLayoutPanel overview = UI.Table(1);
         public readonly RichTextBox Status = UI.Read("管理操作和快捷键实际状态");
         readonly ComboBox slot = UI.Combo("存档槽位", new[] { "自动跟随", "槽位 1", "槽位 2", "槽位 3", "槽位 4", "槽位 5", "槽位 6" });
         readonly CheckBox top = UI.Name(new CheckBox { Text = "管理窗口置顶", AutoSize = true }, "管理窗口置顶");
@@ -441,29 +589,92 @@ namespace Denghuo.Native {
         readonly Label floorCaption = UI.Label("当前楼层");
         readonly Button revealFloor;
         string floorToken = "", floorSignature = "", floorOwner = "";
-        bool rendering, isCompact;
-        public ManagerForm(Helper host) : base(host, "manager", "灯火 · 地牢助手", 550, 650) {
-            var table = UI.Table(1); table.Dock = DockStyle.Fill; Editable = table; table.RowCount = 7;
-            table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); table.RowStyles.Add(new RowStyle(SizeType.Percent, 75)); table.RowStyles.Add(new RowStyle(SizeType.Percent, 25)); table.RowStyles.Add(new RowStyle(SizeType.Absolute, 50)); table.RowStyles.Add(new RowStyle(SizeType.Absolute, 40)); table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            compact = UI.Button("收起", delegate { isCompact = !isCompact; references.Visible = !isCompact; table.RowStyles[4].Height = isCompact ? 0 : 50; summary.Visible = true; compact.Text = isCompact ? "展开" : "收起"; });
-            table.Controls.Add(UI.Buttons(compact, UI.Button("设置", delegate { options.Visible = !options.Visible; }), UI.Button("退出", delegate { Host.Send("exit"); })), 0, 0);
+        bool rendering, attached; bool changingLayout = true;
+        public bool Collapsed, LayoutRestored;
+        public string Page = "overview";
+        readonly Dictionary<string, Panel> pages = new Dictionary<string, Panel>();
+        readonly Dictionary<string, Button> navigation = new Dictionary<string, Button>();
+        readonly Dictionary<string, TaskPane> tasks = new Dictionary<string, TaskPane>();
+        ContextMenuStrip mainMenu;
+        public bool TasksDirty { get { foreach (TaskPane pane in tasks.Values) if (pane.Dirty) return true; return false; } }
+        public Dictionary<string, object> TaskRaw() { var raw = new Dictionary<string, object>(); foreach (var pair in tasks) if (pair.Value.Dirty) raw[pair.Key] = pair.Value.Raw(); return raw; }
+        public void FlushTasks() { foreach (TaskPane pane in tasks.Values) if (pane.Dirty) pane.Flush(); }
+        public void RenderTask(Dictionary<string, object> d) { string page = Data.Text(d, "page", ""); if (tasks.ContainsKey(page)) tasks[page].Render(d); }
+        readonly TableLayoutPanel workspace = UI.Table(1);
+        readonly Panel content = new Panel { Dock = DockStyle.Fill };
+        readonly Label source = UI.Label("等待游戏保存 · 自动备份守护中");
+        readonly Button handle;
+        Rectangle expandedBounds, gameBounds;
+        int gameX = 16, gameY = 16;
+        protected override bool ShowWithoutActivation { get { return true; } }
+        public ManagerForm(Helper host) : base(host, "manager", "灯火 · 游戏助手", 480, 600) {
+            MinimumSize = new Size(Pixels(320), Pixels(360)); expandedBounds = Bounds;
+            workspace.Dock = DockStyle.Fill; workspace.AutoSize = false; Editable = workspace; workspace.Padding = new Padding(14);
+            workspace.RowCount = 5;
+            workspace.RowStyles.Add(new RowStyle(SizeType.AutoSize)); workspace.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            workspace.RowStyles.Add(new RowStyle(SizeType.AutoSize)); workspace.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); workspace.RowStyles.Add(new RowStyle(SizeType.Absolute, Font.Height * 2 + 14));
+            compact = UI.Button("收起", delegate { Host.Send("collapse"); });
+            var brand = UI.Label("灯火"); brand.Font = new Font(Font.FontFamily, 18F, FontStyle.Bold); brand.ForeColor = UI.Gold;
+            var heading = UI.Table(3); heading.Dock = DockStyle.Fill; heading.AutoSize = false; heading.Padding = new Padding(0); heading.ColumnStyles.Clear(); heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); heading.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); heading.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); heading.Controls.Add(brand, 0, 0); heading.Controls.Add(compact, 1, 0); heading.Controls.Add(UI.Button("更多 ⋯", delegate { ShowMore(); }), 2, 0);
+            workspace.RowStyles[0] = new RowStyle(SizeType.Absolute, Pixels(48));
+            workspace.Controls.Add(heading, 0, 0); source.ForeColor = UI.Muted; workspace.Controls.Add(source, 0, 1);
+            var tabs = UI.Buttons(); tabs.Margin = new Padding(0, 7, 0, 10);
+            foreach (string[] entry in new string[][] { new[] { "局势", "overview" }, new[] { "背包", "inventory" }, new[] { "数值", "lookup" }, new[] { "装备", "equipment" }, new[] { "炼金", "alchemy" }, new[] { "楼层", "floor" } }) { string page = entry[1]; var button = UI.Button(entry[0], delegate { OpenPage(page); }); navigation[page] = button; tabs.Controls.Add(button); }
+            workspace.Controls.Add(tabs, 0, 2); workspace.Controls.Add(content, 0, 3); workspace.Controls.Add(Status, 0, 4);
+            foreach (string page in new[] { "overview", "inventory", "lookup", "equipment", "alchemy", "character", "floor", "map", "backups", "plans", "settings" }) { var panel = new Panel { Dock = DockStyle.Fill, Visible = false }; pages[page] = panel; content.Controls.Add(panel); }
+            foreach (string page in new[] { "inventory", "equipment", "alchemy", "character", "map", "backups" }) { var pane = new TaskPane(host, page); tasks[page] = pane; pages[page].Controls.Add(pane); }
+            overview.AutoSize = false; overview.Dock = DockStyle.Fill; overview.Padding = new Padding(0); overview.RowCount = 6;
+            overview.RowStyles.Add(new RowStyle(SizeType.AutoSize)); overview.RowStyles.Add(new RowStyle(SizeType.AutoSize)); overview.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); overview.RowStyles.Add(new RowStyle(SizeType.AutoSize)); overview.RowStyles.Add(new RowStyle(SizeType.Absolute, 60)); overview.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            life.Font = new Font(Font.FontFamily, 22F, FontStyle.Bold); life.ForeColor = UI.Gold; statistics.ForeColor = UI.Muted; statistics.Margin = new Padding(5, 0, 5, 16);
+            summary.BackColor = UI.Background;
+            overview.Controls.Add(life, 0, 0); overview.Controls.Add(statistics, 0, 1); overview.Controls.Add(summary, 0, 2); overview.Controls.Add(UI.Label("相关资料 · 双击查看"), 0, 3); overview.Controls.Add(references, 0, 4);
+            overview.Controls.Add(UI.Buttons(UI.Button("立即备份", delegate { Host.Send("capture"); }), UI.Button("刷新存档", delegate { Host.Send("refresh"); }), UI.Button("找回草稿", delegate { Host.Send("list_drafts"); })), 0, 5); pages["overview"].Controls.Add(overview);
             var settings = UI.Table(2); settings.Dock = DockStyle.Top; settings.Controls.Add(UI.Label("存档槽位"), 0, 0); settings.Controls.Add(slot, 1, 0); settings.Controls.Add(top, 0, 1);
             var refresh = UI.Button("刷新", delegate { Host.Send("refresh"); }); settings.Controls.Add(refresh, 1, 1);
             var directory = UI.Button("选择存档目录…", delegate { using (var picker = new FolderBrowserDialog { Description = "选择包含 game1、game2 等文件夹的存档目录", ShowNewFolderButton = false }) { if (picker.ShowDialog(this) == DialogResult.OK) Host.Send("directory", "path", picker.SelectedPath); } }); settings.Controls.Add(directory, 0, 2);
             connectionControls.AddRange(new Control[] { slot, top, refresh, directory });
-            settings.Controls.Add(UI.Button("游玩显示与快捷键", delegate { Host.Send("show_settings"); }), 1, 2); options.Controls.Add(settings); table.Controls.Add(options, 0, 1);
+            settings.Controls.Add(UI.Button("恢复默认大小与位置", delegate { ResetLayout(); }), 1, 2); options.Controls.Add(settings); options.Visible = true; options.Dock = DockStyle.Top;
             var inspector = UI.Table(1); inspector.Dock = DockStyle.Fill; inspector.RowCount = 4;
             inspector.RowStyles.Add(new RowStyle(SizeType.AutoSize)); inspector.RowStyles.Add(new RowStyle(SizeType.AutoSize)); inspector.RowStyles.Add(new RowStyle(SizeType.Percent, 65)); inspector.RowStyles.Add(new RowStyle(SizeType.Percent, 35));
             revealFloor = UI.Button("揭示本层隐藏内容", delegate { Host.Send("reveal_floor", "token", floorToken); });
             var adjustFloor = UI.Button("查看所选资料数值…", delegate { AdjustFloorReference(); });
             inspector.Controls.Add(floorCaption, 0, 0); inspector.Controls.Add(UI.Buttons(revealFloor, adjustFloor), 0, 1); inspector.Controls.Add(floor, 0, 2); inspector.Controls.Add(floorDetail, 0, 3);
             floor.AfterSelect += delegate { if (floor.SelectedNode != null) UI.ReplaceText(floorDetail, FloorDetailText(floor.SelectedNode)); };
-            table.Controls.Add(inspector, 0, 2); table.Controls.Add(summary, 0, 3); table.Controls.Add(references, 0, 4); table.Controls.Add(Status, 0, 5);
-            table.Controls.Add(UI.Buttons(UI.Button("查数值", delegate { Host.Send("show_lookup"); }), UI.Button("存档历史", delegate { Host.Send("panel", "page", "backups"); }), UI.Button("完整面板", delegate { Host.Send("panel", "page", "overview"); }), UI.Button("立即备份", delegate { Host.Send("capture"); }), UI.Button("载入未完成草稿", delegate { Host.Send("list_drafts"); })), 0, 6); Controls.Add(table);
+            pages["floor"].Controls.Add(inspector); Controls.Add(workspace);
+            handle = UI.Button("灯\n›", delegate { if (!handleDragged) { Expand(); Activate(); } handleDragged = false; }); handle.AccessibleName = "展开灯火助手"; handle.ForeColor = UI.Gold; handle.Font = new Font(Font.FontFamily, 14F, FontStyle.Bold); handle.Dock = DockStyle.Fill; handle.Visible = false; Controls.Add(handle);
+            handle.MouseDown += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) { dragOrigin = Cursor.Position; dragLocation = Location; handleDragged = false; } };
+            handle.MouseMove += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) { Point current = Cursor.Position; if (Math.Abs(current.X-dragOrigin.X) + Math.Abs(current.Y-dragOrigin.Y) > 6) { handleDragged = true; Location = new Point(dragLocation.X+current.X-dragOrigin.X, dragLocation.Y+current.Y-dragOrigin.Y); } } };
+            handle.MouseUp += delegate { if (handleDragged) { expandedBounds.Location = Location; ClampBounds(); SaveLayout(); } };
+            ResizeEnd += delegate { if (!changingLayout && WindowState == FormWindowState.Normal) { if (!Collapsed) expandedBounds = Bounds; SaveLayout(); } };
+            KeyDown += delegate(object sender, KeyEventArgs e) { if (e.Control && e.KeyCode == Keys.F && Page == "lookup") { Host.Lookup.FocusSearch(); e.SuppressKeyPress = true; } };
+            ShowPage("overview");
+            Disposed += delegate { if (mainMenu != null) mainMenu.Dispose(); };
             slot.SelectedIndexChanged += delegate { if (!rendering) Host.Send("slot", "index", slot.SelectedIndex); };
             top.CheckedChanged += delegate { if (!rendering) Host.Send("pin_manager", "checked", top.Checked); };
             references.DoubleClick += delegate { Reference(); }; references.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.KeyCode == Keys.Enter) { Reference(); e.SuppressKeyPress = true; } };
         }
+        Point dragOrigin, dragLocation;
+        bool handleDragged;
+        int Pixels(int value) { return (int)Math.Round(value * SystemDpi / 96F); }
+        int Logical(int value) { return (int)Math.Round(value * 96F / SystemDpi); }
+        public void Mount(string page, BaseForm form) {
+            var body = new Panel { Dock = DockStyle.Fill }; var controls = new List<Control>(); foreach (Control child in form.Controls) controls.Add(child);
+            foreach (Control child in controls) body.Controls.Add(child);
+            if (page == "settings") { var shell = UI.Table(1); shell.AutoSize = false; shell.Dock = DockStyle.Fill; shell.RowCount = 2; shell.RowStyles.Add(new RowStyle(SizeType.AutoSize)); shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); shell.Controls.Add(options, 0, 0); shell.Controls.Add(body, 0, 1); pages[page].Controls.Add(shell); }
+            else pages[page].Controls.Add(body);
+        }
+        void ShowMore() { if (mainMenu != null) mainMenu.Dispose(); var menu = mainMenu = UI.Menu(); foreach (string[] entry in new string[][] { new[] { "角色条件", "character" }, new[] { "地图", "map" }, new[] { "存档历史", "backups" }, new[] { "已保存方案", "plans" }, new[] { "设置", "settings" } }) { string page = entry[1]; var item = menu.Items.Add(entry[0]); item.Click += delegate { OpenPage(page); }; } menu.Items.Add("恢复默认大小与位置", null, delegate { ResetLayout(); }); menu.Items.Add("完整面板", null, delegate { Host.Send("panel", "page", "overview"); }); menu.Items.Add("退出灯火", null, delegate { Host.Send("exit"); }); menu.BackColor = UI.Panel; menu.ForeColor = UI.Text; menu.Show(this, PointToClient(Cursor.Position), ToolStripDropDownDirection.BelowLeft); }
+        void OpenPage(string page) { if (page == "lookup") Host.Send("show_lookup"); else if (page == "settings") Host.Send("show_settings"); else if (page == "plans") { Host.Send("choose_plan", "surface", "lookup"); } else { ShowPage(page); if (page != "overview" && page != "floor") Host.Send("game_page", "page", page); } }
+        public void ShowPage(string page) { if (!pages.ContainsKey(page)) return; Page = page; foreach (var pair in pages) pair.Value.Visible = pair.Key == page; foreach (var pair in navigation) { pair.Value.ForeColor = pair.Key == page ? UI.Gold : UI.Muted; pair.Value.BackColor = pair.Key == page ? UI.Border : UI.Panel; } Host.Visibility((BaseForm)Host.Lookup ?? this); if (!changingLayout) SaveLayout(); }
+        void ClampBounds() { Rectangle area = Screen.FromRectangle(Bounds).WorkingArea; Width = Math.Min(Width, area.Width); Height = Math.Min(Height, area.Height); Left = Math.Max(area.Left, Math.Min(Left, area.Right-Width)); Top = Math.Max(area.Top, Math.Min(Top, area.Bottom-Height)); }
+        public void Collapse() { if (Collapsed) return; changingLayout = true; expandedBounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds; WindowState = FormWindowState.Normal; Collapsed = true; workspace.Visible = false; MinimumSize = Size.Empty; FormBorderStyle = FormBorderStyle.None; Size = new Size(Pixels(44), Pixels(76)); handle.Visible = true; handle.BringToFront(); ShowInTaskbar = true; ClampBounds(); changingLayout = false; SaveLayout(); Host.Visibility(this); Host.Visibility(Host.Lookup); }
+        public void Expand() { if (!Collapsed) return; changingLayout = true; handle.Visible = false; Collapsed = false; FormBorderStyle = FormBorderStyle.Sizable; MinimumSize = new Size(Pixels(320), Pixels(360)); Bounds = expandedBounds; workspace.Visible = true; ShowInTaskbar = true; ClampBounds(); changingLayout = false; SaveLayout(); Host.Visibility(this); Host.Visibility(Host.Lookup); }
+        void SaveLayout(bool reset = false) { if (changingLayout) return; LayoutRestored = true; Rectangle normal = Collapsed ? expandedBounds : WindowState == FormWindowState.Normal ? Bounds : RestoreBounds; if (normal.Width < 100) return; if (attached) { gameX = Logical(Left-gameBounds.Left); gameY = Logical(Top-gameBounds.Top); }
+            Host.Send(reset ? "layout_reset" : "window_layout", "layout", Data.Map("width", Math.Max(320, Logical(normal.Width)), "height", Math.Max(320, Logical(normal.Height)), "x", Logical(normal.Left), "y", Logical(normal.Top), "game_x", gameX, "game_y", gameY, "collapsed", Collapsed, "page", Page)); }
+        public void ApplyLayout(Dictionary<string, object> d) { changingLayout = true; bool collapse = Data.Flag(d, "collapsed"); gameX = (int)Data.Number(d, "game_x"); gameY = (int)Data.Number(d, "game_y"); Size = new Size(Pixels((int)Data.Number(d, "width")), Pixels((int)Data.Number(d, "height"))); if (d.ContainsKey("x") && d["x"] != null) Location = new Point(Pixels((int)Data.Number(d, "x")), Pixels((int)Data.Number(d, "y"))); ClampBounds(); expandedBounds = Bounds; ShowPage(Data.Text(d, "page", "overview")); changingLayout = false; if (collapse) Collapse(); }
+        void ResetLayout() { bool collapsed = Collapsed; Expand(); changingLayout = true; Size = new Size(Pixels(480), Pixels(600)); Rectangle area = Screen.FromControl(this).WorkingArea; gameX = 16; gameY = 16; Location = attached ? new Point(gameBounds.Left+Pixels(gameX), gameBounds.Top+Pixels(gameY)) : new Point(area.Right-Width-Pixels(16), area.Top+Pixels(40)); ClampBounds(); expandedBounds = Bounds; changingLayout = false; if (collapsed) Collapse(); SaveLayout(true); }
+        public void FollowGame(Dictionary<string, object> d) { bool visible = Data.Flag(d, "visible"); object[] rect = Data.Array(d, "rect"); if (rect.Length == 4) { bool first = !attached; gameBounds = Rectangle.FromLTRB(Convert.ToInt32(rect[0]), Convert.ToInt32(rect[1]), Convert.ToInt32(rect[2]), Convert.ToInt32(rect[3])); attached = true; changingLayout = true; Location = new Point(gameBounds.Left+Pixels(gameX), gameBounds.Top+Pixels(gameY)); expandedBounds.Location = Location; ClampBounds(); changingLayout = false; TopMost = true; if (first && !LayoutRestored) Collapse(); }
+            if (rect.Length == 0) { attached = false; TopMost = top.Checked; } if (attached) { if (visible && !Visible) Show(); else if (!visible && Visible) Hide(); Host.Visibility(this); Host.Visibility(Host.Lookup); } }
         void Reference() { int index = references.SelectedIndex; if (index >= 0 && index < referenceTokens.Count) Host.Send("reference", "index", index, "token", referenceTokens[index]); }
         void AdjustFloorReference() {
             for (TreeNode node = floor.SelectedNode; node != null; node = node.Parent) {
@@ -505,10 +716,10 @@ namespace Denghuo.Native {
             floorSignature = signature;
         }
         public void Render(Dictionary<string, object> d) {
-            rendering = true; try { foreach (Control control in connectionControls) control.Enabled = !Data.Flag(d, "io_busy"); RenderFloor(Data.Object(d, "floor_guide")); UI.ReplaceText(summary, Data.Text(d, "text", "")); UI.ReplaceText(Status, Data.Text(d, "error", "") + "\n" + Data.Text(d, "capabilities", "")); slot.SelectedIndex = (int)Math.Max(0, Math.Min(6, Data.Number(d, "slot"))); top.Checked = Data.Flag(d, "topmost"); if (TopMost != top.Checked) TopMost = top.Checked;
+            rendering = true; try { foreach (Control control in connectionControls) control.Enabled = !Data.Flag(d, "io_busy"); RenderFloor(Data.Object(d, "floor_guide")); UI.Article(summary, Data.Text(d, "text", "")); life.Text = Data.Text(d, "life", "等待有效存档"); statistics.Text = Data.Text(d, "statistics", ""); source.Text = Data.Text(d, "source", "等待游戏保存"); UI.ReplaceText(Status, Data.Text(d, "error", "")); Status.Visible = Status.Text.Length > 0; workspace.RowStyles[4] = new RowStyle(SizeType.Absolute, Status.Visible ? Font.Height*2+14 : 0); slot.SelectedIndex = (int)Math.Max(0, Math.Min(6, Data.Number(d, "slot"))); top.Checked = Data.Flag(d, "topmost"); if (!attached && TopMost != top.Checked) TopMost = top.Checked;
                 var items = new List<string>(); foreach (object raw in Data.Array(d, "references")) items.Add(Convert.ToString(raw)); var old = new List<string>(); foreach (object raw in references.Items) old.Add(Convert.ToString(raw));
                 var tokens = new List<string>(); foreach (object raw in Data.Array(d, "reference_tokens")) tokens.Add(Convert.ToString(raw));
-                if (String.Join("\n", items.ToArray()) != String.Join("\n", old.ToArray()) || String.Join("|", tokens.ToArray()) != String.Join("|", referenceTokens.ToArray())) { int selected = references.SelectedIndex; string previous = selected >= 0 && selected < referenceTokens.Count ? referenceTokens[selected] : ""; references.BeginUpdate(); references.Items.Clear(); references.Items.AddRange(items.ToArray()); referenceTokens.Clear(); referenceTokens.AddRange(tokens); references.SelectedIndex = previous == "" ? -1 : referenceTokens.IndexOf(previous); references.EndUpdate(); }
+                if (String.Join("\n", items.ToArray()) != String.Join("\n", old.ToArray()) || String.Join("|", tokens.ToArray()) != String.Join("|", referenceTokens.ToArray())) { int selected = references.SelectedIndex; string previous = selected >= 0 && selected < referenceTokens.Count ? referenceTokens[selected] : ""; references.BeginUpdate(); references.Items.Clear(); references.Items.AddRange(items.ToArray()); referenceTokens.Clear(); referenceTokens.AddRange(tokens); references.SelectedIndex = previous == "" ? -1 : referenceTokens.IndexOf(previous); references.EndUpdate(); } references.ItemHeight = Font.Height+12; overview.RowStyles[4] = new RowStyle(SizeType.Absolute, Math.Min(120, Math.Max(38, references.Items.Count*(Font.Height+12)+8)));
             } finally { rendering = false; }
         }
     }
@@ -518,12 +729,14 @@ namespace Denghuo.Native {
         readonly Dictionary<string, TextBox> bindings = new Dictionary<string, TextBox>();
         readonly List<Control> persistenceControls = new List<Control>();
         readonly RichTextBox status = UI.Read("游玩设置保存与注册状态");
+        readonly TableLayoutPanel outer = UI.Table(1);
+        string shownStatus = "";
         bool rendering, changed, initialized;
         long draftRevision;
         public bool Dirty;
         public SettingsForm(Helper host) : base(host, "settings", "灯火 · 游玩显示与快捷键", 570, 700) {
-            var outer = UI.Table(1); outer.Dock = DockStyle.Fill; Editable = outer; outer.RowCount = 3;
-            outer.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); outer.RowStyles.Add(new RowStyle(SizeType.Absolute, 155)); outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            outer.Dock = DockStyle.Fill; Editable = outer; outer.RowCount = 3;
+            outer.RowStyles.Add(new RowStyle(SizeType.Percent, 100)); outer.RowStyles.Add(new RowStyle(SizeType.Absolute, 0)); outer.RowStyles.Add(new RowStyle(SizeType.AutoSize)); status.Visible = false;
             var scroll = new Panel { AutoScroll = true, Dock = DockStyle.Fill }; var table = UI.Table(2); table.Dock = DockStyle.Top; scroll.Controls.Add(table); int row = 0;
             foreach (string[] pair in new[] { new[] { "enabled", "启用游玩显示（只跟随游戏前台）" }, new[] { "alerts", "新存档新风险短暂提示" } }) { var check = UI.Name(new CheckBox { Text = pair[1], AutoSize = true, Dock = DockStyle.Fill }, pair[1]); values[pair[0]] = check; table.Controls.Add(check, 0, row); table.SetColumnSpan(check, 2); table.RowStyles.Add(new RowStyle(SizeType.AutoSize)); ++row; check.CheckedChanged += delegate { Edited(); }; }
             var anchor = UI.Combo("显示角落", new[] { "左上", "右上", "左下", "右下" }); values["anchor"] = anchor; table.Controls.Add(UI.Label("显示角落"), 0, row); table.Controls.Add(anchor, 1, row++); anchor.SelectedIndexChanged += delegate { Edited(); };
@@ -535,12 +748,13 @@ namespace Denghuo.Native {
             var reload = UI.Button("重新读取保存值", delegate { FlushEdit(); Host.Send("settings_reload", "surface", "settings"); });
             var unlock = UI.Button("拖动位置", delegate { FlushEdit(); Host.Send("unlock", "surface", "settings"); });
             persistenceControls.AddRange(new Control[] { save, reload, unlock });
-            outer.Controls.Add(scroll, 0, 0); outer.Controls.Add(status, 0, 1); outer.Controls.Add(UI.Buttons(save, reload, unlock, UI.Button("数值速查", delegate { Host.Send("show_lookup"); }), UI.Button("完整设置面板", delegate { Host.Send("panel", "page", "play-settings"); })), 0, 2); Controls.Add(outer);
+            var registration = UI.Button("保存与快捷键状态", delegate { status.Visible = !status.Visible; outer.RowStyles[1] = new RowStyle(SizeType.Absolute, status.Visible ? Font.Height*6+16 : 0); });
+            outer.Controls.Add(scroll, 0, 0); outer.Controls.Add(status, 0, 1); outer.Controls.Add(UI.Buttons(save, reload, registration, unlock, UI.Button("完整设置面板", delegate { Host.Send("panel", "page", "play-settings"); })), 0, 2); Controls.Add(outer);
         }
         void Edited() { if (rendering || !initialized || Host.Frozen) return; ++draftRevision; changed = Dirty = true; FlushEdit(); }
         public Dictionary<string, object> Raw() { var v = new Dictionary<string, object>(); var b = new Dictionary<string, object>(); foreach (var pair in values) { var check = pair.Value as CheckBox; v[pair.Key] = check == null ? (object)pair.Value.Text : check.Checked; } foreach (var pair in bindings) b[pair.Key] = pair.Value.Text; return Data.Map("values", v, "bindings", b, "draft_revision", draftRevision); }
         public void FlushEdit() { if (!initialized || !changed) return; changed = false; var raw = Raw(); Host.Send("settings_edit", "surface", "settings", "values", raw["values"], "bindings", raw["bindings"], "draft_revision", draftRevision); }
-        public void Render(Dictionary<string, object> d) { foreach (Control control in persistenceControls) control.Enabled = !Data.Flag(d, "io_busy"); if (Data.Number(d, "draft_revision") < draftRevision) return; rendering = true; try { draftRevision = Data.Number(d, "draft_revision"); var v = Data.Object(d, "values"); var b = Data.Object(d, "bindings"); foreach (var pair in values) { var check = pair.Value as CheckBox; if (check != null) check.Checked = Data.Flag(v, pair.Key); else if (pair.Value.Text != Data.Text(v, pair.Key, "")) pair.Value.Text = Data.Text(v, pair.Key, ""); } foreach (var pair in bindings) if (pair.Value.Text != Data.Text(b, pair.Key, "")) pair.Value.Text = Data.Text(b, pair.Key, ""); UI.ReplaceText(status, Data.Text(d, "status", "") + "\n\n" + Data.Text(d, "registration", "")); Dirty = Data.Flag(d, "dirty"); initialized = true; } finally { rendering = false; } }
+        public void Render(Dictionary<string, object> d) { foreach (Control control in persistenceControls) control.Enabled = !Data.Flag(d, "io_busy"); if (Data.Number(d, "draft_revision") < draftRevision) return; rendering = true; try { draftRevision = Data.Number(d, "draft_revision"); var v = Data.Object(d, "values"); var b = Data.Object(d, "bindings"); foreach (var pair in values) { var check = pair.Value as CheckBox; if (check != null) check.Checked = Data.Flag(v, pair.Key); else if (pair.Value.Text != Data.Text(v, pair.Key, "")) pair.Value.Text = Data.Text(v, pair.Key, ""); } foreach (var pair in bindings) if (pair.Value.Text != Data.Text(b, pair.Key, "")) pair.Value.Text = Data.Text(b, pair.Key, ""); string notice = Data.Text(d, "status", ""); if (notice.Length > 0 && notice != shownStatus) { status.Visible = true; outer.RowStyles[1] = new RowStyle(SizeType.Absolute, Font.Height*4+16); } shownStatus = notice; UI.ReplaceText(status, notice + "\n\n" + Data.Text(d, "registration", "")); Dirty = Data.Flag(d, "dirty"); initialized = true; } finally { rendering = false; } }
     }
 
     sealed class RecoveryForm : Form {

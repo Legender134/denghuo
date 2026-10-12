@@ -254,6 +254,25 @@ class NativeExitTests(ControllerFixture):
         self.ui.close()
         self.host.close.assert_called_once()
 
+    def test_workspace_exit_copy_reopens_all_half_inputs_without_applying_game_changes(self):
+        from companion.game_workspace import GameWorkspace
+        self.ui.workspace = GameWorkspace(self.ui)
+        self.ui.workspace.edit('equipment', {**self.ui.workspace.raw['equipment'], 'level_a': '1e'})
+        self.ui.workspace.edit('alchemy', {**self.ui.workspace.raw['alchemy'], 'energy': '-'})
+        self.ui.report_drafts(); self.session.request_exit('web-fixture'); self.ui.process_exit()
+        self.decide('saved')
+        row = next(row for row in self.session.list_exit_drafts() if row['draft_kind'] == 'game-workspace')
+        saved = self.session.load_exit_draft(row['id'])
+        path = self.session.exit_drafts.directory/(row['id']+'.json')
+        original = path.read_bytes()
+        self.ui.workspace = GameWorkspace(self.ui)
+        self.ui.restore_draft(saved)
+        self.assertEqual(self.ui.workspace.raw['equipment']['level_a'], '1e')
+        self.assertEqual(self.ui.workspace.raw['alchemy']['energy'], '-')
+        self.assertEqual(self.ui.workspace.dirty, {'equipment', 'alchemy'})
+        self.assertEqual(path.read_bytes(), original)
+        with self.assertRaisesRegex(ValueError, '未保存输入'): self.ui.restore_draft(saved)
+
     def test_stale_clean_ack_rechecks_actual_native_draft(self):
         self.open('items.potions.potionofhealing')
         self.ui.report_drafts()

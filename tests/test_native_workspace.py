@@ -41,7 +41,8 @@ class NativeWorkspaceTests(unittest.TestCase):
         lookup.emit = Mock()
         lookup.origin = Mock()
         self.assertTrue(lookup.open_plan('b'*32, False))
-        lookup.owner.manager.session.panel.request.assert_called_once_with('workspace', plan_id='b'*32)
+        lookup.owner.manager.native_ui.workspace.open_plan.assert_called_once_with({'plan': rows[1]})
+        lookup.owner.manager.session.panel.request.assert_not_called()
 
     def test_plan_filter_keeps_opaque_identity_and_stable_name_order(self):
         rows=[{'id':'a'*32,'name':'Beta','kind':'numeric','updated':10}, {'id':'b'*32,'name':'Alpha','kind':'numeric','updated':5}, {'id':'c'*32,'name':'Manual','kind':'manual','updated':11}]

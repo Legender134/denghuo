@@ -195,6 +195,13 @@ class PlayDisplay:
         self.manager.native_ui.change_preferences({'enabled': not self.state['enabled']})
 
     def toggle_peek(self):
+        ui = getattr(self.manager, 'native_ui', None)
+        if getattr(ui, 'workspace', None) is not None:
+            if ui.host.visibility.get('manager') and not getattr(ui, 'companion_collapsed', False):
+                ui.dispatch({'action': 'collapse'})
+            else:
+                ui.show()
+            return
         if (self.lookup and self.lookup.visible()
                 and self.lookup.foreground()):
             self.lookup.hide()
@@ -271,11 +278,20 @@ class PlayDisplay:
             pass
         try:
             self.game = self.native.game()
+            native_ui = getattr(self.manager, 'native_ui', None)
+            helper = native_ui.host.process if native_ui else None
+            foreground = self.native.foreground()
+            helper_active = bool(helper and self.native.process(foreground) == helper.pid)
+            remembered = self.native.remembered_game()
+            target = self.game or (remembered if helper_active else None)
+            if native_ui:
+                # Turning off passive play display leaves the explicitly opened workspace usable.
+                native_ui.track_game((target or remembered) if self.state['enabled'] else None, bool(target and self.state['enabled']))
             if self.game and self.state['enabled']:
-                native_ui = getattr(self.manager, 'native_ui', None)
-                if native_ui and native_ui.host.visibility.get('manager'):
-                    self.manager.hide_to_tray()
-                self.draw()
+                if native_ui and native_ui.host.visibility.get('manager') and not getattr(native_ui, 'companion_collapsed', True):
+                    self.hide()
+                else:
+                    self.draw()
             else:
                 self.peek_open = False
                 self.hide()
