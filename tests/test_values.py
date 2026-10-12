@@ -18,6 +18,49 @@ class PlayerValuesTests(unittest.TestCase):
     def metrics(self, identity, **parameters):
         return {v['label']:v['value'] for b in self.detail(identity,**parameters)['blocks'] for v in b.get('values',[])}
 
+    def test_rockfall_room_scope_and_temporary_radius_are_separate(self):
+        detail=self.detail('levels.traps.rockfalltrap',depth=12)
+        rows={v['label']:v for b in detail['blocks'] for v in b.get('values',[])}
+        self.assertEqual(rows['房间内作用范围']['value'],'整个所属房间的非实心格')
+        self.assertIn('实际放置在地图上',rows['房间内作用范围']['condition'])
+        self.assertIn('不受2格距离限制',rows['房间内作用范围']['condition'])
+        self.assertEqual(rows['无所属房间或临时效果作用距离']['value'],'2')
+        self.assertIn('沿非实心格计算路径距离',rows['无所属房间或临时效果作用距离']['condition'])
+        self.assertNotIn('作用距离',rows)
+        self.assertEqual(rows['伤害范围']['value'],'17–34')
+        self.assertIn('护甲减伤',rows['伤害范围']['condition'])
+        self.assertIn('承伤后',rows['麻痹']['condition'])
+        geyser=self.metrics('levels.traps.geysertrap',depth=12)
+        self.assertEqual(geyser['造水作用距离'],'2')
+        self.assertNotIn('房间内作用范围',geyser)
+
+    def test_geyser_center_and_neighbor_damage_do_not_use_water_radius(self):
+        # GeyserTrap.java:91-96 uses int dmg *= 0.67f only for the eight
+        # neighboring cells; the center branch at 134-139 uses the full roll.
+        detail=self.detail('levels.traps.geysertrap',depth=12)
+        rows={v['label']:v for b in detail['blocks'] for v in b.get('values',[])}
+        self.assertEqual(rows['中心火属性目标伤害范围']['value'],'17–34')
+        self.assertEqual(rows['相邻火属性目标伤害范围']['value'],'11–22')
+        self.assertIn('相邻8格',rows['相邻火属性目标伤害范围']['condition'])
+        self.assertIn('向零截断',rows['相邻火属性目标伤害范围']['condition'])
+        self.assertIn('不免疫',rows['中心火属性目标伤害范围']['condition'])
+        self.assertIn('不是伤害作用距离',rows['造水作用距离']['condition'])
+        self.assertNotIn('作用距离',rows)
+
+    def test_barrier_increment_is_not_actual_average_shield_loss(self):
+        for shield,progress in ((0,'0'),(1,'0.05'),(5,'0.25'),(15,'0.75'),(20,'1'),(40,'1')):
+            with self.subTest(shield=shield):
+                detail=self.detail('actors.buffs.barrier',power=shield)
+                rows={v['label']:v for b in detail['blocks'] for v in b.get('values',[])}
+                self.assertNotIn('每回合平均护盾衰减',rows)
+                self.assertEqual(rows['每回合衰减进度累加']['value'],progress)
+                self.assertEqual(rows['每回合衰减进度累加']['unit'],'进度')
+                self.assertIn('不是实际平均扣减',rows['每回合衰减进度累加']['condition'])
+                threshold=rows['进度达到1时扣除护盾']
+                self.assertEqual(threshold['value'],'1')
+                self.assertIn('清零，超出部分不保留',threshold['condition'])
+                self.assertIn('初始累积进度未知',threshold['condition'])
+
     def test_camouflage_negative_level_does_not_grant_invisibility(self):
         for level,turns in ((-100,'0'),(-2,'0'),(-1,'0'),(0,'3'),(1,'4'),(2,'4')):
             detail=self.values.detail('items.armor.glyphs.camouflage',{'level':level})

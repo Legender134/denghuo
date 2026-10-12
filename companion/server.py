@@ -94,6 +94,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_data(self.server.session.catalog.search(args.get("q", [""])[0][:200], args.get("category", ["全部"])[0], offset=offset))
             except ValueError:
                 self.send_data({"error": "页码不正确"}, 400)
+        elif url.path in ('/api/reference', '/api/reference-images'):
+            from .reference import entry, images
+            try:
+                result = images() if url.path.endswith('-images') else entry(
+                    self.server.session.catalog, parse_qs(url.query).get('id', [''])[0][:300])
+                self.send_data(result)
+            except KeyError:
+                self.send_data({'error': '没有找到这项图鉴资料'}, 404)
+            except (OSError, ValueError):
+                self.send_data({'error': '图鉴资料暂时不可用，请重试'}, 503)
+        elif url.path.startswith('/reference-images/'):
+            from .reference import image_path
+            try:
+                self.send_data(image_path(url.path).read_bytes(), mime='image/png')
+            except (OSError, ValueError, KeyError):
+                self.send_data({'error': '图像不存在'}, 404)
         elif url.path == '/api/forecast':
             from .forecast import information
             try:
@@ -192,7 +208,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_data(result)
             except (OSError, ValueError) as exc:
                 self.send_data({'error': str(exc)}, 400)
-        elif url.path in ("/", "/index.html", "/app.js", "/backups.js", "/rules.js", "/compare.js", "/workspace.js", "/help.js", "/play.js", "/backup-workflows.js", "/backup-libraries.js", "/backup-destination.js", "/global-history.js", "/migration.js", "/alchemy.js", "/character.js", "/scouting.js", "/floor-guide.js", "/forecast.js", "/forecast-worker.js", "/style.css", "/icon.svg"):
+        elif url.path in ("/", "/index.html", "/app.js", "/references.js", "/backups.js", "/rules.js", "/compare.js", "/workspace.js", "/help.js", "/play.js", "/backup-workflows.js", "/backup-libraries.js", "/backup-destination.js", "/global-history.js", "/migration.js", "/alchemy.js", "/character.js", "/scouting.js", "/floor-guide.js", "/forecast.js", "/forecast-worker.js", "/style.css", "/icon.svg"):
             path = WEB / ("index.html" if url.path == "/" else url.path[1:])
             try:
                 mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
@@ -399,6 +415,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/scouting':
                 from .scouting import inspect_saved
                 self.send_data(inspect_saved(self.server.session, payload))
+                return
+            if path == '/api/inventory/reveal':
+                from .inventory_inspection import inspect_item
+                self.send_data(inspect_item(self.server.session, payload))
                 return
             if path == '/api/settings/reload':
                 if (not isinstance(payload, dict) or set(payload) != {'expected_revision'}

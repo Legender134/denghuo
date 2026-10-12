@@ -47,8 +47,8 @@ def normal_stats(row, identity, depth, *, stronger_bosses=False):
     stats = dict(row['stats'])
     family = row['dynamic']
     name = identity.removeprefix('actors.mobs.')
-    if stronger_bosses and name in ('goo','tengu','dm300','dwarfking'):
-        health = {'goo':120,'tengu':250,'dm300':400,'dwarfking':450}[name]
+    if stronger_bosses and name in ('goo','tengu','dm300','dwarfking','pylon'):
+        health = {'goo':120,'tengu':250,'dm300':400,'dwarfking':450,'pylon':80}[name]
         stats.update(HP=health,HT=health)
     if family == 'mimic':
         level = _mimic_level(name,depth)
@@ -401,6 +401,17 @@ def loot_rows(values, identity, row, p):
         rows.append({'name':'生成时装入及尚未丢失的全部战利品','quantity':'随容器内容变化','probability':1,'condition':condition})
     if name == 'tormentedspirit':
         rows += [{**r,'condition':'净化后的奖励；普通击杀不会给此奖励；装备无诅咒且有附魔／刻印'} for r in _category('WEAPON',depth,.5)+_category('ARMOR',depth,.5)]
+    # Challenges.isItemBlocked only removes Dewdrop at Level.drop. It does
+    # not cancel the loot draw or block seeds, stones, food, or healing items.
+    for item in rows:
+        if item.get('id') == 'items.dewdrop':
+            generated = item['probability']
+            blocked = p.get('no_herbalism',0) == 1
+            item['generation_probability'] = generated
+            if blocked: item['probability'] = 0
+            item['condition'] += (f'；生成分支概率 {display(100*generated)}%，每次生成2份露珠；'
+                                  + ('荒芜之地阻止两份露珠落地，可取得概率0%' if blocked else
+                                     '未开启荒芜之地，露珠可正常落地'))
     return rows
 
 
@@ -429,6 +440,7 @@ def add_monster_values(values, identity, p, result, requested):
     boss_condition = identity in ('actors.mobs.goo','actors.mobs.tengu','actors.mobs.dm300','actors.mobs.dwarfking','actors.mobs.yogdzewa','actors.mobs.pylon')
     stronger = boss_condition and p['stronger_bosses'] == 1
     if boss_condition: requested.add('stronger_bosses')
+    if name == 'eye': requested.add('no_herbalism')
     if _exotic_loot_target(identity):requested.add('exotic_crystals')
     if row['base_loot_chance']>0: requested.add('loot_stolen')
     if _wealth_applies(identity,row): requested.update(('wealth_bonus','oblivion_shard','unidentified_equipment','bounty_hunter','preparation_level'))
@@ -459,6 +471,8 @@ def add_monster_values(values, identity, p, result, requested):
     note = '普通敌人、正常状态，无挑战、精英、飞升、召唤盟友或其他状态修正。随机范围端点不表示等概率。'
     if stronger:
         note = '绝命头目挑战：采用已核对的首领初始生命；其余基础战斗数值沿用普通参考。特殊机制与防御条件按各块说明，未覆盖全部挑战变化；无精英、飞升或其他状态修正。随机范围端点不表示等概率。'
+    if name=='eye' and p.get('no_herbalism',0)==1:
+        note = '普通基础战斗数值；掉落部分已应用荒芜之地的露珠落地过滤。其他挑战、精英、飞升、召唤盟友或临时状态修正另计。随机范围端点不表示等概率。'
     if row['dynamic']: note += f' 此表按生成时层数 {depth} 计算；已生成敌人的层数不会随玩家移动而改变。'
     if name in ('fungalcore','fungalsentry','fungalspinner'): note += ' 4.0.2的菌类矿洞任务尚未实装，正常新局不会选择它；以下仅作未实装内容的资料参考，不表示会自然生成。'
     if row['dynamic'] == 'statue': note += ' 装甲石像的实际闪避还会受所穿护甲影响；具体武器、护甲决定的数值需结合本局装备。'
@@ -473,7 +487,7 @@ def add_monster_values(values, identity, p, result, requested):
                '本表不计算财富额外战利品或幸运附魔；神器池使用初始可用池参考，实际已生成神器会改变分布。')
     result.insert(1,{'title':'掉落物、数量与概率','columns':['掉落物','每次抽取数量' if name=='gnollexile' else '数量','每次抽取概率' if name=='gnollexile' else '每次满足条件的概率','条件'],
                     'rows':[[r['name'],str(r['quantity']),display(100*r['probability'])+'%',r.get('condition','')] for r in loot],
-                     'note_summary':('按条件列查看概率，不保证本次掉落；已计入适用的角色等级、累计次数和所填掉率条件。固定奖励另行计算；未计财富额外战利品或幸运附魔。神器池为初始参考，已生成神器会改变分布。' if loot else ''),
+                     'note_summary':(('荒芜之地仅阻止露珠落地；露珠行显示可取得概率，条件列保留生成分支概率。种子和符石不受此过滤影响。' if name=='eye' else '')+'按条件列查看概率，不保证本次掉落；已计入适用的角色等级、累计次数和所填掉率条件。固定奖励另行计算；未计财富额外战利品或幸运附魔。神器池为初始参考，已生成神器会改变分布。' if loot else ''),
                      'note':loot_note if loot else '此敌人没有常规自身物品掉落。任务奖励、已存容器、财富戒指和幸运附魔等额外机制按各自条件结算。'})
     abilities = []
     if name == 'gnollexile':
@@ -889,7 +903,7 @@ def add_monster_values(values, identity, p, result, requested):
         requested.add('damage')
         damage=p['damage']
         reduced=damage if damage<15 else 14+math.floor(math.sqrt(8*(damage-14)+1)-1)//2
-        abilities = [_metric('激活后邻格电击伤害','10–20','HP','每回合攻击两个相对的相邻格，方向逐回合旋转；未激活时不攻击且无敌'),
+        abilities = [_metric('激活后邻格电击伤害','10–20','HP',('绝命头目每回合攻击3个相邻格：八方向环以当前方向为0，另取偏移3、5格' if stronger else '普通难度每回合攻击两个相对的相邻格：八方向环偏移0、4')+'；方向逐回合旋转；未激活时不攻击且无敌'),
                      _metric('所填伤害压缩后承受',reduced,'HP','激活且伤害类型可生效时；15点及以上输入触发压缩')]
     elif name == 'npcs.vaultsentry':
         abilities = [_metric('扫描首次电击','6–12','HP','可见扫描区域中的非隐形友方目标'),

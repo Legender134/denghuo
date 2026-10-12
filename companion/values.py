@@ -17,6 +17,7 @@ from .monster_reference import add_monster_values, monster_record
 
 INPUTS = {
     'stronger_bosses': ('绝命头目挑战（0关闭，1开启；仅已列首领分支）', 0, 0, 1),
+    'no_herbalism': ('荒芜之地挑战（0关闭，1开启；阻止露珠落地）', 0, 0, 1),
     'exotic_crystals': ('异晶生效等级（−1为无效果）', -1, -1, 3),
     'wealth_bonus': ('财富有效加成（不是戒指等级，无效果填0）', 0, -100, 100),
     'oblivion_shard': ('遗忘碎片生效等级（−1为无效果）', -1, -1, 3),
@@ -471,6 +472,12 @@ class PlayerValues:
         source_metadata = provenance(self, identity, owner)
         if enemy_reference:
             commit = self.catalog.data['commit']
+            if 'no_herbalism' in requested:
+                for tail,label,line in (('Challenges.java','荒芜之地仅阻断露珠物品',71),
+                                        ('levels/Level.java','挑战禁物在落地时过滤',1004),
+                                        ('actors/mobs/Eye.java','邪眼露珠、种子和符石的生成分支',221)):
+                    source_metadata['links'].append({'label':label,'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{commit}/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/{tail}#L{line}','kind':'official-game-source'})
+                source_metadata['limits'].append('荒芜之地默认关闭；可手填或由已确认的存档挑战条件带入。露珠生成分支与落地可取得概率分别说明；种子和符石不被此物品过滤阻断。')
             source_metadata['links'].append({'label':'掉落物品池与楼层权重',
                 'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{commit}/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/items/Generator.java#L746',
                 'kind':'official-game-source'})
@@ -760,9 +767,16 @@ class PlayerValues:
             if name in ('confusiontrap','toxictrap'):rows.append(metric('气体总量',300+20*d,'单位'))
             if name=='corrosiontrap':rows.extend([metric('酸雾总量',80+5*d,'单位'),metric('起始酸蚀强度',1+d//4,'点')])
             if name=='disintegrationtrap':rows.append(metric('魔法伤害',f'{30+d}–{50+d}','HP','未计抗性'))
-            if name in ('rockfalltrap','geysertrap'):
-                rows.extend([metric('伤害范围',f'{5+d}–{10+2*d}','HP','落石可由护甲减伤；激流仅伤害火属性目标'),metric('作用距离',2,'格')])
-                if name=='rockfalltrap':rows.append(metric('麻痹',self.duration('Paralysis'),'回合','未被落石杀死时'))
+            if name=='rockfalltrap':
+                rows.extend([metric('伤害范围',f'{5+d}–{10+2*d}','HP','可由护甲减伤'),
+                             metric('房间内作用范围','整个所属房间的非实心格','','陷阱实际放置在地图上，且普通楼层能找到所属房间时；不受2格距离限制'),
+                             metric('无所属房间或临时效果作用距离',2,'格','沿非实心格计算路径距离；包括未实际放置在地图上的临时生成效果'),
+                             metric('麻痹',self.duration('Paralysis'),'回合','承伤后目标仍存活时；特殊生物按自身活动状态判定')])
+            if name=='geysertrap':
+                low,high=(int(float32(float32(n)*float32(.67))) for n in (5+d,10+2*d))
+                rows.extend([metric('中心火属性目标伤害范围',f'{5+d}–{10+2*d}','HP','仅中心格的火属性目标，且不免疫激流陷阱；抗性等另计'),
+                             metric('相邻火属性目标伤害范围',f'{low}–{high}','HP','仅相邻8格中的火属性目标，且不免疫激流陷阱；随机整数伤害先乘0.67，再向零截断；抗性等另计'),
+                             metric('造水作用距离',2,'格','沿非实心格计算路径距离；距离小于2的格尝试造水，距离2的边缘格逐格有2/3概率尝试造水；不是伤害作用距离')])
             if name=='gnollrockfalltrap':rows.extend([metric('伤害范围','6–12','HP','可由护甲减伤'),metric('普通目标麻痹',3,'回合'),metric('豺狼守卫麻痹',10,'回合')])
             if name=='guardiantrap':rows.append(metric('最多召唤守卫',max(0,(d-5)//5),'个'))
             if name in ('worndarttrap','poisondarttrap'):
@@ -807,7 +821,8 @@ class PlayerValues:
         if identity in ('actors.buffs.burning','actors.blobs.fire','items.potions.potionofliquidflame'):
             requested.add('depth');rows.extend([metric('每次燃烧伤害',f'1–{3+d//4}','HP','无抗性；持续接触火焰会续燃')])
         if identity=='actors.buffs.barrier':
-            requested.add('power');n=p['power'];rows=[metric('每回合平均护盾衰减',min(1,n/20),'点','无不动如山等修正')]
+            requested.add('power');n=p['power'];rows=[metric('每回合衰减进度累加',min(1,float32(float32(n)/float32(20))),'进度','按当前护盾值计算，无不动如山等修正；不是实际平均扣减点数'),
+                metric('进度达到1时扣除护盾',1,'点','随后进度清零，超出部分不保留；护盾下降后重新计算累加量。初始累积进度未知，不能据此确定剩余回合')]
         if identity.startswith('items.armor.') and identity.endswith(('warriorarmor','magearmor','roguearmor','huntressarmor','duelistarmor','clericarmor')):
             from .values_decisions import armor_ranges
             requested.update(('tier','level'));t=p['tier'];low,high,challenge=armor_ranges(t,l)
@@ -820,7 +835,7 @@ class PlayerValues:
         if identity=='items.armor.glyphs.viscosity':
             requested.update(('level','damage'));n=p['damage'];effective=max(0,l);deferred=math.ceil(n*(effective+1)/(effective+6));rows=[metric('转为延缓伤害',deferred,'HP'),metric('立即承受',n-deferred,'HP')]
         if identity=='items.armor.glyphs.stone':
-            from .game_math import stone_factor,float32
+            from .game_math import stone_factor
             requested.update(('accuracy','evasion','damage','glyph_multiplier'))
             factor=stone_factor(p['accuracy'],p['evasion'],p['glyph_multiplier'])
             rows=([metric('闪避转换的减伤',100*(1-factor),'%','刻印强度倍率已单独计入；命中和闪避需已包含其他生效增益')] if factor is not None else [])

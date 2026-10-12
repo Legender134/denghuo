@@ -2,8 +2,9 @@
 // Production DOM handlers plus the real local WASM worker under CLI Node/VM.
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),crypto=require('node:crypto');
 const root=path.join(__dirname,'..'),source=fs.readFileSync(path.join(root,'web/forecast.js'),'utf8'),workerSource=fs.readFileSync(path.join(root,'web/forecast-worker.js'),'utf8');
-const metadata=JSON.parse(fs.readFileSync(path.join(root,'data/forecast_items.json'),'utf8'));
-const info={...metadata,maximum_depth:24,profile:'canonical-warrior-no-challenges-no-trinket',note:'独立新局参考',effects:{Weapon:{blazing:'烈焰'}}};
+const python=process.env.FRONTEND_TEST_PYTHON||process.env.ALCHEMY_TEST_PYTHON||(process.platform==='win32'?'python':'python3');
+const metadata=require('node:child_process').spawnSync(python,['-c','import json; from companion.engine import Catalog; from companion.forecast import information; print(json.dumps(information(Catalog())))'],{cwd:root,encoding:'utf8',env:{...process.env,PYTHONDONTWRITEBYTECODE:'1'}});
+assert.equal(metadata.status,0,metadata.stderr);const info=JSON.parse(metadata.stdout);
 async function realWorker(seed,depth){
   const messages=[],requests=[],self={postMessage:message=>messages.push(message)};
   const context=vm.createContext({self,WebAssembly,TextDecoder,BigInt,Number,JSON,Error,
@@ -20,10 +21,13 @@ function harness(){
   const context=vm.createContext({console,JSON,Number,String,Object,Map,Set,BigInt,Date,WebAssembly,Worker,$:get,document:{createElement:node},
     state:{started:1,settings_revision:'r1',active_slot:1,run_id:'run1',revision:1,error:'',data:{},settings:{mode:'save'}},
     fmtTime:String,inlineError:(target,message)=>{target.textContent=message;target.hidden=!message;},
-    post:(url,payload)=>new Promise((resolve,reject)=>writes.push({url,payload,resolve,reject})),api:async url=>{assert.equal(url,'/api/forecast');return info;},
+    post:(url,payload)=>new Promise((resolve,reject)=>writes.push({url,payload,resolve,reject})),
+    fetch:async url=>{assert.equal(url,'/api/forecast');return {ok:true,json:async()=>info};},
     setTimeout:fn=>{timers.push(fn);return timers.length;},clearTimeout:()=>{},
     showDetail:(...args)=>details.push(args),setDetailEntry:()=>{},loadNumericalDetail:(...args)=>calculations.push(args)});
   const run=code=>vm.runInContext(code,context);
+  const workspace=fs.readFileSync(path.join(root,'web/workspace.js'),'utf8');
+  run(workspace.slice(workspace.indexOf('async function getJSON('),workspace.indexOf('async function loadWorkspace(')));
   run('function scoutingContext(){return JSON.stringify([state?.started,state?.settings_revision,state?.active_slot,state?.run_id,state?.revision,state?.error,state?.settings?.mode]);}');run(source);
   return {context,run,get,writes,workers,timers,details,calculations};
 }
@@ -49,6 +53,15 @@ function allNodes(node){return [node,...node.children.flatMap(allNodes)];}
   const choiceText=allNodes(h.get('#forecast-floors')).map(node=>node.textContent).join('\n');assert.match(choiceText,/互斥组/);assert.match(choiceText,/不能同时取得/);assert.match(choiceText,/隐藏/);
   buttons[0].listeners.click();const calculation=h.calculations[0];assert.equal(calculation[2],'assumed');assert.equal(calculation[3].capturedContext,true);assert.equal(calculation[3].ignoreDrafts,true);assert.equal(calculation[3].sourceStamp,null);assert.equal(calculation[1].strength,undefined);assert.match(calculation[3].fieldOrigins.level,/独立新局参考/);assert.match(h.details[0][3],/未持有/);
   const queriedName=info.items.find(item=>item.id===result.items[0].id).name;h.get('#forecast-query').value=queriedName;h.get('#forecast-query').listeners.input();const filtered=allNodes(h.get('#forecast-floors')).filter(node=>node.tagName==='BUTTON');assert(filtered.length>0&&filtered.every(node=>node.textContent.includes(queriedName)));
+  // Use the shipped worker and the production API's Chinese effect names.
+  for(const [seed,depth,from,effects] of [['1234567',4,1,[['Corrosion','腐蚀',1],['Anti-Entropy','反熵',1]]],['1234',24,5,[['Chilling','寒霜',3]]]]){
+    const generated=(await realWorker(seed,depth)).message.result,localized=harness();input(localized,generated.seed_code);localized.get('#forecast-depth').value=String(depth);await localized.run('runForecast()');localized.workers.at(-1).onmessage({data:{ok:true,result:generated}});localized.get('#forecast-from').value=String(from);
+    for(const [english,chinese,count] of effects)for(const query of [chinese,english,english.toLowerCase()]){
+      localized.get('#forecast-query').value=query;localized.get('#forecast-query').listeners.input();const matches=allNodes(localized.get('#forecast-floors')).filter(node=>node.tagName==='BUTTON');
+      assert.equal(matches.length,count,`${generated.seed_code}: ${query}`);assert(matches.every(node=>node.textContent.includes(chinese)),`localized labels for ${english}`);
+    }
+  }
+  assert.match(h.run("forecastEffect({kind:'Weapon',effect:'Explosive'})"),/易爆/);assert.match(h.run("forecastEffect({kind:'Armor',effect:'Repulsion'})"),/反斥/);
   h.get('#forecast-query').value='';h.get('#forecast-kind').value='Artifact';h.get('#forecast-kind').listeners.change();const artifacts=allNodes(h.get('#forecast-floors')).filter(node=>node.tagName==='BUTTON');assert(artifacts.length);artifacts[0].listeners.click();assert.equal(h.calculations.at(-1)[2],'unknown');assert.equal(h.calculations.at(-1)[1].level,undefined);
   assert.match(h.run("forecastAccess({type:'scenarios',group:8,mask:'5'})"),/可走路径 1、3/);
   await start(h);const stale=h.workers.at(-1);h.get('#forecast-confirm').checked=false;h.get('#forecast-confirm').listeners.change();assert(stale.terminated);stale.onmessage({data:{ok:true,result}});assert(h.get('#forecast-result').hidden);

@@ -28,6 +28,10 @@ class ReleaseTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(("controlled release file " + name).encode("utf-8"))
             (root / "tools/build_release.py").write_bytes(script.read_bytes())
+            # The build allowlist now reads the reviewed sprite manifest. Keep
+            # its real URL list while the rest of this encoding fixture stays synthetic.
+            (root / "data/reference_images.json").write_bytes(
+                (script.parents[1] / "data/reference_images.json").read_bytes())
             (root / "companion/__init__.py").write_text('__version__ = "0.3.0"\n', encoding="utf-8")
             env = dict(os.environ, PYTHONIOENCODING="cp1252:strict", PYTHONUTF8="0")
             env.pop("PYTHONPATH", None)

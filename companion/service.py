@@ -1386,10 +1386,12 @@ class Session:
         self.history = self.history[:40]
 
     def snapshot(self):
+        from .inventory_inspection import snapshot_token
         exit_state = self.exit_status()
         with self.lock:
             age = max(0, time.time() - self.modified) if self.modified else None
             return copy.deepcopy({"data": self.data, "slots": self.slots, "settings": self.settings,
+                                  "inventory_snapshot": snapshot_token(self),
                                   "settings_revision": self.settings_revision,
                                   "error": self.error, "warning": self.warning, "modified": self.modified,
                                   "waiting_for_save": self.waiting_for_save,

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 from pathlib import Path
 import stat
 import sys
@@ -89,6 +90,7 @@ FILES = (
     "tools/build_forecast.py", "tests/test_forecast.py", "tools/verify_forecast.js",
     "third_party/seed_seeker/COPYING", "third_party/seed_seeker/NOTICE", "third_party/seed_seeker/CARGO-NOTICES.txt", "third_party/seed_seeker/source.json", "third_party/seed_seeker/engine-source.zip",
     "companion/scouting.py",
+    "companion/inventory_inspection.py", "tests/test_inventory_inspection.py",
     "web/scouting.js",
     "tests/test_scouting.py",
     "tools/verify_scouting.js",
@@ -125,6 +127,16 @@ FILES = (
     "tools/verify_snapshot_refresh.js",
     "tools/verify_public_skills.js",
 )
+# Artwork is selected by the reviewed, version-bound manifest, never by globbing
+# a development directory that may contain obsolete experiments.
+_artwork = json.loads((ROOT / 'data/reference_images.json').read_text(encoding='utf-8'))
+_artwork_urls = sorted({row['url'] for row in _artwork['entries'].values()})
+if not all(re.fullmatch(r'/reference-images/[A-Za-z0-9_.-]+\.png', url) for url in _artwork_urls):
+    raise ValueError('Invalid reference artwork manifest path')
+FILES += ('companion/reference.py', 'web/references.js', 'data/reference_images.json',
+          'tools/build_reference_images.py', 'tests/test_reference_images.py',
+          'tests/test_reference_api.py', 'tools/verify_references.js',
+          *('web' + url for url in _artwork_urls))
 STAMP = (2026, 10, 2, 0, 0, 0)
 
 

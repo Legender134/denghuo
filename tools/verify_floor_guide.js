@@ -6,7 +6,7 @@ const scoutingSource=fs.readFileSync(path.join(__dirname,'../web/scouting.js'),'
 function harness(){
   const nodes=new Map(),writes=[],reads=[],references=[];
   function node(tag='div'){return {tagName:tag.toUpperCase(),children:[],listeners:{},open:false,hidden:false,disabled:false,textContent:'',innerHTML:'',
-    append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;this.innerHTML='';this.textContent='';},addEventListener(name,handler){this.listeners[name]=handler;},contains(item){return this===item||this.children.some(child=>child.contains?.(item));},focus(){context.document.activeElement=this;},getContext(){return {fillRect(){},strokeRect(){}};}};}
+    append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;this.innerHTML='';this.textContent='';},setAttribute(name,value){this[name]=value;},addEventListener(name,handler){this.listeners[name]=handler;},contains(item){return this===item||this.children.some(child=>child.contains?.(item));},focus(){context.document.activeElement=this;},getContext(){return {fillRect(){},strokeRect(){}};}};}
   const get=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
   const state={started:1,revision:1,settings_revision:'s1',active_slot:1,run_id:'run1',error:'',stale:false,
     settings:{mode:'save',save_root:'synthetic-only'},data:{depth:4,branch:0,version:922,hero:{level:5}}};
@@ -158,5 +158,35 @@ const deadline=setTimeout(()=>{console.error('FAIL: floor guide verification did
   vault.writes.at(-1).resolve(vaultCatalog);await settle();const vaultGroup=vault.get('#floor-monsters-list').children[0];
   assert.equal(vaultGroup.open,false);assert.match(vaultGroup.children[0].textContent,/宝库机关\/房间条件/);assert.equal(vault.reads.length,0);
   vaultGroup.open=true;assert.equal(vault.reads.length,0);const mechanism=vaultGroup.children[1].children[0];mechanism.open=true;mechanism.listeners.toggle();assert.equal(vault.reads.length,1);
+  const barren=harness(),barrenCatalog=catalog(),previews=[];
+  Object.assign(barren.state.data,{depth:22,challenges_mask:8,challenges_known:true});barren.run('refreshFloorGuide()');
+  Object.assign(barrenCatalog.source,{depth:22,challenges_mask:8,challenges_known:true});barrenCatalog.floors[0].depth=22;
+  barrenCatalog.encounters.rows=[{id:'actors.mobs.eye',name:'邪眼',hp:'100',damage:'20–30',dr:'0–8',group:'普通轮换',condition:'普通轮换名额',reference_params:{no_herbalism:1}},
+    {id:'levels.traps.guardiantrap$guardian',name:'守卫',hp:'125',damage:'所持武器',dr:'按武器',group:'机关/陷阱条件',fold_group:'机关/陷阱条件',condition:'激活守卫陷阱最多召唤3个，须有可用生成格'}];
+  barren.context.referenceNameHTML=(id,name)=>`<img data-reference="${id}"><span>${name}</span>`;
+  barren.context.bindReferencePreview=(element,row,options)=>previews.push({element,row,options});
+  barren.writes.at(-1).resolve(barrenCatalog);await settle();
+  const eyeCard=barren.get('#floor-monsters-list').children[0],eyeName=eyeCard.children[0].children[0],trapGroup=barren.get('#floor-monsters-list').children[1];
+  assert.equal(eyeName.tagName,'BUTTON');assert.equal(eyeName.type,'button');assert.match(eyeName.innerHTML,/<img.*邪眼/);
+  assert.equal(eyeName['aria-label'],'打开邪眼完整图鉴');assert.equal(previews[0].element,eyeName);
+  assert.equal(previews[0].options.params.no_herbalism,1);assert.equal(previews[0].options.params.depth,22);
+  assert.equal(trapGroup.open,false);assert.match(trapGroup.children[0].textContent,/机关\/陷阱条件/);
+  let prevented=false,stopped=false;eyeName.listeners.click({preventDefault(){prevented=true;},stopPropagation(){stopped=true;}});
+  assert(prevented&&stopped,'name reference must not run summary default disclosure or propagate the click');
+  assert.equal(eyeCard.open,false);assert.equal(barren.reads.length,0,'name reference does not expand or fetch the disclosure');
+  assert.equal(barren.references[0][0].lookup_context.params.no_herbalism,1);
+  assert.match(barren.references[0][0].lookup_context.field_origins.no_herbalism,/所选存档/);
+  eyeCard.open=true;eyeCard.listeners.toggle();assert.equal(new URL(barren.reads[0].url,'http://synthetic').searchParams.get('no_herbalism'),'1');
+  barren.reads[0].resolve({ok:true,json:async()=>({blocks:[{title:'露珠可取得0%，种子和符石不受阻断'}]})});await settle();
+  assert.match(eyeCard.children[2].innerHTML,/已确认荒芜之地，露珠可取得概率为0/);
+  eyeCard.children[2].children.at(-1).listeners.click();assert.equal(barren.references[1][0].lookup_context.params.no_herbalism,1);
+  barren.state.data.challenges_mask=null;barren.state.data.challenges_known=false;barren.run('refreshFloorGuide()');
+  const unknownBarren=JSON.parse(JSON.stringify(barrenCatalog));Object.assign(unknownBarren.source,{challenges_mask:null,challenges_known:false});unknownBarren.encounters.rows[0].reference_params.no_herbalism=0;
+  barren.writes.at(-1).resolve(unknownBarren);await settle();
+  const unknownEye=barren.get('#floor-monsters-list').children[0];unknownEye.children[0].children[0].listeners.click({preventDefault(){},stopPropagation(){}});
+  assert.equal(barren.references.at(-1)[0].lookup_context.params.no_herbalism,0);
+  assert.match(barren.references.at(-1)[0].lookup_context.field_origins.no_herbalism,/挑战未知.*假设/);
+  unknownEye.open=true;unknownEye.listeners.toggle();barren.reads.at(-1).resolve({ok:true,json:async()=>({blocks:[]})});await settle();
+  assert.match(unknownEye.children[2].innerHTML,/挑战未知，暂按未开启荒芜之地参考/);
   console.log(JSON.stringify({public_only_automatic:true,collapsed_lazy_numeric_and_loot:true,same_floor_expansion_preserved:true,explicit_hidden_opt_in:true,save_slot_error_and_late_response_invalidation:true,retry:true,conditional_groups_collapsed_and_lazy:true}));
 })().catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>clearTimeout(deadline));

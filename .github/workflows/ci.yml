@@ -43,6 +43,7 @@ jobs:
       - name: Frontend component checks
         run: |
           node tools/verify_frontend.js
+          node tools/verify_references.js
           node tests/verify_data_workflows.js
           node tools/verify_web_exit_receipt.js
           node tools/verify_workspace_concurrency.js

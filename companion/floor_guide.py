@@ -8,6 +8,13 @@ from collections import Counter
 from .monster_reference import monster_record, normal_stats, reference
 
 
+# Additional trap pools verified at the same pinned 4.0.2 revision as reference().
+TRAP_POOL_SOURCES = {
+    'core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/levels/CavesLevel.java':'65bf20aa7927d7ca511f18e77b2c547092fa69d550d366791c8e08e0567a0333',
+    'core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/levels/CityLevel.java':'3d4ef24c26984390bfd9f12fe03485b61322b90fa4abf99d4f2b8d7277a69142',
+}
+
+
 def floor_encounters(game, catalog):
     depth, branch, version = game.get('depth'), game.get('branch', 0), game.get('version')
     mask = game.get('challenges')
@@ -21,7 +28,7 @@ def floor_encounters(game, catalog):
         return result
     data = reference()
     result['sources']=[{'path':path,'sha256':digest,'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{data["commit"]}/{path}'}
-        for path,digest in data['verified_source_files'].items() if path in data['encounters'].get('condition_sources',()) or path.endswith(('/MobSpawner.java','/Shaman.java','/Elemental.java','/Dungeon.java','/MiningLevel.java','/VaultLevel.java'))]
+        for path,digest in data['verified_source_files'].items() if path in data['encounters'].get('condition_sources',()) or path.endswith(('/MobSpawner.java','/Shaman.java','/Elemental.java','/Dungeon.java','/MiningLevel.java','/VaultLevel.java','/GuardianTrap.java'))]
     def add(identity, condition, group, *, reference_depth=None, profile=None):
         existing=next((r for r in result['rows'] if r['id']==identity and r.get('reference_depth')==reference_depth),None)
         if existing:
@@ -35,6 +42,8 @@ def floor_encounters(game, catalog):
             'hp':health,'damage':str(stats['damageRoll']),'dr':str(stats['drRoll'])}
         if identity in ('actors.mobs.goo','actors.mobs.tengu','actors.mobs.dm300','actors.mobs.dwarfking','actors.mobs.yogdzewa','actors.mobs.pylon'):
             item['reference_params']={'stronger_bosses':int(stronger)}
+        if identity=='actors.mobs.eye':
+            item['reference_params']={'no_herbalism':int(known and bool(mask & 8))}
         if reference_depth is not None:item['reference_depth']=reference_depth
         if profile:
             item['reference_key']=identity+'@'+profile
@@ -49,6 +58,7 @@ def floor_encounters(game, catalog):
             elif group=='挑战支援': row['fold_group']='绝命头目挑战支援'
             elif group=='宝库机关': row['fold_group']='宝库机关/房间条件'
             elif group=='饰品条件': row['fold_group']='饰品生成条件'
+            elif group=='机关/陷阱条件': row['fold_group']='机关/陷阱条件'
         result['note']+=(' 已确认开启绝命头目：应用已核对的首领初始生命、支援名单与拳头选择规则；其他挑战机制及临时状态另查资料。' if stronger else
                          ' 已确认未开启绝命头目，采用普通首领参考；其他挑战及临时状态另查资料。' if known else
                          ' 挑战信息未确认，暂按未开启绝命头目的普通参考；不能据此确认本局难度。')
@@ -122,6 +132,10 @@ def floor_encounters(game, catalog):
             add(rules['alternatives'][rare['class']],'先满足2.5%整轮额外加入，再按默认2%替换；鼠头骨可改变替换概率','罕见跨区变种')
     priority={'普通轮换':0,'稀有替换':1,'罕见跨区':2,'罕见跨区变种':3}
     result['rows'].sort(key=lambda row:priority.get(row['group'],4))
+    if 11<=depth<=24:
+        add('levels.traps.guardiantrap$guardian',f'仅本层存在且激活守卫陷阱时，每次激活最多召唤 {(depth-5)//5} 个守卫（当前等效第{depth}层）；每个守卫须有可用生成格，不保证本层存在该陷阱或生成满额；不属于普通刷新轮换','机关/陷阱条件')
+        for path,digest in TRAP_POOL_SOURCES.items():
+            result['sources'].append({'path':path,'sha256':digest,'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{data["commit"]}/{path}'})
     add('actors.mobs.ebonymimic','仅普通主地牢非首领层生成物品时，宝箱怪之牙生效且分支命中才可能出现；生效等级0／1／2／3对应分支概率12.5%／25%／37.5%／50%，无效果为0。伪装为普通地面物品、出口或门；不是每个宝箱的概率，未读取本局饰品或实际生成结果','饰品条件')
     for identity,condition in (('piranha','水池宝藏房间生成3只食人鱼，每个名额默认2%替换为幻影食人鱼；鼠头骨可改变替换概率'),
         ('phantompiranha','水池房间的食人鱼名额默认2%替换；这不是房间生成概率'),

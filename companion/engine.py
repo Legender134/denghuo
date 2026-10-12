@@ -200,6 +200,9 @@ class Catalog:
             wand = item["wand"]
             details.append(self.name(wand) + (f" · {wand.get('curCharges', '?')} 次" if wand.get("curChargeKnown") or reveal else ""))
         public = {"name": name, "kind": kind if visible else "Unknown" + base.title(),
+                "has_hidden_details": not reveal and (not known or level_applicable and (not bool(item.get('levelKnown')) or not bool(item.get('cursedKnown')))
+                    or 'curCharges' in item and not bool(item.get('curChargeKnown'))
+                    or kind == 'MagesStaff' and isinstance(item.get('wand'), dict) and not bool(item['wand'].get('curChargeKnown'))),
                 "key": key if visible else f"items.{family}.{base}", "quantity": max(1, int(number(item.get("quantity"), 1))),
                 "location": location, "known": known, "level_known": level_known,
                 "revealed": bool(reveal), "identity_visible": visible,
@@ -210,6 +213,11 @@ class Catalog:
                 "mastery": bool(item.get('mastery_potion_bonus')) if visible else None,
                 "augmentation": item.get('augment', 'NONE') if visible else None,
                 "volume": volume}
+        if family:
+            appearance = str(game.get(regular + '_label', '')).lower()
+            if re.fullmatch(r'[a-z]+', appearance):
+                appearance_family = 'exotic-' + base if regular != kind and base in ('potion', 'scroll') else base
+                public['appearance_id'] = f'appearance.{appearance_family}.{appearance}'
         public["alchemy_state"] = project_item_state(item, game, public)
         public['user_note'] = item_user_note(item, game, identity_known=known)
         equipment = project_equipment_state(item, key, cursed_known, self.entry_index)

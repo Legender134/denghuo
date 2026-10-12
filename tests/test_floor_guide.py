@@ -33,6 +33,44 @@ class FloorGuideTests(unittest.TestCase):
         self.assertIn('actors.mobs.hermitcrab',third)
         self.assertNotIn('actors.mobs.slime',third)
 
+    def test_guardian_trap_encounter_is_conditional_folded_and_region_bounded(self):
+        identity='levels.traps.guardiantrap$guardian'
+        values=PlayerValues(NumericRules(self.catalog))
+        for depth in (11,12,13,14,16,17,18,19,21,22,23,24):
+            guide=self.guide(depth,challenges=0)
+            row=next(r for r in guide['rows'] if r['id']==identity)
+            self.assertEqual(row['group'],'机关/陷阱条件')
+            self.assertEqual(row['fold_group'],'机关/陷阱条件')
+            self.assertIn(f'最多召唤 {(depth-5)//5} 个',row['condition'])
+            for phrase in ('存在且激活守卫陷阱','可用生成格','不保证本层存在','不属于普通刷新'):
+                self.assertIn(phrase,row['condition'])
+            detail=values.detail(identity,{'depth':depth})
+            metrics={r['label']:r['value'] for r in detail['blocks'][0]['values']}
+            self.assertEqual(row['hp'],metrics['初始生命'])
+            self.assertEqual(metrics['基础经验'],'0')
+            weapon=next(r for r in detail['blocks'][1]['rows'] if '所持武器' in r[0])
+            self.assertEqual(weapon[2],'100%')
+            self.assertTrue(any(s['path'].endswith('/GuardianTrap.java') for s in guide['sources']))
+        for branch,depths in ((0,(1,6,9,10,15,20,25,26)),(1,range(11,20))):
+            for depth in depths:
+                self.assertNotIn(identity,{r['id'] for r in self.guide(depth,branch)['rows']})
+
+    def test_floor_pylon_and_barren_land_pass_verified_challenge_parameters(self):
+        values=PlayerValues(NumericRules(self.catalog))
+        for mask,health in ((0,'50'),(256,'80'),(511,'80'),(None,'50')):
+            row=next(r for r in self.guide(15,challenges=mask)['rows'] if r['id']=='actors.mobs.pylon')
+            self.assertEqual(row['hp'],health)
+            detail=values.detail(row['id'],row['reference_params'])
+            self.assertEqual(detail['blocks'][0]['values'][0]['value'],health)
+        for mask,active in ((0,0),(1,0),(8,1),(256,0),(511,1),(None,0)):
+            guide=self.guide(22,challenges=mask)
+            eye=next(r for r in guide['rows'] if r['id']=='actors.mobs.eye')
+            self.assertEqual(eye['reference_params'],{'no_herbalism':active})
+            detail=values.detail(eye['id'],{'hero_level':20,**eye['reference_params']})
+            dew=next(r for r in detail['blocks'][1]['rows'] if r[0]=='露珠')
+            self.assertEqual(dew[2],'0%' if active else '50%')
+            self.assertEqual(guide['challenges_known'],mask is not None)
+
     def test_rare_additions_are_per_rotation_and_boss_floor_is_not_rotation(self):
         groups=[r['group'] for r in self.guide(4)['rows'] if r['group'] in ('普通轮换','稀有替换','罕见跨区','罕见跨区变种')]
         self.assertEqual(groups,sorted(groups,key={'普通轮换':0,'稀有替换':1,'罕见跨区':2,'罕见跨区变种':3}.get))
