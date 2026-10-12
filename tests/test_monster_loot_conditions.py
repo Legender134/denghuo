@@ -41,7 +41,7 @@ class OblivionLootTests(unittest.TestCase):
             {'wealth_bonus':1, 'oblivion_shard':0, 'unidentified_equipment':1})
         meat_row = next(row for row in detail['blocks'][1]['rows'] if row[0] == '神秘的肉')
         self.assertEqual(meat_row[2], '70%')
-        self.assertIn('与财富相加', meat_row[3])
+        self.assertIn('与财富、赏金猎人相加', meat_row[3])
 
     def test_count_decay_generation_level_gates_and_cap_follow_bonus(self):
         args = {'wealth_bonus':1, 'oblivion_shard':0, 'unidentified_equipment':1}
@@ -114,9 +114,67 @@ class OblivionLootTests(unittest.TestCase):
         source = 'core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/items/trinkets/ShardOfOblivion.java'
         self.assertIn(source, reference()['verified_source_files'])
 
+    def test_successful_sleeve_theft_closes_only_the_ordinary_loot_channel(self):
+        # Mob.rollToDropLoot skips createLoot after a successful StolenTracker.
+        # A failed attempt has counter 0 and does not close the death-loot gate.
+        self.assertAlmostEqual(sum(r['probability'] for r in self.loot('skeleton', loot_count=1)), .1667/3)
+        stolen = {'loot_stolen':1, 'loot_count':1, 'bounty_hunter':3, 'preparation_level':4}
+        self.assertEqual(sum(r['probability'] for r in self.loot('skeleton', **stolen)), 0)
+        for name, item in (('causticslime','items.quest.gooblob'), ('dm201','items.quest.metalshard'),
+                           ('spectralnecromancer','items.scrolls.scrollofremovecurse'),
+                           ('elemental$newbornfireelemental','items.quest.embers')):
+            self.assertEqual(self.chance(name, item, **stolen), 1)
+        armor = [r for r in self.loot('hermitcrab', **stolen) if r['id'].startswith('items.armor.')]
+        self.assertAlmostEqual(sum(r['probability'] for r in armor), 1)
+        for name in ('vaultdm200','vaultgolem','vaultshaman','vaultskeleton'):
+            self.assertEqual(self.chance('quest.vault.'+name, 'items.quest.dwarftoken', **stolen), 0)
+        self.assertEqual(self.loot('gnollexile'), self.loot('gnollexile', **stolen))
+        self.assertIn('失败尝试', self.loot('skeleton')[0]['condition'])
+        self.assertIn('已被袖章成功偷取', self.loot('skeleton', **stolen)[0]['condition'])
+
+    def test_bounty_hunter_adds_to_wealth_before_shard_count_and_level_gates(self):
+        # Pinned Mob.java:1083-1093: .02f * 2^(prep-1) * talentPoints,
+        # added to Wealth, then Shard excess. These expected values are derived
+        # from that branch; the normal Skeleton base is .1667f.
+        for points, prep, expected in ((0,4,.1667), (3,0,.1667), (1,1,.170034),
+                                       (2,2,.180036), (3,3,.206708), (3,4,.246716)):
+            self.assertAlmostEqual(sum(r['probability'] for r in self.loot('skeleton',
+                bounty_hunter=points, preparation_level=prep)), expected, places=7)
+        args = {'wealth_bonus':1,'bounty_hunter':3,'preparation_level':4,
+                'oblivion_shard':0,'unidentified_equipment':1}
+        self.assertAlmostEqual(sum(r['probability'] for r in self.loot('skeleton', loot_count=1, **args)),
+                               .1667*1.88/3, places=7)
+        self.assertAlmostEqual(self.chance('bat', 'items.potions.exotic.potionofshielding',
+            loot_count=1, exotic_crystals=0, **args), .1667*1.88*6/7/5, places=7)
+        self.assertEqual(self.chance('hermitcrab','items.food.mysterymeat', hero_level=12, **args), 0)
+        self.assertEqual(self.chance('hermitcrab','items.food.mysterymeat', **{**args,'wealth_bonus':100}), 1)
+        for name in ('vaultdm200','vaultgolem','vaultshaman','vaultskeleton'):
+            self.assertEqual(self.chance('quest.vault.'+name,'items.quest.dwarftoken', **args), 1)
+
+    def test_target_and_bounty_conditions_are_bounded_and_have_fixed_sources(self):
+        fields = {r['key']:r for r in self.values.detail('actors.mobs.skeleton')['inputs']}
+        for key, limits in (('loot_stolen',(0,0,1,1)), ('bounty_hunter',(0,0,3,1)),
+                            ('preparation_level',(0,0,4,1))):
+            self.assertEqual(tuple(fields[key][f] for f in ('value','min','max','step')), limits)
+            for invalid in (True, False, -.5, 'NaN', float('inf'), limits[2]+1):
+                with self.subTest(key=key, invalid=invalid), self.assertRaises(ValueError):
+                    self.values.detail('actors.mobs.skeleton', {key:invalid})
+        for name in ('gnollexile','crystalmimic'):
+            self.assertNotIn('loot_stolen', {r['key'] for r in self.values.detail('actors.mobs.'+name)['inputs']})
+        fixed = {r['key'] for r in self.values.detail('actors.mobs.quest.vault.vaultskeleton')['inputs']}
+        self.assertIn('loot_stolen', fixed)
+        self.assertFalse(fixed & {'bounty_hunter','preparation_level'})
+        detail = self.values.detail('actors.mobs.skeleton')
+        urls = [r['url'] for r in detail['provenance']['links']]
+        self.assertTrue(any('MasterThievesArmband.java#L141' in url for url in urls))
+        self.assertTrue(any('Preparation.java#L62' in url for url in urls))
+        self.assertTrue(any('Talent.java#L139' in url for url in urls))
+        self.assertIn('未满足填0', detail['blocks'][1]['note'])
+        self.assertNotIn('未计财富额外战利品、赏金猎人', detail['blocks'][1]['note_summary'])
+
 
 class OblivionPlanWorkflowTests(unittest.TestCase):
-    def test_native_form_fixed_reopen_and_export_import_retain_both_manual_conditions(self):
+    def test_native_form_fixed_reopen_and_export_import_retain_manual_loot_conditions(self):
         # Test runners isolate APPDATA/LOCALAPPDATA before imports. Every
         # Session also starts from an explicit synthetic save_root in its file.
         from companion.native_workspace import NumericLookup
@@ -151,16 +209,20 @@ class OblivionPlanWorkflowTests(unittest.TestCase):
         fields = {field['key']:field for field in state['fields']}
         self.assertEqual(fields['oblivion_shard']['raw'], '-1')
         self.assertIn('示例', fields['oblivion_shard']['origin'])
-        for key, raw in (('wealth_bonus','1'), ('oblivion_shard','0'), ('unidentified_equipment','1')):
+        for key, raw in (('wealth_bonus','1'), ('oblivion_shard','0'), ('unidentified_equipment','1'),
+                         ('loot_stolen','1'), ('bounty_hunter','3'), ('preparation_level','4')):
             lookup.variables[key].set(raw)
         lookup.calculate()
         lookup.render(session.values.detail(*worker.args[1]))
-        for key in ('oblivion_shard','unidentified_equipment'):
+        for key in ('oblivion_shard','unidentified_equipment','loot_stolen','bounty_hunter','preparation_level'):
             self.assertEqual(lookup.input_origins[key], '手填')
         self.assertTrue(lookup.save_plan('碎片普通掉落条件'))
         saved = copy.deepcopy(lookup.saved_plan)
         self.assertEqual(saved['params']['oblivion_shard'], 0)
         self.assertEqual(saved['params']['unidentified_equipment'], 1)
+        self.assertEqual(saved['params']['loot_stolen'], 1)
+        self.assertEqual(saved['params']['bounty_hunter'], 3)
+        self.assertEqual(saved['params']['preparation_level'], 4)
         self.assertTrue(lookup.open_plan(saved['id'], False))
         self.assertEqual(lookup.calculated, saved['params'])
         self.assertEqual(lookup.input_origins['unidentified_equipment'], '手填')
@@ -176,7 +238,9 @@ class OblivionPlanWorkflowTests(unittest.TestCase):
         reopened = target.knowledge.reopen(saved['id'])
         self.assertEqual(reopened['plan']['params'], saved['params'])
         meat = next(row for row in reopened['result']['blocks'][1]['rows'] if row[0] == '神秘的肉')
-        self.assertEqual(meat[2], '70%')
+        self.assertEqual(meat[2], '0%')
+        armor = [r for r in reopened['result']['blocks'][1]['rows'] if '额外固定获得一件护甲' in r[3]]
+        self.assertAlmostEqual(sum(float(r[2].removesuffix('%')) for r in armor), 100)
         self.assertEqual(marker.read_bytes(), b'synthetic-save-preserved\x00\xff')
         session.stop.set()
         target.stop.set()

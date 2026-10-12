@@ -268,31 +268,41 @@ def loot_rows(values, identity, row, p):
     gate = hero <= limit
     condition = f'角色等级不超过 {limit} 级' if limit > 0 else '此种敌人的普通掉落通道关闭'
     modifier_condition = ''
+    ordinary_gate = gate and not p.get('loot_stolen',0)
+    if row['base_loot_chance']>0:
+        condition += ('；此目标的普通战利品已被袖章成功偷取，不再次普通掉落' if p.get('loot_stolen',0) else
+                      '；此目标未被袖章成功偷取普通战利品（失败尝试不关闭此通道）')
     if _wealth_applies(identity,row):
         wealth=p.get('wealth_bonus',0)
         multiplier=float32(math.pow(1.2,wealth))
+        bounty,preparation=p.get('bounty_hunter',0),p.get('preparation_level',0)
+        bonus=0
+        if bounty>0 and preparation>0:
+            bonus=float32(float32(float32(.02)*float32(math.pow(2,preparation-1)))*bounty)
+            multiplier=float32(multiplier+bonus)
+        modifier_condition += f'；赏金猎人有效点数 {bounty}，准备阶段 {preparation}，额外倍率 +{display(bonus)}（须击杀时标记与准备同时生效）'
         level=p.get('oblivion_shard',-1)
         eligible=p.get('unidentified_equipment',0)
         if level >= 0:
             effective=min(eligible,level+1)
             fragment=float32(1+float32(float32(.2)*effective))
             multiplier=float32(multiplier+float32(fragment-1))
-            modifier_condition += f'；遗忘碎片生效等级 {level}，合格未鉴定项 {eligible}，按等级上限计入 {effective} 项；碎片额外倍率与财富相加'
+            modifier_condition += f'；遗忘碎片生效等级 {level}，合格未鉴定项 {eligible}，按等级上限计入 {effective} 项；碎片额外倍率与财富、赏金猎人相加'
         chance *= multiplier
         modifier_condition = f'；财富有效加成 {wealth}，普通掉率倍率 {display(multiplier)}，概率最高100%'+modifier_condition
     if name in ('skeleton','necromancer$necroskeleton','guard','shaman','thief','bandit','dm200','dm201','golem'):
         chance *= (1/3)**count
-        condition += f'；本局同一掉落计数已成功掉落 {count} 次，每次后概率降至原来的 1/3'
+        condition += f'；本局同类战利品已生成 {count} 次（含袖章成功偷取），每次后概率降至原来的 1/3'
     elif name in ('slime','causticslime'):
         chance *= (1/4)**count
-        condition += f'；本局史莱姆武器已掉落 {count} 次，每次后概率降至原来的 1/4'
+        condition += f'；本局史莱姆武器已生成 {count} 次（含袖章成功偷取），每次后概率降至原来的 1/4'
     elif name in ('bat','necromancer','spectralnecromancer','swarm'):
         cap = 7 if name == 'bat' else 5 if name == 'swarm' else 6
         chance *= max(0,cap-count)/cap
-        condition += f'；本局此计数已掉落 {count} 瓶，达到 {cap} 瓶后为 0%'
+        condition += f'；本局此计数已生成 {count} 瓶（含袖章成功偷取），达到 {cap} 瓶后为 0%'
         if name == 'swarm': condition += f'；分裂代数 {p["swarm_generation"]}（原始蝇群为 0）'
     condition += modifier_condition
-    chance = min(1,max(0,chance)) if gate else 0
+    chance = min(1,max(0,chance)) if ordinary_gate else 0
     rows = []
     expr = row['loot_expression'] or 'null'
     if name in ('slime','causticslime'):
@@ -319,10 +329,10 @@ def loot_rows(values, identity, row, p):
         pool = [r for r in _category('POTION',depth) if r['id'] != 'items.potions.potionofhealing']
         total = sum(r['probability'] for r in pool)
         rows += [{**r,'probability':chance*(1-healing)*r['probability']/total} for r in pool]
-        condition += f'；术士治疗药剂已掉落 {count} 瓶，达到 7 瓶后不再掉治疗药剂'
+        condition += f'；术士治疗药剂已生成 {count} 瓶（含袖章成功偷取），达到 7 瓶后不再掉治疗药剂'
     elif name.startswith('quest.vault.') and name != 'quest.vault.vaultbosselemental':
-        rows = [_item(values,'items.quest.dwarftoken',chance if _wealth_applies(identity,row) else 1 if gate else 0)]
-        if not _wealth_applies(identity,row):condition += '；此种宝库变体普通掉率固定为100%，不使用财富或遗忘碎片倍率'
+        rows = [_item(values,'items.quest.dwarftoken',chance if _wealth_applies(identity,row) else 1 if ordinary_gate else 0)]
+        if not _wealth_applies(identity,row):condition += '；此种宝库变体普通掉率固定为100%，不使用财富、赏金猎人或遗忘碎片倍率'
     elif name == 'gnollexile':
         rows = _category('ALL',depth,1 if gate else 0)
         condition += '；先抽取2件（50%）或3件（50%）；此列是每次抽取的概率；神器仍受唯一池限制'
@@ -385,10 +395,29 @@ def loot_rows(values, identity, row, p):
         rows.append({'name':'该石像所持武器','quantity':1,'probability':1,'condition':'非腐化复制体；具体装备在生成时决定，普通掉率表不能推断本局所持装备'})
         if name == 'armoredstatue': rows.append({'name':'该石像所穿护甲','quantity':1,'probability':1,'condition':'非腐化复制体；具体装备在生成时决定'})
     if name in ('mimic','goldenmimic','crystalmimic','ebonymimic'):
-        rows.append({'name':'生成时装入及尚未丢失的全部战利品','quantity':'随容器内容变化','probability':1,'condition':'物品在生成时决定；击杀时返还，普通掉率表不能推断本局容器内容'})
+        condition = '正常击杀时掉落现有携带物；生成奖励在生成时决定，普通掉率表不能推断本局容器内容'
+        if name == 'crystalmimic':
+            condition += '；后来偷来的物品另计，不享受生成奖励的去诅咒规则；成功逃脱会连同携带物消失'
+        rows.append({'name':'生成时装入及尚未丢失的全部战利品','quantity':'随容器内容变化','probability':1,'condition':condition})
     if name == 'tormentedspirit':
         rows += [{**r,'condition':'净化后的奖励；普通击杀不会给此奖励；装备无诅咒且有附魔／刻印'} for r in _category('WEAPON',depth,.5)+_category('ARMOR',depth,.5)]
     return rows
+
+
+def _mimic_prize_block(name):
+    if name not in ('goldenmimic','ebonymimic','crystalmimic'): return None
+    if name == 'crystalmimic':
+        rules = [_metric('生成奖励数量','保留预先装入的奖励','','水晶宝库房间自然生成时预装1件法杖、戒指或神器，神器池耗尽时改为戒指；其他来源以预装内容为准。不额外生成基类的五类随机奖励，也不另抽宝箱怪之牙奖励'),
+                 _metric('生成时奖励的诅咒标记','清除并标为已知','','对当时已装入的全部物品处理；此分支不额外升级，也没有黄金／黑檀变体的诅咒附魔、刻印清除步骤')]
+    else:
+        rules = [_metric('生成时新增基础奖励',1,'条','在预先装入物品之外，从金币、投掷武器、护甲、近战武器、戒指五类均等抽候选；空结果或挑战禁物重抽，不能把最终类别比例一律当成20%。金币数量和投掷堆叠数量按各自生成规则'),
+                 _metric('宝箱怪之牙额外抽取',1,'条','仅宝箱怪之牙的隐蔽宝箱怪效果生效时，从默认物品池另抽一次；与基础奖励及黑檀额外抽取分别计算'),
+                 _metric('生成奖励质量','装备／法杖去诅咒','','处理当时已装入的装备类物品与法杖：清除诅咒并标为已知；武器的诅咒附魔、护甲的诅咒刻印也移除，正常附魔／刻印不因此移除'),
+                 _metric('生成奖励中 +0 非神器升级',50 if name == 'goldenmimic' else 100,'%','仅上述装备类物品与法杖，且处理时等级恰为+0、不是神器；升级1次。神器、负等级和已有正等级物品不走此升级分支')]
+        if name == 'ebonymimic':
+            rules.insert(2,_metric('黑檀独立额外抽取',1,'条','再从默认物品池抽一次，然后统一处理奖励质量；因此生成时新增奖励共2条，宝箱怪之牙隐蔽效果生效时共3条，均不含预先装入内容'))
+    return {'title':'生成奖励与质量','values':rules,
+            'note':'在宝箱怪生成时处理奖励；只将诅咒状态标为已知，不因此鉴定等级或全部属性。击杀只是掉落仍携带的内容，不会重新抽取或升级。后来偷来的物品不套用这些生成规则；此资料不读取或鉴定本局容器内容。'}
 
 
 def add_monster_values(values, identity, p, result, requested):
@@ -401,7 +430,8 @@ def add_monster_values(values, identity, p, result, requested):
     stronger = boss_condition and p['stronger_bosses'] == 1
     if boss_condition: requested.add('stronger_bosses')
     if _exotic_loot_target(identity):requested.add('exotic_crystals')
-    if _wealth_applies(identity,row): requested.update(('wealth_bonus','oblivion_shard','unidentified_equipment'))
+    if row['base_loot_chance']>0: requested.add('loot_stolen')
+    if _wealth_applies(identity,row): requested.update(('wealth_bonus','oblivion_shard','unidentified_equipment','bounty_hunter','preparation_level'))
     uses_depth = bool(row['dynamic']) or row['loot_expression'] in ('Gold.class','Generator.Category.ARMOR','Generator.Category.WEAPON','Generator.Category.MISSILE') or name in ('dm200','dm201','golem','hermitcrab','thief','bandit','tormentedspirit','gnollexile')
     if uses_depth: requested.add('depth')
     counts = ('skeleton','necromancer$necroskeleton','guard','shaman','thief','bandit','dm200','dm201','golem','slime','causticslime','bat','necromancer','spectralnecromancer','swarm','warlock')
@@ -435,17 +465,24 @@ def add_monster_values(values, identity, p, result, requested):
     if name in ('crystalspire','gnollgeomancer','fungalcore','demonspawner','necromancer','spectralnecromancer','yogdzewa','rotheart'): note += ' 此类敌人的主要作用来自特殊能力或召唤，普通攻击值不表示它会使用普通攻击。'
     result.insert(0,{'title':'常规战斗数值','values':stat_rows,'note':note})
     loot = loot_rows(values,identity,row,p)
-    loot_note=('按所填角色等级、本局累计掉落次数、财富与遗忘碎片条件计算；默认财富加成0、遗忘碎片−1（无效果）、合格未鉴定项0，适用的异晶默认−1（无效果）。掉率加成仅用于普通掉落，固定额外奖励另列。'
+    loot_note=('按所填角色等级、本局战利品生成计数、财富、赏金猎人与遗忘碎片条件计算；默认未被袖章成功偷取、财富加成0、赏金猎人0（未触发）、准备阶段0（无准备）、遗忘碎片−1（无效果）、合格未鉴定项0，适用的异晶默认−1（无效果）。掉率加成仅用于普通掉落，固定额外奖励另列。'
                '财富有效加成不是戒指等级：无戒指或魔法免疫填0，单枚正常+0戒指填1，正常戒指按生效等级＋1合计；诅咒戒指按min(0, 生效等级−2)合计。'
                '额外形态和临时增益须计入生效加成后手填；未从存档推定。普通掉率按实际判定最高100%，物品池表已乘普通掉率，不代表本次一定掉落。'
                '遗忘碎片合格项由玩家确认：未鉴定的主武器、副武器、护甲、戒指、杂项槽各计1项，近期使用未鉴定法杖／投掷武器的有效标记各计1项；最多7项，实际只计入生效等级＋1项。'
-               '碎片倍率＝1＋0.2×计入项数；普通通道合并倍率＝财富倍率＋碎片倍率−1，再应用累计掉落与等级限制。碎片生效等级须核对当前降级等状态；不会自动鉴定装备或读取隐藏条件。'
-               '本表不计算财富额外战利品、赏金猎人或幸运附魔；神器池使用初始可用池参考，实际已生成神器会改变分布。')
+               '赏金猎人需击杀结算时有效标记与刺杀准备同时存在：额外倍率＝0.02×2^(准备等级−1)×点数；未满足填0，不能仅按已投入天赋点数当作生效。准备等级1–4，最多3点。碎片倍率＝1＋0.2×计入项数；普通通道合并倍率＝财富倍率＋赏金猎人额外倍率＋碎片倍率−1，再应用生成计数、等级与成功偷取限制。袖章已成功取走此目标普通战利品时，普通掉落为0；失败尝试不关闭死亡普通掉落。成功偷取调用生成战利品，会推进相应本局计数，请填生成后的计数；不自动递增。碎片生效等级须核对当前降级等状态；不会自动鉴定装备或读取隐藏条件。'
+               '本表不计算财富额外战利品或幸运附魔；神器池使用初始可用池参考，实际已生成神器会改变分布。')
     result.insert(1,{'title':'掉落物、数量与概率','columns':['掉落物','每次抽取数量' if name=='gnollexile' else '数量','每次抽取概率' if name=='gnollexile' else '每次满足条件的概率','条件'],
                     'rows':[[r['name'],str(r['quantity']),display(100*r['probability'])+'%',r.get('condition','')] for r in loot],
+                     'note_summary':('按条件列查看概率，不保证本次掉落；已计入适用的角色等级、累计次数和所填掉率条件。固定奖励另行计算；未计财富额外战利品或幸运附魔。神器池为初始参考，已生成神器会改变分布。' if loot else ''),
                      'note':loot_note if loot else '此敌人没有常规自身物品掉落。任务奖励、已存容器、财富戒指和幸运附魔等额外机制按各自条件结算。'})
     abilities = []
-    if name == 'albino':
+    if name == 'gnollexile':
+        abilities = [_metric('长矛最大攻击距离',2,'格','相邻时可攻击；非相邻时须八方向距离不超过2，且两步内路径不受实墙或中间角色阻挡，自身格可通行；不能穿墙或越过挡路角色'),
+                     _metric('初始行为','被动游荡','','只看见玩家不会自动追击；这是生成规则，不能断言本局这只仍处于被动'),
+                     _metric('负面状态解除被动','转为普通游荡','','被动行动发现自身有负面状态时，先离开被动，再按普通察敌规则行动；不等于立即保证发动攻击'),
+                     _metric('已警觉时发现敌人','进入追击','','同次被动行动中目标可见且刚被警觉时；可生效的非腐化来源承伤处理可令未追击者警觉，是否追击仍取决于目标可见等条件'),
+                     _metric('被动时受到吸引','保持被动','','吸引可以改变游荡目标，单凭吸引不会解除被动')]
+    elif name == 'albino':
         abilities = [_metric('命中后施加流血概率',50,'%','先完成普通攻击效果处理，处理后的伤害必须大于0；零伤害不触发'),
                      _metric('传给流血状态的强度范围','2–3','强度参数','范围内随机抽取，非等概率；不是固定持续时间或直接扣血量'),
                      _metric('新流血首次强度范围','1–3','强度','流血状态再在传入值的1/2至全值之间抽取；已有更强流血不降低'),
@@ -599,7 +636,13 @@ def add_monster_values(values, identity, p, result, requested):
         abilities=[_metric('伪装首击基础伤害',damage,'HP','尚在伪装状态时发动攻击；目标护甲等仍可减伤'),
                    _metric('伪装首击命中值','无限命中','','目标未隐形时；无限闪避及其他命中规则另计')]
         if name=='crystalmimic':
-            abilities.append(_metric('伪装首击额外伤害倍率',1,'倍','水晶宝箱怪没有普通宝箱怪的首击伤害加成；攻击角色时另尝试偷走符合条件的未装备物品'))
+            abilities += [_metric('伪装首击额外伤害倍率',1,'倍','水晶宝箱怪没有普通宝箱怪的首击伤害加成；仅尚属中立且命中玩家时尝试偷取'),
+                          _metric('成功逃脱的后果','自身与携带物一同消失','','普通逃跑行为触发逃脱判断后，须自身在玩家视野外，且距玩家至少6格；未满足则转为游荡。不是每回合只要离开视野且达到距离就自动消失'),
+                          _metric('停止伪装时极速基础持续','2／1','回合','停止伪装时仍属中立为2，否则为1；随后进入逃跑。受攻击而先转为敌对时走1回合分支，状态抗性及实际行动顺序另计'),
+                          _metric('偷取对象','未装备、非唯一、等级小于+1','','从背包顶层条目随机抽取，嵌套袋内物品不在此列表；丢失背包状态下抽不到物品。已装备、唯一或等级至少+1的物品不能偷取'),
+                          _metric('每次偷取最多随机抽取',11,'次','初抽1次，遇空结果、唯一物品或等级至少+1时最多重抽10次；抽到合格项即停止。不是保证成功，也没有固定成功率'),
+                          _metric('一次成功偷取数量',1,'件','堆叠取1件，非堆叠整件取走；蜂蜜罐按自身破碎规则处理，新增携带物不重新执行生成奖励质量处理'),
+                          _metric('其他命中后的目标移位','随机移到自身周围空位','','非中立状态命中玩家，或命中其他生物时，从宝箱怪周围8格的可通行且无人空位随机选落点；移动的是受击目标，无空位则不移动。敌对状态随后转为逃跑')]
     elif name == 'eye':
         requested.add('damage')
         abilities = [_metric('死亡凝视基础伤害','30–50','HP','光路上的每个目标分别进行魔法命中检定；不扣普通护甲，抗性等另计'),
@@ -871,4 +914,6 @@ def add_monster_values(values, identity, p, result, requested):
             note += ' 追近、后退或离开追击状态会取消蓄力；蓄力攻击尝试结束后也清除蓄力，未命中不会保留。'
         result.insert(2,{'title':'特殊攻击与机制','values':abilities,'note':note})
     result.insert(3 if abilities else 2,defense_block(values,identity,row,stronger_bosses=stronger))
+    prize = _mimic_prize_block(name)
+    if prize: result.insert(2,prize)
     return True

@@ -76,7 +76,7 @@ class NumericLookup:
 
     @classmethod
     def entry_context(cls, snap, identity):
-        from .decisions import source, healing_context
+        from .decisions import source, healing_context, dot_context, dot_origins
         from .public_skills import skill_context
         specific = skill_context(snap, identity)
         params = cls.hero_context(snap)
@@ -85,6 +85,12 @@ class NumericLookup:
             buffs = [row for row in (snap.get('data') or {}).get('buffs', []) if row.get('kind') == 'Healing']
             if len(buffs) == 1:
                 params.update(healing_context(buffs[0]))
+        if not snap.get('error'):
+            buffs = [row for row in (snap.get('data') or {}).get('buffs', []) if row.get('reference_id') == identity]
+            if len(buffs) == 1:
+                fields = dot_context(buffs[0])
+                params.update(fields)
+                specific['field_origins'] = {**specific.get('field_origins', {}), **dot_origins(fields)}
         provenance = source(snap)
         context = {**specific, 'params': params, 'stamp': cls.source_stamp(snap),
                    'source': provenance, 'source_label': provenance['label'], 'mode': provenance['mode']}
@@ -362,6 +368,10 @@ class NumericLookup:
             current_keys.update(('shielding_dew', 'vial', 'dew_volume'))
         if self.identity == 'actors.buffs.healing':
             current_keys.update(('power', 'healing_percent', 'healing_flat', 'vial'))
+        if self.identity == 'actors.buffs.corrosion':
+            current_keys.update(('power', 'remaining_turns', 'corrosion_public'))
+        if self.identity == 'items.armor.glyphs.viscosity$defereddamage':
+            current_keys.add('damage')
         prefix = '手动局势' if context['mode'] == 'manual' else '快照'
         for key, variable in self.variables.items():
             if key in current_keys and key in context['params']:

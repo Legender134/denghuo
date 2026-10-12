@@ -361,7 +361,8 @@ def build(index, catalog, upstream):
                  'items/potions/exotic/ExoticPotion.java','items/scrolls/exotic/ExoticScroll.java',
                  'actors/blobs/StenchGas.java','actors/blobs/ToxicGas.java','actors/blobs/Web.java','items/wands/WandOfBlastWave.java',
                  'actors/buffs/Roots.java','actors/buffs/Light.java','actors/buffs/FlavourBuff.java','actors/blobs/Fire.java','items/armor/glyphs/Viscosity.java','items/weapon/melee/Sickle.java','mechanics/Ballistica.java','levels/Level.java',
-                 'items/rings/Ring.java','items/rings/RingOfWealth.java'):
+                 'items/rings/Ring.java','items/rings/RingOfWealth.java',
+                 'actors/buffs/Preparation.java','actors/hero/Talent.java','items/artifacts/MasterThievesArmband.java'):
         source(GAME_PATH+tail)
     return {'format': 1, 'version': catalog['version'], 'commit': catalog['commit'], 'license': 'GPL-3.0-or-later',
             'scope': 'normal enemy reference without challenges, ascension, champions, equipment or status modifiers',

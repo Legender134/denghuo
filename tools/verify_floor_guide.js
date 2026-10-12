@@ -56,8 +56,14 @@ const deadline=setTimeout(()=>{console.error('FAIL: floor guide verification did
   assert.match(h.get('#scout-source').textContent,/槽位 1.*第 4 层/);assert.equal(h.get('#scout-open').disabled,false);
   h.writes.at(-1).resolve(catalog());await settle();assert.equal(h.get('#scout-result').hidden,false,'late catalog must not clear revealed handoff');
   h.context.view='overview';
-  h.state.revision++;h.run('refreshFloorGuide()');assert.equal(h.get('#floor-hidden-content').hidden,true);await load(h);
+  const retainedReference=card.children[2].children.at(-1);
+  h.state.revision++;h.state.modified=101;h.run('refreshFloorGuide()');assert.equal(h.get('#floor-hidden-content').hidden,true);
+  retainedReference.listeners.click();assert.equal(h.references.at(-1)[0].lookup_context.stamp[4],1,'pending refresh keeps the last confirmed reference source');
+  const refreshedCatalog=catalog();refreshedCatalog.source.modified=101;h.writes.at(-1).resolve(refreshedCatalog);await settle();
   assert.equal(h.get('#floor-monsters-list').children[0],card,'same-floor save refresh preserves open public monster cards');
+  retainedReference.listeners.click();
+  assert.deepEqual(Array.from(h.references.at(-1)[0].lookup_context.stamp),[1,'synthetic-only','save',1,2,101],'retained card uses the confirmed updated snapshot source');
+  assert.equal(h.reads.length,1,'source-only refresh must not refetch unchanged public numeric rules');
   const old=h.run('revealFloorContents()');const pending=h.writes.at(-1);h.state.active_slot=2;h.state.run_id='run2';h.run('refreshFloorGuide()');
   pending.resolve({source:{floor_modified:100},features:[],traps:[],heaps:[],mobs:[]});await old;assert.equal(h.get('#floor-hidden-content').hidden,true);
   const newer=h.writes.at(-1);h.state.error='存档不可读';h.run('refreshFloorGuide()');newer.resolve(catalog());await settle();

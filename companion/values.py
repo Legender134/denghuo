@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import re
+import struct
 
 from .rules import Formula, NumericRules, PREFIX, Range, UnknownFormula, display, key_for
 from .values_data import FIXED, DURATION_EFFECTS, TRINKETS
@@ -20,7 +21,10 @@ INPUTS = {
     'wealth_bonus': ('财富有效加成（不是戒指等级，无效果填0）', 0, -100, 100),
     'oblivion_shard': ('遗忘碎片生效等级（−1为无效果）', -1, -1, 3),
     'unidentified_equipment': ('遗忘碎片合格未鉴定项数（含近期使用标记）', 0, 0, 7),
-    'loot_count': ('本局此类战利品已成功掉落次数', 0, 0, 1000),
+    'loot_count': ('本局此类战利品生成计数（含袖章成功偷取）', 0, 0, 1000),
+    'loot_stolen': ('此目标已被袖章成功偷取普通战利品（0否，1是）', 0, 0, 1),
+    'bounty_hunter': ('赏金猎人有效点数（击杀时标记生效；未触发填0）', 0, 0, 3),
+    'preparation_level': ('刺杀准备阶段（0无准备，1–4对应准备等级）', 0, 0, 4),
     'swarm_generation': ('蝇群分裂代数（原始为0）', 0, 0, 1000),
     'trickster_combo': ('豺狼诡术师本次命中前的连续命中数', 0, 0, 1000),
     'level': ('装备等级', 0, 0, 100),
@@ -37,6 +41,8 @@ INPUTS = {
     'glyph_multiplier': ('刻印强度倍率（无增益填1）', 1, 0, 1000),
     'damage': ('此次基础伤害', 20, 0, 100000),
     'power': ('状态强度/剩余量', 10, 0, 10000),
+    'remaining_turns': ('酸蚀剩余时长', 0, 0, 1000),
+    'corrosion_public': ('酸蚀精度（0明确手填精确假设，1游戏公开显示值）', 0, 0, 1),
     'healing_percent': ('每次恢复占剩余额度的百分比', 25, 0, 100),
     'healing_flat': ('每次额外固定恢复', 0, 0, 10000),
     'stored_charges': ('神器当前整数充能', 3, 0, 100),
@@ -68,7 +74,7 @@ def integer_parameters(raw, *, signed_equipment=False, health_fields=None, zero_
         if key == 'level' and signed_equipment:
             low = -100
         value = raw.get(key, default)
-        fractional=key in ('accuracy','evasion','glyph_multiplier','power','healing_percent','loot_chance')
+        fractional=key in ('accuracy','evasion','glyph_multiplier','power','healing_percent','loot_chance','remaining_turns')
         expected = '数值，可使用小数' if fractional else '整数'
         invalid = f'{label}需要填写{expected}（{low}–{high}）'
         if isinstance(value, bool):
@@ -118,6 +124,34 @@ def block(title, rows, note=''):
 
 def table(title, columns, rows, note=''):
     return {'title': title, 'columns': columns, 'rows': [[str(v) for v in row] for row in rows], 'note': note}
+
+
+def corrosion_schedule(power, ticks, depth):
+    """SPD 4.0.2 Corrosion.totalIncomingDMG, before protection and actor order."""
+    damage, rows = float32(power), []
+    for _ in range(ticks):
+        rows.append(int(damage))
+        damage = float32(damage + (1 if damage < depth//2+2 else .5))
+    return rows
+
+
+def corrosion_bounds(power, ticks, depth):
+    """Conservative float intervals include both growth branches at the threshold."""
+    previous = lambda value: struct.unpack('f', struct.pack('I', struct.unpack('I', struct.pack('f', value))[0]-1))[0]
+    low, high, threshold = float32(power), previous(power+1), depth//2+2
+    rows = []
+    for _ in range(ticks):
+        rows.append((int(low), int(high)))
+        if high < threshold:
+            low, high = float32(low+1), float32(high+1)
+        elif low >= threshold:
+            low, high = float32(low+.5), float32(high+.5)
+        else:
+            # The +1/+0.5 transition is not monotone; neither initial endpoint
+            # alone bounds all later updates after single-precision rounding.
+            low, high = (min(float32(low+1), float32(threshold+.5)),
+                         max(float32(previous(threshold)+1), float32(high+.5)))
+    return rows
 
 
 def heal_schedule(amount, current, maximum, vial=-1, percent=.25, flat=0, apply_vial=True):
@@ -225,8 +259,11 @@ class PlayerValues:
             raw = {'depth':1, 'hero_level':1, **raw}
         healing_fields = ('power', 'healing_percent', 'healing_flat', 'vial')
         healing_missing = [key for key in healing_fields if key not in raw or raw[key] in ('', None)] if identity == 'actors.buffs.healing' else []
+        dot_fields = (('power', 'remaining_turns') if identity == 'actors.buffs.corrosion' else
+                      ('damage',) if identity == 'items.armor.glyphs.viscosity$defereddamage' else ())
+        dot_missing = [key for key in dot_fields if key not in raw or raw[key] in ('', None)]
         talent_reference = identity.startswith('actors.hero.talent.')
-        p = integer_parameters({key:value for key,value in raw.items() if key not in healing_missing}, signed_equipment=signed_equipment, health_fields=(), zero_talent=talent_reference)
+        p = integer_parameters({key:value for key,value in raw.items() if key not in healing_missing + dot_missing}, signed_equipment=signed_equipment, health_fields=(), zero_talent=talent_reference)
         if identity == 'actors.buffs.healing' and 'power' not in healing_missing and p['power'] != int(p['power']):
             raise ValueError('剩余治疗池必须是整数')
         talent_cap=4
@@ -337,6 +374,7 @@ class PlayerValues:
         self.rings(identity, p, result, requested)
         self.combat_effects(identity, owner, p, result, requested)
         self.world_effects(identity, owner, p, result, requested)
+        self.dot_effects(identity, p, result, requested, dot_missing)
         self.abilities(identity, entry, owner, p, result, requested)
         self.extra_effects(identity, entry, owner, p, result, requested)
         self.artifacts(identity, p, result, requested)
@@ -388,7 +426,18 @@ class PlayerValues:
             for section in result:
                 if section.get('columns',[None])[0]=='投入点数':
                     section['selected_row']=next((index for index,row in enumerate(section['rows']) if str(row[0]).lstrip('+')==str(p['talent'])),None)
-        inputs=[{'key':k,'label':INPUTS[k][0],'value':p[k],'min':-100 if k=='level' and signed_equipment else 0 if k=='talent' and talent_reference else INPUTS[k][2],'max':talent_cap if k=='talent' else INPUTS[k][3],'step':'any' if k in ('accuracy','evasion','glyph_multiplier','power','healing_percent','loot_chance') else 1} for k in INPUTS if k in requested]
+        inputs=[{'key':k,'label':INPUTS[k][0],'value':p[k],'min':-100 if k=='level' and signed_equipment else 0 if k=='talent' and talent_reference else INPUTS[k][2],'max':talent_cap if k=='talent' else INPUTS[k][3],'step':'any' if k in ('accuracy','evasion','glyph_multiplier','power','healing_percent','loot_chance','remaining_turns') else 1} for k in INPUTS if k in requested]
+        for input_value in inputs:
+            if input_value['key'] in dot_missing:
+                input_value['value'] = ''
+            if identity == 'items.armor.glyphs.viscosity$defereddamage' and input_value['key'] == 'damage':
+                input_value['label'] = '当前剩余延缓伤害池（整数）'
+            if identity == 'actors.buffs.corrosion':
+                if input_value['key'] == 'power':
+                    input_value.update(label='游戏显示的当前酸蚀强度（整数）' if p['corrosion_public'] else '当前酸蚀强度（明确手填精确假设）',
+                                       step=1 if p['corrosion_public'] else 'any')
+                if input_value['key'] == 'remaining_turns' and p['corrosion_public']:
+                    input_value.update(label='游戏显示的酸蚀剩余时长（最多两位小数）', step=.01)
         if identity=='items.armor.glyphs.stone':
             labels={'accuracy':'攻击者有效命中值（通常是敌人）','evasion':'穿戴者转换前的有效闪避值（通常是你）','damage':'刻印处理前的本次伤害'}
             for value in inputs:
@@ -400,7 +449,7 @@ class PlayerValues:
         if identity.split('$')[0]=='actors.buffs.monkenergy':
             for input_value in inputs:
                 if input_value['key']=='power':input_value['label']='当前内力（可填小数）'
-        power_labels={'actors.buffs.poison':'剩余中毒回合','actors.buffs.bleeding':'当前流血强度','actors.buffs.corrosion':'当前酸蚀强度（未取整）','actors.buffs.barrier':'当前屏障护盾','actors.hero.abilities.warrior.heroicleap':'此次护甲随机减伤','actors.hero.talent.body_slam':'此次护甲随机减伤','actors.buffs.amok':'当前狂乱剩余回合','actors.buffs.revealedarea':'当前感知剩余回合'}
+        power_labels={'actors.buffs.poison':'剩余中毒回合','actors.buffs.bleeding':'当前流血强度','actors.buffs.barrier':'当前屏障护盾','actors.hero.abilities.warrior.heroicleap':'此次护甲随机减伤','actors.hero.talent.body_slam':'此次护甲随机减伤','actors.buffs.amok':'当前狂乱剩余回合','actors.buffs.revealedarea':'当前感知剩余回合'}
         if identity in power_labels:
             for input_value in inputs:
                 if input_value['key']=='power':input_value['label']=power_labels[identity]
@@ -435,6 +484,15 @@ class PlayerValues:
                                         ('actors/mobs/Mob.java','普通掉率中财富与遗忘碎片的加法叠加',1075)):
                     source_metadata['links'].append({'label':label,'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{commit}/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/{tail}#L{line}','kind':'official-game-source'})
                 source_metadata['limits'].append('遗忘碎片默认−1（无效果）、合格未鉴定项数0；两者均为手填参考条件，不从存档推定未知身份、装备或近期使用标记。')
+            if 'loot_stolen' in requested:
+                source_metadata['links'].append({'label':'袖章成功偷取与死亡普通掉落门控',
+                    'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{commit}/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/items/artifacts/MasterThievesArmband.java#L141','kind':'official-game-source'})
+                source_metadata['limits'].append('袖章默认未成功偷取；只按明确手填条件关闭普通通道，失败尝试不关闭，固定奖励分别结算。')
+            if 'bounty_hunter' in requested:
+                for tail,label in (('actors/mobs/Mob.java#L1075','赏金猎人、财富与碎片的普通掉率叠加'),
+                                   ('actors/buffs/Preparation.java#L62','刺杀准备等级1–4'),('actors/hero/Talent.java#L139','赏金猎人最多3点')):
+                    source_metadata['links'].append({'label':label,'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{commit}/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/{tail}','kind':'official-game-source'})
+                source_metadata['limits'].append('赏金猎人有效点数和准备阶段默认0；须玩家确认击杀结算时标记与准备同时生效，不从存档推定隐藏目标或短暂状态。')
             if 'exotic_crystals' in requested:
                 for tail,label in (('items/trinkets/ExoticCrystals.java','异晶转换概率'),
                                    ('items/trinkets/Trinket.java','饰品生效与无效果条件'),
@@ -449,6 +507,7 @@ class PlayerValues:
         return {'id':identity,'name':entry['name'],'version':self.catalog.data['version'], 'status':'values',
                 'blocks':result, 'inputs':inputs, 'alchemy_recipes': alchemy_recipes,
                 **({'missing_inputs':healing_missing} if identity == 'actors.buffs.healing' else {}),
+                **({'missing_inputs':dot_missing} if dot_fields else {}),
                 'notice': '回合指游戏时间，不是现实秒数。小数最多显示六位有效数字。',
                 'no_fixed_values':not result, 'non_numeric':self.non_numeric(identity),
                 'provenance':source_metadata}
@@ -602,6 +661,7 @@ class PlayerValues:
 
     def combat_effects(self, identity, owner, p, result, requested):
         if not owner:return
+        if identity == 'items.armor.glyphs.viscosity$defereddamage':return
         level=p['level'];depth=p['depth'];hero=p['hero_level']
         if identity.startswith(('items.weapon.enchantments.','items.armor.glyphs.','items.weapon.curses.','items.armor.curses.')):
             effect_level = max(0, level)
@@ -746,8 +806,6 @@ class PlayerValues:
             requested.add('depth');rows.extend([metric('淤泥伤害',1+d//5 if d>=5 else .5,'HP/回合','入水洗去；对粘咕为1HP/回合')])
         if identity in ('actors.buffs.burning','actors.blobs.fire','items.potions.potionofliquidflame'):
             requested.add('depth');rows.extend([metric('每次燃烧伤害',f'1–{3+d//4}','HP','无抗性；持续接触火焰会续燃')])
-        if identity=='actors.buffs.corrosion':
-            requested.update(('power','depth'));n=p['power'];rows=[metric('下一次酸蚀伤害',math.floor(n),'HP'),metric('下次后强度增加',1 if n<d//2+2 else .5,'点','伤害向下取整；持续时间由施加来源决定')]
         if identity=='actors.buffs.barrier':
             requested.add('power');n=p['power'];rows=[metric('每回合平均护盾衰减',min(1,n/20),'点','无不动如山等修正')]
         if identity.startswith('items.armor.') and identity.endswith(('warriorarmor','magearmor','roguearmor','huntressarmor','duelistarmor','clericarmor')):
@@ -759,7 +817,7 @@ class PlayerValues:
         if identity=='items.armor.glyphs.antimagic':rows=[metric('额外魔法减伤','0–0' if l<0 else f'{l}–{rounded(3+1.5*l)}','HP','仅对受此刻印影响的魔法；负等级在英雄刻印查询中按未生效处理')];requested.add('level')
         if identity=='items.armor.glyphs.flow':rows=[metric('水中移动速度倍率',1 if l<0 else 2+.5*l,'倍','英雄负等级护甲不触发此移动增益')];requested.add('level')
         if identity=='items.armor.glyphs.swiftness':rows=[metric('无近敌时移动速度倍率',1 if l<0 else 1.2+.04*l,'倍','英雄负等级护甲不触发此移动增益'),metric('近敌检查距离',3,'格','沿可通行路径')];requested.add('level')
-        if identity in ('items.armor.glyphs.viscosity','items.armor.glyphs.viscosity$defereddamage'):
+        if identity=='items.armor.glyphs.viscosity':
             requested.update(('level','damage'));n=p['damage'];effective=max(0,l);deferred=math.ceil(n*(effective+1)/(effective+6));rows=[metric('转为延缓伤害',deferred,'HP'),metric('立即承受',n-deferred,'HP')]
         if identity=='items.armor.glyphs.stone':
             from .game_math import stone_factor,float32
@@ -940,6 +998,61 @@ class PlayerValues:
             elif name=='flash':requested.add('casts');rows.extend([metric('升华中当前消耗',2+p['casts'],'次充能','次数指升华中此前使用闪现的次数')])
             elif name=='recallinscription':result.append(table('铭文复诵消耗',['物品种类','圣典充能'],[['普通符石',2],['强化/附魔符石',4],['普通卷轴',3],['嬗变卷轴',6],['一般秘卷',4],['蜕变/附魔秘卷',8]]));rows.append(metric('可复诵时间',300 if t>=2 else 10,'回合'))
         if rows:result.append(block('技能具体效果',rows,'未计额外天赋、强化、抗性；当前所填等级生效。'))
+
+    def dot_effects(self, identity, p, result, requested, missing):
+        bounds = ('以下为基础伤害，不等同最终生命损失；抗性、免疫、护盾及其他防护会改变实际结果。'
+                  '更新次数不是安全等待时间，不预测角色与敌人的行动顺序。')
+        if identity == 'items.armor.glyphs.viscosity$defereddamage':
+            requested.add('damage')
+            if missing:
+                result.append(block('当前延缓伤害池', [], '当前池尚未确认，请填写整数池；不套用新命中的刻印分摊。'))
+                return
+            pool = p['damage']
+            tick = max(1, int(float32(pool * float32(.1)))) if pool else 0
+            note = bounds + '假设没有新增延缓伤害；新施加状态会先延后一回合，当前记录不能确认下一次执行时机。'
+            if pool == 0:
+                note += '没有剩余待结算池；若零池状态仍存在并执行一次更新，会先结算基础1点、扣池为−1并移除；下列0表示没有剩余池。'
+            result.append(block('当前延缓伤害池', [metric('当前剩余池', pool, 'HP'),
+                metric('下一次基础伤害', tick, 'HP', '正池的下一次状态更新；零池边界见说明'),
+                metric('扣池后剩余', max(0, pool-tick), 'HP'), metric('剩余基础总量', pool, 'HP')], note))
+            result[-1]['note_summary'] = '按当前整数伤害池计算基础伤害；未计新增伤害与行动时序。零池边界见完整说明。'
+        if identity == 'actors.buffs.corrosion':
+            requested.update(('power', 'remaining_turns', 'corrosion_public', 'depth'))
+            if missing:
+                result.append(block('当前酸蚀状态', [], '当前强度或剩余时长尚未确认，请补全空白参数；不推定施加来源或默认时长。'))
+                return
+            power, left, depth = p['power'], p['remaining_turns'], p['depth']
+            if p['corrosion_public']:
+                if power != int(power) or left != round(left, 2):
+                    raise ValueError('公开酸蚀强度须为整数、剩余时长最多两位小数；精确小数须选择明确手填假设')
+                # Include both rounding endpoints conservatively; never infer the saved fraction.
+                low_ticks = math.ceil(max(0, left-.005))
+                high_ticks = math.ceil(left+.005)
+                intervals = corrosion_bounds(power, high_ticks, depth)
+                low = [row[0] for row in intervals[:low_ticks]]
+                high = [row[1] for row in intervals]
+                span = lambda a, b: str(a) if a == b else f'{a}–{b}'
+                rows = [[i+1, span(low[i] if i < len(low) else 0, high[i])]
+                        for i in range(high_ticks)]
+                note = ('按游戏公开精度的保守范围：整数强度代表取整前的一个区间，时长只显示到两位小数；'
+                        '接近整回合时可能多一次更新。范围表中的0也可能表示状态已结束，无此次更新。'
+                        '隐藏小数没有带入；需要单一序列时，请选择“明确手填精确假设”并核对数值。')
+                values = [metric('公开当前强度', int(power), '点'), metric('公开剩余时长', left, '回合'),
+                          metric('下一次基础伤害', int(power), 'HP', '若状态仍执行下一次更新'),
+                          metric('剩余更新次数范围', span(low_ticks, high_ticks), '次'),
+                          metric('剩余基础总量范围', span(sum(low), sum(high)), 'HP')]
+            else:
+                sequence = corrosion_schedule(power, math.ceil(float32(left)), depth)
+                rows = [[i+1, value] for i, value in enumerate(sequence)]
+                note = '明确手填精确假设；不表示游戏公开了这些未取整小数。'
+                values = [metric('当前强度假设', power, '点'), metric('剩余时长假设', left, '回合'),
+                          metric('下一次基础伤害', sequence[0] if sequence else 0, 'HP'),
+                          metric('下次后强度增加', 1 if float32(power) < depth//2+2 else .5, '点'),
+                          metric('剩余更新次数', len(sequence), '次'), metric('剩余基础总量', sum(sequence), 'HP')]
+            note += bounds + '假设不继续接触酸雾、没有续时长或提高强度；不能据此断言必死或安全。'
+            result.append(block('当前酸蚀状态', values, note))
+            result[-1]['note_summary'] = ('公开显示值给出的基础伤害范围，未计防护与后续续时长；隐藏小数未带入。' if p['corrosion_public'] else '明确手填精确假设的基础伤害，未计防护与后续新增效果。')
+            result.append(table('逐次酸蚀基础伤害', ['状态更新次数', '本次基础伤害（HP）'], rows, '使用上方同一组条件；防护与行动时序等完整范围见当前状态说明。'))
 
     def dynamic(self, identity, entry, owner, p, result, requested):
         level,hero,maximum,current,depth=p['level'],p['hero_level'],p['max_hp'],p['hp'],p['depth']

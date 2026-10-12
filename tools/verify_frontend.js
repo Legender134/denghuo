@@ -705,6 +705,22 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert(dashboard.get('#settings-error').textContent.includes('新修改'));
 
   const numeric=harness();numeric.load('rules.js');numeric.context.state=stamp();
+  const commonLoot={title:'掉落物、数量与概率',columns:['掉落物','数量','概率','条件'],rows:[['短剑','1','10%','同一条件'],['长矛','1','20%','同一条件']],note:'按条件列查看概率'};
+  numeric.context.lootBlock=commonLoot;const originalLoot=JSON.stringify(commonLoot);
+  const compactLoot=numeric.run('exampleHTML(lootBlock)');
+  assert.match(compactLoot,/查看共同掉落条件（全部2项）/);
+  assert.equal((compactLoot.match(/同一条件/g)||[]).length,1,'identical conditions stay readable once');
+  assert.match(compactLoot,/<td>短剑<\/td><td>1<\/td><td>10%<\/td>/);
+  assert(!compactLoot.includes('<th scope="col">条件</th>'));
+  assert(compactLoot.includes('按共同条件查看概率'));
+  assert(!compactLoot.includes('按条件列查看概率'));
+  assert.equal(JSON.stringify(commonLoot),originalLoot,'presentation must preserve original probability data');
+  commonLoot.rows[1][3]='不同条件';const separateLoot=numeric.run('exampleHTML(lootBlock)');
+  assert(!separateLoot.includes('查看共同掉落条件'),'different branches retain individual conditions');
+  assert(separateLoot.includes('<th scope="col">条件</th>'));
+  assert(separateLoot.includes('不同条件'));
+  commonLoot.title='其他资料';commonLoot.rows[1][3]='同一条件';
+  assert(!numeric.run('exampleHTML(lootBlock)').includes('查看共同掉落条件'),'only the loot table changes');
   numeric.run("numericalDetail={identity:'example',inputs:[{key:'hp'},{key:'vial'}],origins:{hp:'快照',vial:'手填'},source:calculationStamp()};refreshNumericalOrigin()");
   assert(!numeric.get('#values-freshness').textContent.includes('旧快照'));
   numeric.context.state.data.buffs=[{kind:'Barrier',current_shield:7}];assert.equal(numeric.run('visibleCalculationContext().current_shield'),7);numeric.context.state.data.buffs.push({kind:'Barrier',current_shield:8});assert(!('current_shield' in numeric.run('visibleCalculationContext()')));numeric.context.state.data.buffs=[];

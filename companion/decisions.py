@@ -69,6 +69,31 @@ def healing_context(buff):
             for key,target in fields.items() if key in valid}
 
 
+def dot_context(buff):
+    """Already projected display values; do not inspect the raw saved damage/left."""
+    fields = buff.get('public_dot', {})
+    if buff.get('reference_id') == 'items.armor.glyphs.viscosity$defereddamage':
+        value = fields.get('damage')
+        return {'damage': value} if type(value) is int and 0 <= value <= 100000 else {}
+    if buff.get('reference_id') != 'actors.buffs.corrosion':
+        return {}
+    result = {'corrosion_public': 1}
+    value = fields.get('power')
+    if type(value) is int and 0 <= value <= 10000:
+        result['power'] = value
+    value = fields.get('remaining_turns')
+    if type(value) in (int, float) and 0 <= value <= 1000:
+        result['remaining_turns'] = value
+    return result
+
+
+def dot_origins(fields):
+    labels = {'damage': '游戏公开的当前延缓池（整数）', 'power': '游戏公开的当前酸蚀强度（取整）',
+              'remaining_turns': '游戏公开的酸蚀剩余时长（最多两位小数）',
+              'corrosion_public': '公开显示精度范围；隐藏小数未带入'}
+    return {key: labels[key] for key in fields}
+
+
 def healing_comparison(buff, hp, maximum, vial):
     from .game_math import healing_pool_with_vial, potion_healing_pool
     from .values import heal_schedule, metric
@@ -142,6 +167,13 @@ def context_actions(session,snapshot):
                 active = [buff for buff in data.get('buffs', []) if buff.get('kind') == 'Healing']
                 if len(active) == 1:
                     reference['params'].update(healing_context(active[0]))
+            active = [buff for buff in data.get('buffs', []) if buff.get('reference_id') == reference['entry']]
+            if len(active) == 1:
+                fields = dot_context(active[0])
+                reference['params'].update(fields)
+                reference['field_origins'] = dot_origins(fields)
+                if fields:
+                    reference['source_label'] = provenance['label'] + ' · 游戏公开状态条件'
         if tip['id'] in ('strength_主武器', 'strength_副武器', 'strength_护甲'):
             for reference in references:
                 item=next(item for item in known_available if item['key']==reference['entry'] and item['location']==tip['id'].split('_',1)[1])

@@ -5,7 +5,7 @@ const numericalFormDrafts=new Map();
 const numericalCalculated=new Map();
 const heroParameterKeys=['hero_level','max_hp','hp','depth','strength','current_shield'];
 const healingParameterKeys=['power','healing_percent','healing_flat','vial'];
-function currentParameterKeys(identity){return identity==='actors.buffs.healing'?[...heroParameterKeys,...healingParameterKeys]:['items.waterskin','items.dewdrop'].includes(identity)?[...heroParameterKeys,'shielding_dew','vial','dew_volume']:identity?.startsWith('actors.hero.talent.')||identity?.startsWith('actors.hero.spells.')&&!identity.includes('$')?[...heroParameterKeys,'talent']:heroParameterKeys;}
+function currentParameterKeys(identity){return identity==='actors.buffs.corrosion'?[...heroParameterKeys,'power','remaining_turns','corrosion_public']:identity==='items.armor.glyphs.viscosity$defereddamage'?[...heroParameterKeys,'damage']:identity==='actors.buffs.healing'?[...heroParameterKeys,...healingParameterKeys]:['items.waterskin','items.dewdrop'].includes(identity)?[...heroParameterKeys,'shielding_dew','vial','dew_volume']:identity?.startsWith('actors.hero.talent.')||identity?.startsWith('actors.hero.spells.')&&!identity.includes('$')?[...heroParameterKeys,'talent']:heroParameterKeys;}
 const fixedNumericalDrafts=new Map();
 function numericalDraftKey(detail=numericalDetail){return detail?.savedPlan?'plan:'+detail.savedPlan.id:detail?.identity;}
 function sameNumericalParams(left,right){const keys=Object.keys(left||{}).sort(),other=Object.keys(right||{}).sort();return keys.length===other.length&&keys.every((key,index)=>key===other[index]&&Number(left[key])===Number(right[key]));}
@@ -46,13 +46,20 @@ function currentSkillContext(identity){
   return {state:row?.state||'unknown',conditions,params:learned&&(!spell||row.talent&&row.points>0)?{[resource?'shielding_dew':'talent']:row.points}:{},
     origin:learned?(state?.settings?.mode==='manual'?'手动局势':'快照')+` · ${spell?'此技能已学':'此天赋已投入'} ${row.points} 点`:'示例 · '+conditions.split('；')[0]};
 }
-function heroInputOrigin(key,stamp=calculationStamp()){if(key==='talent'||key==='shielding_dew'){const skill=currentSkillContext(numericalDetail?.identity);if(skill)return skill.origin;}return (stamp===null?'参考来源未确认':stamp?.mode==='manual'?'手动局势':'快照')+(key==='strength'?(typeof currentCharacterStrengthLabel==='function'?currentCharacterStrengthLabel():'基础力量参考'):key==='current_shield'?'公开当前护盾':'');}
+function heroInputOrigin(key,stamp=calculationStamp()){if(key==='talent'||key==='shielding_dew'){const skill=currentSkillContext(numericalDetail?.identity);if(skill)return skill.origin;}const dotLabels={damage:'游戏公开的当前延缓池（整数）',power:'游戏公开的当前酸蚀强度（取整）',remaining_turns:'游戏公开的酸蚀剩余时长（最多两位小数）',corrosion_public:'公开显示精度范围；隐藏小数未带入'};return (stamp===null?'参考来源未确认':stamp?.mode==='manual'?'手动局势':'快照')+(key in currentDotContext(numericalDetail?.identity)?' · '+dotLabels[key]:key==='strength'?(typeof currentCharacterStrengthLabel==='function'?currentCharacterStrengthLabel():'基础力量参考'):key==='current_shield'?'公开当前护盾':'');}
 function cancelNumericalDetail(){rememberFixedNumericalDraft();numericalRequest++;numericalDetail=null;}
 $('#detail-dialog').addEventListener('close',cancelNumericalDetail);
 function exampleHTML(example){
   const values=(example.values||[]).map(v=>`<div><dt>${escapeHTML(v.label)}</dt><dd>${escapeHTML(displayNumber(v.value))}<small>${escapeHTML(v.unit||'')}</small></dd>${v.condition?`<p class="numeric-condition">${escapeHTML(v.condition)}</p>`:''}</div>`).join('');
-  const table=example.columns?`<div class="table-scroll" tabindex="0" aria-label="可横向滚动的数值表"><table><thead><tr>${example.columns.map(c=>`<th scope="col">${escapeHTML(c)}</th>`).join('')}</tr></thead><tbody>${example.rows.map((row,index)=>`<tr${example.selected_row===index?' class="selected-value-row" aria-current="true"':''}>${row.map(v=>`<td>${escapeHTML(displayNumber(v))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:'';
-  return `<section class="example-block"><h3>${escapeHTML(example.title)}</h3>${example.note?`<p class="muted">${escapeHTML(example.note)}</p>`:''}${values?`<dl class="numeric-values">${values}</dl>`:''}${table}</section>`;
+  // Collapse only byte-identical conditions shared by every normal loot row.
+  const sharedCondition=example.title==='掉落物、数量与概率'&&example.columns?.at(-1)==='条件'&&example.rows?.length>1&&typeof example.rows[0].at(-1)==='string'&&example.rows[0].at(-1)&&example.rows.every(row=>row.length===example.columns.length&&row.at(-1)===example.rows[0].at(-1))?example.rows[0].at(-1):'';
+  const columns=sharedCondition?example.columns.slice(0,-1):example.columns,rows=sharedCondition?example.rows.map(row=>row.slice(0,-1)):example.rows;
+  const common=sharedCondition?`<details class="numeric-note-details"><summary>查看共同掉落条件（全部${example.rows.length}项）</summary><p class="muted">${escapeHTML(sharedCondition)}</p></details>`:'';
+  const table=example.columns?`<div class="table-scroll" tabindex="0" aria-label="可横向滚动的数值表"><table><thead><tr>${columns.map(c=>`<th scope="col">${escapeHTML(c)}</th>`).join('')}</tr></thead><tbody>${rows.map((row,index)=>`<tr${example.selected_row===index?' class="selected-value-row" aria-current="true"':''}>${row.map(v=>`<td>${escapeHTML(displayNumber(v))}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:'';
+  const noteText=example.note_summary||example.note;
+  const note=example.note?`<p class="muted">${escapeHTML(sharedCondition?noteText.replace('按条件列查看概率','按共同条件查看概率'):noteText)}</p>`:'';
+  const detail=example.note&&example.note_summary?`<details class="numeric-note-details"><summary>展开计算规则与适用范围</summary><p class="muted">${escapeHTML(example.note)}</p></details>`:'';
+  return `<section class="example-block"><h3>${escapeHTML(example.title)}</h3>${note}${values?`<dl class="numeric-values">${values}</dl>`:''}${common}${table}${detail}</section>`;
 }
 // Presentation only; request parameters and backend arithmetic retain their precision.
 function displayNumber(value){
@@ -60,6 +67,13 @@ function displayNumber(value){
   if(typeof value==='number')return format(value);
   if(typeof value==='string'&&/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?%?$/i.test(value)){const percent=value.endsWith('%');return format(Number(percent?value.slice(0,-1):value))+(percent?'%':'');}
   return value;
+}
+function currentDotContext(identity){
+  if(state?.error||!['actors.buffs.corrosion','items.armor.glyphs.viscosity$defereddamage'].includes(identity))return {};
+  const buffs=(state?.data?.buffs||[]).filter(buff=>buff.reference_id===identity);
+  if(buffs.length!==1)return {};
+  const fields=buffs[0].public_dot||{},keys=identity==='actors.buffs.corrosion'?['power','remaining_turns','corrosion_public']:['damage'];
+  return Object.fromEntries(keys.filter(key=>typeof fields[key]==='number'&&Number.isFinite(fields[key])).map(key=>[key,fields[key]]));
 }
 function visibleCalculationContext(identity=numericalDetail?.identity){
   const hero=state?.data?.hero;
@@ -73,13 +87,15 @@ function visibleCalculationContext(identity=numericalDetail?.identity){
     else if(vials.length===1&&vials[0].known&&vials[0].available&&vials[0].level_known&&Number.isInteger(vials[0].level)&&vials[0].level>=-1&&vials[0].level<=3)conditions.vial=vials[0].level;
     if(identity==='items.waterskin'&&water.length===1&&Number.isInteger(water[0].volume))conditions.dew_volume=water[0].volume;
   }
-  return {hero_level:hero.level,max_hp:hero.ht,hp:hero.hp,depth:state.data.depth,strength:typeof currentCharacterStrength==='function'?currentCharacterStrength():hero.strength,...(Number.isInteger(shield)&&shield>=0&&shield<=10000?{current_shield:shield}:{}),...conditions,...currentSkillContext(identity)?.params};
+  return {hero_level:hero.level,max_hp:hero.ht,hp:hero.hp,depth:state.data.depth,strength:typeof currentCharacterStrength==='function'?currentCharacterStrength():hero.strength,...(Number.isInteger(shield)&&shield>=0&&shield<=10000?{current_shield:shield}:{}),...conditions,...currentDotContext(identity),...currentSkillContext(identity)?.params};
 }
 function validNumericalInputs(inputs,detail){
   const invalid=inputs.find(input=>{
     const spec=detail.inputs?.find(field=>field.key===input.dataset.valueKey),raw=input.value.trim(),value=Number(raw);
     const syntax=/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(raw);
-    const wrongStep=spec&&spec.step!=='any'&&Math.abs((value-(Number(spec.min)||0))/(Number(spec.step)||1)-Math.round((value-(Number(spec.min)||0))/(Number(spec.step)||1)))>1e-8;
+    const corrosionExact=detail.identity==='actors.buffs.corrosion'&&$('[data-value-key="corrosion_public"]')?.value==='0';
+    const step=corrosionExact&&['power','remaining_turns'].includes(input.dataset.valueKey)?'any':spec?.step;
+    const wrongStep=spec&&step!=='any'&&Math.abs((value-(Number(spec.min)||0))/(Number(step)||1)-Math.round((value-(Number(spec.min)||0))/(Number(step)||1)))>1e-8;
     const bad=!syntax||!Number.isFinite(value)||!!spec&&(value<Number(spec.min)||value>Number(spec.max)||wrongStep);
     input.setCustomValidity?.(bad?'请填写范围内的完整数值；整数参数不能含小数。':'');
     return bad||!input.validity.valid;
@@ -135,7 +151,7 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
     if(seq!==numericalRequest||!$('#detail-dialog').open)return;
     if(result.status==='legacy'){container.innerHTML=`<p class="rule-warning">${escapeHTML(String(result.notice||'').replace('小数最多显示六位有效数字。','显示通常保留三位小数；微小非零值保留有效数字，计算使用原始精度。'))}</p>`;return;}
     const first=result.blocks[0];
-    const lead=first?.values?.length<=6&&!first?.columns&&/^(当前 |按你的|命中概率|技能具体效果|当前治疗状态)/.test(first.title);
+    const lead=first?.values?.length<=6&&!first?.columns&&/^(当前 |按你的|命中概率|技能具体效果|当前治疗状态|当前酸蚀状态|当前延缓伤害池)/.test(first.title);
     detail.inputs=result.inputs;detail.result=result;
     if(options.commitPending)detail.sessionUnsaved=true;
     if(options.commitPending)numericalFormDrafts.delete(currentDraftKey());
