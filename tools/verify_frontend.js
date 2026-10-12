@@ -261,6 +261,61 @@ function setup(options={}){
   });
   console.log(JSON.stringify({comparison_saved_plan_race_cases:checks.length}));
 }
+async function verifySingleItemReveal(){
+  const h=harness(),pending=[],lookups=[];
+  h.run('let numericalRequest=0;');
+  Object.assign(h.context,{cancelNumericalDetail(){h.run('numericalRequest++');},
+    loadNumericalDetail(...args){h.run('numericalRequest++');lookups.push(args);},
+    post:(url,payload)=>new Promise((resolve,reject)=>pending.push({url,payload,resolve,reject}))});
+  const app=fs.readFileSync(path.join(root,'web/app.js'),'utf8');
+  h.run(app.slice(app.indexOf('function itemSnapshotReference('),app.indexOf('function showReference(')));
+  h.context.reference={inventorySnapshot:'a'.repeat(64),items:[],stamp:{mode:'save',slot:1,revision:3}};
+  h.context.selected={name:'未鉴定药剂',key:'items.potions.potion',instance_key:'item-2',
+    location:'背包',details:[],known:false,has_hidden_details:true};
+  const revealButton=()=>h.get('#detail-related').children.find(row=>row.textContent==='揭示这件物品的真实资料（剧透）');
+  const response=(overrides={})=>({source:{expected:'a'.repeat(64)},note:'仅揭示这一件',
+    item:{...structuredClone(h.context.selected),key:'items.potions.potionofhealing',name:'治疗药剂',
+      revealed:true,has_hidden_details:false,user_note:{title:'保留备用',body:'玩家自己的备注',scope:'specific_item'}},...overrides});
+  h.run('showItem(selected,reference)');
+  assert(revealButton());assert.equal(pending.length,0,'opening an unknown item must not disclose automatically');
+  const originalButton=revealButton(),revealing=originalButton.listeners.click();
+  assert(originalButton.disabled);assert.equal(pending[0].url,'/api/inventory/reveal');
+  assert.deepEqual(JSON.parse(JSON.stringify(pending[0].payload)),{expected:'a'.repeat(64),instance_key:'item-2',reveal:true});
+  pending.shift().resolve(response());await revealing;
+  assert.equal(h.get('#detail-title').textContent,'治疗药剂');assert(!revealButton());
+  assert.equal(h.get('#detail-context').textContent,'仅揭示这一件');
+  assert.equal(h.get('#detail-user-note').children[2].textContent,'保留备用');
+  assert.equal(lookups.at(-1)[0],'items.potions.potionofhealing');
+  assert.equal(h.context.selected.key,'items.potions.potion','the public inventory remains redacted');
+
+  h.context.selected={...h.context.selected,name:'长矛',key:'items.weapon.melee.spear',known:true,
+    level:null,game_level_known:false,related:[{id:'items.scrolls.scrollofupgrade',name:'升级风险'}]};
+  h.run('showItem(selected,reference)');
+  assert(revealButton(),'related links and initial numerical loading must retain the reveal entry');
+  assert.equal(h.get('#detail-related').children[0].textContent,'查看 升级风险');
+  const knownPending=revealButton().listeners.click();
+  const knownResponse=response();knownResponse.item.level=2;
+  pending.shift().resolve(knownResponse);await knownPending;
+  assert.equal(lookups.at(-1)[1].level,2);assert.equal(lookups.at(-1)[2],'revealed');
+
+  h.run('showItem(selected,reference)');
+  const failedButton=revealButton(),failed=failedButton.listeners.click();
+  pending.shift().reject(new Error('背包快照已经变化'));await failed;
+  assert(!failedButton.disabled);assert.match(h.get('#detail-related').children.at(-1).textContent,/快照已经变化/);
+  const retried=failedButton.listeners.click();pending.shift().resolve(response({source:{expected:'b'.repeat(64)}}));await retried;
+  assert.equal(h.get('#detail-title').textContent,'长矛');assert(!failedButton.disabled);
+  assert.match(h.get('#detail-related').children.at(-1).textContent,/与所选物品不一致/);
+
+  h.run('showItem(selected,reference)');const closed=revealButton().listeners.click();
+  h.get('#detail-dialog').close();pending.shift().resolve(response());await closed;
+  assert(!h.get('#detail-dialog').open,'a late disclosure must not reopen a closed dialog');
+  h.run('showItem(selected,reference)');const switched=revealButton().listeners.click();
+  h.run("showDetail('另一条资料','','','')");pending.shift().resolve(response());await switched;
+  assert.equal(h.get('#detail-title').textContent,'另一条资料','a late item cannot replace another detail');
+  h.run("showItem(selected,{...reference,stamp:{mode:'manual'}})");assert(!revealButton());
+  h.run('showItem({...selected,revealed:true},reference)');assert(!revealButton());
+  console.log('PASS: explicit single-item disclosure; related-link retention; captured instance; revealed numerical origin; preserved notes; retry, close and navigation races');
+}
 async function verifyInventoryEntrySnapshots(){
   const h=harness(),sword='items.weapon.melee.sword',buttons={inventory:[],equipped:[]};
   const rows=[{key:sword,name:'单手剑 +2',level:2,location:'主武器',quantity:1,details:[],known:true,available:true,
@@ -554,6 +609,7 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   verifyRawNumericValidation();
   verifyNavigationHistory();
   await verifyInventoryEntrySnapshots();
+  await verifySingleItemReveal();
   await verifyNumericalSaveTransitions();
   await verifyBackupDestinationDrafts();
   await verifyDirectoryPickerDrafts();

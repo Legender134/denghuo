@@ -14,6 +14,14 @@
 - Chinese translation: Shattered Pixel Dungeon translation contributors
 - License: GNU General Public License, version 3 or later
 
+`web/reference-images/` contains unscaled, transparent frames and item identity
+icons cropped from the original game artwork at that same fixed revision.
+`data/reference_images.json` identifies each source atlas, crop, Java mapping,
+source SHA-256 and output SHA-256. The original game copyrights and GPL-3.0-or-later
+terms above apply. Random potion, scroll and ring appearances are separate from
+effect icons; representative variants are explicitly marked. The extractor is
+`tools/build_reference_images.py`; no replacement or generated artwork is used.
+
 `companion/values_resources.py` ports the dew-consumption and recovery branches from `Waterskin.execute`, `Dewdrop.consumeDew`, `VialOfBlood` and `Healing.setHeal` at the fixed revision above. Its arithmetic follows the original Java single-precision operations before rounding and is a GPL-3.0-or-later derivative. Player-facing provenance links point to the same commit. Other reviewed calculation tables retain the same source and license obligations.
 
 `companion/game_math.py`, `decisions.py` and `engine.py` also translate the public remaining-healing projection, `Healing.healingThisTick` / `setHeal`, `PotionOfHealing` pool and `VialOfBlood` limit branches from that same revision under GPL-3.0-or-later. `global_progress.py` checks the two byte-preserved global file structures against `Badges`, `Rankings`, `Bundle` and `FileUtils`; it does not instantiate game objects or edit their statistics. The game copyrights above apply to the translated arithmetic.

@@ -63,8 +63,19 @@ function renderFloorMonsters(catalog,key){
     let container=target;
     if(row.fold_group){const group=groups.get(row.fold_group);if(!group.attached){target.append(group.wrapper);group.attached=true;}container=group.content;}
     const card=document.createElement('details');card.className='floor-monster';
-    const summary=document.createElement('summary'),name=document.createElement('strong'),brief=document.createElement('span');
-    name.textContent=row.name+(row.group==='普通轮换'?'':` · ${row.group}`);brief.textContent=`生命 ${row.hp} · 普攻 ${row.damage} · 减伤 ${row.dr}`;summary.append(name,brief);
+    const hero=catalog.source.hero_level??1,referenceDepth=row.reference_depth??catalog.source.depth,referenceParams={depth:referenceDepth,hero_level:hero,loot_count:0,...(row.reference_params||{})};
+    function openMonsterReference(){
+      if(key!==floorGuide.key||signature!==floorGuide.signature)return;
+      const fieldOrigins=row.reference_depth==null?{}:{depth:'召唤规则固定等效层数，非当前楼层'};
+      for(const challenge of ['stronger_bosses','no_herbalism'])if(row.reference_params?.[challenge]!=null)fieldOrigins[challenge]=catalog.source.challenges_known?'所选存档已保存的挑战条件':'挑战未知，按关闭此挑战假设';
+      showReference({id:row.id,name:row.name,lookup_context:{capture_context:true,ignore_drafts:true,stamp:floorGuide.referenceStamp,params:referenceParams,field_origins:fieldOrigins,conditions:row.condition+'；累计生成示例0次（含成功偷取），未读取本局计数或敌人临时状态。'}},'4.0.2');
+    }
+    const summary=document.createElement('summary'),name=document.createElement('button'),brief=document.createElement('span');
+    name.type='button';name.className='reference-link';name.setAttribute('aria-label',`打开${row.name}完整图鉴`);
+    if(typeof referenceNameHTML==='function')name.innerHTML=referenceNameHTML(row.id,row.name);else name.textContent=row.name;
+    name.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();openMonsterReference();});
+    if(typeof bindReferencePreview==='function')bindReferencePreview(name,row,{params:referenceParams});
+    brief.textContent=`${row.group==='普通轮换'?'':row.group+' · '}生命 ${row.hp} · 普攻 ${row.damage} · 减伤 ${row.dr}`;summary.append(name,brief);
     const condition=document.createElement('p');condition.className='muted';condition.textContent=row.group+' · '+row.condition;
     const content=document.createElement('div'),retry=document.createElement('button');retry.type='button';retry.className='text-button';retry.textContent='重新读取怪物资料';retry.hidden=true;
     card.append(summary,condition,content,retry);container.append(card);
@@ -73,14 +84,15 @@ function renderFloorMonsters(catalog,key){
       if(loaded||busy||key!==floorGuide.key||signature!==floorGuide.signature)return;
       busy=true;retry.hidden=true;content.textContent='正在读取数值与掉落概率…';
       try{
-        const hero=catalog.source.hero_level??1,referenceDepth=row.reference_depth??catalog.source.depth,referenceParams={depth:referenceDepth,hero_level:hero,loot_count:0,...(row.reference_params||{})},query=new URLSearchParams({id:row.id,...referenceParams});
+        const query=new URLSearchParams({id:row.id,...referenceParams});
         const response=await fetch('/api/values?'+query);const detail=await response.json();if(!response.ok)throw new Error(detail.error||'怪物资料读取失败');
         if(key!==floorGuide.key||signature!==floorGuide.signature)return;
         const calculationParams=(detail.inputs||[]).filter(field=>!['depth','hero_level','loot_count','wealth_bonus','stronger_bosses'].includes(field.key));
         const parameterNote=calculationParams.length?`<details class="numeric-note-details"><summary>参考参数与适用边界</summary><p class="muted">本次参考参数：${escapeHTML(calculationParams.map(field=>`${field.label}：${field.value}`).join('；'))}。未读取敌人的当前状态，可在完整资料调整。</p></details>`:'';
-        content.innerHTML=`<p class="muted">${row.reference_params?.stronger_bosses===1?'绝命头目初始生命及明确列出分支':'普通基础状态参考'} · 角色等级 ${hero}${catalog.source.hero_level==null?'（示例）':''} · 累计生成次数（含成功偷取）与财富有效加成都按0参考。完整资料可调整适用的次数和财富条件。</p>`+parameterNote+detail.blocks.map(exampleHTML).join('');
+        const herbalismNote=row.reference_params?.no_herbalism==null?'':catalog.source.challenges_known?(row.reference_params.no_herbalism===1?' · 已确认荒芜之地，露珠可取得概率为0':' · 已确认未开启荒芜之地'):' · 挑战未知，暂按未开启荒芜之地参考';
+        content.innerHTML=`<p class="muted">${row.reference_params?.stronger_bosses===1?'绝命头目初始生命及明确列出分支':'普通基础状态参考'}${herbalismNote} · 角色等级 ${hero}${catalog.source.hero_level==null?'（示例）':''} · 累计生成次数（含成功偷取）与财富有效加成都按0参考。完整资料可调整适用的次数、财富和挑战条件。</p>`+parameterNote+detail.blocks.map(exampleHTML).join('');
         const button=document.createElement('button');button.type='button';button.className='text-button';button.textContent='调整掉落次数等条件 / 查看来源';
-        button.addEventListener('click',()=>{if(key!==floorGuide.key||signature!==floorGuide.signature)return;const fieldOrigins=row.reference_depth==null?{}:{depth:'召唤规则固定等效层数，非当前楼层'};if(row.reference_params?.stronger_bosses!=null)fieldOrigins.stronger_bosses=catalog.source.challenges_known?'所选存档已保存的挑战条件':'挑战未知，按普通难度假设';showReference({id:row.id,name:row.name,lookup_context:{capture_context:true,ignore_drafts:true,stamp:floorGuide.referenceStamp,params:referenceParams,field_origins:fieldOrigins,conditions:row.condition+'；累计生成示例0次（含成功偷取），未读取本局计数或敌人临时状态。'}},'4.0.2');});
+        button.addEventListener('click',openMonsterReference);
         content.append(button);loaded=true;
       }catch(error){if(key===floorGuide.key&&signature===floorGuide.signature){content.textContent=error.message;retry.hidden=false;}}
       finally{busy=false;}

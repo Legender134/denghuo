@@ -46,6 +46,19 @@ node tools/verify_frontend.js
 
 参数化计算在 `companion/values*.py` 和 `game_math.py`；修改索引不会自动实现新计算。更新游戏版本要同时核对固定提交、元数据、兼容判断、计算逻辑及测试。
 
+## 官方精灵图
+
+运行已包含固定的 `data/reference_images.json` 与 PNG，不需要 Pillow。重新生成时安装 Pillow，并执行：
+
+```powershell
+.venv/Scripts/python.exe tools/build_reference_images.py --upstream .research/player-upstream-4.0.2
+$env:DENGHUO_UPSTREAM_SOURCE = (Resolve-Path .research/player-upstream-4.0.2).Path
+.venv/Scripts/python.exe -m unittest discover -s tests -p test_reference_images.py -v
+node tools/verify_references.js
+```
+
+清单记录官方文件哈希、类、图集坐标和无法静态确定的条目；生成器只裁剪已核对的原始像素，并使用确定性透明 PNG 编码。随机效果图标、公开外观和代表形态分别标注，不猜测未知身份。上游缓存与 Pillow 可用时额外核对全部源哈希、像素和重复构建；否则这些上游验证明确跳过。
+
 ## 源码包
 
 ```powershell

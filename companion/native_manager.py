@@ -534,8 +534,9 @@ class NativeManager:
                     'field_origins':{}}
                 if 'reference_depth' in selected:
                     row['field_origins']['depth']='召唤规则固定等效层数，非当前楼层'
-                if 'stronger_bosses' in selected.get('reference_params',{}):
-                    row['field_origins']['stronger_bosses']='所选存档已保存的挑战条件' if snap['data'].get('challenges_known') else '挑战未知，按普通难度假设'
+                for field in ('stronger_bosses', 'no_herbalism'):
+                    if field in selected.get('reference_params',{}):
+                        row['field_origins'][field]='所选存档已保存的挑战条件' if snap['data'].get('challenges_known') else '挑战未知，按普通难度假设'
                 self.manager.open_reference(row,None,'')
             elif action == 'floor_item_reference':
                 snap=self.session.snapshot()

@@ -26,6 +26,52 @@ class OblivionLootTests(unittest.TestCase):
     def chance(self, name, item, **params):
         return sum(row['probability'] for row in self.loot(name, **params) if row.get('id') == item)
 
+    def test_barren_land_blocks_eye_dew_on_drop_but_preserves_generation_and_seeds(self):
+        # Eye.createLoot draws 2/4 dew (two items), 1/4 seed, 1/4 stone.
+        # Challenges.java:71 only blocks Dewdrop; Level.java:1004 filters it.
+        for params,generated in (({},.5),({'wealth_bonus':1},.5),({'wealth_bonus':-1},5/12),
+                                  ({'hero_level':30},0),({'loot_stolen':1},0)):
+            ordinary=self.loot('eye',**params)
+            barren=self.loot('eye',no_herbalism=1,**params)
+            normal_dew=next(r for r in ordinary if r['id']=='items.dewdrop')
+            blocked_dew=next(r for r in barren if r['id']=='items.dewdrop')
+            self.assertAlmostEqual(normal_dew['probability'],generated,places=7)
+            self.assertAlmostEqual(blocked_dew['generation_probability'],generated,places=7)
+            self.assertEqual(blocked_dew['probability'],0)
+            self.assertEqual(blocked_dew['quantity'],2)
+            self.assertIn('阻止两份露珠落地',blocked_dew['condition'])
+            self.assertEqual([r for r in ordinary if r['id']!='items.dewdrop'],
+                             [r for r in barren if r['id']!='items.dewdrop'])
+        normal=self.loot('eye')
+        self.assertAlmostEqual(sum(r['probability'] for r in normal if r['id'].startswith('plants.')),.25)
+        self.assertAlmostEqual(sum(r['probability'] for r in normal if r['id'].startswith('items.stones.')),.25)
+
+    def test_barren_land_condition_is_manual_strict_and_does_not_block_other_loot(self):
+        for identity in reference()['monsters']:
+            base={'depth':22,'hero_level':1,'loot_count':0,'swarm_generation':0}
+            ordinary=loot_rows(self.values,identity,monster_record(self.values.catalog,identity),base)
+            barren=loot_rows(self.values,identity,monster_record(self.values.catalog,identity),{**base,'no_herbalism':1})
+            if identity not in ('actors.mobs.eye','actors.mobs.yogdzewa$yogeye'):
+                self.assertEqual(ordinary,barren,identity)
+                self.assertFalse(any(r.get('id')=='items.dewdrop' for r in ordinary),identity)
+            elif identity=='actors.mobs.yogdzewa$yogeye':
+                self.assertEqual(sum(r['probability'] for r in ordinary),0)
+                self.assertEqual(sum(r['probability'] for r in barren),0)
+        for state in (0,1):
+            detail=self.values.detail('actors.mobs.eye',{'no_herbalism':state})
+            field=next(r for r in detail['inputs'] if r['key']=='no_herbalism')
+            self.assertEqual((field['value'],field['min'],field['max'],field['step']),(state,0,1,1))
+            dew=next(r for r in detail['blocks'][1]['rows'] if r[0]=='露珠')
+            self.assertEqual(dew[2],'0%' if state else '50%')
+            self.assertIn('生成分支概率 50%',dew[3])
+            urls=[r['url'] for r in detail['provenance']['links']]
+            self.assertTrue(any('/Challenges.java#L71' in url for url in urls))
+            self.assertTrue(any('/Level.java#L1004' in url for url in urls))
+        for invalid in (True,False,-1,2,.5,'true',float('inf')):
+            with self.subTest(invalid=invalid),self.assertRaises(ValueError):
+                self.values.detail('actors.mobs.eye',{'no_herbalism':invalid})
+        self.assertNotIn('no_herbalism',{r['key'] for r in self.values.detail('actors.mobs.rat')['inputs']})
+
     def test_shard_and_wealth_add_in_mob_bonus_instead_of_multiplying(self):
         # HermitCrab.java:37 sets 0.5f. ShardOfOblivion.java:196-223
         # gives +0.2 per eligible item, capped by level+1. Mob.java:1091

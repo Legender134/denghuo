@@ -88,7 +88,7 @@ class MonsterReferenceTests(unittest.TestCase):
         self.assertEqual(metrics['攻击命中后施加中毒概率']['value'],'50')
 
     def test_stronger_bosses_is_a_strict_explicit_parameter_with_bounded_scope(self):
-        for name,normal,strong in (('goo','100','120'),('tengu','200','250'),('dm300','300','400'),('dwarfking','300','450'),('yogdzewa','1000','1000')):
+        for name,normal,strong in (('goo','100','120'),('tengu','200','250'),('dm300','300','400'),('dwarfking','300','450'),('yogdzewa','1000','1000'),('pylon','50','80')):
             self.assertEqual(self.stats(name,stronger_bosses=0)['初始生命'],normal)
             detail=self.detail(name,stronger_bosses=1)
             self.assertEqual(detail['blocks'][0]['values'][0]['value'],strong)
@@ -97,6 +97,19 @@ class MonsterReferenceTests(unittest.TestCase):
         for invalid in (True,False,-1,2,0.5,'true'):
             with self.assertRaises(ValueError):self.detail('dwarfking',stronger_bosses=invalid)
         self.assertFalse(any(r['key']=='stronger_bosses' for r in self.detail('rat')['inputs']))
+
+    def test_pylon_challenge_uses_three_electrified_neighbors(self):
+        # Pylon.java:54,99-103 at pinned 57a4e06: HT=80 and CIRCLE8
+        # indices k,k+3,k+5; normal HP=50 and indices k,k+4.
+        for strong,health,directions in ((0,'50','偏移0、4'),(1,'80','偏移3、5')):
+            stats=self.stats('pylon',stronger_bosses=strong)
+            self.assertEqual((stats['初始生命'],stats['初始最大生命']),(health,health))
+            shock=self.mechanisms('pylon',stronger_bosses=strong)['激活后邻格电击伤害']
+            self.assertEqual(shock['value'],'10–20')
+            self.assertIn(directions,shock['condition'])
+            self.assertIn('方向逐回合旋转',shock['condition'])
+            self.assertIn('未激活时不攻击且无敌',shock['condition'])
+            self.assertEqual('3个相邻格' in shock['condition'],bool(strong))
 
     def test_verified_goo_and_dm300_challenge_mechanisms_do_not_keep_normal_counts(self):
         goo=self.mechanisms('goo',stronger_bosses=1)
