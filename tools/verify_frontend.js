@@ -270,6 +270,7 @@ async function verifySingleItemReveal(){
   const app=fs.readFileSync(path.join(root,'web/app.js'),'utf8');
   h.run(app.slice(app.indexOf('function itemSnapshotReference('),app.indexOf('function showReference(')));
   h.context.reference={inventorySnapshot:'a'.repeat(64),items:[],stamp:{mode:'save',slot:1,revision:3}};
+  h.context.state={data:{items:[]},inventory_snapshot:'a'.repeat(64)};h.context.calculationStamp=()=>h.context.reference.stamp;
   h.context.selected={name:'未鉴定药剂',key:'items.potions.potion',instance_key:'item-2',
     location:'背包',details:[],known:false,has_hidden_details:true};
   const revealButton=()=>h.get('#detail-related').children.find(row=>row.textContent==='揭示这件物品的真实资料（剧透）');
@@ -491,7 +492,7 @@ function verifyNavigationHistory(){
 }
 async function verifyComparisonRecovery(){
   const markup=fs.readFileSync(path.join(root,'web/index.html'),'utf8').match(/<form\b[^>]*id="equipment-comparison"[^>]*>([\s\S]*?)<\/form>/)[1];
-  const entries=['items.weapon.melee.shortsword','items.weapon.melee.battleaxe','items.wands.wandoffireblast','items.wands.wandofprismaticlight','items.weapon.missiles.shuriken','items.weapon.missiles.trident','items.weapon.missiles.boomerang','items.weapon.missiles.darts.dart','items.weapon.missiles.shuriken$shurikeninstanttracker'].map(id=>({id,name:id}));
+  const entries=['items.weapon.melee.shortsword','items.weapon.melee.battleaxe','items.wands.wandoffireblast','items.wands.wandofprismaticlight','items.weapon.missiles.shuriken','items.weapon.missiles.trident','items.weapon.missiles.boomerang','items.weapon.missiles.darts.dart','items.weapon.missiles.shuriken$shurikeninstanttracker','items.weapon.melee.spear','items.rings.ringofmight','items.rings.ringofenergy'].map(id=>({id,name:id}));
   function setup(){
     const h=harness(),dynamic={a:[],b:[]};let catalogCalls=0,schemaCalls=0,failCatalog=true,failSchema=true;
     const controls=[...markup.matchAll(/<(input|select)\b[^>]*\bid="([^"]+)"[^>]*>/g)].map(match=>{const input=h.get('#'+match[2]);input.value=match[0].match(/\bvalue="([^"]*)"/)?.[1]||'';return input;});
@@ -536,6 +537,42 @@ async function verifyComparisonRecovery(){
   const changing=setup();await changing.h.run('comparisonReady');changing.h.context.state={data:{items:[firstMissile,{...firstMissile,level:7}]}};changing.h.context.selectedItem=changing.h.context.state.data.items[1];
   const pending=[];changing.h.context.fetch=url=>new Promise(resolve=>pending.push(()=>resolve({ok:true,json:async()=>({entries:entries.filter(row=>row.id.startsWith(new URLSearchParams(url.split('?')[1]).get('q')))})})));
   const choosing=changing.h.run('compareInventoryItem(selectedItem)');changing.h.context.state.data.items=[{...firstMissile,level:3}];pending.forEach(done=>done());assert.equal(await choosing,false);assert.match(changing.h.run('compareError'),/背包快照已变化/);
+
+  // Connect the real disclosure and comparison handlers, retaining the public
+  // snapshot while importing just the explicitly disclosed instance.
+  const app=fs.readFileSync(path.join(root,'web/app.js'),'utf8');
+  h.run('let numericalRequest=0;');
+  Object.assign(h.context,{cancelNumericalDetail(){h.run('numericalRequest++');},loadNumericalDetail(){h.run('numericalRequest++');}});
+  h.run(app.slice(app.indexOf('function itemSnapshotReference('),app.indexOf('function showReference(')));
+  for(const kind of ['weapon','ring']){
+    const publicItem={key:kind==='weapon'?'items.weapon.melee.spear':'items.rings.ring',name:'未确认装备',instance_key:'item-1',known:kind==='weapon',available:true,level:null,game_level_known:false,has_hidden_details:true,location:'背包',details:[]};
+    const concealed={...publicItem,instance_key:'item-2'};
+    h.context.state={revision:1,inventory_snapshot:'c'.repeat(64),data:{items:[publicItem,concealed]}};
+    h.context.selectedItem=publicItem;h.context.calculationStamp=()=>({mode:'save',revision:h.context.state.revision});
+    h.context.disclosed={...publicItem,key:kind==='weapon'?publicItem.key:'items.rings.ringofmight',name:'揭示装备 +2',level:2,cursed:true,revealed:true,has_hidden_details:false};
+    h.context.post=async()=>({source:{expected:h.context.state.inventory_snapshot},item:h.context.disclosed,note:'仅这一件'});
+    const reveal=()=>h.get('#detail-related').children.find(row=>row.textContent==='揭示这件物品的真实资料（剧透）');
+    const comparison=()=>h.get('#detail-related').children.find(row=>row.textContent==='比较这件装备与升级预算');
+    h.run('showItem(selectedItem)');await reveal().listeners.click();
+    assert.equal(await comparison().listeners.click(),true,'the actual comparison must accept this exact disclosure');
+    await h.run("Promise.all(['a','b'].map(side=>compareContextState[side].promise))");
+    assert.equal(h.get('#compare-kind').value,kind);assert.equal(h.run('readComparisonArgs().id_a'),h.context.disclosed.key);assert.equal(h.run('readComparisonArgs().level_a'),'2');
+    assert.match(h.get('#compare-origin-a').textContent,/主动揭示/);
+    if(kind==='ring'){assert.equal(h.run('readComparisonArgs().level_known_a'),'1');assert.equal(h.run('readComparisonArgs().curse_a'),'1');}
+    assert.equal(h.context.state.data.items[0].level,null);assert.equal(h.context.state.data.items[1].revealed,undefined);
+    assert.equal(h.run('compareItems.filter(item=>item.revealed).length'),1,'other unknown instances stay out of the comparison');
+    h.run('showItem(selectedItem)');await reveal().listeners.click();
+    h.context.forged={...h.context.disclosed};assert.equal(await h.run('compareInventoryItem(forged,itemDisclosure.reference)'),false,'a different object cannot borrow the disclosure binding');
+    h.context.state.revision=2;h.context.state.inventory_snapshot='d'.repeat(64);h.run('refreshItemDisclosure()');
+    assert(comparison().disabled);assert.match(h.get('#detail-context').textContent,/主动揭示已过期/);
+    assert.equal(await comparison().listeners.click(),false,'a stale exact instance must also be rejected by the handler');
+    assert.match(h.get('#detail-workspace-error').textContent,/快照已变化/);
+    let finish;h.context.post=()=>new Promise(resolve=>finish=resolve);
+    h.run('showItem(selectedItem)');const waiting=reveal().listeners.click();h.context.state.revision=3;
+    finish({source:{expected:'d'.repeat(64)},item:h.context.disclosed,note:'old reply'});await waiting;
+    assert.equal(h.get('#detail-title').textContent,publicItem.name,'a disclosure reply cannot cross a newer snapshot');
+    assert.match(h.get('#detail-related').children.at(-1).textContent,/快照已变化/);
+  }
   const draft=setup(),messages=[];await draft.h.run('comparisonReady');
   Object.assign(draft.h.context,{unfinishedDraftRequest:0,draftRecoveryEditGeneration:0,webEditingFrozen:false,webDirtySummary:()=>[],
     post:async()=>({draft:{draft:{schema:'denghuo-web-session',format:2,comparison:{form:{'compare-kind':{value:'missile'},'compare-level-a':{value:'7',checked:false},'compare-level-known-a':{value:'',checked:true}},choices:{a:entries[4].id,b:entries[5].id}}}}}),
@@ -791,6 +828,13 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert(numeric.get('#values-freshness').textContent.includes('修改前的结果'));
   numeric.context.state=null;numeric.run('refreshNumericalOrigin()');
   assert(numeric.get('#values-use-latest').disabled);
+
+
+  numeric.context.state=stamp();numeric.run("numericalDetail={identity:'items.rings.ringofmight',inputs:[{key:'level'}],origins:{level:'已主动揭示的存档等级'},source:calculationStamp(),levelSource:calculationStamp()};refreshNumericalOrigin()");
+  assert.equal(numeric.get('#values-freshness').className,'muted');
+  numeric.context.state.revision++;numeric.run('refreshNumericalOrigin()');assert.equal(numeric.get('#values-freshness').className,'rule-warning');assert.match(numeric.get('#values-freshness').textContent,/较早快照/);
+  numeric.context.itemDisclosure={expired:true};numeric.run("numericalDetail.dirty=true;numericalDetail.origins.level='手填';refreshNumericalOrigin()");
+  assert.match(numeric.get('#values-freshness').textContent,/主动揭示已过期/);assert.match(numeric.get('#values-freshness').textContent,/手填草稿仍保留/);assert(numeric.get('#values-use-latest').disabled);
 
   // Exercise the actual calculate/latest handlers with isolated form elements.
   const drafts=harness();drafts.context.state=stamp();let formInputs=[];

@@ -51,7 +51,7 @@ async function runForecast(){
   stopForecast('',true);const serial=forecastSerial,seed=parseForecastSeed($('#forecast-seed').value),depth=Number($('#forecast-depth').value);
   forecastBusy=true;forecastControls();inlineError($('#forecast-error'),'');$('#forecast-status').textContent='正在离线生成参考情景；可以随时取消…';
   try{
-    if(!forecastInfo)forecastInfo=await api('/api/forecast');if(serial!==forecastSerial)return;
+    if(!forecastInfo)forecastInfo=await getJSON('/api/forecast');if(serial!==forecastSerial)return;
     if(forecastInfo.game_version!=='4.0.2'||forecastInfo.maximum_depth!==24||!Array.isArray(forecastInfo.items))throw Error('本地预测资料版本不匹配。');
     $('#forecast-profile').textContent=forecastInfo.note;
     if(typeof Worker!=='function'||typeof WebAssembly!=='object')throw Error('此浏览器组件暂不支持离线计算，请使用软件内支持 WebAssembly 的面板。');

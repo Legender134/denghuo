@@ -20,10 +20,13 @@ function harness(){
   const context=vm.createContext({console,JSON,Number,String,Object,Map,Set,BigInt,Date,WebAssembly,Worker,$:get,document:{createElement:node},
     state:{started:1,settings_revision:'r1',active_slot:1,run_id:'run1',revision:1,error:'',data:{},settings:{mode:'save'}},
     fmtTime:String,inlineError:(target,message)=>{target.textContent=message;target.hidden=!message;},
-    post:(url,payload)=>new Promise((resolve,reject)=>writes.push({url,payload,resolve,reject})),api:async url=>{assert.equal(url,'/api/forecast');return info;},
+    post:(url,payload)=>new Promise((resolve,reject)=>writes.push({url,payload,resolve,reject})),
+    fetch:async url=>{assert.equal(url,'/api/forecast');return {ok:true,json:async()=>info};},
     setTimeout:fn=>{timers.push(fn);return timers.length;},clearTimeout:()=>{},
     showDetail:(...args)=>details.push(args),setDetailEntry:()=>{},loadNumericalDetail:(...args)=>calculations.push(args)});
   const run=code=>vm.runInContext(code,context);
+  const workspace=fs.readFileSync(path.join(root,'web/workspace.js'),'utf8');
+  run(workspace.slice(workspace.indexOf('async function getJSON('),workspace.indexOf('async function loadWorkspace(')));
   run('function scoutingContext(){return JSON.stringify([state?.started,state?.settings_revision,state?.active_slot,state?.run_id,state?.revision,state?.error,state?.settings?.mode]);}');run(source);
   return {context,run,get,writes,workers,timers,details,calculations};
 }

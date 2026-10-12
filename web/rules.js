@@ -228,9 +228,9 @@ function refreshNumericalOrigin(){
   const d=numericalDetail,freshness=$('#values-freshness'),source=$('#values-source');
   if(!d || !freshness || !source)return;
   const now=calculationStamp(),stamp=d.dirty&&d.calculated?d.calculated.source:d.source;
-  const snapshotUsed=d.inputs?.some(i=>/^(快照|手动局势)/.test(d.origins[i.key]||'')||['物品已知等级','物品已知阶数'].includes(d.origins[i.key]));
+  const snapshotUsed=d.inputs?.some(i=>/^(快照|手动局势)/.test(d.origins[i.key]||'')||['物品已知等级','物品已知阶数','已主动揭示的存档等级','存档物品阶数 · 主动揭示模式'].includes(d.origins[i.key]));
   const changed=stamp&&(!now||['modified','slot','mode','save_root','revision','started'].some(k=>stamp[k]!==now[k]));
-  const levelOld=(d.origins.level==='物品已知等级'||d.origins.tier==='物品已知阶数')&&d.levelSource&&(!now||['modified','slot','mode','save_root','revision','started'].some(k=>d.levelSource[k]!==now[k]));
+  const levelOld=(['物品已知等级','已主动揭示的存档等级'].includes(d.origins.level)||['物品已知阶数','存档物品阶数 · 主动揭示模式'].includes(d.origins.tier))&&d.levelSource&&(!now||['modified','slot','mode','save_root','revision','started'].some(k=>d.levelSource[k]!==now[k]));
   const old=snapshotUsed&&(!now||state.stale||changed||levelOld);
   freshness.className=old||d.dirty||d.unconfirmedSource?'rule-warning':'muted';
   freshness.textContent=d.dirty?'输入已修改，尚未计算；下方仍是修改前的结果，请重新计算。':d.unconfirmedSource?'参考来源未确认；请核对原参数或明确带入最新状态。':levelOld?'物品等级来自较早快照，无法唯一确认现在是哪件装备；请核对等级后手填。':old?(changed?'游戏快照已经变化；下方结果仍按原参数计算，请带入最新状态或核对后手填。':'这些结果含旧快照参数，请按游戏画面核对。'):'按下列参数计算；随机范围和生效条件见各表。';
@@ -239,6 +239,7 @@ function refreshNumericalOrigin(){
   if(d.characterReference){source.textContent+=' '+numericCharacterLabel(d.characterReference)+(d.characterReference.signature!==JSON.stringify(characterResult?.params)?'；当前共享条件已有变化，此处保留带入时的力量。':'');}
   const button=$('#values-use-latest');if(button)button.disabled=!now;
   if(d.fixed){source.textContent=`固定保存参数。${typeof originLabel==='function'?originLabel(d.savedPlan?.origin):'过去来源只用于追溯，不绑定当前角色。'}`;freshness.textContent=d.dirty?'会话草稿已修改，尚未保存；下方仍是修改前的结果，请重新计算。':`${d.sessionUnsaved?'会话计算草稿尚未保存。':'按保存参数计算，'}不跟随最新快照。${d.rulesChanged?'资料规则已更新；请重新计算并核对保留结果与当前规则的差异。':''}`;freshness.className=d.dirty||d.rulesChanged?'rule-warning':'muted';}
+  if(typeof itemDisclosure!=='undefined'&&itemDisclosure?.expired){freshness.className='rule-warning';freshness.textContent='这件物品的主动揭示已过期；下方仅按旧参数试算，请重新从背包选择并主动揭示。'+(d.dirty?'手填草稿仍保留，尚未计算。':'');if(button)button.disabled=true;}
 }
 function provenanceText(result){
   const p=result.provenance||{};

@@ -122,7 +122,7 @@ function fillCompareChoice(suffix,preserveManual=false){
   if(kind==='missile'&&!preserveManual)$('#compare-level-known-'+suffix).checked=!!(item?.owned||item?.reference)&&item.level!==null;
   mastery.closest('label').hidden=!physical;augment.closest('label').hidden=!physical;
   $('#compare-conditional-'+suffix).hidden=physical;$('#compare-ring-pair-'+suffix).hidden=kind!=='ring';
-  if(!physical){mastery.checked=false;augment.value='NONE';if(!preserveManual){$('#compare-pair-'+suffix).checked=false;$('#compare-pair-level-'+suffix).value='0';$('#compare-pair-curse-'+suffix).value='0';$('#compare-level-known-'+suffix).checked=!!item?.owned&&item.level!==null;$('#compare-curse-'+suffix).value=item?.owned?(item.cursed===true?'1':item.cursed===false?'0':'unknown'):'0';}loadComparisonContext(suffix,item);}
+  if(!physical){mastery.checked=false;augment.value='NONE';if(!preserveManual){$('#compare-pair-'+suffix).checked=false;$('#compare-pair-level-'+suffix).value='0';$('#compare-pair-curse-'+suffix).value='0';$('#compare-level-known-'+suffix).checked=owned&&item.level!==null;$('#compare-curse-'+suffix).value=owned?(item.cursed===true?'1':item.cursed===false?'0':'unknown'):'0';}loadComparisonContext(suffix,item);}
   const allowed=kind==='armor'?['NONE','EVASION','DEFENSE']:['weapon','missile'].includes(kind)?['NONE','SPEED','DAMAGE']:['NONE'];
   if(!augment.dataset.manual)augment.value=allowed.includes(item?.augmentation)?item.augmentation:'NONE';
   $('#compare-origin-'+suffix).textContent=[level,mastery,augment,tier].some(i=>i.dataset.manual)?'手填条件保留，请按游戏画面核对':item?.reference?(item.revealed?'来自先前主动揭示的存档装备条件，请核对':'来自先前存档的已知装备条件，请核对'):item?.owned?(item.revealed?'已主动揭示存档装备条件；游戏鉴定状态未改变':item.level===null?'等级未知，先按+0试算':'已带入已知等级、精通/强化及原护甲阶数'):'手册示例，请填写要比较的等级与条件';
@@ -302,16 +302,18 @@ async function compareRiskReference(reference){
 }
 async function compareInventoryItem(item,reference={items:state?.data?.items,stamp:calculationStamp()}){
   const sourceItems=reference.items,kind=comparisonFamily(item?.key);
-  if(!kind||!(item.known||item.revealed===true)||item.available!==true||!sourceItems?.includes(item))return false;
+  const disclosed=item?.revealed===true&&reference.disclosedItem===item&&sourceItems?.includes(reference.disclosedFrom)&&reference.disclosedFrom.instance_key===item.instance_key&&!!reference.inventorySnapshot;
+  if(!kind||!(item.known||item.revealed===true)||item.available!==true||!(sourceItems?.includes(item)||disclosed))return false;
   const ownedIndex=sourceItems.filter(row=>(row.known||row.revealed===true)&&row.available===true&&comparisonFamily(row.key)===kind).indexOf(item);
   const request=++compareOpenRequest,nav=navigationSerial,generation=compareEditGeneration;
   try{await initializeEquipmentComparison(true);}catch(error){compareError=error.message;inlineError($('#detail-workspace-error'),compareError);refreshComparisonOrigin();return false;}
   if(request!==compareOpenRequest||nav!==navigationSerial||generation!==compareEditGeneration||(typeof webEditingFrozen!=='undefined'&&webEditingFrozen))return false;
-  if(JSON.stringify(reference.stamp)!==JSON.stringify(calculationStamp())||JSON.stringify(sourceItems)!==JSON.stringify(state?.data?.items)){compareError='背包快照已变化，请重新点开要比较的那件装备。';inlineError($('#detail-workspace-error'),compareError);refreshComparisonOrigin();return false;}
+  if(JSON.stringify(reference.stamp)!==JSON.stringify(calculationStamp())||JSON.stringify(sourceItems)!==JSON.stringify(state?.data?.items)||(disclosed&&(reference.inventorySnapshot!==state?.inventory_snapshot||state?.error))){compareError='背包快照已变化，请重新点开要比较的那件装备。';inlineError($('#detail-workspace-error'),compareError);refreshComparisonOrigin();return false;}
   rememberComparisonImport();compareEditGeneration++;compareRequest++;comparePending=false;$('#compare-submit').disabled=false;
   $('#equipment-comparison').querySelectorAll('input,select').forEach(input=>input.disabled=false);
   $('#detail-dialog').close();navigate('inventory');$('#compare-kind').value=kind;compareSignature='';renderEquipmentComparison();
-  $('#compare-a').value=String(ownedIndex);$('#compare-a').dataset.edited='true';fillCompareChoice('a');
+  if(disclosed){const index=compareItems.length;compareItems.push({...item,owned:false,reference:true,token:'disclosed:'+item.instance_key});const option=document.createElement('option');option.value=String(index);option.textContent=`固定装备参考 · 本次主动揭示 · ${item.location} · ${item.name}`;$('#compare-a').append(option);$('#compare-a').value=String(index);}else $('#compare-a').value=String(ownedIndex);
+  $('#compare-a').dataset.edited='true';fillCompareChoice('a');
   compareSavedPlan=null;compareFixed=false;compareSessionUnsaved=true;compareDirty=true;compareError='';updateComparisonSavedNote();
   $('.comparison-panel').open=true;refreshComparisonOrigin();$('#compare-level-a').focus();$('.comparison-panel').scrollIntoView({block:'start'});return true;
 }
