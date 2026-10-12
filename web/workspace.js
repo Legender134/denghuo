@@ -437,7 +437,7 @@ async function watchWebExitCompletion(){
 function updateWebRecoveryStatus(exit,message=''){
   const own=exit?.participants?.find(row=>row.surface_id===webSurfaceId);
   const status=$('#draft-recovery-status');if(!status)return;
-  const error=message||own?.recovery_error||'',text=error||(own?.recovery_pending?'未完成输入正在自动保留；磁盘写入完成前尚未确认保存。':'')||state?.draft_recovery_notice||'';
+  const error=message||own?.recovery_error||'',text=error||(own?.dirty&&own?.recovery_pending?'未完成输入正在自动保留；磁盘写入完成前尚未确认保存。':'')||state?.draft_recovery_notice||'';
   if(status.textContent!==text)status.textContent=text;
   status.className=error?'rule-warning':'connection-banner';status.hidden=!text;
 }

@@ -117,6 +117,8 @@ FILES = (
     "tests/test_combat_context.py",
     "tests/test_library_recovery.py",
     "tests/test_public_skills.py",
+    "tests/test_public_dot.py",
+    "tests/test_special_enemy_reference.py",
     "tests/test_public_build.py",
     "tools/verify_equipment_context.js",
     "tools/verify_library_recovery.js",

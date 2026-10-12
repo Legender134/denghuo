@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from decimal import Decimal, ROUND_HALF_EVEN
 from pathlib import Path
 import re
 
@@ -14,7 +15,7 @@ from .public_source_data import MISSILE_PUBLIC_TYPES
 from .public_skills import project_skills
 from .public_build import project_build
 from .saves import SaveError, validate_map
-from .game_math import healing_tick
+from .game_math import healing_tick, float32
 
 ROOT = Path(__file__).resolve().parents[1]
 PREFIX = "com.shatteredpixel.shatteredpixeldungeon."
@@ -40,6 +41,27 @@ def public_healing(buff, maximum):
     if len(projected) == 4 and type(maximum) in (int, float) and 1 <= maximum <= 10000:
         projected['next_heal'] = healing_tick(projected['left'], projected['percent'], projected['flat'], projected['vial_level'], maximum)
     return projected
+
+
+def public_dot(buff, identity):
+    """Only Viscosity/Corrosion icon and description values, never hidden fractions."""
+    projected = {}
+    value = buff.get('damage')
+    if identity == 'items.armor.glyphs.viscosity$defereddamage':
+        if type(value) is int and 0 <= value <= 100000:
+            projected['damage'] = value
+    elif identity == 'actors.buffs.corrosion':
+        projected['corrosion_public'] = 1
+        if type(value) in (int, float) and math.isfinite(value) and 0 <= value < 10001:
+            visible = int(float32(value))
+            if visible <= 10000:
+                projected['power'] = visible
+        left = buff.get('left')
+        if type(left) in (int, float) and math.isfinite(left) and 0 <= left <= 1000:
+            # Buff.dispTurns uses DecimalFormat("#.##") on the Java float.
+            projected['remaining_turns'] = float(Decimal.from_float(float32(left)).quantize(
+                Decimal('.01'), rounding=ROUND_HALF_EVEN))
+    return {'public_dot': projected} if projected else {}
 
 
 def number(value, default=0):
@@ -453,6 +475,7 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
                        "reference_id": catalog.key(b) if catalog.key(b) in catalog.entry_index else None,
                        "active": b.get("state") == "BERSERK" if short_class(b) == "Berserk" else True,
                        **(public_healing(b, ht) if catalog.key(b) == 'actors.buffs.healing' else {}),
+                       **public_dot(b, catalog.key(b)),
                        **({"current_shield": b["shielding"]} if catalog.key(b) == "actors.buffs.barrier"
                           and type(b.get("shielding")) is int and 0 <= b["shielding"] <= 10000 else {})}
                       for b in buffs if short_class(b) not in ("Regeneration", "Hunger")

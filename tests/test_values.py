@@ -250,7 +250,7 @@ class PlayerValuesTests(unittest.TestCase):
         self.assertEqual(poison['首次毒伤'],'2')
         self.assertEqual(poison['完整毒伤总量'],'5')
         self.assertEqual(self.metrics('actors.buffs.poison',power=0)['首次毒伤'],'0')
-        self.assertEqual(self.metrics('actors.buffs.corrosion',power='7.5',depth=10)['下一次酸蚀伤害'],'7')
+        self.assertEqual(self.metrics('actors.buffs.corrosion',power='7.5',remaining_turns=1,depth=10)['下一次基础伤害'],'7')
         self.assertEqual(self.metrics('actors.buffs.bleeding',power='7.5')['下一次流血'],'8')
 
     def test_traps_and_holy_bomb_have_current_version_values(self):
@@ -259,8 +259,8 @@ class PlayerValuesTests(unittest.TestCase):
         bomb=self.metrics('items.bombs.holybomb',depth=10)
         self.assertEqual(bomb['基础爆炸伤害'],'14–42')
         self.assertEqual(bomb['对亡灵/恶魔追加伤害'],'7–21')
-        self.assertEqual(self.metrics('actors.buffs.corrosion',depth=10,power=6)['下次后强度增加'],'1')
-        self.assertEqual(self.metrics('actors.buffs.corrosion',depth=10,power=7)['下次后强度增加'],'0.5')
+        self.assertEqual(self.metrics('actors.buffs.corrosion',depth=10,power=6,remaining_turns=1)['下次后强度增加'],'1')
+        self.assertEqual(self.metrics('actors.buffs.corrosion',depth=10,power=7,remaining_turns=1)['下次后强度增加'],'0.5')
         flash=self.metrics('items.bombs.flashbangbomb',depth=10)
         self.assertEqual(flash['基础爆炸伤害'],'14–42')
         self.assertEqual(flash['额外电击伤害'],'4–11')

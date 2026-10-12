@@ -22,6 +22,9 @@ def provenance(values,identity,owner):
         if identity=='items.artifacts.sandalsofnature':
             related.append('com.shatteredpixel.shatteredpixeldungeon.levels.features.highgrass')
         extras={
+            'actors.mobs.goldenmimic':('items.trinkets.mimictooth',),
+            'actors.mobs.ebonymimic':('items.trinkets.mimictooth',),
+            'actors.mobs.crystalmimic':('actors.hero.belongings','levels.rooms.special.crystalvaultroom'),
             'items.armor.glyphs.camouflage':('levels.features.highgrass','actors.hero.hero','actors.char'),
             'actors.mobs.dm200':('actors.blobs.toxicgas',),
             'actors.mobs.quest.vault.vaultdm200':('actors.blobs.toxicgas',),

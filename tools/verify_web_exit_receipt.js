@@ -180,9 +180,15 @@ test('cancel during discard clear cannot revive the old request',async()=>{
   pending.resolve({exit:{...dirty,phase:'backing-up'}});await discarding;
   assert.equal(f.run('webExitState.id'),'replacement-request');assert.equal(f.run('webExitState.phase'),'confirming');assert(f.get('#session-exit-dialog').open);assert(!f.get('#session-exit-cancel').disabled);
 });
-test('pending checkpoint is visible without claiming durable preservation',async()=>{
-  const f=setup();f.run('updateWebRecoveryStatus('+JSON.stringify({...confirming,participants:[{surface_id:'synthetic',recovery_pending:true,recovery_saved:false}]})+')');
+test('pending checkpoint notice reflects actual unfinished input and preserves errors',async()=>{
+  const f=setup(),report=(dirty,error='')=>({...confirming,participants:[{surface_id:'synthetic',dirty,recovery_pending:true,recovery_saved:false,recovery_error:error}]});
+  f.run('updateWebRecoveryStatus('+JSON.stringify(report(false))+')');
+  assert(f.get('#draft-recovery-status').hidden);assert.equal(f.get('#draft-recovery-status').textContent,'');
+  f.run('updateWebRecoveryStatus('+JSON.stringify(report(true))+')');
   assert.match(f.get('#draft-recovery-status').textContent,/正在自动保留.*尚未确认保存/);assert(!f.get('#draft-recovery-status').hidden);
+  f.run('updateWebRecoveryStatus('+JSON.stringify(report(false,'synthetic checkpoint failure'))+')');
+  assert(!f.get('#draft-recovery-status').hidden);assert.equal(f.get('#draft-recovery-status').textContent,'synthetic checkpoint failure');
+  assert.equal(f.get('#draft-recovery-status').className,'rule-warning');
 });
 test('late offline resolution cannot replace a cancelled and restarted exit',async()=>{
   const pending=deferred(),dirty={...confirming,participants:[{surface_id:'synthetic',ack:null,dirty:true,revision:7},{surface_id:'offline-other',label:'offline',online:false,ack:null,dirty:true,revision:3}]},f=setup(dirty,success,{dirty:true});let active=dirty;

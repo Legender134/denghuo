@@ -3,7 +3,7 @@ import copy
 import os
 from pathlib import Path
 
-from .decisions import public_context, source, healing_context
+from .decisions import public_context, source, healing_context, dot_context, dot_origins
 from .public_skills import skill_context
 
 COMMON = ('items.potions.potionofhealing', 'items.waterskin', 'items.scrolls.scrollofupgrade',
@@ -68,10 +68,14 @@ def workspace_status(session):
         if identity not in entries or any(row['id'] == identity for row in current):
             continue
         params = dict(context)
-        fields = healing_context(buff) if identity == 'actors.buffs.healing' else {}
+        fields = healing_context(buff) if identity == 'actors.buffs.healing' else dot_context(buff)
         params.update(fields)
         conditions = ('公开当前护盾已带入；其余强度、时长与条件需另行填写' if 'current_shield' in context else '只确认状态存在；剩余强度、时长与其他条件需另行填写')
         origins = {}
+        if identity in ('actors.buffs.corrosion', 'items.armor.glyphs.viscosity$defereddamage'):
+            origins = dot_origins(fields)
+            conditions = ('只带入游戏公开显示值；酸蚀隐藏小数按范围计算，精确值须明确手填假设；缺失条件保持待确认。'
+                          '基础伤害不等同最终生命损失，不预测行动时序、后续续酸雾或新增延缓池。')
         if identity == 'actors.buffs.healing':
             labels = {'power':'剩余治疗池（已包含原饰物加成）', 'healing_percent':'当前恢复百分比', 'healing_flat':'当前固定恢复', 'vial':'当前治疗来源的试管限速'}
             origins = {key:provenance['label']+' · '+labels[key] for key in fields}

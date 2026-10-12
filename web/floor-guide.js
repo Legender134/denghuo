@@ -1,6 +1,6 @@
 'use strict';
 // Public rules load automatically; saved hidden contents require a fresh click.
-const floorGuide={context:null,key:null,level:null,catalog:null,serial:0,signature:null,revealed:false,nodes:new Map()};
+const floorGuide={context:null,key:null,level:null,catalog:null,serial:0,signature:null,revealed:false,referenceStamp:null,nodes:new Map()};
 function floorGuideContext(){return JSON.stringify([snapshotViewOwner(),state?.revision,state?.settings_revision,state?.error,state?.stale,state?.data?.depth,state?.data?.branch,state?.data?.version,state?.data?.challenges_mask,state?.data?.challenges_known,state?.data?.hero?.level]);}
 function floorGuideKey(){return JSON.stringify([snapshotViewOwner(),state?.data?.depth,state?.data?.branch,state?.data?.version,state?.data?.challenges_mask,state?.data?.challenges_known]);}
 function hideFloorContents(message='隐藏门、陷阱和未见物品需主动揭示。'){
@@ -45,7 +45,7 @@ async function loadFloorGuide(serial,context,key){
 }
 function renderFloorMonsters(catalog,key){
   const rows=catalog.encounters.rows,signature=JSON.stringify([key,catalog.source.hero_level,rows]);
-  const referenceStamp=[state.started,state.settings.save_root,state.settings.mode,catalog.source.slot,state.revision,catalog.source.modified];
+  floorGuide.referenceStamp=[state.started,state.settings.save_root,state.settings.mode,catalog.source.slot,state.revision,catalog.source.modified];
   $('#floor-monsters-count').textContent=`${rows.length} 种`;
   if(signature===floorGuide.signature)return;
   const previous=new Map([...floorGuide.nodes].map(([id,row])=>[id,{open:row.node.open,focused:row.node.contains(document.activeElement)}]));
@@ -77,10 +77,10 @@ function renderFloorMonsters(catalog,key){
         const response=await fetch('/api/values?'+query);const detail=await response.json();if(!response.ok)throw new Error(detail.error||'怪物资料读取失败');
         if(key!==floorGuide.key||signature!==floorGuide.signature)return;
         const calculationParams=(detail.inputs||[]).filter(field=>!['depth','hero_level','loot_count','wealth_bonus','stronger_bosses'].includes(field.key));
-        const parameterNote=calculationParams.length?`<p class="muted">本次参考参数：${escapeHTML(calculationParams.map(field=>`${field.label}：${field.value}`).join('；'))}。未读取敌人的当前状态，可在完整资料调整。</p>`:'';
-        content.innerHTML=`<p class="muted">${row.reference_params?.stronger_bosses===1?'绝命头目初始生命及明确列出分支':'普通基础状态参考'} · 角色等级 ${hero}${catalog.source.hero_level==null?'（示例）':''} · 累计成功掉落与财富有效加成都按0参考。完整资料可调整适用的次数和财富条件。</p>`+parameterNote+detail.blocks.map(exampleHTML).join('');
+        const parameterNote=calculationParams.length?`<details class="numeric-note-details"><summary>参考参数与适用边界</summary><p class="muted">本次参考参数：${escapeHTML(calculationParams.map(field=>`${field.label}：${field.value}`).join('；'))}。未读取敌人的当前状态，可在完整资料调整。</p></details>`:'';
+        content.innerHTML=`<p class="muted">${row.reference_params?.stronger_bosses===1?'绝命头目初始生命及明确列出分支':'普通基础状态参考'} · 角色等级 ${hero}${catalog.source.hero_level==null?'（示例）':''} · 累计生成次数（含成功偷取）与财富有效加成都按0参考。完整资料可调整适用的次数和财富条件。</p>`+parameterNote+detail.blocks.map(exampleHTML).join('');
         const button=document.createElement('button');button.type='button';button.className='text-button';button.textContent='调整掉落次数等条件 / 查看来源';
-        button.addEventListener('click',()=>{if(key!==floorGuide.key||signature!==floorGuide.signature)return;const fieldOrigins=row.reference_depth==null?{}:{depth:'召唤规则固定等效层数，非当前楼层'};if(row.reference_params?.stronger_bosses!=null)fieldOrigins.stronger_bosses=catalog.source.challenges_known?'所选存档已保存的挑战条件':'挑战未知，按普通难度假设';showReference({id:row.id,name:row.name,lookup_context:{capture_context:true,ignore_drafts:true,stamp:referenceStamp,params:referenceParams,field_origins:fieldOrigins,conditions:row.condition+'；累计成功掉落示例0次，未读取本局计数或敌人临时状态。'}},'4.0.2');});
+        button.addEventListener('click',()=>{if(key!==floorGuide.key||signature!==floorGuide.signature)return;const fieldOrigins=row.reference_depth==null?{}:{depth:'召唤规则固定等效层数，非当前楼层'};if(row.reference_params?.stronger_bosses!=null)fieldOrigins.stronger_bosses=catalog.source.challenges_known?'所选存档已保存的挑战条件':'挑战未知，按普通难度假设';showReference({id:row.id,name:row.name,lookup_context:{capture_context:true,ignore_drafts:true,stamp:floorGuide.referenceStamp,params:referenceParams,field_origins:fieldOrigins,conditions:row.condition+'；累计生成示例0次（含成功偷取），未读取本局计数或敌人临时状态。'}},'4.0.2');});
         content.append(button);loaded=true;
       }catch(error){if(key===floorGuide.key&&signature===floorGuide.signature){content.textContent=error.message;retry.hidden=false;}}
       finally{busy=false;}
