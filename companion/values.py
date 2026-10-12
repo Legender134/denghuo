@@ -15,8 +15,11 @@ from .public_source_data import MISSILE_PUBLIC_TYPES
 from .monster_reference import add_monster_values, monster_record
 
 INPUTS = {
+    'stronger_bosses': ('绝命头目挑战（0关闭，1开启；仅已列首领分支）', 0, 0, 1),
     'exotic_crystals': ('异晶生效等级（−1为无效果）', -1, -1, 3),
     'wealth_bonus': ('财富有效加成（不是戒指等级，无效果填0）', 0, -100, 100),
+    'oblivion_shard': ('遗忘碎片生效等级（−1为无效果）', -1, -1, 3),
+    'unidentified_equipment': ('遗忘碎片合格未鉴定项数（含近期使用标记）', 0, 0, 7),
     'loot_count': ('本局此类战利品已成功掉落次数', 0, 0, 1000),
     'swarm_generation': ('蝇群分裂代数（原始为0）', 0, 0, 1000),
     'trickster_combo': ('豺狼诡术师本次命中前的连续命中数', 0, 0, 1000),
@@ -426,6 +429,12 @@ class PlayerValues:
                 source_metadata['links'].append({'label':label,
                     'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{commit}/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/items/rings/{filename}.java',
                     'kind':'official-game-source'})
+            if 'oblivion_shard' in requested:
+                for tail,label,line in (('items/trinkets/ShardOfOblivion.java','遗忘碎片合格项、等级上限与普通掉率加成',196),
+                                        ('items/trinkets/Trinket.java','饰品生效等级与正常升级上限',48),
+                                        ('actors/mobs/Mob.java','普通掉率中财富与遗忘碎片的加法叠加',1075)):
+                    source_metadata['links'].append({'label':label,'url':f'https://github.com/00-Evan/shattered-pixel-dungeon/blob/{commit}/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/{tail}#L{line}','kind':'official-game-source'})
+                source_metadata['limits'].append('遗忘碎片默认−1（无效果）、合格未鉴定项数0；两者均为手填参考条件，不从存档推定未知身份、装备或近期使用标记。')
             if 'exotic_crystals' in requested:
                 for tail,label in (('items/trinkets/ExoticCrystals.java','异晶转换概率'),
                                    ('items/trinkets/Trinket.java','饰品生效与无效果条件'),

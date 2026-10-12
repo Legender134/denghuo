@@ -92,6 +92,9 @@ def inspect_saved(session, payload):
                   'modified': modified, 'expected': expected}
         hero_level = game.get('hero', {}).get('lvl')
         source['hero_level'] = hero_level if type(hero_level) is int and 1 <= hero_level <= 30 else None
+        mask = game.get('challenges')
+        source['challenges_known'] = type(mask) is int and 0 <= mask <= 511
+        source['challenges_mask'] = mask if source['challenges_known'] else None
         if action == 'catalog':
             floors = []
             for depth, branch in locations:

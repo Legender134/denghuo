@@ -440,6 +440,7 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
             "energy": number(game.get("energy")), "version": game.get("version"),
             "challenges": [name for bit, name in CHALLENGES.items() if challenge_mask & bit],
             "challenges_known": type(game.get('challenges')) is int and 0 <= game['challenges'] <= 511,
+            "challenges_mask": game['challenges'] if type(game.get('challenges')) is int and 0 <= game['challenges'] <= 511 else None,
             "buffs_known": type(hero.get('buffs', [])) is list and all(
                 isinstance(b, dict) and isinstance(b.get('__className'), str)
                 and b['__className'].startswith(PREFIX+'actors.buffs.')

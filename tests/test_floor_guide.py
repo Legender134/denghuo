@@ -1,9 +1,12 @@
 """Source-bound public encounter rules, independent of saved hidden contents."""
 import unittest
 import json
+from queue import Queue
 from types import SimpleNamespace
+from unittest.mock import patch
 from tests import test_scouting as scouting_tests
 from companion.native_manager import NativeManager
+from companion.native_host import MAX_LINE, NativeHost
 from companion.engine import Catalog
 from companion.floor_guide import floor_encounters
 from companion.values import PlayerValues
@@ -15,8 +18,8 @@ class FloorGuideTests(unittest.TestCase):
     def setUpClass(cls):
         cls.catalog=Catalog()
 
-    def guide(self, depth, branch=0, version=922):
-        return floor_encounters({'version':version,'depth':depth,'branch':branch},self.catalog)
+    def guide(self, depth, branch=0, version=922, challenges=None):
+        return floor_encounters({'version':version,'depth':depth,'branch':branch,'challenges':challenges},self.catalog)
 
     def test_floor_one_and_three_slots_and_alternatives_follow_spawner(self):
         first={r['id']:r for r in self.guide(1)['rows']}
@@ -60,8 +63,15 @@ class FloorGuideTests(unittest.TestCase):
         self.assertIn('尚未实装',mining['note'])
         self.assertIn('兼容位置',self.guide(11,1)['note'])
         vault=self.guide(17,1)
-        self.assertEqual(len(vault['rows']),10)
-        self.assertTrue(all(r['id'].startswith('actors.mobs.quest.vault.') for r in vault['rows']))
+        self.assertEqual(sum(r['id'].startswith('actors.mobs.quest.vault.') for r in vault['rows']),10)
+        mechanisms={r['id']:r for r in vault['rows'] if r['group']=='宝库机关'}
+        self.assertEqual(set(mechanisms),{'actors.mobs.npcs.vaultsentry','actors.mobs.npcs.vaultlaser'})
+        for row in mechanisms.values():
+            self.assertEqual(row['fold_group'],'宝库机关/房间条件')
+            self.assertIn('不可破坏',row['condition'])
+            self.assertEqual(row['hp'],'不可破坏')
+            self.assertEqual(row['damage'],'不使用普通攻击')
+        self.assertTrue(any(s['path'].endswith('/VaultLasersRoom.java') for s in vault['sources']))
         for depth,branch,version in ((4,1,922),(4,0,920),(4,0,999),(True,0,922),(4,True,922)):
             self.assertEqual(self.guide(depth,branch,version)['rows'],[])
 
@@ -90,6 +100,46 @@ class FloorGuideTests(unittest.TestCase):
         self.assertIn('仍存活的恶魔血巢',yog['actors.mobs.yogdzewa$yogripper']['condition'])
         self.assertNotIn('actors.mobs.yogdzewa$yogeye',yog)
         self.assertIn('actors.mobs.pylon',{r['id'] for r in self.guide(15)['rows']})
+
+    def test_saved_stronger_bosses_switches_verified_health_and_support_rules(self):
+        # HP constants and branches come from the pinned original Java initializers,
+        # DwarfKing.summonSubject, YogDzewa pools, and DM300.totalPylonsToActivate.
+        values=PlayerValues(NumericRules(self.catalog))
+        for depth,boss,ordinary,strong in ((5,'goo',100,120),(10,'tengu',200,250),
+                                          (15,'dm300',300,400),(20,'dwarfking',300,450),(25,'yogdzewa',1000,1000)):
+            for mask,expected in ((0,ordinary),(256,strong),(511,strong)):
+                guide=self.guide(depth,challenges=mask)
+                self.assertTrue(guide['challenges_known'])
+                self.assertEqual(guide['challenges_mask'],mask)
+                row=next(r for r in guide['rows'] if r['id']=='actors.mobs.'+boss)
+                self.assertEqual(row['hp'],str(expected))
+                detail=values.detail(row['id'],row['reference_params'])
+                self.assertEqual(detail['blocks'][0]['values'][0]['value'],row['hp'])
+                field=next(r for r in detail['inputs'] if r['key']=='stronger_bosses')
+                self.assertEqual(field['value'],int(bool(mask&256)))
+        king={r['id']:r for r in self.guide(20,challenges=256)['rows']}
+        self.assertEqual(king['actors.mobs.dwarfking$dkgolem']['fold_group'],'绝命头目挑战支援')
+        self.assertIn('每第9次',king['actors.mobs.dwarfking$dkgolem']['condition'])
+        yog={r['id']:r for r in self.guide(25,challenges=256)['rows']}
+        for identity in ('yogeye','yogscorpio'):
+            self.assertIn('未读取本局血巢计数',yog['actors.mobs.yogdzewa$'+identity]['condition'])
+            self.assertEqual(yog['actors.mobs.yogdzewa$'+identity]['fold_group'],'绝命头目挑战支援')
+        self.assertTrue(all('共6拳' in r['condition'] and '同一配对不会同轮' in r['condition'] for r in yog.values() if r['id'].startswith('actors.mobs.yogfist$')))
+        self.assertIn('最后2个名额固定',yog['actors.mobs.yogdzewa$yogripper']['condition'])
+        pylon=next(r for r in self.guide(15,challenges=256)['rows'] if r['id']=='actors.mobs.pylon')
+        self.assertIn('共激活3座',pylon['condition'])
+
+    def test_missing_or_invalid_challenges_are_an_explicit_ordinary_assumption(self):
+        for mask in (None,True,False,-1,512,'256',256.0):
+            guide=self.guide(20,challenges=mask)
+            self.assertFalse(guide['challenges_known'])
+            self.assertIsNone(guide['challenges_mask'])
+            self.assertIn('挑战信息未确认',guide['note'])
+            rows={r['id']:r for r in guide['rows']}
+            self.assertEqual(rows['actors.mobs.dwarfking']['hp'],'300')
+            self.assertNotIn('actors.mobs.dwarfking$dkgolem',rows)
+        for depth in (16,17,18,19):
+            self.assertEqual(len([r for r in self.guide(depth,1)['rows'] if r['group']=='宝库机关']),2)
 
     def test_conditional_enemies_are_unique_and_do_not_turn_room_chances_into_spawn_odds(self):
         for branch,depths in ((0,range(1,27)),(1,range(11,20))):
@@ -166,16 +216,46 @@ class NativeFloorGuideTests(unittest.TestCase):
         self.assertEqual(public['nodes'][0]['children'],[])
         self.assertTrue(public['nodes'][1]['expanded'])
         self.assertTrue(all(not row.get('expanded') for row in public['nodes'][1]['children']))
-        self.assertLess(len(json.dumps(public,ensure_ascii=False).encode()),524288)
+        self.assert_native_transport(public)
         self.ui.reveal_floor({'token':public['token']})
         work,finish=self.jobs.pop();result=work();finish(result,None)
         revealed=self.ui.floor_state(snap)
+        self.assert_native_transport(revealed)
         self.assertTrue(revealed['revealed'])
-        self.assertTrue(any(row['text'].startswith('黄金宝箱怪') for row in revealed['nodes'][0]['children']))
+        saved=next(row for row in revealed['nodes'][0]['children'] if row['id']=='hidden-mobs')
+        self.assertFalse(saved.get('expanded',False))
+        self.assertTrue(any(row['text'].startswith('黄金宝箱怪') for row in saved['children']))
         self.assertEqual(self.tree(),before)
         self.assertFalse(self.session.settings['reveal'])
         self.ui.reveal_floor({'token':public['token']})
         self.assertFalse(self.ui.floor_state(snap)['revealed'])
+
+    def assert_native_transport(self, state):
+        host=NativeHost.__new__(NativeHost)
+        host.closed=host.failed=False
+        host.serial=host.revision=0
+        host.session='a'*32
+        host.outgoing=Queue(maxsize=1)
+        host.error=self.fail
+        self.assertTrue(host.command('manager_state',floor_guide=state))
+        wire=host.outgoing.get_nowait()
+        self.assertLessEqual(len(wire),MAX_LINE)
+        self.assertEqual(json.loads(wire)['floor_guide'],state)
+
+    def test_native_leaf_details_keep_own_fields_and_shared_conditions_on_parent(self):
+        block={'title':'战斗与掉落','note':'完整块条件；仅在父节点传输一次。',
+               'values':[{'label':'伤害','value':'3–8','unit':'点','condition':'仅已命中时'}],
+               'columns':['物品','数量','概率','附加条件'],
+               'rows':[['测试物品',1,'25%','第四列条件不得丢失']]}
+        with patch.object(PlayerValues,'detail',return_value={'inputs':[],'blocks':[block]}):
+            public=self.ui.floor_state(self.session.snapshot())
+        monster=next(row for row in public['nodes'][1]['children'] if row['id']=='actors.mobs.crab')
+        preview=monster['children'][0]
+        self.assertEqual(preview['detail'],block['note'])
+        self.assertEqual([row['detail'] for row in preview['children']],
+                         ['伤害：3–8 点\n仅已命中时','物品：测试物品\n数量：1\n概率：25%\n附加条件：第四列条件不得丢失'])
+        self.assertIn('本层条件参考',monster['detail'])
+        self.assert_native_transport(public)
 
     def test_native_old_snapshot_and_late_hidden_result_are_retired(self):
         old=self.ui.floor_state(self.session.snapshot())
@@ -195,7 +275,9 @@ class NativeFloorGuideTests(unittest.TestCase):
         self.ui.reveal_floor({'token':public['token']})
         work,finish=self.jobs.pop();finish(work(),None)
         revealed=self.ui.floor_state(snap)
-        heap=next(row for row in revealed['nodes'][0]['children'] if row['id']=='heaps-0')
+        heaps=next(row for row in revealed['nodes'][0]['children'] if row['id']=='hidden-heaps')
+        self.assertFalse(heaps.get('expanded',False))
+        heap=next(row for row in heaps['children'] if row['id']=='heaps-0')
         selected=heap['children'][0]
         self.assertIn('item-floor-',selected['id'])
         calls=[];self.ui.manager.open_reference=lambda *args:calls.append(args)
@@ -210,7 +292,8 @@ class NativeFloorGuideTests(unittest.TestCase):
         self.assertNotIn('stamp',reference)
         self.assertIn('未合并当前角色',reference['conditions'])
         self.assertIn('槽位 1',reference['field_origins']['level'])
-        self.assertTrue(any('保存生命 22 / 36' in row['text'] for row in revealed['nodes'][0]['children']))
+        saved=next(row for row in revealed['nodes'][0]['children'] if row['id']=='hidden-mobs')
+        self.assertTrue(any('保存生命 22 / 36' in row['text'] for row in saved['children']))
         self.assertEqual(self.tree(),before)
         self.assertFalse(self.session.settings['reveal'])
 
@@ -222,7 +305,8 @@ class NativeFloorGuideTests(unittest.TestCase):
         self.ui.reveal_floor({'token':public['token']})
         work,finish=self.jobs.pop();finish(work(),None)
         revealed=self.ui.floor_state(snap)
-        selected=next(row for row in revealed['nodes'][0]['children'] if row['id']=='heaps-0')['children'][0]
+        heaps=next(row for row in revealed['nodes'][0]['children'] if row['id']=='hidden-heaps')
+        selected=next(row for row in heaps['children'] if row['id']=='heaps-0')['children'][0]
         calls=[];self.ui.manager.open_reference=lambda *args:calls.append(args);self.ui.frozen=False
         self.ui.reveal_floor({'token':revealed['token']})
         self.ui.dispatch({'action':'floor_item_reference','token':revealed['token'],'id':selected['id']})
@@ -284,6 +368,53 @@ class NativeFloorGuideTests(unittest.TestCase):
         self.ui.dispatch({'action':'floor_reference','token':public['token'],'id':'actors.mobs.greatcrab'})
         self.assertEqual(calls[0][0]['entry'],'actors.mobs.greatcrab')
         self.assertEqual(self.ui.manager.action_error,'')
+
+    def test_challenge_snapshot_catalog_cache_and_full_reference_stay_consistent(self):
+        from companion.scouting import inspect_saved
+        self.game.update(depth=20,challenges=0)
+        self.save();self.session.refresh()
+        ordinary=self.ui.floor_state(self.session.snapshot())
+        self.assertNotIn('actors.mobs.dwarfking$dkgolem',self.ui._floor_reference_rows)
+        self.game['challenges']=256
+        self.save();self.session.refresh()
+        snap=self.session.snapshot()
+        self.assertEqual(snap['data']['challenges_mask'],256)
+        self.assertTrue(snap['data']['challenges_known'])
+        public=self.ui.floor_state(snap)
+        self.assertNotEqual(public['owner'],ordinary['owner'])
+        king=next(r for r in public['nodes'][1]['children'] if r['id']=='actors.mobs.dwarfking')
+        self.assertIn('生命 450',king['text'])
+        health=next(b for b in king['children'] if b['text']=='常规战斗数值')['children'][0]
+        self.assertIn('450',health['text'])
+        group=next(r for r in public['nodes'][1]['children'] if r['id']=='group-绝命头目挑战支援')
+        self.assertFalse(group.get('expanded',False))
+        self.assertEqual(group['children'][0]['id'],'actors.mobs.dwarfking$dkgolem')
+        catalog=inspect_saved(self.session,{'action':'catalog'})
+        self.assertEqual(catalog['source']['challenges_mask'],256)
+        self.assertTrue(catalog['source']['challenges_known'])
+        self.assertEqual(catalog['encounters']['challenges_mask'],256)
+        calls=[];self.ui.manager.open_reference=lambda *args:calls.append(args);self.ui.frozen=False
+        self.ui.dispatch({'action':'floor_reference','token':public['token'],'id':'actors.mobs.dwarfking'})
+        self.assertEqual(calls[0][0]['params']['stronger_bosses'],1)
+        self.assertIn('所选存档',calls[0][0]['field_origins']['stronger_bosses'])
+        self.game.pop('challenges');self.save();self.session.refresh()
+        unknown=self.ui.floor_state(self.session.snapshot())
+        self.assertIn('挑战信息未确认',unknown['nodes'][1]['detail'])
+        king=next(r for r in unknown['nodes'][1]['children'] if r['id']=='actors.mobs.dwarfking')
+        self.assertIn('生命 300',king['text'])
+        self.assertIsNone(self.session.snapshot()['data']['challenges_mask'])
+
+    def test_vault_mechanisms_are_closed_and_reference_existing_numeric_profiles(self):
+        self.game.update(depth=17,branch=1,challenges=0)
+        self.save();self.session.refresh()
+        public=self.ui.floor_state(self.session.snapshot())
+        group=next(r for r in public['nodes'][1]['children'] if r['id']=='group-宝库机关/房间条件')
+        self.assertFalse(group.get('expanded',False))
+        self.assertEqual({r['id'] for r in group['children']},{'actors.mobs.npcs.vaultsentry','actors.mobs.npcs.vaultlaser'})
+        for row in group['children']:
+            self.assertIn('生命 不可破坏',row['text'])
+            self.assertFalse(row.get('expanded',False))
+            self.assertTrue(any(b['text']=='特殊攻击与机制' for b in row['children']))
 
 
 if __name__=='__main__': unittest.main()

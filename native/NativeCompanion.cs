@@ -457,7 +457,7 @@ namespace Denghuo.Native {
             revealFloor = UI.Button("揭示本层隐藏内容", delegate { Host.Send("reveal_floor", "token", floorToken); });
             var adjustFloor = UI.Button("查看所选资料数值…", delegate { AdjustFloorReference(); });
             inspector.Controls.Add(floorCaption, 0, 0); inspector.Controls.Add(UI.Buttons(revealFloor, adjustFloor), 0, 1); inspector.Controls.Add(floor, 0, 2); inspector.Controls.Add(floorDetail, 0, 3);
-            floor.AfterSelect += delegate { if (floor.SelectedNode != null) UI.ReplaceText(floorDetail, Convert.ToString(floor.SelectedNode.Tag)); };
+            floor.AfterSelect += delegate { if (floor.SelectedNode != null) UI.ReplaceText(floorDetail, FloorDetailText(floor.SelectedNode)); };
             table.Controls.Add(inspector, 0, 2); table.Controls.Add(summary, 0, 3); table.Controls.Add(references, 0, 4); table.Controls.Add(Status, 0, 5);
             table.Controls.Add(UI.Buttons(UI.Button("查数值", delegate { Host.Send("show_lookup"); }), UI.Button("存档历史", delegate { Host.Send("panel", "page", "backups"); }), UI.Button("完整面板", delegate { Host.Send("panel", "page", "overview"); }), UI.Button("立即备份", delegate { Host.Send("capture"); }), UI.Button("载入未完成草稿", delegate { Host.Send("list_drafts"); })), 0, 6); Controls.Add(table);
             slot.SelectedIndexChanged += delegate { if (!rendering) Host.Send("slot", "index", slot.SelectedIndex); };
@@ -478,11 +478,20 @@ namespace Denghuo.Native {
             UI.ReplaceText(floorDetail, "请先选择本层可能出现的怪物，或主动揭示后选择具体物品，再查看数值。");
         }
         void RememberFloor(TreeNodeCollection nodes, HashSet<string> expanded, HashSet<string> known) { foreach (TreeNode node in nodes) { if (node.Nodes.Count > 0) known.Add(node.Name); if (node.IsExpanded) expanded.Add(node.Name); RememberFloor(node.Nodes, expanded, known); } }
+        string FloorDetailText(TreeNode selected) {
+            var details = new List<string>();
+            for (TreeNode node = selected; node != null; node = node.Parent) {
+                string detail = Convert.ToString(node.Tag);
+                if (node == selected && String.IsNullOrEmpty(detail)) detail = node.Text;
+                if (!String.IsNullOrEmpty(detail) && !details.Contains(detail)) details.Add(detail);
+            }
+            return String.Join("\n\n", details.ToArray());
+        }
         void AddFloor(TreeNodeCollection nodes, object[] rows, string parent, HashSet<string> expanded, HashSet<string> known, string selected, ref TreeNode chosen) {
             foreach (object raw in rows) {
                 var row = raw as Dictionary<string, object>; if (row == null) continue;
-                string name = parent + "/" + Data.Text(row, "id", ""); var node = new TreeNode(Data.Text(row, "text", "")) { Name = name, Tag = Data.Text(row, "detail", Data.Text(row, "text", "")) };
-                node.ToolTipText = Convert.ToString(node.Tag); nodes.Add(node); AddFloor(node.Nodes, Data.Array(row, "children"), name, expanded, known, selected, ref chosen);
+                string name = parent + "/" + Data.Text(row, "id", ""); var node = new TreeNode(Data.Text(row, "text", "")) { Name = name, Tag = Data.Text(row, "detail", "") };
+                node.ToolTipText = Data.Text(row, "detail", node.Text); nodes.Add(node); AddFloor(node.Nodes, Data.Array(row, "children"), name, expanded, known, selected, ref chosen);
                 if (expanded.Contains(name) || !known.Contains(name) && Data.Flag(row, "expanded")) node.Expand(); if (name == selected) chosen = node;
             }
         }

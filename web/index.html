@@ -24,22 +24,10 @@
 </head>
 <body>
   <aside class="sidebar">
-    <a class="brand" href="#overview"><img src="/icon.svg" alt=""><span>灯火<small>DUNGEON COMPANION</small></span></a>
-    <section id="floor-guide" aria-labelledby="floor-guide-title">
-      <div class="panel-title"><h2 id="floor-guide-title">当前楼层</h2><button id="floor-guide-refresh" class="text-button" type="button">刷新</button></div>
-      <p id="floor-guide-source" class="muted" role="status">游戏保存后，自动显示本层资料。</p>
-      <details id="floor-hidden" open><summary>本层隐藏内容 <span id="floor-hidden-count">尚未揭示</span></summary>
-        <p id="floor-hidden-status" class="muted">隐藏门、陷阱和未见物品需主动揭示。</p>
-        <button id="floor-hidden-open" class="secondary" type="button" disabled>揭示本层隐藏内容</button>
-        <div id="floor-hidden-content" hidden></div>
-      </details>
-      <details id="floor-monsters" open><summary>本层可能出现的怪物 <span id="floor-monsters-count"></span></summary>
-        <p id="floor-monsters-note" class="muted">等待有效存档。</p><div id="floor-monsters-list"></div>
-      </details>
-      <p id="floor-guide-error" class="rule-warning" role="alert" hidden></p>
-    </section>
-    <div class="nav-label">你的地牢同行者</div>
-    <button id="nav-toggle" class="secondary nav-toggle" aria-expanded="false" aria-controls="main-nav">更多页面（共 12 项） ▾</button>
+    <div class="sidebar-heading">
+      <a class="brand" href="#overview"><img src="/icon.svg" alt=""><span>灯火<small>DUNGEON COMPANION</small></span></a>
+      <button id="nav-toggle" class="secondary nav-toggle" type="button" aria-expanded="false" aria-controls="main-nav" aria-label="展开全部12个页面">页面 ▾</button>
+    </div>
     <nav id="main-nav" aria-label="主导航">
       <button class="nav active" data-view="overview"><span>◈</span>冒险概览</button>
       <button class="nav" data-view="inventory"><span>▣</span>背包与装备</button>
@@ -54,6 +42,21 @@
       <button class="nav" data-view="play-settings"><span>⌨</span>游玩显示与快捷键</button>
       <button class="nav" data-view="help"><span>?</span>帮助与关于 <kbd>F1</kbd></button>
     </nav>
+    <section id="floor-guide" aria-labelledby="floor-guide-title">
+      <div class="panel-title"><h2 id="floor-guide-title">当前楼层</h2><button id="floor-guide-refresh" class="text-button" type="button">刷新</button></div>
+      <p id="floor-guide-source" class="muted" role="status">游戏保存后，自动显示本层资料。</p>
+      <details id="floor-hidden" open><summary>本层隐藏内容 <span id="floor-hidden-count">尚未揭示</span></summary>
+        <p id="floor-hidden-status" class="muted">隐藏门、陷阱和未见物品需主动揭示。</p>
+        <button id="floor-hidden-open" class="secondary" type="button" disabled>揭示本层隐藏内容</button>
+        <div id="floor-hidden-content" hidden></div>
+      </details>
+      <details id="floor-monsters" open><summary>本层可能出现的怪物 <span id="floor-monsters-count"></span></summary>
+        <p id="floor-monsters-brief" class="muted">连接有效存档后显示本层资料。</p><div id="floor-monsters-list"></div>
+        <details class="floor-rule-note"><summary>生成规则说明</summary><p id="floor-monsters-note" class="muted">等待有效存档。</p></details>
+      </details>
+      <p id="floor-guide-error" class="rule-warning" role="alert" hidden></p>
+    </section>
+    <div class="nav-label">你的地牢同行者</div>
     <div class="sidebar-bottom"><div class="session-label"><span class="dot" id="sidebar-dot"></span><span id="connection-short">正在连接</span></div><p>每一步，都多一点把握。</p><div class="version">破碎的像素地牢 · <span id="catalog-version">4.0.2</span><br>本地运行 · 回档需确认</div></div>
   </aside>
   <main>
