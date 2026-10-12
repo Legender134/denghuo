@@ -307,8 +307,10 @@ class ServiceLivenessTests(unittest.TestCase):
             self.assertEqual(failures, [])
             self.assertFalse(rows[0]['ok'])
             release.set()
-            self.assertTrue(applied.wait(2))
-            self.assertTrue(updated.wait(2))
+            # These workers finish real copy/hash I/O after the gate opens.
+            # Their cleanup is not a UI latency bound (the assertions above are).
+            self.assertTrue(applied.wait(10), 'destination worker did not finish after I/O release')
+            self.assertTrue(updated.wait(10), 'queued settings worker did not finish after I/O release')
             self.assertEqual(len(errors), 1)
             self.assertEqual(len(update_errors), 1)
             self.assertIs(self.session.backups, manager)
