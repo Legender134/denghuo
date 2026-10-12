@@ -458,6 +458,24 @@ class ExitRecoveryJournal:
             self.fingerprints[identity] = (signature, hashlib.sha256(raw).hexdigest())
             return True
 
+    def verify_checkpoint(self, surface_id, revision, dirty, draft, kind, label):
+        """Recheck preserved bytes without writing or clearing an unchanged draft."""
+        identity = self.identity(surface_id)
+        with self.lock:
+            path = unlinked(self.directory / (identity + '.json'))
+            if unlinked(self.directory / (identity + '.json.pending')).exists():
+                raise ValueError('自动草稿有中断副本，原件保留；请重新核对')
+            if not dirty and not path.exists():
+                return False
+            signature = json.dumps([revision, draft, kind, label], ensure_ascii=True, sort_keys=True)
+            known = self.fingerprints.get(identity)
+            if not dirty or not known or known[0] != signature:
+                raise ValueError('自动草稿落盘副本已变化，原件保留；请明确保存当前窗口的草稿副本')
+            _, raw = self._read(identity)
+            if hashlib.sha256(raw).hexdigest() != known[1]:
+                raise ValueError('自动草稿落盘副本已变化，原件保留；请明确保存当前窗口的草稿副本')
+            return True
+
     def load(self, identity):
         with self.lock, self._storage_lock():
             value, _ = self._read(identity)
@@ -626,10 +644,11 @@ class ExitRecoveryJournal:
 
 
 class ExitCoordinator:
-    def __init__(self, finalize, save_draft, clock=time.time, on_finished=None, checkpoint=None):
+    def __init__(self, finalize, save_draft, clock=time.time, on_finished=None, checkpoint=None, verify_checkpoint=None):
         self.finalize, self.save_draft, self.clock = finalize, save_draft, clock
         self.on_finished = on_finished
         self.checkpoint = checkpoint
+        self.verify_checkpoint = verify_checkpoint
         self.lock = threading.RLock()
         self.surfaces = {}
         self.request = None
@@ -647,13 +666,13 @@ class ExitCoordinator:
         """Wait a bounded time for queued preservation, without claiming success."""
         return self._persistence_idle.wait(timeout)
 
-    def _job(self, surface, *, request_id=None, decision=None, offline=False):
+    def _job(self, surface, *, request_id=None, decision=None, offline=False, verify_only=False):
         self._sequence += 1
         return {'surface': surface, 'version': surface['version'], 'sequence': self._sequence,
                 'surface_id': surface['surface_id'], 'revision': surface['revision'],
                 'dirty': surface['dirty'], 'draft': copy.deepcopy(surface['draft']),
                 'kind': surface['kind'], 'label': surface['label'],
-                'request_id': request_id, 'decision': decision, 'offline': offline,
+                'request_id': request_id, 'decision': decision, 'offline': offline, 'verify_only': verify_only,
                 'done': threading.Event(), 'error': None, 'saved': None}
 
     def _enqueue(self, job):
@@ -677,7 +696,9 @@ class ExitCoordinator:
         surface = job['surface']
         if job['request_id'] is not None and surface['dirty']:
             surface['restore_required'] = True
-        surface.update(operation=job['sequence'], recovery_pending=True, recovery_saved=False)
+        surface['operation'] = job['sequence']
+        if not job['verify_only']:
+            surface.update(recovery_pending=True, recovery_saved=False)
         self._persistence_idle.clear()
         if self._persistence_worker is None:
             self._persistence_worker = threading.Thread(target=self._persist,
@@ -695,8 +716,11 @@ class ExitCoordinator:
         if any(item['surface'] is surface and item['version'] == surface['version']
                for item in pending):
             return
+        complete = surface['completed_version'] == surface['version'] and not surface['recovery_error']
+        if complete and self.verify_checkpoint is None:
+            return
         try:
-            self._enqueue(self._job(surface))
+            self._enqueue(self._job(surface, verify_only=complete))
         except ValueError as exc:
             surface.update(recovery_pending=False, recovery_saved=False,
                            recovery_error=self._preservation_error(exc))
@@ -731,8 +755,9 @@ class ExitCoordinator:
                     with self.lock:
                         self._current_decision(job)
                 saved = False
-                if self.checkpoint is not None:
-                    saved = self.checkpoint(job['surface_id'], job['revision'],
+                checkpoint = self.verify_checkpoint if job['verify_only'] else self.checkpoint
+                if checkpoint is not None:
+                    saved = checkpoint(job['surface_id'], job['revision'],
                         job['dirty'] if job['request_id'] is None else False,
                         job['draft'], job['kind'], job['label'])
                 with self.lock:
@@ -744,6 +769,8 @@ class ExitCoordinator:
                             and surface['version'] == job['version']
                             and surface['operation'] == job['sequence']):
                         surface.update(recovery_saved=saved, recovery_pending=False, recovery_error='')
+                        surface['completed_version'] = (job['version'] if job['request_id'] is None
+                            and (saved or not job['dirty']) else None)
                         if job['request_id'] is None and (saved or not job['dirty']):
                             surface['restore_required'] = False
                     if job['request_id'] is not None:
@@ -785,7 +812,8 @@ class ExitCoordinator:
                 self.surfaces[surface_id] = {'surface_id': surface_id, 'kind': kind, 'label': label or '编辑窗口',
                     'revision': 0, 'dirty': False, 'draft': None, 'last_seen': self.clock(),
                     'closed': False, 'notify': notify, 'ack': None, 'recovery_saved': False, 'recovery_error': '',
-                    'recovery_pending': False, 'version': 0, 'operation': 0, 'restore_required': False}
+                    'recovery_pending': False, 'version': 0, 'operation': 0, 'restore_required': False,
+                    'completed_version': None}
             else:
                 surface = self.surfaces[surface_id]
                 if surface['kind'] != kind:

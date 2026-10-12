@@ -57,9 +57,15 @@ function navigate(next,historyMode='push'){
   if(next==='alchemy'&&typeof loadAlchemy==='function')loadAlchemy();
   if(next==='help'&&typeof loadHelp==='function')loadHelp();
   if(next==='play-settings'){if(typeof loadPlaySettings==='function')loadPlaySettings();if(typeof loadBackupDestination==='function')loadBackupDestination();}
-  if(changed)window.scrollTo({top:viewPositions.get(next)||0,behavior:'instant'});
+  if(changed){
+    const target=$(`#view-${next}`),heading=target.querySelector('h1');
+    const narrow=window.matchMedia('(max-width:800px)').matches;
+    const start=narrow?target.getBoundingClientRect().top+window.scrollY:0;
+    window.scrollTo({top:Math.max(start,viewPositions.get(next)||0),behavior:'instant'});
+    if(narrow&&heading){heading.tabIndex=-1;heading.focus({preventScroll:true});}
+  }
 }
-$$('[data-view]').forEach(el=>el.addEventListener('click',()=>{navigate(el.dataset.view);if($('#main-nav').classList.contains('expanded')){setNavigationExpanded(false);$('#nav-toggle').focus();}}));
+$$('[data-view]').forEach(el=>el.addEventListener('click',()=>{const expanded=$('#main-nav').classList.contains('expanded');if(expanded)setNavigationExpanded(false);navigate(el.dataset.view);if(expanded&&!window.matchMedia('(max-width:800px)').matches)$('#nav-toggle').focus();}));
 function setNavigationExpanded(expanded){$('#main-nav').classList.toggle('expanded',expanded);$('#nav-toggle').setAttribute('aria-expanded',String(expanded));$('#nav-toggle').textContent=expanded?'收起 ▴':'页面 ▾';$('#nav-toggle').setAttribute('aria-label',expanded?'收起全部页面':`展开全部${Object.keys(names).length}个页面`);}
 $('#nav-toggle').addEventListener('click',()=>setNavigationExpanded($('#nav-toggle').getAttribute('aria-expanded')!=='true'));
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&$('#nav-toggle').getAttribute('aria-expanded')==='true'&&($('#main-nav').contains(event.target)||event.target===$('#nav-toggle'))){event.preventDefault();setNavigationExpanded(false);$('#nav-toggle').focus();}});
@@ -207,7 +213,7 @@ function renderInventory(){
 }
 let detailEntry=null;
 function showDetailContext(text){showItemNote(null);const target=$('#detail-context');if(target){target.textContent=text||'';target.hidden=!text;}}
-function showDetail(title,text,category,meta){if(typeof itemDisclosure!=='undefined')itemDisclosure=null;if(typeof detailReferenceSerial!=='undefined'){detailReferenceSerial++;setReferencePortrait('',title);const encounters=$('#detail-encounters');if(encounters){encounters.hidden=true;encounters.replaceChildren();}const status=$('#detail-reference-status');if(status)status.hidden=true;}showDetailContext('');cancelNumericalDetail();detailEntry=null;$('#detail-rules').replaceChildren();$('#detail-tools')?.replaceChildren();$('#detail-related')?.replaceChildren();$('#detail-title').textContent=title;$('#detail-text').textContent=text || '此条目没有独立说明，请参考游戏中的检查界面。';$('#detail-category').textContent=category;$('#detail-meta').textContent=meta;if(!$('#detail-dialog').open)$('#detail-dialog').showModal();$('#detail-dialog').scrollTop=0;}
+function showDetail(title,text,category,meta){if(typeof itemDisclosure!=='undefined')itemDisclosure=null;if(typeof detailReferenceSerial!=='undefined'){detailReferenceSerial++;setReferencePortrait('',title);const encounters=$('#detail-encounters');if(encounters){encounters.hidden=true;encounters.replaceChildren();}const status=$('#detail-reference-status');if(status)status.hidden=true;}showDetailContext('');cancelNumericalDetail();detailEntry=null;$('#detail-rules').replaceChildren();$('#detail-tools')?.replaceChildren();$('#detail-related')?.replaceChildren();$('#detail-title').textContent=title;$('#detail-text').textContent=text || '此条目没有独立说明，请参考游戏中的检查界面。';$('#detail-dialog .game-description').open=true;$('#detail-dialog').classList.toggle('monster-detail',false);$('#detail-category').textContent=category;$('#detail-meta').textContent=meta;if(!$('#detail-dialog').open)$('#detail-dialog').showModal();$('#detail-dialog').scrollTop=0;}
 function showRelatedReferences(rows,context={}){const target=$('#detail-related');if(!target)return;target.replaceChildren();for(const row of rows||[]){const button=document.createElement('button');button.className='secondary';button.textContent='查看 '+row.name;button.addEventListener('click',()=>showReference({...row,lookup_context:row.lookup_context||{...context,ignore_drafts:true,capture_context:true,conditions:row.conditions}}));target.append(button);}}
 function showItem(item,reference=itemSnapshotReference()){
   showDetail(item.name,item.description,item.location,item.details.join(' · ')+(item.revealed?' · 已主动揭示存档资料；游戏鉴定状态未改变':item.known?'':' · 未鉴定物品保留未知身份')+(item.available===false?' · 当前记录中不可用；仅供阅读参考':''));showItemNote(item.user_note);if(typeof setReferencePortrait==='function'){setReferencePortrait(publicReferenceId(item),item.name);if(item.known||item.revealed)void hydrateReference({id:item.key,name:item.name,appearance_id:publicReferenceId(item),preserve_description:true},detailReferenceSerial);}

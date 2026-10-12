@@ -924,6 +924,18 @@ class BackupManager:
             health.update(state='working', protected=False)
         return health
 
+    def health_error(self, root, slot=None):
+        """Published errors only; status readers must not acquire disk/manager locks."""
+        if self._storage_error:
+            return self._storage_error
+        if self.health_root is None:
+            return self.error
+        if self.health_root != str(Path(root)):
+            return ''
+        if slot is None:
+            return self.error
+        return self.tick_failure or self.slot_health.get(slot, {}).get('error', '')
+
     def health_status(self, root, slot=None):
         with self.lock:
             storage_error = ''
@@ -933,20 +945,19 @@ class BackupManager:
                 storage_error = str(exc)
             current = self.health_root == str(Path(root))
             success, saved = (self.last_success, self.last_saved) if current else (0, 0)
-            # Startup/storage failures may precede the first root-bound tick.
-            error = (self.error if self.health_root is None else
-                     (self.error if slot is None else self.tick_failure) if current else '')
+            error = self.health_error(root, slot)
             if slot is not None:
                 own = self.slot_health.get(slot, {}) if current else {}
                 success, saved = own.get('last_success', 0), own.get('saved', 0)
-                error = error or own.get('error', '')
             error = storage_error or error
             state = ('paused' if not self.enabled else 'blocked' if error or not Path(root).is_dir()
                      else 'waiting' if not success or self.clock() - saved > 60 else 'protected')
             return {'state': state, 'error': error, 'last_success': success, 'saved': saved, 'slot': slot,
                     'global_progress': self.global_health_status(root),
                     'last_save_protected': bool(success and saved and not error),
-                    'other_errors': self.error if current and slot is not None and self.error != error else ''}
+                    'other_errors': '；'.join(f'槽位 {other}：{row["error"]}'
+                        for other, row in sorted(self.slot_health.items())
+                        if other != slot and row.get('error')) if current and slot is not None else ''}
 
     def snapshot(self, root):
         with self.lock:

@@ -89,6 +89,30 @@ class ServiceLivenessTests(unittest.TestCase):
         with patch.object(self.session.backups, 'health_status', side_effect=AssertionError('snapshot touched disk')):
             self.assert_snapshot_returns()
 
+    def test_current_slot_health_survives_another_ended_slot(self):
+        self.write_save(hp=20)
+        import shutil
+        shutil.copytree(self.root / 'game1', self.root / 'game2')
+        (self.root / 'game1' / 'game.dat').write_bytes(bytes([1]))
+        self.session.update_settings({'slot': 2})
+        self.session.backups.tick(Path(self.session.settings['save_root']), force=True)
+        self.session.refresh()
+        self.session.backup_health()
+        health = self.assert_snapshot_returns()['backup_health']
+        self.assertTrue(health['last_save_protected'], health)
+        self.assertFalse(health['error'])
+        self.assertIn('槽位 1', health['other_errors'])
+        self.assertNotIn('槽位 2', health['other_errors'])
+        self.session.backups.tick_failure = '当前目录检查失败'
+        health = self.assert_snapshot_returns()['backup_health']
+        self.assertEqual(health['state'], 'blocked')
+        self.assertFalse(health['last_save_protected'])
+        self.session.backups.tick_failure = ''
+        self.session.backups.slot_health[2]['error'] = '当前槽位读取失败'
+        health = self.assert_snapshot_returns()['backup_health']
+        self.assertEqual(health['error'], '当前槽位读取失败')
+        self.assertFalse(health['last_save_protected'])
+
     def test_slow_monitor_keeps_snapshot_and_shutdown_bounded(self):
         entered, release, wait = self.gate()
         actual_tick = self.session.backups.tick
@@ -283,8 +307,10 @@ class ServiceLivenessTests(unittest.TestCase):
             self.assertEqual(failures, [])
             self.assertFalse(rows[0]['ok'])
             release.set()
-            self.assertTrue(applied.wait(2))
-            self.assertTrue(updated.wait(2))
+            # These workers finish real copy/hash I/O after the gate opens.
+            # Their cleanup is not a UI latency bound (the assertions above are).
+            self.assertTrue(applied.wait(10), 'destination worker did not finish after I/O release')
+            self.assertTrue(updated.wait(10), 'queued settings worker did not finish after I/O release')
             self.assertEqual(len(errors), 1)
             self.assertEqual(len(update_errors), 1)
             self.assertIs(self.session.backups, manager)

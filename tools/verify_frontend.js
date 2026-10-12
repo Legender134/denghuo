@@ -474,7 +474,7 @@ function verifyNavigationHistory(){
     h.context.location={hash:initial,search:''};
     h.context.history={scrollRestoration:'auto',replaceState(_state,_title,url){stack[index]=url;h.context.location.hash=url;},pushState(_state,_title,url){stack.splice(index+1);stack.push(url);index++;h.context.location.hash=url;}};
     h.context.document={querySelector:h.get,querySelectorAll:()=>[],addEventListener(){}};
-    h.context.window={scrollY:0,scrollTo({top}){this.scrollY=top;},addEventListener(name,fn){if(!events.has(name))events.set(name,[]);events.get(name).push(fn);}};
+    h.context.window={scrollY:0,matchMedia:()=>({matches:false}),scrollTo({top}){this.scrollY=top;},addEventListener(name,fn){if(!events.has(name))events.set(name,[]);events.get(name).push(fn);}};
     for(const name of ['loadWorkspace','searchLibrary','renderInventory','loadSettings','loadBackups','loadMigration','loadAlchemy','loadHelp','loadPlaySettings','loadBackupDestination'])h.context[name]=()=>loads.push(name);
     const source=fs.readFileSync(path.join(root,'web/app.js'),'utf8');h.run(source.slice(0,source.indexOf('function handlePageShortcut(')));
     h.run("navigate(location.hash.slice(1),'replace')");
@@ -488,6 +488,16 @@ function verifyNavigationHistory(){
   t.hash('#invalid-tool');assert.equal(h.run('view'),'overview');assert.equal(t.stack.at(-1),'#overview');assert.equal(t.stack.length,5,'normalize an existing unknown hash rather than push a second entry');
   const deep=setup('#alchemy');assert.equal(deep.h.run('view'),'alchemy');assert.equal(deep.stack.length,1,'opening a deep link does not add a phantom overview visit');
   const backupEntry=setup('#play-settings');assert.deepEqual(backupEntry.loads,['loadPlaySettings','loadBackupDestination'],'direct settings entry initializes the visible backup form');
+  const narrow=setup(),title=element('library-title');
+  narrow.h.context.window.matchMedia=()=>({matches:true});
+  narrow.h.get('#view-library').getBoundingClientRect=()=>({top:795-narrow.h.context.window.scrollY});
+  narrow.h.get('#view-library').querySelector=()=>title;
+  narrow.h.get('#view-workspace').getBoundingClientRect=()=>({top:795-narrow.h.context.window.scrollY});
+  narrow.h.run("navigate('library')");
+  assert.equal(narrow.h.context.window.scrollY,795,'small-window navigation reaches the chosen content past the floor sidebar');
+  assert(title.focused,'keyboard focus follows the selected page');
+  narrow.h.context.window.scrollY=1040;narrow.h.run("navigate('workspace');navigate('library')");
+  assert.equal(narrow.h.context.window.scrollY,1040,'small-window reading position is retained');
   console.log(JSON.stringify({internal_navigation_history:true}));
 }
 async function verifyComparisonRecovery(){
@@ -684,7 +694,7 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
     modified:0,age_seconds:null,stale:true,catalog_version:'4.0.2',catalog_count:955,token:'fixture',
     settings:{mode:'save',slot:'auto',stop_at:'',reveal:false,save_root:'/synthetic/default',always_on_top:false},backup_health:{state:'waiting'}};
   dashboard.context.document={querySelector:dashboard.get,querySelectorAll:()=>[],addEventListener(){}};
-  dashboard.context.window={addEventListener(){},scrollTo(){},focus(){},scrollY:0};
+  dashboard.context.window={matchMedia:()=>({matches:false}),addEventListener(){},scrollTo(){},focus(){},scrollY:0};
   dashboard.context.location={hash:''};dashboard.context.history={replaceState(_state,_title,url){dashboard.context.location.hash=url;},pushState(_state,_title,url){dashboard.context.location.hash=url;}};
   dashboard.context.crypto={randomUUID:()=> '0123456789abcdef'};
   dashboard.context.setInterval=()=>0;dashboard.context.setTimeout=()=>0;dashboard.context.clearTimeout=()=>{};

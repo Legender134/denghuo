@@ -50,7 +50,7 @@ function heroInputOrigin(key,stamp=calculationStamp()){if(key==='talent'||key===
 function cancelNumericalDetail(){rememberFixedNumericalDraft();numericalRequest++;numericalDetail=null;}
 $('#detail-dialog').addEventListener('close',cancelNumericalDetail);
 function exampleHTML(example){
-  const values=(example.values||[]).map(v=>`<div><dt>${escapeHTML(v.label)}</dt><dd>${escapeHTML(displayNumber(v.value))}<small>${escapeHTML(v.unit||'')}</small></dd>${v.condition?`<p class="numeric-condition">${escapeHTML(v.condition)}</p>`:''}</div>`).join('');
+  const values=(example.values||[]).map(v=>`<div><dt>${escapeHTML(v.label)}</dt><dd>${escapeHTML(displayNumber(v.value))}<small>${escapeHTML(v.unit||'')}</small></dd>${v.condition&&!example.compact_conditions?`<p class="numeric-condition">${escapeHTML(v.condition)}</p>`:''}</div>`).join('');
   // Collapse only byte-identical conditions shared by every normal loot row.
   const sharedCondition=example.title==='掉落物、数量与概率'&&example.columns?.at(-1)==='条件'&&example.rows?.length>1&&typeof example.rows[0].at(-1)==='string'&&example.rows[0].at(-1)&&example.rows.every(row=>row.length===example.columns.length&&row.at(-1)===example.rows[0].at(-1))?example.rows[0].at(-1):'';
   const columns=sharedCondition?example.columns.slice(0,-1):example.columns,rows=sharedCondition?example.rows.map(row=>row.slice(0,-1)):example.rows;
@@ -59,7 +59,7 @@ function exampleHTML(example){
   const noteText=example.note_summary||example.note;
   const note=example.note?`<p class="muted">${escapeHTML(sharedCondition?noteText.replace('按条件列查看概率','按共同条件查看概率'):noteText)}</p>`:'';
   const detail=example.note&&example.note_summary?`<details class="numeric-note-details"><summary>展开计算规则与适用范围</summary><p class="muted">${escapeHTML(example.note)}</p></details>`:'';
-  return `<section class="example-block"><h3>${escapeHTML(example.title)}</h3>${note}${values?`<dl class="numeric-values">${values}</dl>`:''}${common}${table}${detail}</section>`;
+  return `<section class="example-block"><h3>${escapeHTML(example.title)}</h3>${note}${values?`<dl class="numeric-values">${values}</dl>`:''}${common}${table}${detail}${example.compact_conditions?comparisonConditionsHTML(example.values||[]):''}</section>`;
 }
 // Presentation only; request parameters and backend arithmetic retain their precision.
 function displayNumber(value){
@@ -151,7 +151,10 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
     if(seq!==numericalRequest||!$('#detail-dialog').open)return;
     if(result.status==='legacy'){container.innerHTML=`<p class="rule-warning">${escapeHTML(String(result.notice||'').replace('小数最多显示六位有效数字。','显示通常保留三位小数；微小非零值保留有效数字，计算使用原始精度。'))}</p>`;return;}
     const first=result.blocks[0];
-    const lead=first?.values?.length<=6&&!first?.columns&&/^(当前 |按你的|命中概率|技能具体效果|当前治疗状态|当前酸蚀状态|当前延缓伤害池)/.test(first.title);
+    const combat=first?.title==='常规战斗数值';
+    $('#detail-dialog').classList.toggle('monster-detail',combat);
+    if(combat&&!previousForm)$('#detail-dialog .game-description').open=false;
+    const lead=combat||first?.values?.length<=6&&!first?.columns&&/^(当前 |按你的|命中概率|技能具体效果|当前治疗状态|当前酸蚀状态|当前延缓伤害池)/.test(first.title);
     detail.inputs=result.inputs;detail.result=result;
     if(options.commitPending)detail.sessionUnsaved=true;
     if(options.commitPending)numericalFormDrafts.delete(currentDraftKey());
@@ -162,8 +165,11 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
     if(options.commitPending&&!detail.fixed){const drafts={};for(const input of result.inputs)if((detail.origins[input.key]||'').startsWith('手填'))drafts[input.key]=Number(input.value);numericalDrafts.set(currentDraftKey(),drafts);}
     const restoreFocus=focusSelector&&(document.activeElement===document.body||previousForm.contains(document.activeElement));
     const scrollTop=$('#detail-dialog').scrollTop;
-    const formHTML=result.inputs.length?`<form id="value-calculator" class="value-calculator" novalidate><div class="form-grid">${result.inputs.map(input=>`<label>${escapeHTML(input.label)}<small data-origin-key="${escapeHTML(input.key)}">${escapeHTML(detail.origins[input.key]||'示例 · 请核对')}</small><input data-value-key="${escapeHTML(input.key)}" type="text" inputmode="${input.step==='any'?'decimal':'numeric'}" step="${input.step||1}" min="${input.min}" max="${input.max}" value="${input.value}" required></label>`).join('')}</div><div class="backup-actions"><button class="primary" type="submit">重新计算</button><button class="secondary" id="values-use-latest" type="button">带入最新角色状态</button><button class="secondary" id="values-use-character" type="button" ${result.inputs.some(input=>input.key==='strength')?'':'disabled'}>带入共享角色条件的总力量</button>${detail.importUndo?'<button class="secondary" id="values-undo-import" type="button">撤回本次带入</button>':''}${detail.savedPlan?'<button class="secondary" id="values-reload-saved" type="button">重新读取最新已保存方案 / 放弃会话草稿</button>':''}</div><p id="values-source" role="status"></p><p class="muted">力量优先带入已知角色条件的总力量；未确认时只提供基础参考。支线等效层数及其他战斗效果请另行核对。示例参数不会被当作已确认的实战状态。</p></form>`:'';
-    container.innerHTML=`<div class="values-heading"><h3>具体数值</h3><span class="pill">${escapeHTML(result.version)}</span></div>${result.inputs.length?'<p id="values-freshness" role="status"></p>':''}${lead?exampleHTML(first):''}${formHTML}<p class="muted">${escapeHTML(String(result.notice||'').replace('小数最多显示六位有效数字。','显示通常保留三位小数；微小非零值保留有效数字，计算使用原始精度。'))}</p>${result.blocks.slice(lead?1:0).map(exampleHTML).join('')}${result.no_fixed_values?(result.non_numeric?'<p class="muted">这是阅读资料或场景标记，没有独立的伤害、生命或概率属性。</p>':'<p class="rule-warning">此条目的具体数值尚在核对，目前不提供未经确认的结果。</p>'):''}${provenanceHTML(result)}`;
+    const inputHTML=inputs=>inputs.map(input=>`<label>${escapeHTML(input.label)}<small data-origin-key="${escapeHTML(input.key)}">${escapeHTML(detail.origins[input.key]||'示例 · 请核对')}</small><input data-value-key="${escapeHTML(input.key)}" type="text" inputmode="${input.step==='any'?'decimal':'numeric'}" step="${input.step||1}" min="${input.min}" max="${input.max}" value="${input.value}" required></label>`).join('');
+    const basic=combat?result.inputs.filter(input=>['depth','hero_level'].includes(input.key)):result.inputs;
+    const advanced=combat?result.inputs.filter(input=>!['depth','hero_level'].includes(input.key)):[];
+    const formHTML=result.inputs.length?`<form id="value-calculator" class="value-calculator" novalidate><div class="form-grid">${inputHTML(basic)}</div>${advanced.length?`<details class="numeric-advanced"><summary>掉落与其他条件（${advanced.length}项，可调整）</summary><div class="form-grid">${inputHTML(advanced)}</div></details>`:''}<div class="backup-actions"><button class="primary" type="submit">重新计算</button><button class="secondary" id="values-use-latest" type="button">带入最新角色状态</button><button class="secondary" id="values-use-character" type="button" ${result.inputs.some(input=>input.key==='strength')?'':'disabled'}>带入共享角色条件的总力量</button>${detail.importUndo?'<button class="secondary" id="values-undo-import" type="button">撤回本次带入</button>':''}${detail.savedPlan?'<button class="secondary" id="values-reload-saved" type="button">重新读取最新已保存方案 / 放弃会话草稿</button>':''}</div><p id="values-source" role="status"></p><p class="muted">力量优先带入已知角色条件的总力量；未确认时只提供基础参考。支线等效层数及其他战斗效果请另行核对。示例参数不会被当作已确认的实战状态。</p></form>`:'';
+    container.innerHTML=`<div class="values-heading"><h3>具体数值</h3><span class="pill">${escapeHTML(result.version)}</span></div>${result.inputs.length?'<p id="values-freshness" role="status"></p>':''}${lead?exampleHTML(combat?{...first,compact_conditions:true}:first):''}${formHTML}<p class="muted">${escapeHTML(String(result.notice||'').replace('小数最多显示六位有效数字。','显示通常保留三位小数；微小非零值保留有效数字，计算使用原始精度。'))}</p>${result.blocks.slice(lead?1:0).map(exampleHTML).join('')}${result.no_fixed_values?(result.non_numeric?'<p class="muted">这是阅读资料或场景标记，没有独立的伤害、生命或概率属性。</p>':'<p class="rule-warning">此条目的具体数值尚在核对，目前不提供未经确认的结果。</p>'):''}${provenanceHTML(result)}`;
     $('#values-use-character')?.addEventListener('click',()=>{try{applyCharacterToNumeric();}catch(error){toast(error.message,true);}});
     $$('[data-value-key]').forEach(input=>input.addEventListener('input',()=>{
       detail.origins[input.dataset.valueKey]='手填 · 尚未重新计算';
