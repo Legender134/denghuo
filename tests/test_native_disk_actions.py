@@ -7,6 +7,7 @@ from queue import Queue
 import subprocess
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -329,6 +330,33 @@ class NativeDiskActionsTests(unittest.TestCase):
         self.finish()
         self.manager.play.unlock_layout.assert_called_once_with(persist=False)
 
+
+    def test_connection_conflict_reload_adopts_disk_and_preserves_play_draft(self):
+        settings = self.settings()
+        settings.vars['offset_x'].set('1e')
+        other = Session(self.session.config_path)
+        other.update_settings({'slot': 2})
+        self.poll({'action': 'slot', 'index': 3}); self.finish()
+        self.assertIn('连接设置', self.manager.action_error)
+        self.assertEqual(self.session.settings['slot'], 'auto')
+        self.poll({'action': 'reload_connection'}); self.finish()
+        self.assertEqual(self.session.settings['slot'], 2)
+        self.assertEqual(settings.vars['offset_x'].get(), '1e')
+        self.assertTrue(settings.has_draft())
+        self.assertEqual(self.manager.action_error, '')
+        self.poll({'action': 'slot', 'index': 3}); self.finish()
+        self.assertEqual(self.session.settings['slot'], 3)
+
+    def test_expired_action_error_is_removed_from_current_native_state(self):
+        self.manager.action_error = '已经过期的保存错误'
+        self.manager.action_error_until = time.monotonic()-1
+        self.ui.update(self.session.snapshot(), force=True)
+        current = [d for action, d in self.host.commands if action == 'manager_state'][-1]
+        self.assertNotIn('已经过期', current['error'])
+        self.manager.action_error_until = time.monotonic()+30
+        self.ui.update(self.session.snapshot(), force=True)
+        current = [d for action, d in self.host.commands if action == 'manager_state'][-1]
+        self.assertIn('已经过期', current['error'])
 
 if __name__ == '__main__':
     unittest.main()

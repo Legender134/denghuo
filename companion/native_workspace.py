@@ -60,6 +60,7 @@ class NumericLookup:
         self.suggested, self.total = False, 0
         self.edit_revision, self.undo_state, self.confirmation = 0, None, None
         self.pending_save = None
+        self.focus_result = False
         self.plan_filters = ('', '全部类型', '最近更新')
         self.search()
 
@@ -213,6 +214,7 @@ class NumericLookup:
         self.guard('切换资料', lambda: self.select_row(row))
 
     def select_row(self, row):
+        self.focus_result = True
         self.saved_plan, self.plan_error = None, ''
         self.identity = row['id']
         self.rendered = self.calculated = None
@@ -472,8 +474,6 @@ class NumericLookup:
         self.host.command('plans', rows=[{'id': row['id'], 'text': row['name']+' · '+labels.get(row['kind'], row['kind'])+' · '+plan_updated_text(row['updated'])} for row in rows])
 
     def open_plan(self, record_id, confirm_draft=True):
-        if confirm_draft:
-            return self.guard('打开方案', lambda: self.open_plan(record_id, False))
         try:
             opened = self.owner.manager.session.knowledge.reopen(record_id)
             if opened['plan']['kind'] != 'numeric':
@@ -485,6 +485,8 @@ class NumericLookup:
                 self.origin.text = '已将所选方案交给完整面板；请核对固定条件。'
                 self.emit()
                 return True
+            if confirm_draft:
+                return self.guard('打开方案', lambda: self.open_plan(record_id, False))
             self.ticket = self.submitted = None
             self.clear_params()
             self.saved_plan, self.identity = opened['plan'], opened['plan']['entry']
@@ -522,6 +524,7 @@ class NumericLookup:
         captured = reference.get('stamp')
         stamp = tuple(captured) if isinstance(captured, (list, tuple)) and len(captured) == 6 else None
         def apply():
+            self.focus_result = True
             self.undo_state = self.draft(include_result=True)
             snap = self.owner.manager.session.snapshot()
             self.clear_params()
@@ -720,12 +723,14 @@ class NumericLookup:
         self.host.revision += 1
         fields = [{**field, 'raw': self.variables[field['key']].get(), 'origin': self.input_origins.get(field['key'], '')} for field in self.inputs if field['key'] in self.variables]
         self.host.command('lookup_state', draft_revision=self.edit_revision, query=self.query.get(),
+            focus_result=self.focus_result,
             rows=[{'text': text, 'token': binding_token(row)} for text, row in zip(self.list.values, self.rows)], fields=fields, note=self.note.get(),
             result=self.text.text, status=self.origin.text, dirty=self.has_draft(),
             can_more=self.suggested or len(self.rows) < self.total, undo=bool(self.undo_state),
             can_latest=bool(self.identity and self.inputs and self.owner.manager.session.snapshot().get('data')),
             sources=self.rendered.get('provenance', {}).get('links', []) if self.rendered else [],
             sources_token=self.source_token())
+        self.focus_result = False
         self.owner.manager.native_ui.report_drafts()
 
     def open_first_result(self, _=None):

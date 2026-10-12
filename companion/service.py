@@ -23,7 +23,7 @@ from .paths import ROOT, data_directory
 
 CST = timezone(timedelta(hours=8))
 DEFAULTS = {"save_root": str(default_root()), "slot": "auto", "mode": "save", "reveal": False,
-            "always_on_top": False, "stop_at": "", "startup_surface": "panel", "backup_root": ""}
+            "always_on_top": False, "stop_at": "", "startup_surface": "native", "backup_root": ""}
 
 
 class SettingsConflict(ValueError):

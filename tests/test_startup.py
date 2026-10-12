@@ -55,12 +55,15 @@ class StartupTests(unittest.TestCase):
         self.assert_port_released()
 
     def test_startup_surface_and_explicit_flags(self):
-        cases = [('panel', [], True, True), ('native', [], False, False),
+        cases = [(None, [], False, False), ('panel', [], True, True), ('native', [], False, False),
                  ('native', ['--web'], True, True), ('panel', ['--no-browser'], False, False),
                  ('panel', ['--start-hidden'], False, True), ('native', ['--start-hidden'], False, True)]
         for surface, flags, panel, hidden in cases:
             with self.subTest(surface=surface, flags=flags):
-                self.config.write_text(json.dumps({'save_root': str(self.root), 'startup_surface': surface}))
+                settings = {'save_root': str(self.root)}
+                if surface is not None:
+                    settings['startup_surface'] = surface
+                self.config.write_text(json.dumps(settings))
                 self.servers = []
                 calls = []
                 def overlay(session, url, **kwargs):
@@ -74,6 +77,7 @@ class StartupTests(unittest.TestCase):
                 self.assert_port_released()
 
     def test_default_browser_failure_keeps_a_visible_native_entry_and_live_service(self):
+        self.config.write_text(json.dumps({'save_root': str(self.root), 'startup_surface': 'panel'}))
         for browser_failure in (False, OSError('controlled default browser failure')):
             with self.subTest(failure=browser_failure):
                 self.servers = []

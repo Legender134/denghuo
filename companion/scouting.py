@@ -186,7 +186,10 @@ def project_floor(level, game, catalog, depth, branch):
     for trap in collection('traps'):
         if not isinstance(trap.get('__className'), str) or not trap['__className'].startswith(PREFIX + 'levels.traps.'):
             raise SaveError('陷阱类型无效，隐藏内容未展开。')
-        traps.append({**at(trap.get('pos')), 'name': catalog.name(trap), 'id': catalog.key(trap),
+        name = catalog.name(trap)
+        if catalog.key(trap)+'.name' not in catalog.messages and catalog.key(trap) not in catalog.entry_index:
+            name = '未识别陷阱（'+name+'）'
+        traps.append({**at(trap.get('pos')), 'name': name, 'id': catalog.key(trap),
                       'visible': flag(trap, 'visible'), 'active': flag(trap, 'active', True)})
     mobs = []
     for mob in collection('mobs'):

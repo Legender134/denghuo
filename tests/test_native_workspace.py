@@ -235,10 +235,13 @@ class NativeStrengthWorkflowTests(ControllerFixture):
         self.open('items.rings.ringofforce'); self.lookup.variables['strength'].set('invalid original')
         calls = self.session.panel.request.call_count
         for plan in (character, legacy, target):
-            self.lookup.open_plan(plan['id'])
+            self.assertTrue(self.lookup.open_plan(plan['id']))
             self.assertEqual(self.lookup.variables['strength'].get(), 'invalid original')
-            self.assertIsNotNone(self.lookup.confirmation)
+            self.assertTrue(self.lookup.dirty)
+            self.assertIsNone(self.lookup.confirmation)
+            calls += 1
             self.assertEqual(self.session.panel.request.call_count, calls)
+            self.session.panel.request.assert_called_with('workspace', plan_id=plan['id'])
 
 
 if __name__=='__main__':unittest.main()
