@@ -71,7 +71,7 @@ $sourceVersion = .venv/Scripts/python.exe -c "from companion import __version__;
 
 ## 原生窗口构建输入
 
-标准桌面窗口使用项目自有 `native/NativeCompanion.cs`，按 C# 4 与 Framework 4.0 API 编译。构建者从 Microsoft 的 [NuGet 固定包 Microsoft.NETFramework.ReferenceAssemblies.net40 1.0.3](https://www.nuget.org/packages/Microsoft.NETFramework.ReferenceAssemblies.net40/1.0.3) 下载 `.nupkg`（ZIP 格式）并解压。包的 SHA-256 应为 `54d6e20a1b61caf79395d6d71d091265e81f5a5705ac4ae52af45ca143c3c694`；引用目录是其中的 `build/.NETFramework/v4.0`。
+桌面工作区使用项目自有 WPF 呈现层：`native/NativeCompanion.cs` 处理本地协议，`NativeShell.cs`、`NativeWorkspace.cs` 与嵌入式 `NativeTheme.xaml` 提供窗口及控件。按 C# 4 与 Framework 4.0 API 编译。构建者从 Microsoft 的 [NuGet 固定包 Microsoft.NETFramework.ReferenceAssemblies.net40 1.0.3](https://www.nuget.org/packages/Microsoft.NETFramework.ReferenceAssemblies.net40/1.0.3) 下载 `.nupkg`（ZIP 格式）并解压。包的 SHA-256 应为 `54d6e20a1b61caf79395d6d71d091265e81f5a5705ac4ae52af45ca143c3c694`；引用目录是其中的 `build/.NETFramework/v4.0`。
 
 ```powershell
 $net40References = '.local/net40-referenceassemblies/build/.NETFramework/v4.0'

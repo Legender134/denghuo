@@ -12,6 +12,7 @@ from .values_investment import family
 BOOL = [('', '未确认'), ('false', '否'), ('true', '是')]
 FLAGS = [('0', '否'), ('1', '是')]
 CURSE = [('unknown', '未确认'), ('0', '无诅咒'), ('1', '有诅咒')]
+ORIGIN_KEYS = ('kind', 'mode', 'slot', 'snapshot_at', 'fields', 'references')
 
 
 def integer(value, label, optional=False):
@@ -58,6 +59,9 @@ class GameWorkspace:
         self.client_revisions = {}
         self.focus_result = None
         self.map_catalog, self.map_result, self.backup_catalog, self.backup_preview = None, None, None, None
+        self.map_binding, self.map_generation = None, 0
+        self.map_publication_pending = False
+        self.structured_results = {}
         self.legacy_alchemy = None
         self.names = {row['id']: row['name'] for row in self.session.catalog.entries}
         from .alchemy_flow import family_list, resource_catalog
@@ -108,12 +112,44 @@ class GameWorkspace:
         self.raw[page] = values; self.dirty.add(page)
         if {k: v for k, v in values.items() if k not in ('name', 'note')} != {k: v for k, v in old.items() if k not in ('name', 'note')}:
             self.results.pop(page, None); self.calculated.pop(page, None)
+            self.mark_manual_source(page, old, values)
         self.native.report_drafts()
+
+    def mark_manual_source(self, page, old, values):
+        source = self.sources.get(page)
+        if not source:
+            return
+        changed = {key for key in old.keys() | values.keys() if old.get(key) != values.get(key)} - {'name', 'note'}
+        fields = source.get('fields', {})
+        for key in changed:
+            canonical_key = ('rings' if key.startswith('ring') else key) if page == 'character' else (
+                'resources' if re.match(r'r\d+\.', key) or key == 'resources' else
+                'targets' if re.match(r't\d+\.', key) or key == 'targets' else
+                'chains' if re.match(r'c\d+\.', key) or key == 'paths' else key) if page == 'alchemy' else (
+                'character_scene' if key == 'context.scene_enabled' else 'scene_ring_slot' if key == 'context.scene_ring_slot' else
+                'target_context' if key.startswith('context.target') else key.removeprefix('context.'))
+            if canonical_key in fields:
+                fields[canonical_key] = '手填 · 固定假设'
+        references = source.get('references')
+        if references and page == 'equipment':
+            for side in ('a', 'b'):
+                if 'id_'+side in changed:
+                    identity = values.get('id_'+side, '')
+                    references[side] = {'id': identity, 'name': self.names.get(identity, identity), 'effect_id': None, 'user_note': None}
+        if changed:
+            source['label'] = source.get('label', '固定来源') + ' · 已编辑的条件为手填假设。' if '已编辑的条件为手填假设。' not in source.get('label', '') else source['label']
+
+    def equipment_choices(self):
+        from .values_investment import FAMILIES
+        # Prefix families also include armor glyphs and other reference pages.
+        # Only actual equipment classes occur directly in these namespaces.
+        return [(row['id'], row['name']) for row in self.session.catalog.entries
+                if family(row['id']) and '$' not in row['id'] and not row['id'].endswith('.ability')
+                and (family(row['id']) == 'missile' or '.' not in row['id'][len(FAMILIES[family(row['id'])]):])]
 
     def equipment_fields(self):
         raw = self.raw['equipment']; result = []
-        equipment = [(row['id'], row['name']) for row in self.session.catalog.entries if family(row['id'])
-                     and '$' not in row['id'] and not row['id'].endswith('.ability')]
+        equipment = self.equipment_choices()
         for side in ('a', 'b'):
             result.append(field('id_'+side, '装备 '+side.upper(), raw.get('id_'+side), [('', '请选择已知装备 / 明确假设'), *equipment], '选择比较对象'))
         for side in ('a', 'b'):
@@ -286,11 +322,11 @@ class GameWorkspace:
 
     def alchemy_args(self):
         raw = self.raw['alchemy']; resources = []; specs = self.alchemy_fields()
+        labels = {spec['key']: spec['label'] for spec in specs}
         for i in range(row_count(raw, 'resources')):
             prefix = f'r{i}'; state = {}
-            labels = {spec['key']: spec['label'] for spec in specs}
             for key in raw:
-                if not key.startswith(prefix+'.state.') or not raw.get(key, ''): continue
+                if key not in labels or not key.startswith(prefix+'.state.') or not raw.get(key, ''): continue
                 name = key[len(prefix+'.state.'):]; value = raw[key]
                 if name.startswith('rolled_choices.'):
                     state.setdefault('rolled_choices', [None]*4)[int(name[-1])] = value
@@ -356,6 +392,7 @@ class GameWorkspace:
         args = self.equipment_args() if page == 'equipment' else self.alchemy_args() if page == 'alchemy' else self.character_args()
         canonical, result = canonical_plan(self.session, page, None, args)
         self.calculated[page] = canonical
+        self.structured_results[page] = copy.deepcopy(result)
         self.results[page] = self.result_text(page, result)
         self.focus_result = page
 
@@ -364,25 +401,31 @@ class GameWorkspace:
             lines = [f"A · {result['choices'][0]['name']}    /    B · {result['choices'][1]['name']}"]
             planning = result.get('planning')
             if planning:
-                lines.append('预算结果 · A、B 分别使用同一预算，不能同时花费')
-                for index, choice in enumerate(planning['choices']):
-                    lines.append(('A' if index == 0 else 'B')+' · '+choice['name'])
-                    for cell in choice.get('metric_rows', []): lines.append(cell['label']+'  '+str(cell['value'])+' '+cell.get('unit', ''))
-                    for alternative in choice.get('alternatives', []):
-                        lines.append(f"投入 {alternative.get('upgrades', alternative.get('spent_upgrades', '?'))} 卷 · 余 {alternative.get('remaining_upgrades', '?')} 卷")
-                        if not alternative.get('upgrade_branches'):
-                            lines += [cell['label']+' '+str(cell['value'])+' '+cell.get('unit', '')+' · '+cell.get('condition', '') for cell in alternative.get('metric_rows', [])]
-                        for branch in alternative.get('upgrade_branches', []):
-                            lines.append(branch['condition'])
-                            lines += [cell['label']+' '+str(cell['value'])+' '+cell.get('unit', '')+' · '+cell.get('condition', '') for cell in branch['metric_rows']]
-                    lines.append(choice.get('explanation', ''))
-                lines.append(planning['notice'])
+                pending = ['AB'[index] for index, choice in enumerate(planning['choices']) if choice.get('upgrade_pending')]
+                lines.append('预算待确认：'+ '、'.join(pending)+' 注魔假设未确认，升级预算待计算。' if pending else '预算按所列条件计算；随机升级分支需分别核对。')
+                lines.append(f"预算 {planning['upgrade_budget']} 卷 / {planning['strength_budget']} 瓶力量药剂；A、B 分别使用同一预算，不能同时花费。")
+                lines.append('    '.join('AB'[index]+f" 投入 {choice.get('spent_upgrades', '?')} 卷 · 余 {choice.get('remaining_upgrades', '?')} 卷"
+                    for index, choice in enumerate(planning['choices'])))
             lines.append('当前 / 升级一次（A / B）')
             for row in result['rows']:
                 lines.append(row['label']+'   A '+str(row['values'][0])+' → '+str(row['values'][1])+'    B '+str(row['values'][2])+' → '+str(row['values'][3])+' '+row.get('unit', ''))
-                if row.get('condition'): lines.append('  '+row['condition'])
+            lines.append('条件与投入明细')
+            for row in result['rows']:
+                if row.get('condition'): lines.append(row['label']+' · '+row['condition'])
+            if planning:
+                for index, choice in enumerate(planning['choices']):
+                    lines.append('AB'[index]+' · '+choice['name']+' · '+choice.get('explanation', ''))
+                    for alternative in choice.get('alternatives', []):
+                        lines.append(f"投入 {alternative.get('upgrades', alternative.get('spent_upgrades', '?'))} 卷 · 余 {alternative.get('remaining_upgrades', '?')} 卷；力量药剂投入 {alternative.get('spent_strength', '?')} 瓶 · 余 {alternative.get('remaining_strength', '?')} 瓶")
+                        branches = alternative.get('upgrade_branches')
+                        if not branches:
+                            lines += [cell['label']+' '+str(cell['value'])+' '+cell.get('unit', '')+' · '+cell.get('condition', '') for cell in alternative.get('metric_rows', [])]
+                        for branch in branches or []:
+                            lines.append(branch['condition'])
+                            lines += [cell['label']+' '+str(cell['value'])+' '+cell.get('unit', '')+' · '+cell.get('condition', '') for cell in branch['metric_rows']]
+                lines.append(planning['notice'])
             lines.append(result['notice'])
-            return '\n\n'.join(lines)
+            return '\n'.join(lines)
         if page == 'character':
             strength = result['strength']
             text = ('总力量 '+str(strength['effective']) if strength.get('state') == 'known' else '总力量尚未确认：'+'；'.join(strength['missing']))
@@ -430,6 +473,31 @@ class GameWorkspace:
             self.selected.pop('inventory', None); self.selected_tokens.pop('inventory', None)
         return rows
 
+    def sync_map_source(self, snap=None):
+        snap = self.session.snapshot() if snap is None else snap
+        settings = snap.get('settings', {})
+        binding = binding_token([snap.get(key) for key in ('started', 'revision', 'settings_revision', 'active_slot', 'run_id', 'error')]
+            + [settings.get(key) for key in ('save_root', 'mode', 'slot')])
+        if binding == self.map_binding:
+            return self.map_publication_pending
+        self.map_binding = binding; self.map_generation += 1
+        self.map_publication_pending = True
+        self.map_catalog = self.map_result = None
+        self.rows['map'] = []
+        self.selected.pop('map', None); self.selected_tokens.pop('map', None)
+        return True
+
+    def public_map(self):
+        snap = self.session.snapshot()
+        if snap.get('error') or snap.get('settings', {}).get('mode') != 'save':
+            return None
+        data = snap.get('data') or {}
+        terrain = data.get('map')
+        if not terrain:
+            return None
+        return {'depth': data.get('depth'), 'branch': data.get('branch', 0), 'map': copy.deepcopy(terrain),
+                'revealed': False, 'note': terrain.get('caption', '最近保存的已探索地形；不代表当前视野')}
+
     def emit(self, page=None):
         if page is not None: self.page = page
         page = self.page; specs, rows, actions = [], [], []
@@ -463,14 +531,20 @@ class GameWorkspace:
                 specs = []; actions = [('convert_legacy', '复制为可编辑的多目标方案')]
                 text = self.results.get(page, '旧版原方案仍保留。')+'\n\n复制会保留原记录，按原配方每批产出换算目标件数。确认后再编辑并另存。'
         elif page == 'map':
+            self.sync_map_source()
             rows = self.rows.get('map', [])
-            actions = [('reload', '读取已生成楼层'), ('map_reveal', '主动揭示所选楼层'), ('map_hide', '收起隐藏地图')]
-            text = '选择已生成楼层，再主动揭示。地图只读，表示最近保存，非实时视野。'
+            actions = [('map_known', '查看当前已探索地形'), ('reload', '读取已生成楼层'), ('map_reveal', '主动揭示所选楼层'), ('map_hide', '收起隐藏内容')]
+            text = '当前保存楼层默认只显示已探索地形，未知区域保持遮蔽。其他已生成楼层需选择后主动揭示；地图只读，非实时视野。'
+            public = self.public_map()
             if self.map_result:
                 floor = self.map_result
                 text = f"第 {floor['depth']} 层 / 支线 {floor['branch']} · 已主动揭示\n\n"+floor['note']
                 for label, key in [('地形', 'features'), ('陷阱', 'traps'), ('生物', 'mobs'), ('容器', 'heaps')]:
                     text += '\n\n'+label+'\n'+'\n'.join(row['name']+f" ({row['x']}, {row['y']})"+(' · '+ '、'.join(item['name']+f" ×{item['quantity']}" for item in row['items']) if row.get('items') else '') for row in floor[key])
+            elif public:
+                text = f"当前第 {public['depth']} 层 / 支线 {public['branch']} · 已探索地形\n\n"+public['note']+'\n\n'+text
+            else:
+                text = '当前没有可显示的已探索地图；请连接有效存档并在游戏内完成保存。\n\n'+text
         else:
             rows = self.rows.get('backups', [])
             actions = [('reload', '刷新历史'), ('backup_preview', '预览所选进度')]
@@ -486,7 +560,12 @@ class GameWorkspace:
             raw=copy.deepcopy(self.raw.get(page, {})), revision=self.revision,
             draft_revision=self.client_revisions.get(page, 0), dirty=page in self.dirty,
             calculated=page in self.calculated, focus_result=self.focus_result == page,
-            map=(self.map_result or {}).get('map', {}) if page == 'map' else {})
+            map=(self.map_result or self.public_map() or {}).get('map', {}) if page == 'map' else {},
+            map_revealed=bool(self.map_result) if page == 'map' else False,
+            progress=copy.deepcopy((self.backup_preview or {}).get('progress', {})) if page == 'backups' else {},
+            comparison=copy.deepcopy(self.structured_results.get(page, {})) if page == 'equipment' and page in self.calculated else {},
+            planning=copy.deepcopy(self.structured_results.get(page, {}).get('planning', {})) if page == 'equipment' and page in self.calculated else {})
+        if page == 'map': self.map_publication_pending = False
         self.focus_result = None
         self.native.report_drafts()
 
@@ -506,15 +585,17 @@ class GameWorkspace:
             self.reload(page); self.emit(page); return
         action = item.get('command')
         if item.get('action') == 'game_select':
+            if page == 'map': self.sync_map_source()
             row = next((r for r in (self.inventory() if page == 'inventory' else self.rows.get(page, [])) if r['id'] == item.get('id') and r['token'] == item.get('token')), None)
             if not row: raise ValueError('列表已变化，请重新选择')
             self.selected[page] = row['id']
             self.selected_tokens[page] = row['token']
             if page == 'backups': self.backup_preview = None
-            if page == 'map': self.map_result = None
+            if page == 'map': self.map_result = None; self.map_generation += 1
         elif action == 'reload': self.reload(page)
         elif action == 'map_reveal': self.reveal_map()
-        elif action == 'map_hide': self.map_result = None
+        elif action in ('map_hide', 'map_known'):
+            self.map_result = None; self.map_generation += 1
         elif action == 'backup_preview': self.preview_backup()
         elif action == 'backup_confirm':
             preview = self.backup_preview
@@ -537,7 +618,9 @@ class GameWorkspace:
             if page not in self.calculated: raise ValueError('先计算有效条件，再命名保存')
             raw = self.raw[page]; saved = self.saved.get(page); source = self.sources.get(page, {})
             payload = {'action': 'save', 'kind': page, 'entry': None, 'name': raw.get('name', ''), 'note': raw.get('note', ''),
-                       'params': self.calculated[page], 'source': {k: source[k] for k in ('mode', 'slot', 'snapshot_at') if k in source}}
+                       'params': self.calculated[page], 'source': {k: copy.deepcopy(source[k]) for k in ORIGIN_KEYS if k in source}}
+            if 'fields' in payload['source']:
+                payload['source']['fields'] = {key: value for key, value in payload['source']['fields'].items() if key in self.calculated[page]}
             if action == 'update':
                 if not saved: raise ValueError('没有当前原方案；可另存')
                 payload.update(record_id=saved['id'], expected_record_revision=saved['record_revision'])
@@ -573,7 +656,16 @@ class GameWorkspace:
 
     def reload(self, page):
         from .scouting import inspect_saved
+        if page == 'map':
+            self.sync_map_source(); self.map_generation += 1
+            self.map_catalog = self.map_result = None; self.rows['map'] = []
+            self.selected.pop('map', None); self.selected_tokens.pop('map', None)
+            generation = self.map_generation
         def complete(result, error):
+            if page == 'map':
+                self.sync_map_source()
+                if generation != self.map_generation:
+                    return
             if error:
                 self.rows[page] = []; self.native.error(error)
                 if page == 'map': self.map_catalog = self.map_result = None
@@ -596,23 +688,40 @@ class GameWorkspace:
             lambda: inspect_saved(self.session, {'action': 'catalog'}) if page == 'map' else self.session.backup_status(), complete)
 
     def reveal_map(self):
+        self.sync_map_source()
         row = next((r for r in self.rows.get('map', []) if r['id'] == self.selected.get('map')), None)
         if not row or not self.map_catalog: raise ValueError('请先读取并选择当前已生成的楼层')
         from .scouting import inspect_saved
         payload = {'action': 'floor', 'depth': row['floor']['depth'], 'branch': row['floor']['branch'], 'expected': self.map_catalog['source']['expected'], 'reveal': True}
         selected = row['token']
+        self.map_generation += 1; generation = self.map_generation
         def complete(result, error):
+            self.sync_map_source()
+            if generation != self.map_generation:
+                return
             current = next((r for r in self.rows.get('map', []) if r['id'] == self.selected.get('map')), {})
+            if current.get('token') != selected:
+                return
             if error: self.map_result = None; self.native.error(error)
-            elif current.get('token') == selected: self.map_result = result
+            else: self.map_result = result
             self.emit('map')
         self.native.queue_io('正在只读揭示所选保存楼层', lambda: inspect_saved(self.session, payload), complete)
 
     @staticmethod
     def progress_text(summary):
         if summary.get('empty'): return '空槽位'
-        labels = [('class', '职业'), ('level', '等级'), ('depth', '层数'), ('hp', '生命'), ('ht', '最大生命'), ('saved', '保存时间'), ('run_id', '冒险标识')]
-        return ' · '.join(label+' '+str(summary[key]) for key, label in labels if key in summary)+'\n'+summary.get('warning', '')
+        from datetime import datetime, timezone
+        from .engine import CLASSES
+        progress = ' · '.join(label+' '+str(CLASSES.get(summary[key], summary[key]) if key == 'class' else summary[key])
+            for key, label in [('class', '职业'), ('level', '等级'), ('depth', '层数'), ('hp', '生命'), ('ht', '最大生命')] if key in summary)
+        saved = summary.get('saved')
+        try:
+            stamp = datetime.fromtimestamp(saved, timezone.utc).astimezone() if type(saved) in (int, float) else None
+            saved_text = stamp.strftime('%Y-%m-%d %H:%M:%S UTC%z') if stamp else '未记录'
+        except (ValueError, OSError, OverflowError):
+            saved_text = '时间超出本机显示范围'
+        identity = str(summary.get('run_id') or '')
+        return progress+'\n保存时间 '+saved_text+(' · 冒险 '+identity[:12] if identity else '')+('\n'+summary['warning'] if summary.get('warning') else '')
 
     def preview_backup(self):
         row = next((r for r in self.rows.get('backups', []) if r['id'] == self.selected.get('backups')), None)
@@ -625,7 +734,8 @@ class GameWorkspace:
             elif current.get('token') == selected:
                 text = f"槽位 {entry['slot']} · "+('恢复备份' if action == 'restore' else '撤回上次回档')+'\n\n当前进度\n'+self.progress_text(result['current'])+'\n\n目标进度\n'+self.progress_text(result['target'])+'\n\n'+('同一次冒险。' if result['same_run'] else '可能属于不同冒险，请仔细核对。')
                 request = {**payload, 'action': action, 'expected_current': result['expected_current'], 'confirm': f"恢复槽位 {entry['slot']}"}
-                self.backup_preview = {'action': action, 'text': text, 'payload': request, 'token': binding_token([request, text])}
+                self.backup_preview = {'action': action, 'text': text, 'payload': request, 'token': binding_token([request, text]),
+                    'progress': {'current': result['current'], 'target': result['target'], 'same_run': result['same_run']}}
             self.emit('backups')
         self.native.queue_io('正在核对当前与目标进度', lambda: self.session.backup_transfer('preview' if action == 'restore' else 'undo-preview', payload), complete)
 
@@ -649,9 +759,10 @@ class GameWorkspace:
             if not self.legacy_alchemy: self.load_alchemy(params)
             else: self.raw[page] = {'legacy': json.dumps(params, ensure_ascii=False)}
         self.raw[page].update(name=plan['name'], note=plan.get('note', ''))
-        self.sources[page] = {**plan.get('source', {}), 'label': '固定方案「'+plan['name']+'」 · 打开不会更新原记录或带入当前游戏状态。'}
+        self.sources[page] = {**copy.deepcopy(plan.get('origin', {})), 'label': '固定方案「'+plan['name']+'」 · 打开不会更新原记录或带入当前游戏状态。'}
         self.saved[page] = copy.deepcopy(plan)
         if opened.get('result') is not None:
+            self.structured_results[page] = copy.deepcopy(opened['result'])
             self.calculated[page] = params; self.results[page] = self.result_text(page, opened['result'])
             self.focus_result = page
         else:

@@ -10,7 +10,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ASSEMBLIES = ('mscorlib.dll', 'System.dll', 'System.Core.dll', 'System.Drawing.dll',
-              'System.Windows.Forms.dll', 'System.Web.Extensions.dll')
+              'System.Windows.Forms.dll', 'System.Web.Extensions.dll', 'WindowsBase.dll',
+              'PresentationCore.dll', 'PresentationFramework.dll', 'System.Xaml.dll', 'System.Xml.dll')
 
 
 def build(references, output=None, compiler=None):
@@ -19,6 +20,7 @@ def build(references, output=None, compiler=None):
         if not (references/name).is_file():
             raise ValueError('缺少Framework 4.0 reference assembly：'+name)
     inputs = [ROOT/'native'/name for name in ('NativeCompanion.cs', 'NativeCompanion.manifest', 'NativeCompanion.exe.config')]+[ROOT/'data/lamp.ico']
+    inputs += [ROOT/'native'/name for name in ('NativeShell.cs', 'NativeWorkspace.cs', 'NativeTheme.xaml')]
     digest = hashlib.sha256(b''.join(path.read_bytes() for path in inputs)+b''.join((references/name).read_bytes() for name in ASSEMBLIES)).hexdigest()
     output = Path(output) if output else ROOT/'.local'/'native'/digest[:20]
     output.mkdir(parents=True, exist_ok=True)
@@ -26,7 +28,10 @@ def build(references, output=None, compiler=None):
     exe = output/'NativeCompanion.exe'
     command = [str(compiler), '/nologo', '/noconfig', '/nostdlib+', '/langversion:4', '/target:winexe', '/platform:anycpu',
                '/optimize+', '/out:'+str(exe), '/win32manifest:'+str(inputs[1]), '/win32icon:'+str(inputs[3]),
-               *['/reference:'+str(references/name) for name in ASSEMBLIES], str(inputs[0])]
+               *['/reference:'+str(references/name) for name in ASSEMBLIES],
+               '/resource:'+str(inputs[6])+',Denghuo.Theme.xaml',
+               '/resource:'+str(inputs[3])+',Denghuo.Lamp.ico',
+               str(inputs[0]), str(inputs[4]), str(inputs[5])]
     completed = subprocess.run(command, capture_output=True, text=True, encoding='mbcs' if sys.platform == 'win32' else 'utf-8', errors='replace')
     if completed.returncode:
         raise RuntimeError(completed.stdout+completed.stderr)

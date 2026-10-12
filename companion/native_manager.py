@@ -489,6 +489,8 @@ class NativeManager:
                 self.host.command('window_layout', layout=self.layout.values, restored=self.layout.original is not None)
                 if self.layout.values['page'] in ('inventory', 'equipment', 'alchemy', 'character', 'map', 'backups'):
                     self.workspace.handle({'action': 'game_page', 'page': self.layout.values['page']})
+                elif self.layout.values['page'] == 'settings':
+                    self.manager.open_play_settings(show=False)
                 self.update(self.session.snapshot(), force=True)
             elif action in ('window_layout', 'layout_reset'):
                 self.layout.update(item['layout'], reset=action == 'layout_reset')
@@ -742,6 +744,8 @@ class NativeManager:
             self.signature = signature
             self.host.command('manager_state', **state)
         workspace = getattr(self, 'workspace', None)
+        if workspace and workspace.sync_map_source(snap) and workspace.page == 'map':
+            workspace.emit('map')
         if workspace and workspace.page == 'inventory':
             current = binding_token([snap.get('started'), snap.get('revision'), snap.get('settings_revision'), snap.get('error')])
             if current != getattr(self, '_inventory_revision', None):
