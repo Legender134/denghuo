@@ -18,14 +18,14 @@ def build(references, output=None, compiler=None):
     for name in ASSEMBLIES:
         if not (references/name).is_file():
             raise ValueError('缺少Framework 4.0 reference assembly：'+name)
-    inputs = [ROOT/'native'/name for name in ('NativeCompanion.cs', 'NativeCompanion.manifest', 'NativeCompanion.exe.config')]
+    inputs = [ROOT/'native'/name for name in ('NativeCompanion.cs', 'NativeCompanion.manifest', 'NativeCompanion.exe.config')]+[ROOT/'data/lamp.ico']
     digest = hashlib.sha256(b''.join(path.read_bytes() for path in inputs)+b''.join((references/name).read_bytes() for name in ASSEMBLIES)).hexdigest()
     output = Path(output) if output else ROOT/'.local'/'native'/digest[:20]
     output.mkdir(parents=True, exist_ok=True)
     compiler = Path(compiler or r'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe')
     exe = output/'NativeCompanion.exe'
     command = [str(compiler), '/nologo', '/noconfig', '/nostdlib+', '/langversion:4', '/target:winexe', '/platform:anycpu',
-               '/optimize+', '/out:'+str(exe), '/win32manifest:'+str(inputs[1]),
+               '/optimize+', '/out:'+str(exe), '/win32manifest:'+str(inputs[1]), '/win32icon:'+str(inputs[3]),
                *['/reference:'+str(references/name) for name in ASSEMBLIES], str(inputs[0])]
     completed = subprocess.run(command, capture_output=True, text=True, encoding='mbcs' if sys.platform == 'win32' else 'utf-8', errors='replace')
     if completed.returncode:

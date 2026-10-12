@@ -316,7 +316,11 @@ class Overlay:
             elif command == 'library' and self.play:
                 self.safely(self.play.open_lookup)
             elif command in ('panel', 'backups', 'library', 'workspace', 'help'):
-                self.open_panel(command if command != 'panel' else 'overview')
+                if command == 'backups' and getattr(self.native_ui, 'workspace', None) is not None:
+                    self.native_ui.workspace.handle({'action': 'game_page', 'page': 'backups'})
+                    self.native_ui.host.command('game_show', page='backups')
+                else:
+                    self.open_panel(command if command != 'panel' else 'overview')
             elif command == 'hotkeys':
                 if value:self.root.title('灯火 · 地牢助手 · 可用快捷键 '+value)
                 self.update_capabilities()

@@ -477,6 +477,10 @@ class NumericLookup:
         try:
             opened = self.owner.manager.session.knowledge.reopen(record_id)
             if opened['plan']['kind'] != 'numeric':
+                workspace = getattr(self.owner.manager.native_ui, 'workspace', None)
+                if workspace and opened['plan']['kind'] in ('equipment', 'alchemy', 'character'):
+                    workspace.open_plan(opened)
+                    return True
                 self.owner.manager.session.panel.request('workspace', plan_id=record_id)
                 self.origin.text = '已将所选方案交给完整面板；请核对固定条件。'
                 self.emit()

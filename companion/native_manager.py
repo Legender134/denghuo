@@ -18,7 +18,11 @@ class NativeManager:
         self.exit_events, self.exit_state = Queue(maxsize=32), None
         self.revision, self.reported = 0, None
         self.frozen, self.signature, self.references = False, None, []
+        from .window_layout import WindowLayout
+        self.layout = WindowLayout(self.session.config_path)
         self.host = NativeHost(manager.root, self.dispatch, self.error)
+        from .game_workspace import GameWorkspace
+        self.workspace = GameWorkspace(self)
         self.host.idle = self.process_io
         self.session.register_exit_surface('native', kind='native', label='桌面速查与游玩设置', notify=self.notify_exit)
         self.report_drafts()
@@ -35,7 +39,7 @@ class NativeManager:
             draft = self.drafts()
             try:
                 for kind, raw in draft.items():
-                    label = '数值速查未完成草稿' if kind == 'numeric' else '游玩设置未完成草稿'
+                    label = {'numeric': '数值速查未完成草稿', 'play-settings': '游玩设置未完成草稿', 'game-workspace': '游戏工作区未完成草稿'}[kind]
                     self.session.save_exit_draft('native', kind, label, raw)
                 if draft:
                     message += '\n原始草稿副本已保存；重新启动后可从管理窗口显式载入。'
@@ -56,7 +60,8 @@ class NativeManager:
     def drafts(self):
         lookup, settings = self.lookup(), self.manager.play_settings
         return {**({'numeric': lookup.draft()} if lookup and lookup.has_draft() else {}),
-                **({'play-settings': settings.draft()} if settings and settings.has_draft() else {})}
+                **({'play-settings': settings.draft()} if settings and settings.has_draft() else {}),
+                **({'game-workspace': self.workspace.drafts()} if getattr(self, 'workspace', None) and self.workspace.drafts() else {})}
 
     def report_drafts(self):
         if getattr(self, 'disconnected', False):
@@ -169,6 +174,9 @@ class NativeManager:
         if item.get('settings'):
             self.manager.open_play_settings(show=False)
             self.manager.play_settings.handle({'action': 'settings_edit', **item['settings']})
+        if item.get('game') and getattr(self, 'workspace', None):
+            if not isinstance(item['game'], dict): raise ValueError('工作区退出草稿格式无效；原始输入仍保留')
+            for page, values in item['game'].items(): self.workspace.edit(page, values)
         decision = item.get('decision')
         if decision not in ('clean', 'saved', 'discard', 'cancel'):
             raise ValueError('退出选择无效；原始草稿仍保留。')
@@ -184,6 +192,8 @@ class NativeManager:
                 copies.append(lookup.exit_copy_payload())
             if settings and settings.has_draft():
                 copies.append({'kind': 'settings-raw', 'draft': settings.draft()})
+            if getattr(self, 'workspace', None) and self.workspace.drafts():
+                copies.append({'kind': 'game-raw', 'draft': self.workspace.drafts()})
         return {'request_id': state['id'], 'decision': decision, 'revision': self.revision,
                 'fingerprint': json.dumps(drafts, ensure_ascii=False, sort_keys=True),
                 'copies': copy.deepcopy(copies)}
@@ -232,9 +242,9 @@ class NativeManager:
                     if payload['kind'] == 'plan':
                         self.session.knowledge.save(**payload['payload'])
                     else:
-                        settings = payload['kind'] == 'settings-raw'
-                        self.session.save_exit_draft('native', 'play-settings' if settings else 'numeric',
-                            '游玩设置未完成草稿' if settings else '数值速查未完成草稿', payload['draft'])
+                        kind, label = {'settings-raw': ('play-settings', '游玩设置未完成草稿'),
+                            'raw': ('numeric', '数值速查未完成草稿'), 'game-raw': ('game-workspace', '游戏工作区未完成草稿')}[payload['kind']]
+                        self.session.save_exit_draft('native', kind, label, payload['draft'])
                 job['result'] = self.session.acknowledge_exit(job['request_id'], 'native',
                     job['decision'], job['revision'])
             except (ValueError, KeyError, OSError, RuntimeError) as exc:
@@ -476,19 +486,35 @@ class NativeManager:
         action = item.get('action')
         try:
             if action == 'ready':
+                self.host.command('window_layout', layout=self.layout.values, restored=self.layout.original is not None)
+                if self.layout.values['page'] in ('inventory', 'equipment', 'alchemy', 'character', 'map', 'backups'):
+                    self.workspace.handle({'action': 'game_page', 'page': self.layout.values['page']})
                 self.update(self.session.snapshot(), force=True)
+            elif action in ('window_layout', 'layout_reset'):
+                self.layout.update(item['layout'], reset=action == 'layout_reset')
+            elif action == 'collapse':
+                play = self.manager.play
+                target = play.native.remembered_game() if play else None
+                if target and self.host.process:
+                    from .native_focus import return_to_game
+                    return_to_game(play.native, target, self.host.process.pid)
+                self.host.command('collapse')
             elif action == 'visibility':
                 surface = item.get('surface')
                 hwnd = item.get('hwnd')
                 if self.host.process and hwnd and self.manager.play and self.manager.play.native.process(hwnd) == self.host.process.pid:
                     self.host.handles[surface] = hwnd
                     self.host.visibility[surface] = bool(item.get('visible'))
+                    if surface == 'manager':
+                        self.companion_collapsed = item.get('collapsed') is True
             elif action == 'exit_decision':
                 self.exit_decision(item)
             elif self.frozen:
                 return
             elif action == 'exit':
                 self.request_exit()
+            elif action in ('game_page', 'game_action', 'game_edit', 'game_select'):
+                self.workspace.handle(item)
             elif item.get('surface') == 'lookup':
                 if self.lookup() is None:
                     self.manager.open_lookup()
@@ -601,7 +627,7 @@ class NativeManager:
             if row.get('draft_kind') == 'offline-native' and not row.get('error'):
                 try:
                     draft = self.session.load_exit_draft(row['id'])['draft']
-                    row['components'] = [key for key in ('numeric', 'play-settings')
+                    row['components'] = [key for key in ('numeric', 'play-settings', 'game-workspace')
                                          if isinstance(draft.get(key), dict)]
                     if not row['components']:
                         row['error'] = '副本没有当前版本支持的原生表单；原件仍保留。'
@@ -613,12 +639,18 @@ class NativeManager:
         kind = saved['draft_kind']
         draft = saved['draft']
         if kind == 'offline-native':
-            if component not in ('numeric', 'play-settings') or not isinstance(draft.get(component), dict):
+            if component not in ('numeric', 'play-settings', 'game-workspace') or not isinstance(draft.get(component), dict):
                 raise ValueError('请在草稿列表选择此离线副本中的数值或游玩设置表单；原件仍保留。')
             kind, draft = component, draft[component]
         elif component is not None:
             raise ValueError('此副本不含所选原生表单；原件仍保留。')
-        if kind == 'numeric':
+        if kind == 'game-workspace':
+            if self.workspace.drafts(): raise ValueError('当前工作区已有未保存输入；请先命名保存或保留退出副本，再载入其他草稿')
+            self.workspace.restore_draft(draft)
+            self.workspace.page = next(iter(draft), 'equipment')
+            self.workspace.emit()
+            self.host.command('game_show', page=self.workspace.page)
+        elif kind == 'numeric':
             self.manager.open_lookup()
             lookup = self.lookup()
             lookup.guard('载入未完成草稿', lambda: lookup.restore_draft(draft))
@@ -637,13 +669,12 @@ class NativeManager:
         data = snap.get('data') or {}
         hero = data.get('hero', {})
         backup = snap.get('backup_health', {})
-        texts = [self.manager.status.cget('text'), self.manager.backup_status.cget('text'),
-                 self.manager.hero.cget('text'), self.manager.metrics.cget('text')]
+        texts = []
         global_health = backup.get('global_progress', {})
         global_labels = {'protected': '成就与排行榜最近文件已备份', 'warning': '全局进度结构不支持，原始字节已保留',
             'blocked': '全局历史新增受阻', 'paused': '全局自动历史已暂停', 'waiting': '等待游戏产生全局进度',
             'working': '正在核对全局历史', 'unknown': '全局历史尚未确认'}
-        if global_health:
+        if global_health and global_health.get('state') not in ('waiting', 'working', 'unknown'):
             global_label = global_labels.get(global_health.get('state'), '全局历史尚未确认')
             if global_health.get('state') == 'protected' and len(global_health.get('files', {})) == 1:
                 global_label = ('成就记录已备份' if 'badges.dat' in global_health['files'] else '排行榜与每日记录已备份')
@@ -686,13 +717,22 @@ class NativeManager:
             texts.append('自动备份完整原因：'+backup['error'])
         if snap.get('draft_recovery_notice'):
             texts.append(snap['draft_recovery_notice'])
-        state = {'text': '\n\n'.join(filter(None, texts)), 'slot': 0 if snap['settings']['slot'] == 'auto' else snap['settings']['slot'],
+        protection = {'protected': '保存已备份', 'blocked': '备份受阻', 'paused': '备份暂停'}.get(backup.get('state'),
+            '上次保存已备份' if backup.get('last_save_protected') else '等待保存')
+        source_text = ('手填局势' if snap['settings']['mode'] == 'manual' else '旧快照 · 请先保存游戏' if snap.get('stale') else '存档快照')
+        source_text += f" · 槽位 {snap.get('active_slot') or '?'}"
+        source_text += ' · ' + protection
+        state = {'text': '\n\n'.join(filter(None, texts)), 'source': source_text,
+            'life': f"{hero.get('hp', '?')} / {hero.get('ht', '?')}  生命" if hero else '等待有效存档',
+            'statistics': f"{hero.get('class', '')} Lv.{hero.get('level', '?')} · 第 {data.get('depth', '?')} 层\n基础力量 {hero.get('strength', '?')} · 金币 {data.get('gold', '?')}",
+            'slot': 0 if snap['settings']['slot'] == 'auto' else snap['settings']['slot'],
             'floor_guide': self.floor_state(snap),
             'io_busy': self.io_busy,
             'topmost': snap['settings']['always_on_top'], 'references': reference_texts,
             'reference_tokens': [binding_token(row) for row in references],
             'capabilities': registration, 'error': '\n'.join(filter(None, [
-                self._io_job['label']+'；磁盘等待期间仍可退出或取消。' if self.io_busy else '', self.manager.action_error] +
+                self._io_job['label']+'；磁盘等待期间仍可退出或取消。' if self.io_busy else '', self.manager.action_error,
+                getattr(getattr(self, 'layout', None), 'error', '')] +
                 [row.get('recovery_error', '') for row in snap.get('exit', {}).get('participants', [])
                  if row['surface_id'] == 'native']))}
         if self.exit_state and self.exit_state.get('phase') == 'finished':
@@ -701,6 +741,12 @@ class NativeManager:
         if force or signature != self.signature:
             self.signature = signature
             self.host.command('manager_state', **state)
+        workspace = getattr(self, 'workspace', None)
+        if workspace and workspace.page == 'inventory':
+            current = binding_token([snap.get('started'), snap.get('revision'), snap.get('settings_revision'), snap.get('error')])
+            if current != getattr(self, '_inventory_revision', None):
+                self._inventory_revision = current
+                workspace.emit('inventory')
         if self.manager.play_settings:
             self.manager.play_settings.emit()
         self.report_drafts()
@@ -708,10 +754,19 @@ class NativeManager:
     def show(self):
         self.host.command('show', surface='manager')
 
+    def track_game(self, game, visible):
+        rect = list(game['rect']) if game else []
+        key = (tuple(rect), bool(visible))
+        if key != getattr(self, '_game_window_state', None):
+            self._game_window_state = key
+            self.host.command('game_bounds', rect=rect, visible=bool(visible))
+
     def hide(self):
         self.host.command('hide' if self.manager.tray is not None else 'minimize_manager', surface='manager')
 
     def close(self):
+        if hasattr(self, 'layout'):
+            self.layout.close()
         if hasattr(self, '_io_stop'):
             self._io_stop.set()
         if self.session.exit_status()['phase'] not in ('backing-up', 'finished'):
