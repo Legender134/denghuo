@@ -70,7 +70,7 @@ async function runForecast(){
     forecastWorker.postMessage({seed,depth});
   }catch(error){if(serial===forecastSerial){stopForecast('本次未展示预测结果。');inlineError($('#forecast-error'),error.message);}}
 }
-function forecastEffect(item){return item.effect?(forecastInfo.effects?.[item.kind]?.[item.effect.replaceAll('-','').replaceAll('_','')]||item.effect):'';}
+function forecastEffect(item){return item.effect?(forecastInfo.effects?.[item.kind]?.[item.effect.replaceAll('-','').replaceAll('_','').toLowerCase()]||item.effect):'';}
 function forecastAccess(access){
   if(access.type==='choice')return `互斥组 ${access.group} · 选项 ${access.option+1}（同组不同选项不能同时取得）`;
   if(access.type==='scenarios'){const paths=[],mask=BigInt(access.mask);for(let bit=0;bit<64;bit++)if(mask&(1n<<BigInt(bit)))paths.push(bit+1);return `取得路径组 ${access.group} · 可走路径 ${paths.join('、')}（同组物品共有至少一条路径才可兼得）`;}
@@ -89,7 +89,7 @@ function showForecastItem(item,definition){
 function renderForecast(){
   if(!forecastValue)return;const from=Number($('#forecast-from').value),kind=$('#forecast-kind').value,query=$('#forecast-query').value.trim().toLowerCase(),target=$('#forecast-floors');target.replaceChildren();
   const definitions=new Map(forecastInfo.items.map(item=>[item.id,item]));
-  const items=forecastValue.items.filter(item=>item.depth>=from&&(!kind||item.kind===kind)&&(!query||[definitions.get(item.id).name,definitions.get(item.id).english_name,forecastSources[item.source],forecastEffect(item)].join(' ').toLowerCase().includes(query)));
+  const items=forecastValue.items.filter(item=>item.depth>=from&&(!kind||item.kind===kind)&&(!query||[definitions.get(item.id).name,definitions.get(item.id).english_name,forecastSources[item.source],forecastEffect(item),item.effect].join(' ').toLowerCase().includes(query)));
   $('#forecast-count').textContent=`第 ${from}–${forecastValue.maximum_depth} 层显示 ${items.length} 项候选；筛选仅影响显示，不改变互斥条件。隐藏房间只列类型，不提供未生成楼层坐标。`;
   for(let depth=from;depth<=forecastValue.maximum_depth;depth++){
     const rows=items.filter(item=>item.depth===depth),floor=forecastValue.floors.find(row=>row.depth===depth);

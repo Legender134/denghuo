@@ -80,7 +80,7 @@ function renderEquipmentComparison(preserveInputs=false){
     for(const suffix of ['a','b']){
       const select=$('#compare-'+suffix),prior=(held[suffix]||previous[suffix])?.token;
       select.innerHTML=compareItems.map((i,n)=>`<option value="${n}">${escapeHTML((i.reference?`固定装备参考 · ${i.location} · ${i.name}`:i.owned?`${i.location} · ${i.name}${i.level===null?' · 等级未知':''}${i.revealed?' · 已主动揭示':''}`:`手册 · ${i.name}`)+(i.user_note?.title?' · 用户记录：'+i.user_note.title:''))}</option>`).join('');
-      const index=compareItems.findIndex(i=>i.token===prior);
+      const index=held[suffix]?compareItems.indexOf(held[suffix]):compareItems.findIndex(i=>i.token===prior);
       const edited=index>=0&&deliberate(suffix);
       const equipped=compareItems.findIndex(i=>i.owned&&i.location===(kind==='armor'?'护甲':'主武器'));
       const chosen=suffix==='a'&&!edited&&equipped>=0?equipped:index;

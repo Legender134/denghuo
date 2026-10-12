@@ -549,7 +549,7 @@ async function verifyComparisonRecovery(){
     const concealed={...publicItem,instance_key:'item-2'};
     h.context.state={revision:1,inventory_snapshot:'c'.repeat(64),data:{items:[publicItem,concealed]}};
     h.context.selectedItem=publicItem;h.context.calculationStamp=()=>({mode:'save',revision:h.context.state.revision});
-    h.context.disclosed={...publicItem,key:kind==='weapon'?publicItem.key:'items.rings.ringofmight',name:'揭示装备 +2',level:2,cursed:true,revealed:true,has_hidden_details:false};
+    h.context.disclosed={...publicItem,key:kind==='weapon'?publicItem.key:'items.rings.ringofmight',name:'揭示装备 +2',level:2,cursed:true,revealed:true,has_hidden_details:false,user_note:{title:'保留这件装备的记录',body:'用于旧快照对照',scope:'specific_item'}};
     h.context.post=async()=>({source:{expected:h.context.state.inventory_snapshot},item:h.context.disclosed,note:'仅这一件'});
     const reveal=()=>h.get('#detail-related').children.find(row=>row.textContent==='揭示这件物品的真实资料（剧透）');
     const comparison=()=>h.get('#detail-related').children.find(row=>row.textContent==='比较这件装备与升级预算');
@@ -565,6 +565,7 @@ async function verifyComparisonRecovery(){
     h.context.forged={...h.context.disclosed};assert.equal(await h.run('compareInventoryItem(forged,itemDisclosure.reference)'),false,'a different object cannot borrow the disclosure binding');
     h.context.state.revision=2;h.context.state.inventory_snapshot='d'.repeat(64);h.run('refreshItemDisclosure()');
     assert(comparison().disabled);assert.match(h.get('#detail-context').textContent,/主动揭示已过期/);
+    assert.equal(h.get('#detail-user-note').hidden,false);assert.equal(h.get('#detail-user-note').children[2].textContent,'保留这件装备的记录');
     assert.equal(await comparison().listeners.click(),false,'a stale exact instance must also be rejected by the handler');
     assert.match(h.get('#detail-workspace-error').textContent,/快照已变化/);
     let finish;h.context.post=()=>new Promise(resolve=>finish=resolve);
@@ -572,6 +573,25 @@ async function verifyComparisonRecovery(){
     finish({source:{expected:'d'.repeat(64)},item:h.context.disclosed,note:'old reply'});await waiting;
     assert.equal(h.get('#detail-title').textContent,publicItem.name,'a disclosure reply cannot cross a newer snapshot');
     assert.match(h.get('#detail-related').children.at(-1).textContent,/快照已变化/);
+  }
+  for(const mode of ['disclosed','known']){
+    const retained=setup(),r=retained.h;await r.run('comparisonReady');await r.run('initializeEquipmentComparison(true)');
+    const item={key:mode==='known'?'items.rings.ringofmight':'items.rings.ring',instance_key:'item-1',name:'根骨之戒',location:'背包',known:mode==='known',available:true,level:mode==='known'?2:null,cursed:true},other={...item,key:'items.rings.ringofenergy',instance_key:'item-2',name:'能量之戒',known:true,level:0};
+    r.context.state={started:1,active_slot:1,revision:1,inventory_snapshot:'a'.repeat(64),data:{items:[item,other]}};r.context.calculationStamp=()=>({revision:r.context.state.revision});
+    async function choose(level){
+      if(mode==='known'){item.level=level;item.cursed=level===2;}
+      r.context.item=mode==='known'?item:{...item,key:'items.rings.ringofmight',name:'根骨之戒 +'+level,level,cursed:level===2,revealed:true};
+      r.context.reference={items:r.context.state.data.items,stamp:r.context.calculationStamp(),inventorySnapshot:r.context.state.inventory_snapshot,...(mode==='known'?{}:{disclosedFrom:item,disclosedItem:r.context.item})};
+      return r.run('compareInventoryItem(item,reference)');
+    }
+    assert.equal(await choose(2),true);other.level=1;r.context.state.revision=2;r.context.state.inventory_snapshot='b'.repeat(64);r.run('renderEquipmentComparison()');
+    r.get('#compare-b').value=r.get('#compare-a').value;r.get('#compare-b').listeners.change();
+    r.context.state.revision=3;r.context.state.inventory_snapshot='c'.repeat(64);assert.equal(await choose(3),true);
+    for(const level of [2,3]){
+      other.level=level;r.context.state.revision++;r.run('renderEquipmentComparison()');
+      assert.equal(r.get('#compare-level-a').value,'3',mode);assert.equal(r.get('#compare-level-b').value,'2',mode);
+      assert.equal(r.get('#compare-curse-a').value,'0');assert.equal(r.get('#compare-curse-b').value,'1');
+    }
   }
   const draft=setup(),messages=[];await draft.h.run('comparisonReady');
   Object.assign(draft.h.context,{unfinishedDraftRequest:0,draftRecoveryEditGeneration:0,webEditingFrozen:false,webDirtySummary:()=>[],

@@ -191,6 +191,7 @@ function refreshItemDisclosure(){
   if(!disclosure.expired&&sameItemSnapshot(disclosure.reference))return;
   disclosure.expired=true;if(disclosure.compareButton)disclosure.compareButton.disabled=true;
   showDetailContext('这件物品的主动揭示已过期；下方仅保留旧参数试算。请重新从背包选择并主动揭示，不会自动揭示新快照。');
+  showItemNote(disclosure.reference.disclosedItem.user_note);
 }
 function itemNoteLabel(item){return item.user_note?`<small class="user-note">${escapeHTML('用户记录：'+(item.user_note.title||'查看备注'))}</small>`:'';}
 function showItemNote(note){
