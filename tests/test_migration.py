@@ -61,6 +61,20 @@ class MigrationTests(unittest.TestCase):
         root = Path(session.settings['save_root'])
         return {str(path.relative_to(root)): path.read_bytes() for path in root.rglob('*') if path.is_file()}
 
+    def test_same_floor_backups_remain_identifiable_in_selection_and_preview(self):
+        self.capture(self.source, 20, 1)
+        rows = [row for row in migration.status(self.source)['rows']
+                if row['group'] == 'backup' and row['slot'] == 1]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row['summary']['hp'] for row in rows}, {5, 20})
+        self.assertEqual(len({row['detail'] for row in rows}), 2)
+        for row in rows:
+            self.assertIn('法师', row['detail'])
+            self.assertIn(row['id'][:12], row['detail'])
+            self.assertTrue(row['summary']['saved'])
+            selected = migration.export_preview(self.source, {'selected': [row['key']]})['rows']
+            self.assertEqual(selected, [row])
+
     def bundle(self, selected=None):
         selected = selected if selected is not None else [row['key'] for row in migration.status(self.source)['rows'] if row['valid']]
         preview = migration.export_preview(self.source, {'selected': selected})

@@ -160,7 +160,8 @@ class Session:
         self.exit_drafts = ExitDraftStore(self.config_path.parent / 'exit-drafts')
         self.exit_recovery = ExitRecoveryJournal(self.config_path.parent / 'exit-recovery', self.exit_drafts)
         self.exit_coordinator = ExitCoordinator(self.prepare_shutdown, self.save_exit_draft,
-            on_finished=self._exit_finished, checkpoint=self.exit_recovery.checkpoint)
+            on_finished=self._exit_finished, checkpoint=self.exit_recovery.checkpoint,
+            verify_checkpoint=self.exit_recovery.verify_checkpoint)
         self.settings = dict(DEFAULTS)
         self.settings_revision = uuid.uuid4().hex
         self.config_error = ""
@@ -589,10 +590,11 @@ class Session:
             {'state': 'unknown', 'error': '', 'last_success': 0, 'saved': 0, 'slot': self.active_slot,
              'last_save_protected': False, 'other_errors': ''})
         # These memory-only flags can retract protection, never establish it.
-        enabled, health_root, error = self.backups.enabled, self.backups.health_root, self.backups.error
+        enabled = self.backups.enabled
+        error = self.backups.health_error(self.settings['save_root'], self.active_slot)
         if not enabled:
             health['state'], health['last_save_protected'] = 'paused', False
-        elif error and health_root in (None, str(self.settings['save_root'])):
+        elif error:
             health['state'], health['error'], health['last_save_protected'] = 'blocked', error, False
         elif health['state'] == 'unknown' and self.waiting_for_save:
             health['state'] = 'waiting'

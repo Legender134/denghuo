@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -684,6 +685,34 @@ os._exit(23)
         self.assertIsNone(session.exit_status()['participants'][0]['ack'])
         self.assertEqual(session.exit_status()['phase'],'confirming')
         self.assertEqual(len(Session(self.config).list_exit_drafts()),1)
+
+    def test_unchanged_heartbeat_keeps_saved_status_during_read_only_verification(self):
+        session = Session(self.config)
+        self.report(session, raw='preserved raw')
+        coordinator = session.exit_coordinator
+        entered, release = threading.Event(), threading.Event()
+        original = coordinator.verify_checkpoint
+        def verify(*args):
+            entered.set()
+            if not release.wait(3):
+                raise AssertionError('verification was not released')
+            return original(*args)
+        try:
+            with patch.object(coordinator, 'verify_checkpoint', side_effect=verify), \
+                    patch.object(coordinator, 'checkpoint', side_effect=AssertionError('unchanged draft was rewritten')):
+                for _ in range(3):
+                    session.report_exit_surface('web-aaaaaaaa', 1, True,
+                        draft=coordinator.surfaces['web-aaaaaaaa']['draft'],
+                        label='数值与炼金原始输入', kind='web')
+                    self.assertTrue(entered.wait(1))
+                    own = session.exit_status()['participants'][0]
+                    self.assertTrue(own['recovery_saved'])
+                    self.assertFalse(own['recovery_pending'])
+                release.set()
+                self.assertTrue(coordinator.flush_checkpoints(3))
+        finally:
+            release.set()
+        self.assertTrue(self.report(session, revision=2, raw='edited')['participants'][0]['recovery_saved'])
 
     def test_unchanged_heartbeat_detects_corrupted_disk_copy_and_preserves_it(self):
         session=Session(self.config)

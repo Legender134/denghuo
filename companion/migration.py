@@ -19,6 +19,7 @@ from . import __version__
 from . import backup_workflows as flows
 from . import global_progress as globals
 from .backups import MAX_TOTAL, unlinked
+from .engine import CLASSES
 from .knowledge import MAX_BYTES, MAX_FAVORITES, MAX_PLANS, canonical_plan
 from .play_state import validate_preferences
 from .session_exit import MAX_DRAFT_SET, checked_draft_set
@@ -236,10 +237,13 @@ def status(session):
             error = error or row.get('repair_error', '')
             valid = row.get('integrity', {}).get('valid') is not False and not error
             level = row.get('level')
+            summary = {key: row.get(key) for key in
+                       ('saved', 'time', 'last_seen', 'class', 'level', 'depth', 'branch', 'hp', 'ht')}
+            summary.update(slot=row['slot'], id=row['id'])
             rows.append({'key': f"backup:{row['slot']}:{row['id']}", 'group': 'backup',
                          'label': row.get('label') or f"槽位 {row['slot']} · 第 {row.get('depth', '未知')} 层",
-                         'detail': error if not valid else f"{row.get('class', '职业未知')} · 等级 {level if level is not None else '未知'} · 导出前完整校验",
-                         'slot': row['slot'], 'id': row['id'], 'valid': valid, 'error': error})
+                         'detail': f"槽位 {row['slot']} · {CLASSES.get(row.get('class'), '职业未知')} · 等级 {level if level is not None else '未知'} · 生命 {row.get('hp', '未知')}/{row.get('ht', '未知')} · 编号 {row['id'][:12]}" + (' · 导出前完整校验' if valid else ''),
+                         'summary': summary, 'slot': row['slot'], 'id': row['id'], 'valid': valid, 'error': error})
         for row in stored['plans']:
             rows.append({'key': 'plan:' + row['id'], 'group': 'plan', 'label': row['name'],
                          'detail': f"{row['kind']} · 资料版本 {row['rules_version']}", 'valid': True,
