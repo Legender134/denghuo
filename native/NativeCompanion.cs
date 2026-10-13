@@ -110,7 +110,7 @@ namespace Denghuo.Native {
                 case "game_confirm": GameConfirm(d); break;
                 case "lookup_state": Lookup.Render(d); break;
                 case "settings_state": Settings.Render(d); break;
-                case "plans": Plans.Render(d); ShowSurface("plans"); break;
+                case "plans": Plans.Render(d); break;
                 case "focus_search": ShowSurface("lookup"); Lookup.FocusSearch(); break;
                 case "name_plan": NamePlan(d); break;
                 case "game_name_plan": GameNamePlan(d); break;
@@ -140,12 +140,12 @@ namespace Denghuo.Native {
         Dialog Decision(string title,string message,string saveLabel="保存副本并载入",string discardLabel="放弃草稿并载入") { var dialog=new Dialog(Manager,title,460,350); dialog.Body.Children.Add(UI.Text(message)); dialog.Actions.Children.Add(UI.Button(saveLabel,delegate { dialog.Choose("saved"); },true)); dialog.Actions.Children.Add(UI.Button("返回编辑",delegate { dialog.Choose("cancel"); })); dialog.Actions.Children.Add(UI.Button(discardLabel,delegate { dialog.Choose("discard"); })); return dialog; }
         void ExitRequest(Dictionary<string,object> state,string error,bool retry) {
             string id=Data.Text(state,"id",""); if(retry ? !exitRequests.IsCurrent(id) : !exitRequests.Begin(id)) return; CloseExitDialog();
-            Lookup.FlushEdit(); Settings.FlushEdit(); Manager.FlushTasks(); Frozen=true; SetFrozen(true);
+            Lookup.FlushEdit(); Settings.FlushEdit(); Manager.FlushTasks(); Manager.FlushLayout(); Frozen=true; SetFrozen(true);
             var lookup=Lookup.Raw(); var settings=Settings.Raw(); bool dirty=Lookup.Dirty || Settings.Dirty || Manager.TasksDirty || SaveDraft!=null || error.Length>0; string decision="clean";
-            if(dirty) { var dialog=Decision("退出灯火",(error.Length>0 ? "保存副本未完成："+error+"\n原始草稿仍保留。\n" : "")+"当前工作区有未保存草稿。退出后将停止后台辅助与自动备份。保存副本会保留全部原始输入。","保存草稿并退出","放弃草稿并退出"); activeExit=dialog; try { dialog.ShowDialog(); decision=dialog.Decision; } finally { if(activeExit==dialog) activeExit=null; } }
+            if(dirty) { var dialog=Decision("退出灯火",(error.Length>0 ? "保存副本未完成："+error+"\n原始草稿仍保留。\n" : "")+"当前工作区有未保存草稿。退出后将停止后台辅助与自动备份。保存副本会保留全部原始输入。","保存草稿并退出",error.StartsWith("窗口布局未保存") ? "放弃本次布局与草稿并退出" : "放弃草稿并退出"); activeExit=dialog; try { dialog.ShowDialog(); decision=dialog.Decision; } finally { if(activeExit==dialog) activeExit=null; } }
             if(!exitRequests.IsCurrent(id)) return;
             Send("exit_decision","request_id",id,"decision",decision,"lookup",Lookup.Dirty || SaveDraft!=null ? (object)lookup : null,"settings",Settings.Dirty ? (object)settings : null,"game",Manager.TaskRaw());
-            if(decision=="cancel") { CloseExitDialog(); Frozen=false; SetFrozen(false); } else ExitWaiting(state,"正在保存草稿副本或确认放弃；磁盘等待期间仍可取消退出。",true);
+            if(decision=="cancel") { CloseExitDialog(); Frozen=false; SetFrozen(false); } else ExitWaiting(state,"正在保存窗口位置与处理草稿；等待期间可取消退出。",true);
         }
         void ExitWaiting(Dictionary<string,object> state,string message,bool canCancel) {
             string id=Data.Text(state,"id",""); if(!exitRequests.IsCurrent(id)) return; CloseExitDialog();

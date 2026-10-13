@@ -1107,7 +1107,7 @@ class PlayerValues:
             requested.update(('max_hp','hero_level'))
             result.append(block('按你的最大生命计算',[metric('获得护盾',math.floor(.6*maximum+10),'HP'),metric('药水恐惧挑战毒强度',4+hero//2,'点','挑战开启时替代护盾')]))
         if identity=='items.potions.elixirs.elixirofaquaticrejuvenation':
-            requested.add('max_hp');result.append(block('水灵治疗',[metric('治疗池',rounded(maximum*1.5),'HP','只在水中生效')]))
+            requested.add('max_hp');result.append(block('水灵治疗',[metric('治疗池',rounded(maximum*1.5),'HP','站在水中且未漂浮时恢复；药水恐惧下不治疗')]))
         if identity=='items.potions.elixirs.elixirofarcanearmor':
             requested.add('hero_level');result.append(block('魔法减伤',[metric('随机魔法减伤',f'0–{5+hero//2}','HP'),metric('持续',80,'回合')]))
         if identity=='items.potions.exotic.potionofearthenarmor':

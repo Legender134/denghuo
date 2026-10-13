@@ -40,6 +40,63 @@ class NativeExitTests(ControllerFixture):
                                'decision': decision, **raw})
         self.wait_exit_copies()
 
+    def test_layout_write_delays_exit_ack_but_cancel_and_new_layout_remain_available(self):
+        import json
+        from companion import window_layout
+        self.ui.layout = layout = window_layout.WindowLayout(self.session.config_path)
+        entered, release = threading.Event(), threading.Event()
+        original = window_layout.atomic_json
+        def blocked(path, value):
+            entered.set()
+            if not release.wait(8): raise OSError('test did not release layout write')
+            return original(path, value)
+        web = 'web-cccccccc'
+        self.session.report_exit_surface(web, 1, True, draft={'raw': {'hp': ''}})
+        try:
+            with patch.object(window_layout, 'atomic_json', side_effect=blocked):
+                layout.update({**window_layout.DEFAULT, 'width': 650})
+                self.assertTrue(entered.wait(3))
+                self.ui.request_exit(); first = self.session.exit_status(); self.ui.process_exit()
+                self.ui.exit_decision({'request_id': first['id'], 'decision': 'clean'})
+                old_job = self.ui._exit_copy_jobs[0]
+                self.assertFalse(old_job['done'].wait(.15))
+                self.assertEqual(self.session.exit_status()['phase'], 'confirming')
+                self.ui.exit_decision({'request_id': first['id'], 'decision': 'cancel'})
+                self.assertEqual(self.session.exit_status()['phase'], 'cancelled')
+                self.assertTrue(old_job['done'].wait(2)); self.ui._process_exit_copies()
+                expected = {**window_layout.DEFAULT, 'width': 700, 'page': 'alchemy', 'collapsed': True}
+                layout.update(expected)
+                self.ui.request_exit(); second = self.session.exit_status(); self.ui.process_exit()
+                self.ui.exit_decision({'request_id': second['id'], 'decision': 'clean'})
+                self.assertFalse(self.ui._exit_copy_jobs[0]['done'].wait(.15))
+                release.set(); self.wait_exit_copies()
+                participant = next(row for row in self.session.exit_status()['participants'] if row['surface_id'] == 'native')
+                self.assertEqual(participant['ack'], 'clean')
+                self.assertEqual(json.loads(layout.path.read_bytes()), expected)
+                self.assertTrue(layout.close())
+                reopened = window_layout.WindowLayout(self.session.config_path)
+                try: self.assertEqual(reopened.values, expected)
+                finally: reopened.close()
+                self.session.acknowledge_exit(second['id'], web, 'cancel', 1)
+        finally:
+            release.set(); layout.flush(5); layout.close()
+
+    def test_failed_layout_write_requires_explicit_exit_choice_and_preserves_original(self):
+        from companion import window_layout
+        self.ui.layout = layout = window_layout.WindowLayout(self.session.config_path)
+        original = b'{external layout retained'
+        layout.path.write_bytes(original)
+        try:
+            layout.update(window_layout.DEFAULT)
+            self.assertTrue(layout.flush(5))
+            self.ui.request_exit(); self.ui.process_exit(); self.decide('clean')
+            self.assertEqual(self.session.exit_status()['phase'], 'confirming')
+            self.assertEqual(self.host.commands[-1][0], 'exit_save_error')
+            self.assertIn('窗口布局未保存', self.host.commands[-1][1]['message'])
+            self.decide('discard')
+            self.assertEqual(layout.path.read_bytes(), original)
+        finally: layout.close()
+
     def test_native_damaged_original_confirmation_listing_and_inspection_preserve_raw_bytes(self):
         path = self.directory / 'exit-recovery' / ('d' * 32 + '.json.pending')
         path.parent.mkdir(exist_ok=True); original = b'{native interrupted original'; path.write_bytes(original)

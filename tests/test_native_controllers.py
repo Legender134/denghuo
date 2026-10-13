@@ -163,6 +163,36 @@ class NumericControllerTests(ControllerFixture):
         self.assertEqual(self.lookup.calculated['hp'], 8)
         self.assertTrue(self.host.commands[-1][1]['can_save'])
 
+    def test_fixed_reference_reopens_original_parameters_and_guards_current_draft(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['hp'].set('7')
+        self.lookup.variables['max_hp'].set('120')
+        self.lookup.note.set('固定时的备注')
+        self.lookup.calculate(); self.finish(); self.lookup.pin()
+        fixed = copy.deepcopy(self.lookup.calculated)
+        origins = dict(self.lookup.input_origins)
+        self.assertTrue(self.host.commands[-1][1]['has_pin'])
+        self.assertIn('条目操作', self.lookup.operation_receipt)
+        self.open('actors.mobs.rat')
+        self.session.update_manual({'hp': 1, 'ht': 200, 'level': 8})
+        self.lookup.handle({'action': 'view_pin'}); self.finish()
+        self.assertEqual(self.lookup.identity, 'items.potions.potionofhealing')
+        self.assertEqual(self.lookup.calculated, fixed)
+        self.assertEqual(self.lookup.note.get(), '固定时的备注')
+        self.assertEqual(self.lookup.input_origins, origins)
+        self.lookup.variables['hp'].set('unfinished')
+        self.lookup.handle({'action': 'view_pin'})
+        self.assertIsNotNone(self.lookup.confirmation)
+        self.lookup.handle({'action': 'replace_decision', 'decision': 'cancel'})
+        self.assertEqual(self.lookup.variables['hp'].get(), 'unfinished')
+        self.lookup.handle({'action': 'view_pin'})
+        self.lookup.handle({'action': 'replace_decision', 'decision': 'saved'}); self.finish()
+        self.assertEqual(self.lookup.calculated, fixed)
+        self.assertTrue(self.session.list_exit_drafts())
+        self.lookup.clear_pin()
+        self.assertFalse(self.host.commands[-1][1]['has_pin'])
+        self.lookup.view_pin(); self.assertIn('尚未固定', self.lookup.operation_receipt)
+
     def test_handbook_operation_receipts_survive_origin_refresh(self):
         self.open('items.potions.potionofhealing')
         self.lookup.favorite()
@@ -191,6 +221,39 @@ class NumericControllerTests(ControllerFixture):
         self.assertTrue(payload['rows'])
         self.assertFalse(any(action == 'show' for action, data in self.host.commands))
         self.assertTrue(self.host.commands[0][1]['layout']['collapsed'])
+
+    def test_restored_and_filtered_plans_only_publish_list_data(self):
+        ui = NativeManager.__new__(NativeManager)
+        ui.manager, ui.session, ui.host = self.manager, self.session, self.host
+        ui.layout = SimpleNamespace(values={'page': 'plans', 'collapsed': True}, original=b'layout')
+        ui.update, ui.report_drafts = Mock(), Mock()
+        self.host.commands.clear()
+        ui.dispatch({'action': 'ready'})
+        self.assertEqual([action for action, _ in self.host.commands], ['window_layout', 'plans'])
+        self.assertTrue(self.host.commands[0][1]['layout']['collapsed'])
+        self.host.commands.clear()
+        self.lookup.handle({'action': 'filter_plans', 'query': '没有匹配的方案'})
+        self.assertEqual([action for action, _ in self.host.commands], ['plans', 'lookup_state'])
+        self.assertEqual(self.host.commands[0][1]['rows'], [])
+
+    def test_first_plan_actions_initialize_without_opening_handbook(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.save_plan('本次治疗')
+        ui = NativeManager.__new__(NativeManager)
+        ui.manager, ui.session, ui.host = self.manager, self.session, self.host
+        ui.frozen = False
+        ui.update, ui.report_drafts = Mock(), Mock()
+        self.manager.open_lookup = Mock(side_effect=AssertionError('List requests must not navigate'))
+        for action in ('choose_plan', 'filter_plans'):
+            with self.subTest(action=action):
+                self.owner.lookup = None
+                self.host.commands.clear()
+                ui.dispatch({'action': action, 'surface': 'lookup'})
+                self.assertIsInstance(self.owner.lookup, NumericLookup)
+                plans = next(data for command, data in self.host.commands if command == 'plans')
+                self.assertEqual(len(plans['rows']), 1)
+                self.assertFalse(any(command == 'show' for command, _ in self.host.commands))
+        self.manager.open_lookup.assert_not_called()
 
     @unittest.skipUnless(sys.platform == 'win32', 'Windows display controller imports Tk')
     def test_snapshot_update_publishes_changed_origin_without_replacing_result(self):

@@ -194,7 +194,7 @@ class PublicDotTests(unittest.TestCase):
         worker.request = request
         manager = SimpleNamespace(session=session, root=SimpleNamespace(after=Mock(), after_cancel=Mock()),
                                   native_ui=SimpleNamespace(host=host, report_drafts=Mock()))
-        owner = SimpleNamespace(manager=manager, worker=worker, native=Mock())
+        owner = SimpleNamespace(manager=manager, worker=worker, native=Mock(), pinned=None)
         lookup = NumericLookup(owner)
         def finish():
             lookup.render(session.values.detail(*worker.args[1]))

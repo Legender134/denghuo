@@ -268,6 +268,8 @@ class NumericLookup:
                     '等级未知 · +0示例' if key == 'level' and self.context and self.context.get('level_unknown') else '示例 · 请核对')
                 if key in detail.get('missing_inputs', []):
                     self.input_origins[key] = '未确认 · 请填写'
+                elif not self.saved_plan and key in (self.context or {}).get('fixed_origins', {}):
+                    self.input_origins[key] = self.context['fixed_origins'][key]
                 elif not self.saved_plan and key in (self.context or {}).get('field_origins', {}):
                     self.input_origins[key] = ('' if key == 'talent' else prefix+' · ')+self.context['field_origins'][key]
                 self.variables[key] = Value(str(field['value']), lambda key=key: self.changed(key))
@@ -363,6 +365,9 @@ class NumericLookup:
             self.origin.text = '百科 '+self.rendered['version']+' · '+source
             self.origin_brief = ('旧参考 · 请核对条件' if old else '独立参考 · 未绑定当前角色' if independent and not uses else
                                  '参考来源未确认' if uses and not stamp else '手填局势与参考条件' if uses and snap['settings']['mode']=='manual' else '快照条件与手填假设' if uses else '示例 / 手填条件')
+        if (self.rendered and not self.dirty and not self.parameter_error and
+                self.identity.startswith('plants.') and self.identity.endswith('$seed')):
+            self.origin_brief = '种植触发后 · ' + self.origin_brief
         if not self.dirty and (self.draft_modified or self.pending_save):
             self.origin.text += ' · 当前参数、备注或命名有未保存修改；请核对后保存。'
 
@@ -461,15 +466,36 @@ class NumericLookup:
         else:
             self.owner.pinned = (self.identity, dict(self.calculated))
             self.owner.pinned_note = self.note.get()
+            self.owner.pinned_context = copy.deepcopy(self.context) or {'mode': 'example', 'source_label': '固定参考'}
+            self.owner.pinned_context['fixed_origins'] = dict(self.input_origins)
             self.owner.peek_key = None
-            self.origin.text = '已固定；返回游戏后按速查键查看。固定的是百科参考。'
+            self.origin.text = '已固定；在「条目操作 → 查看固定参考」打开。本次运行内保留。'
         self.operation_receipt = self.origin.text
         self.emit()
+
+    def view_pin(self):
+        pinned = copy.deepcopy(self.owner.pinned)
+        if not pinned:
+            self.operation_receipt = '尚未固定参考。'
+            self.emit()
+            return
+        identity, params = pinned
+        context = copy.deepcopy(getattr(self.owner, 'pinned_context', None)) or {
+            'mode': 'example', 'source_label': '固定参考', 'params': {}}
+        context['params'] = params
+        note = getattr(self.owner, 'pinned_note', '')
+        def opened():
+            self.select_row({'id': identity, 'lookup_context': context})
+            self.note.value = note
+            self.operation_receipt = '固定参考 · 原参数，未跟随当前角色。'
+            self.emit()
+        self.guard('查看固定参考', opened)
 
     def clear_pin(self):
         self.owner.pinned, self.owner.peek_key = None, None
         self.owner.pinned_note = ''
-        self.origin.text = '已清除固定；游戏速查恢复装备与局势快照。'
+        self.owner.pinned_context = None
+        self.origin.text = '已清除固定参考。'
         self.operation_receipt = self.origin.text
         self.emit()
 
@@ -781,7 +807,7 @@ class NumericLookup:
                 if item.get('decision') == 'saved':
                     self.save_draft_copy()
                 callback()
-        elif action in ('favorite', 'pin', 'clear_pin', 'choose_plan', 'save_plan', 'reload_plan', 'undo_import', 'use_latest'):
+        elif action in ('favorite', 'pin', 'view_pin', 'clear_pin', 'choose_plan', 'save_plan', 'reload_plan', 'undo_import', 'use_latest'):
             getattr(self, action)()
         elif action == 'provenance' and self.rendered:
             provenance = self.rendered.get('provenance', {})
@@ -824,7 +850,7 @@ class NumericLookup:
             needs_calculation=self.dirty or bool((self.rendered or {}).get('missing_inputs')),
             can_save=bool(self.identity and self.calculated is not None and not self.dirty and self.rendered and not self.calculating and not self.parameter_error),
             favorite=bool(self.identity and self.identity in self.favorite_ids),
-            has_saved_plan=bool(self.saved_plan),
+            has_saved_plan=bool(self.saved_plan), has_pin=bool(self.owner.pinned),
             can_more=self.suggested or len(self.rows) < self.total, undo=bool(self.undo_state),
             can_latest=bool(self.identity and self.inputs and self.owner.manager.session.snapshot().get('data')),
             sources=self.rendered.get('provenance', {}).get('links', []) if self.rendered else [],

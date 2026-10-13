@@ -280,8 +280,19 @@ class NativeManager:
         current = self.session.exit_status()
         if current['id'] == captured['request_id'] and current['phase'] in ('confirming', 'backing-up'):
             self.host.command('exit_waiting', state=current, can_cancel=current['phase'] == 'confirming',
-                message='正在保存草稿副本或确认放弃；磁盘等待期间仍可取消退出。'
+                message='正在保存窗口位置与处理草稿；等待期间可取消退出。'
                 if current['phase'] == 'confirming' else '草稿确认完成，正在保留最后备份与退出回执。')
+
+    def _flush_exit_layout(self, job):
+        layout = getattr(self, 'layout', None)
+        while layout is not None and not layout.flush(.1):
+            current = self.session.exit_status()
+            if (self._exit_copy_stop.is_set() or current['id'] != job['request_id']
+                    or current['phase'] != 'confirming'):
+                return False
+        if layout is not None and layout.error and job['decision'] != 'discard':
+            raise ValueError('窗口布局未保存：' + layout.error + ' 可重试，或明确放弃本次布局与未保存草稿后退出。')
+        return True
 
     def _persist_exit_copies(self):
         while not self._exit_copy_stop.is_set():
@@ -300,6 +311,8 @@ class NativeManager:
                         kind, label = {'settings-raw': ('play-settings', '游玩设置未完成草稿'),
                             'raw': ('numeric', '数值速查未完成草稿'), 'game-raw': ('game-workspace', '游戏工作区未完成草稿')}[payload['kind']]
                         self.session.save_exit_draft('native', kind, label, payload['draft'])
+                if not self._flush_exit_layout(job):
+                    continue
                 job['result'] = self.session.acknowledge_exit(job['request_id'], 'native',
                     job['decision'], job['revision'])
             except (ValueError, KeyError, OSError, RuntimeError) as exc:
@@ -594,7 +607,8 @@ class NativeManager:
                 self.workspace.handle(item)
             elif item.get('surface') == 'lookup':
                 if self.lookup() is None:
-                    self.manager.open_lookup()
+                    from .native_workspace import NumericLookup
+                    self.manager.play.lookup = NumericLookup(self.manager.play)
                 self.lookup().handle(item)
             elif item.get('surface') == 'settings':
                 self.manager.open_play_settings(show=False)
@@ -897,7 +911,8 @@ class NativeManager:
 
     def close(self):
         if hasattr(self, 'layout'):
-            self.layout.close()
+            if not self.layout.close():
+                logging.warning('窗口布局仍在等待磁盘，本次位置尚未确认保存。')
         if hasattr(self, '_io_stop'):
             self._io_stop.set()
         if self.session.exit_status()['phase'] not in ('backing-up', 'finished'):

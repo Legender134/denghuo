@@ -132,6 +132,22 @@ class NativeWorkspaceTests(unittest.TestCase):
 
 
 class NativeStrengthWorkflowTests(ControllerFixture):
+    def test_primary_plant_and_water_effects_keep_activation_conditions(self):
+        for identity, condition in (
+            ('plants.mageroyal', '守望者'),
+            ('plants.mageroyal$seed', '守望者'),
+            ('plants.sungrass$seed', '离开原地会中断'),
+            ('items.potions.elixirs.elixirofaquaticrejuvenation', '未漂浮'),
+        ):
+            with self.subTest(identity=identity):
+                self.open(identity)
+                payload = self.host.commands[-1][1]
+                self.assertIn(condition, payload['primary_values'][0]['condition'])
+                if identity.endswith('$seed'):
+                    self.assertIn('种植触发后', payload['origin_brief'])
+                if 'aquaticrejuvenation' in identity:
+                    self.assertIn('药水恐惧下不治疗', payload['primary_values'][0]['condition'])
+
     def test_monster_primary_answer_deduplicates_health_without_changing_full_table(self):
         self.open('actors.mobs.rat')
         payload=self.host.commands[-1][1]
