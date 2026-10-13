@@ -138,7 +138,7 @@ namespace Denghuo.Native {
             host=owner; page=name; Focusable=true; RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto }); RowDefinitions.Add(new RowDefinition()); RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto });
             mode=UI.Button("编辑条件",delegate { SetEditing(!editing); }); mode.HorizontalAlignment=HorizontalAlignment.Left; mode.Background=Brushes.Transparent; var taskHeader=new WrapPanel(); taskHeader.Children.Add(mode); if(page=="inventory") taskHeader.Children.Add(UI.Button("装备比较 ›",delegate { host.Manager.OpenPage("equipment"); }));
             if(page=="equipment") { var taskHeading=new DockPanel(); DockPanel.SetDock(taskHeader,Dock.Right); taskHeading.Children.Add(taskHeader); origin.VerticalAlignment=VerticalAlignment.Center; taskHeading.Children.Add(origin); Children.Add(taskHeading); } else Children.Add(UI.Stack(origin,taskHeader));
-            selection=UI.Section(page=="inventory" ? "选择背包物品" : page=="map" ? "选择保存楼层" : "选择存档记录",selector,true); output.Children.Add(selection); output.Children.Add(map); output.Children.Add(mapLegend); mapDetails=UI.Section("地形与坐标（只读）",mapCoordinates,false); output.Children.Add(mapDetails); if(page=="equipment") { output.Children.Add(comparison); details=UI.Section("完整数值与条件",article,true); output.Children.Add(details); } else output.Children.Add(article); output.Children.Add(resultDetails); scroll=UI.Scroll(output); Grid.SetRow(scroll,1); Children.Add(scroll); actions.Margin=new Thickness(0,10,0,0); if(page=="backups") { receipt=UI.Section("回执详情",notice,false); output.Children.Insert(0,receipt); output.Children.Insert(0,receiptBrief); Grid.SetRow(actions,2); Children.Add(actions); } else { var feedback=UI.Scroll(notice); feedback.MaxHeight=64; var bottom=UI.Stack(feedback,actions); Grid.SetRow(bottom,2); Children.Add(bottom); }
+            selection=UI.Section(page=="inventory" ? "选择背包物品" : page=="map" ? "选择保存楼层" : "选择存档记录",selector,true); output.Children.Add(selection); if(page=="map") output.Children.Add(article); output.Children.Add(map); mapDetails=UI.Section("图例与坐标",UI.Stack(mapLegend,mapCoordinates),false); output.Children.Add(mapDetails); if(page=="equipment") { output.Children.Add(comparison); details=UI.Section("完整数值与条件",article,true); output.Children.Add(details); } else if(page!="map") output.Children.Add(article); output.Children.Add(resultDetails); scroll=UI.Scroll(output); Grid.SetRow(scroll,1); Children.Add(scroll); actions.Margin=new Thickness(0,10,0,0); if(page=="backups") { receipt=UI.Section("回执详情",notice,false); output.Children.Insert(0,receipt); output.Children.Insert(0,receiptBrief); Grid.SetRow(actions,2); Children.Add(actions); } else { var feedback=UI.Scroll(notice); feedback.MaxHeight=64; var bottom=UI.Stack(feedback,actions); Grid.SetRow(bottom,2); Children.Add(bottom); }
             fields.Changed=delegate(string key,bool structural) { if(rendering || host.Frozen) return; ++revision; Dirty=true; notice.Text=key=="name" || key=="note" ? "备注或名称已修改，尚未保存" : "条件已修改，待重新计算"; notice.Visibility=Visibility.Visible; values=fields.Raw(); host.Send("game_edit","page",page,"values",values,"draft_revision",revision,"structure",structural); if(key!="name" && key!="note") { calculated=false; foreach(string command in new[]{"save","update"}) if(actionControls.ContainsKey(command)) { actionControls[command].IsEnabled=false; actionControls[command].ToolTip="先重新计算有效结果"; } if(editing) { mode.Content="返回说明"; UI.Name(mode,"返回说明"); } articleText="条件已修改，请重新计算。原始输入已保留。"; UI.Article(article,articleText); comparison.Children.Clear(); resultDetails.Children.Clear(); if(details!=null) details.IsExpanded=true; } };
         }
         public void SetPlanMetadata(string name,string note) { fields.SetMetadata(name,note); values=fields.Raw(); Dirty=true; ++revision; Flush(); }
@@ -323,11 +323,12 @@ namespace Denghuo.Native {
                 string caution=Data.Text(data,"primary_note",""); if(caution.Length>0) { var noteText=UI.Text(caution,12,UI.Muted); noteText.Margin=new Thickness(0,0,0,12); article.Children.Add(noteText); }
             }
             if(sections.Length==0) { var text=new StackPanel(); UI.Article(text,Data.Text(data,"result","")); article.Children.Add(text); }
+            var secondary=new StackPanel();
             foreach(object raw in sections) {
                 var section=raw as Dictionary<string,object>; if(section==null) continue;
                 string title=Data.Text(section,"title","数值"), key=identity+"/"+Data.Text(section,"index","");
                 object[] values=Data.Array(section,"values"), selected=Data.Array(section,"selected_values"), columns=Data.Array(section,"columns"), rows=Data.Array(section,"rows");
-                if(values.Length>0 || selected.Length>0) article.Children.Add(RememberSection(key+"/current",title+(selected.Length>0 ? " · 当前条件" : ""),UI.Stack(LabeledValues(values),LabeledValues(selected)),main.Length==0));
+                if(values.Length>0 || selected.Length>0) secondary.Children.Add(RememberSection(key+"/current",title+(selected.Length>0 ? " · 当前条件" : ""),UI.Stack(LabeledValues(values),LabeledValues(selected)),true));
                 if(columns.Length>0 && rows.Length>0) {
                     var table=new StackPanel(); int rowIndex=0;
                     foreach(object rawRow in rows) {
@@ -337,15 +338,16 @@ namespace Denghuo.Native {
                         bool current=section.ContainsKey("selected_row") && section["selected_row"]!=null && Data.Number(section,"selected_row")==rowIndex;
                         if(current) rowTitle+=" · 当前条件";
                         table.Children.Add(RememberSection(key+"/row/"+rowIndex,rowTitle,LabeledValues(labeled.ToArray()),current)); rowIndex++;
-                    } article.Children.Add(RememberSection(key+"/table","完整"+title+" · "+rows.Length+"行",table,false));
+                    } secondary.Children.Add(RememberSection(key+"/table","完整"+title+" · "+rows.Length+"行",table,false));
                 }
-                string noteText=Data.Text(section,"note",""); if(noteText.Length>0) article.Children.Add(RememberSection(key+"/note",title+" · 适用条件",UI.Text(noteText),false));
+                string noteText=Data.Text(section,"note",""); if(noteText.Length>0) secondary.Children.Add(RememberSection(key+"/note",title+" · 适用条件",UI.Text(noteText),false));
             }
             var provenance=new StackPanel(); provenance.Children.Add(UI.Text(Data.Text(data,"status",""),12,UI.Muted));
             string prose=Data.Text(data,"result_prose",""); if(prose.Length>0) UI.Article(provenance,prose+"\n\n"+Data.Text(data,"status",""));
             int sourceIndex=0; string token=Data.Text(data,"sources_token","");
             foreach(object raw in Data.Array(data,"sources")) { var link=(Dictionary<string,object>)raw; int index=sourceIndex++; provenance.Children.Add(UI.Button("官方依据 · "+Data.Text(link,"label",""),delegate { Host.Send("source_link","surface","lookup","index",index,"token",token); })); }
-            article.Children.Add(RememberSection(identity+"/provenance","来源、条件与备注",provenance,false));
+            secondary.Children.Add(RememberSection(identity+"/provenance","来源、条件与备注",provenance,false));
+            if(main.Length>0) article.Children.Add(RememberSection(identity+"/details","详细数值与说明",secondary,false)); else article.Children.Add(secondary);
         }
         public void Render(Dictionary<string,object> d) {
             if(Data.Number(d,"draft_revision")<draftRevision) return;

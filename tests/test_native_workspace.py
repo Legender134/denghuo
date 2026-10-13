@@ -165,6 +165,22 @@ class NativeStrengthWorkflowTests(ControllerFixture):
         self.lookup.variables['level'].set('-'); self.lookup.changed('level')
         self.assertEqual(self.host.commands[-1][1]['primary_values'], [])
 
+    def test_tenacity_primary_answer_keeps_hp_assumption_and_negative_semantics(self):
+        self.open('items.rings.ringoftenacity')
+        answers = []
+        for hp in (50, 90):
+            self.lookup.variables['max_hp'].set('100'); self.lookup.variables['hp'].set(str(hp))
+            self.lookup.calculate(); self.finish(); payload = self.host.commands[-1][1]
+            self.assertIn(f'当前生命 {hp}/100', payload['primary_note'])
+            self.assertIn('负数表示增伤', payload['primary_note'])
+            self.assertIn('正常', payload['primary_values'][0]['label'])
+            self.assertIn('诅咒', payload['primary_values'][1]['label'])
+            answers.append(float(payload['primary_values'][0]['value']))
+            self.assertLess(float(payload['primary_values'][1]['value']), 0)
+        self.assertGreater(answers[0], answers[1])
+        self.lookup.variables['hp'].set('-'); self.lookup.changed('hp')
+        self.assertEqual(self.host.commands[-1][1]['primary_values'], [])
+
     def test_failed_then_pending_calculation_reports_state_preserves_raw_and_blocks_repeat(self):
         self.open('items.potions.potionofhealing')
         self.lookup.variables['hp'].set('  '); self.lookup.calculate()

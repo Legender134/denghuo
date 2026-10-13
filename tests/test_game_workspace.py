@@ -258,13 +258,19 @@ class GameWorkspaceTests(ControllerFixture):
         calculated = copy.deepcopy(self.workspace.calculated['alchemy'])
         structured = copy.deepcopy(self.workspace.structured_results['alchemy'])
         self.workspace.emit('alchemy'); state = self.host.commands[-1][1]; text = state['text']
-        self.assertLess(text.index('制作顺序'), text.index('实际消耗材料'))
-        self.assertIn('材料：治疗药剂 ×1', text)
-        self.assertIn('能量：12 − 4 = 8', text)
+        self.assertTrue(text.startswith('可以制作'))
+        self.assertIn('耗能 4 · 余 8', text)
+        self.assertNotIn('制作顺序', text)
+        steps = state['result_details'][0]
+        self.assertEqual(steps['id'], 'crafting_steps'); self.assertFalse(steps['expanded'])
+        self.assertTrue(steps['text'].startswith('制作顺序'))
+        self.assertNotIn('可以制作', steps['text'])
+        self.assertIn('材料：治疗药剂 ×1', steps['text'])
+        self.assertIn('能量：12 − 4 = 8', steps['text'])
         self.assertNotIn('单手剑', text)
         self.assertNotIn('item-0', text); self.assertNotIn('item-1', text)
-        self.assertEqual(len(state['result_details']), 1)
-        detail = state['result_details'][0]
+        self.assertEqual(len(state['result_details']), 2)
+        detail = state['result_details'][1]
         self.assertEqual(detail['id'], 'unused_inventory'); self.assertFalse(detail['expanded'])
         self.assertIn('单手剑', detail['text']); self.assertIn('未消耗', detail['text'])
         self.assertEqual(self.workspace.calculated['alchemy'], calculated)
@@ -273,6 +279,34 @@ class GameWorkspaceTests(ControllerFixture):
         self.workspace.edit('alchemy', {**self.workspace.raw['alchemy'], 'energy': '1e'})
         self.workspace.emit('alchemy')
         self.assertEqual(self.host.commands[-1][1]['result_details'], [])
+
+    def test_random_alchemy_cannot_appear_guaranteed_when_details_are_closed(self):
+        from tests.test_alchemy_flow import params, goal, stock
+        sun = 'plants.sungrass$seed'
+        self.workspace.load_alchemy(params([goal('seed-potion', 2, {'seed_ids': [sun]*3})], [stock(sun, 6)], 0))
+        self.workspace.calculate('alchemy'); self.workspace.emit('alchemy')
+        result = self.workspace.structured_results['alchemy']; state = self.host.commands[-1][1]
+        self.assertTrue(result['within_budget']); self.assertFalse(result['complete'])
+        self.assertIn('产出未确定', state['text']); self.assertIn('不能保证指定物品', state['text'])
+        self.assertNotIn('可以制作', state['text']); self.assertNotIn('预算内可完成', state['text'])
+        self.assertIn('不能保证治疗', state['result_details'][0]['text'])
+        self.assertFalse(state['result_details'][0]['expanded'])
+
+    def test_inventory_description_is_optional_but_identity_and_unavailability_stay_visible(self):
+        item = {'instance_key': 'item-0', 'key': 'items.potions.potionofhealing', 'name': '治疗药剂', 'quantity': 2,
+                'location': '背包', 'description': '完整物品说明', 'details': ['完整属性'], 'known': True, 'available': True}
+        for known, revealed, available, expected in [(True, False, True, ''), (False, False, True, '身份未鉴定'),
+                (False, True, False, '游戏鉴定状态未改变')]:
+            self.session.data['items'] = [{**item, 'known': known, 'revealed': revealed, 'available': available}]
+            rows = self.workspace.inventory()
+            self.workspace.selected['inventory'] = rows[0]['id']; self.workspace.selected_tokens['inventory'] = rows[0]['token']
+            self.workspace.emit('inventory'); state = self.host.commands[-1][1]
+            self.assertTrue(state['text'].startswith('治疗药剂 ×2')); self.assertIn(expected, state['text'])
+            self.assertNotIn('完整物品说明', state['text']); self.assertNotIn('已知公开资料', state['text'])
+            if not available: self.assertIn('当前不可用', state['text'])
+            self.assertFalse(state['result_details'][0]['expanded'])
+            self.assertIn('完整物品说明', state['result_details'][0]['text'])
+            self.assertIn('完整属性', state['result_details'][0]['text'])
 
     def test_alchemy_shortages_show_local_names_counts_and_specific_candidate_targets(self):
         from tests.test_alchemy_flow import params, goal, stock
@@ -595,6 +629,10 @@ class GameWorkspaceTests(ControllerFixture):
         self.assertEqual(state['map']['tiles'][:4], [4, 1, 1, -1])
         self.assertFalse(state['map_revealed'])
         self.assertIn('已探索地形', state['text'])
+        self.assertIn('非实时视野', state['text'])
+        self.assertEqual(state['result_details'][0]['id'], 'map_discoveries')
+        self.assertFalse(state['result_details'][0]['expanded'])
+        self.assertGreater(len(state['result_details'][0]['text']), len(state['text']))
         self.assertIn('map_known', [row['id'] for row in state['actions']])
         self.assertIsNone(self.workspace.map_result)
 
