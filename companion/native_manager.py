@@ -12,6 +12,61 @@ import time
 from .native_host import NativeHost, binding_token
 
 
+def resource_insight(option, index):
+    """Summarize already-validated decision values, never calculate from examples."""
+    if option['entry'] not in ('items.potions.potionofhealing', 'items.waterskin'):
+        return None
+    restriction = option.get('restriction', '')
+    missing = option.get('calculation_missing', '')
+    values = {row['label']: row for row in option.get('values', [])}
+    summary, assumption = [], ''
+    if restriction:
+        summary = [restriction]
+    elif missing:
+        summary = ['条件待补全']
+    elif option.get('comparison'):
+        label = '再次喝药的额外实际恢复'
+        if label in values:
+            summary = ['再喝多恢复 ' + values[label]['value'] + ' HP']
+            assumption = '假设期间不再受伤'
+    elif option['entry'] in ('items.potions.potionofhealing', 'items.waterskin'):
+        for label, brief in (('首次恢复', '首次'), ('最终实际恢复', '合计'), ('实际新增屏障', '新增屏障')):
+            if label in values:
+                summary.append(brief + ' +' + values[label]['value'] + ' ' + values[label].get('unit', 'HP'))
+        if summary:
+            assumption = '不再受伤；不含已有治疗' if option['entry'] == 'items.waterskin' else '假设期间不再受伤'
+    if not summary:
+        return None
+    details = '\n'.join(filter(None, (restriction, missing, option.get('note', '') if values else '',
+        *[row['label'] + ' ' + row['value'] + ' ' + row.get('unit', '')
+          + (' · ' + row['condition'] if row.get('condition') else '') for row in values.values()])))
+    return {'id': 'resource-' + option['entry'], 'title': option['name'] + ' ×' + str(option['quantity']),
+            'summary': ' · '.join(summary), 'assumption': assumption, 'body': details,
+            'severity': 'warning' if restriction else 'info',
+            'actions': [{'index': index, 'text': '查看计算' if not (restriction or missing) else '核对条件'}]}
+
+
+def overview_insights(data, advice, resources):
+    """Keep consequential mechanics ahead of generic reminders and repeated HUD data."""
+    buffs = {buff.get('kind') for buff in data.get('buffs', [])}
+    titles = {
+        'burning': '漂浮时不能用水灭火' if 'Levitation' in buffs else '接触水能灭火，仍可能再受一次伤害',
+        'ooze': '漂浮时不能用水洗掉淤泥' if 'Levitation' in buffs else '水能洗掉淤泥，不能清除酸蚀',
+        'corrosion': '酸蚀不能靠水清除', 'dot': '休息仍会推进持续伤害',
+        'starving': '饥饿时不能靠普通休息回血',
+        'pharmacophobia': '治疗药剂会改为中毒',
+    }
+    if buffs & {'Paralysis', 'TimeStasis', 'Frost', 'MagicalSleep', 'Roots'}:
+        titles['burning'] = '无法走动，不能立即入水灭火'
+        titles['ooze'] = '无法走动，不能立即入水清洗'
+    routine = {'critical_hp', 'low_hp', 'hungry', 'class', 'unknown', 'strength_potion', 'upgrade_scroll'}
+    important, secondary = [], []
+    for tip in advice:
+        row = {**tip, 'summary': '', 'assumption': '', 'title': titles.get(tip['id'], tip['title'])}
+        (secondary if tip['id'] in routine or tip['id'].startswith('strength_') else important).append(row)
+    return important + resources, secondary
+
+
 class NativeManager:
     def __init__(self, manager):
         self.manager, self.session = manager, manager.session
@@ -393,9 +448,11 @@ class NativeManager:
                   'caption':'连接有效存档后显示本层资料。','nodes':[]}
         self._floor_item_references = {}
         if not available: return result
-        result['caption']=f"第 {data['depth']} 层"+(f" · 支线 {data['branch']}" if data.get('branch') else '')+' · 最近存档，非实时视野'
+        result['caption']=f"第 {data['depth']} 层"+(f" · 支线 {data['branch']}" if data.get('branch') else '')
         hero=data.get('hero',{})
-        result['caption']+=f"\n生命 {hero.get('hp','未确认')} / {hero.get('ht','未确认')} · 等级 {hero.get('level','未确认')}"
+        result['caption']+=f" · 按角色等级 {hero.get('level','未确认')} 参考"
+        result['warning'] = ('版本未确认 · 仅作参考' if data.get('version') != self.session.catalog.data['version_code'] else
+                             '挑战未确认 · 普通条件参考' if not data.get('challenges_known') else '')
         key = binding_token([data.get(k) for k in ('depth','branch','version','challenges_mask','challenges_known')]+[data.get('hero',{}).get('level')])
         if key!=getattr(self,'_floor_public_key',None):
             guide = floor_encounters({'depth':data['depth'],'branch':data.get('branch',0),'version':data.get('version'),
@@ -718,7 +775,7 @@ class NativeManager:
                     remaining += f'；按该局势下一次可回 {actual} 生命'
                 texts.append(f"{buff['name']} · {source}：{remaining}")
         texts += [tip['title']+'\n'+tip['body'] for tip in data.get('tips', [])]
-        references, reference_texts, reference_groups = [], [], []
+        references, reference_texts, reference_groups, resources = [], [], [], []
         try:
             decisions = self.session.decisions(snap)
             for risk in decisions['risks']:
@@ -729,6 +786,9 @@ class NativeManager:
             for row in decisions['options']:
                 note = '\n'.join(filter(None, (row['restriction'], row['calculation_missing'], row['note'])))
                 texts.append(row['name']+f" ×{row['quantity']} · "+decisions['source']['label']+'\n'+note)
+                insight = resource_insight(row, len(references))
+                if insight:
+                    resources.append(insight)
                 references.append((row, row['source'], note))
                 reference_texts.append(row['purpose']+'（参考参数）')
                 reference_groups.append(None)
@@ -747,6 +807,9 @@ class NativeManager:
             texts.append('自动备份完整原因：'+backup['error'])
         if snap.get('draft_recovery_notice'):
             texts.append(snap['draft_recovery_notice'])
+        snapshot_notes = '\n'.join(filter(None, (
+            texts[0] if global_health and global_health.get('state') not in ('waiting', 'working', 'unknown') else '',
+            '备份受阻：'+backup['error'] if backup.get('error') else '', snap.get('draft_recovery_notice', ''))))
         protection = {'protected': '保存已备份', 'blocked': '备份受阻', 'paused': '备份暂停'}.get(backup.get('state'),
             '上次保存已备份' if backup.get('last_save_protected') else '等待保存')
         source_text = ('手填局势' if snap['settings']['mode'] == 'manual' else
@@ -760,13 +823,24 @@ class NativeManager:
             source_text += ' · '+plan_updated_text(snap['modified'])+' 保存'
         from .reference import native_artwork
         advice = sorted(data.get('tips', []), key=lambda tip: {'critical': 0, 'warning': 1}.get(tip.get('severity'), 2))
+        advice = [{**tip, 'actions': [{'index': index, 'text': references[index][0]['name']+'数值'}
+                   for index, group in enumerate(reference_groups) if group == tip['id']]} for tip in advice]
+        insights, secondary = overview_insights(data, advice, resources)
+        # Retained data after a failed read remains accessible as a reference, never as current advice.
+        if snap.get('error'):
+            secondary, insights = insights + secondary, []
+        brief_source = ('读取受阻' if snap.get('error') else '等待存档' if not data else
+                        ('手填已过期' if snap.get('stale') else '手填') if snap['settings']['mode'] == 'manual' else
+                        '旧快照' if snap.get('stale') else '存档快照')
+        if data:
+            brief_source += f" · {data.get('depth', '?')} 层"
         state = {'text': '\n\n'.join(filter(None, texts)), 'source': source_text,
+            'source_brief': brief_source, 'source_warning': bool(snap.get('stale') or snap.get('error')),
+            'snapshot_notes': snapshot_notes,
+            'insights': insights, 'secondary_advice': secondary,
             'protection': protection, 'read_error': snap.get('error') or '',
             'waiting_for_save': bool(snap.get('waiting_for_save')),
-            'advice': [{**tip, 'body': tip['body'],
-                       'actions': [{'index': index, 'text': references[index][0]['name']+'数值'}
-                                   for index, group in enumerate(reference_groups) if group == tip['id']]}
-                      for tip in advice],
+            'advice': advice,
             'no_data': not bool(data),
             'hp': hero.get('hp'), 'ht': hero.get('ht'),
             'life': f"{hero.get('hp', '?')} / {hero.get('ht', '?')}  生命" if hero else '等待有效存档',

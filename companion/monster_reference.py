@@ -477,7 +477,8 @@ def add_monster_values(values, identity, p, result, requested):
     if name in ('fungalcore','fungalsentry','fungalspinner'): note += ' 4.0.2的菌类矿洞任务尚未实装，正常新局不会选择它；以下仅作未实装内容的资料参考，不表示会自然生成。'
     if row['dynamic'] == 'statue': note += ' 装甲石像的实际闪避还会受所穿护甲影响；具体武器、护甲决定的数值需结合本局装备。'
     if name in ('crystalspire','gnollgeomancer','fungalcore','demonspawner','necromancer','spectralnecromancer','yogdzewa','rotheart'): note += ' 此类敌人的主要作用来自特殊能力或召唤，普通攻击值不表示它会使用普通攻击。'
-    result.insert(0,{'title':'常规战斗数值','values':stat_rows,'note':note})
+    combat = {'title':'常规战斗数值','values':stat_rows,'note':note}
+    result.insert(0,combat)
     loot = loot_rows(values,identity,row,p)
     loot_note=('按所填角色等级、本局战利品生成计数、财富、赏金猎人与遗忘碎片条件计算；默认未被袖章成功偷取、财富加成0、赏金猎人0（未触发）、准备阶段0（无准备）、遗忘碎片−1（无效果）、合格未鉴定项0，适用的异晶默认−1（无效果）。掉率加成仅用于普通掉落，固定额外奖励另列。'
                '财富有效加成不是戒指等级：无戒指或魔法免疫填0，单枚正常+0戒指填1，正常戒指按生效等级＋1合计；诅咒戒指按min(0, 生效等级−2)合计。'
@@ -927,7 +928,35 @@ def add_monster_values(values, identity, p, result, requested):
         elif name == 'goo':
             note += ' 追近、后退或离开追击状态会取消蓄力；蓄力攻击尝试结束后也清除蓄力，未命中不会保留。'
         result.insert(2,{'title':'特殊攻击与机制','values':abilities,'note':note})
-    result.insert(3 if abilities else 2,defense_block(values,identity,row,stronger_bosses=stronger))
+    defenses = defense_block(values,identity,row,stronger_bosses=stronger)
+    result.insert(3 if abilities else 2,defenses)
     prize = _mimic_prize_block(name)
     if prize: result.insert(2,prize)
+    primary = stat_rows[:2]
+    if stats['HP'] == stats['HT']:
+        primary = [_metric('初始生命／上限',stats['HP'],'HP'),stat_rows[2]]
+        mechanism = {
+            'crystalspire':'尖刺单次基础伤害',
+            'gnollgeomancer':'投石／落石每次基础伤害',
+            'demonspawner':'成功召唤后基础添加冷却',
+            'necromancer':'准备召唤的最大敌人距离',
+            'spectralnecromancer':'准备召唤的最大敌人距离',
+            'rotheart':'受到燃烧状态伤害时',
+            'pylon':'激活后邻格电击伤害',
+            'npcs.vaultsentry':'扫描首次电击',
+            'npcs.vaultlaser':'激光伤害',
+        }.get(name)
+        if mechanism:
+            primary[1] = next(metric for metric in abilities if metric['label']==mechanism)
+        elif name == 'yogdzewa':
+            rule = next(rule for rule in defenses['rows'] if rule[:2]==['所有伤害','无敌'])
+            primary[1] = _metric('开战前或有古神之拳时',rule[1],condition=rule[2])
+        elif row['dynamic'] == 'sentry':
+            primary[1] = stat_rows[5]
+    combat['primary_values'] = primary
+    summary = [primary[1]['condition']] if primary[1]['condition'] else []
+    summary.append('绝命头目：只计入已核对的变化，其余按普通参考。' if stronger else '普通基础参考；未计精英、飞升或额外状态。')
+    if row['dynamic']: summary.append(f'生成层数 {depth}。')
+    if name in ('fungalcore','fungalsentry','fungalspinner'): summary.append('4.0.2菌类任务未实装，正常新局不会生成。')
+    combat['summary_note'] = ' '.join(summary)
     return True

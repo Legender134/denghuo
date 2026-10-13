@@ -29,6 +29,52 @@ class MonsterReferenceTests(unittest.TestCase):
         block=next(row for row in self.detail(name,**params)['blocks'] if row['title']=='特殊攻击与机制')
         return {row['label']:row for row in block['values']}
 
+    def test_primary_combat_values_merge_equal_health_and_use_calculated_attack(self):
+        for name,params,health,damage in (('rat',{},'8','1–4'),
+                                        ('piranha',{'depth':4},'30','4–12'),
+                                        ('goo',{'stronger_bosses':1},'120','1–8')):
+            with self.subTest(name=name):
+                combat=self.detail(name,**params)['blocks'][0]
+                self.assertEqual([(r['label'],r['value']) for r in combat['primary_values']],
+                                 [('初始生命／上限',health),('基础伤害范围',damage)])
+                self.assertEqual(len(combat['values']),10)
+                self.assertEqual([r['label'] for r in combat['values'][:3]],
+                                 ['初始生命','初始最大生命','基础伤害范围'])
+                self.assertEqual(combat['primary_values'][1],combat['values'][2])
+                self.assertNotIn(combat['note'],combat['summary_note'])
+                self.assertLess(len(combat['summary_note']),100)
+        self.assertIn('绝命头目',self.detail('goo',stronger_bosses=1)['blocks'][0]['summary_note'])
+        self.assertIn('生成层数 4',self.detail('piranha',depth=4)['blocks'][0]['summary_note'])
+        self.assertIn('未实装',self.detail('fungalcore')['blocks'][0]['summary_note'])
+
+    def test_primary_non_attackers_reuse_mechanisms_with_their_conditions(self):
+        for name,label in (('crystalspire','尖刺单次基础伤害'),
+                           ('gnollgeomancer','投石／落石每次基础伤害'),
+                           ('demonspawner','成功召唤后基础添加冷却'),
+                           ('necromancer','准备召唤的最大敌人距离'),
+                           ('spectralnecromancer','准备召唤的最大敌人距离'),
+                           ('rotheart','受到燃烧状态伤害时'),
+                           ('pylon','激活后邻格电击伤害'),
+                           ('npcs.vaultsentry','扫描首次电击'),
+                           ('npcs.vaultlaser','激光伤害')):
+            with self.subTest(name=name):
+                combat=self.detail(name)['blocks'][0]
+                selected=combat['primary_values'][1]
+                self.assertEqual(selected,self.mechanisms(name)[label])
+                self.assertIn(selected['condition'],combat['summary_note'])
+                self.assertEqual(combat['values'][2]['value'],'不使用普通攻击')
+        yog=self.detail('yogdzewa')['blocks'][0]
+        self.assertEqual(yog['primary_values'][1]['value'],'无敌')
+        self.assertIn('古神之拳',yog['primary_values'][1]['label'])
+        self.assertIn('任意古神之拳仍存活',yog['summary_note'])
+
+    def test_primary_summoned_skeleton_keeps_different_initial_and_maximum_health(self):
+        combat=self.detail('necromancer$necroskeleton')['blocks'][0]
+        self.assertEqual([(r['label'],r['value']) for r in combat['primary_values']],
+                         [('初始生命','20'),('初始最大生命','25')])
+        self.assertEqual(len(combat['values']),10)
+        self.assertEqual(combat['values'][2]['value'],'2–10')
+
     def test_mining_guardian_recovery_is_not_a_killable_health_pool(self):
         metrics=self.mechanisms('crystalguardian')
         self.assertIn('生命设为1',metrics['正常零生命处理']['value'])

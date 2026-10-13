@@ -70,6 +70,82 @@ class ControllerFixture(unittest.TestCase):
         self.lookup.render(self.session.values.detail(*args))
 
 
+class CompactOverviewTests(ControllerFixture):
+    def game(self):
+        from companion.engine import PREFIX
+        return {'version': self.session.catalog.data['version_code'], 'challenges': 0, 'depth': 2,
+                'PotionOfHealing_known': True,
+                'hero': {'class': 'WARRIOR', 'lvl': 5, 'HP': 20, 'HT': 100, 'STR': 10,
+                         'buffs': [], 'inventory': [{'__className': PREFIX+'items.potions.PotionOfHealing', 'quantity': 2}]}}
+
+    def render(self, game, *, stale=False, error=''):
+        from companion.engine import analyze
+        snap = self.session.snapshot()
+        snap.update(data=analyze(game, self.session.catalog), active_slot=1, stale=stale, error=error)
+        snap['settings']['mode'] = 'save'
+        ui = NativeManager.__new__(NativeManager)
+        ui.manager, ui.session, ui.host = self.manager, self.session, self.host
+        ui.process_exit, ui.report_drafts = Mock(), Mock()
+        ui.exit_state, ui.signature = None, None
+        ui.update(snap)
+        return next(data for action, data in reversed(self.host.commands) if action == 'manager_state'), ui
+
+    def test_default_surfaces_conditional_resource_math_not_repeated_health(self):
+        payload, ui = self.render(self.game())
+        row = next(row for row in payload['insights'] if row['id'].startswith('resource-'))
+        self.assertIn('首次 +24 HP', row['summary'])
+        self.assertIn('合计 +80 HP', row['summary'])
+        self.assertIn('不再受伤', row['assumption'])
+        self.assertNotIn('20 / 100', row['summary'])
+        self.assertIn('critical_hp', [row['id'] for row in payload['secondary_advice']])
+        index = row['actions'][0]['index']
+        self.assertEqual(payload['reference_tokens'][index], binding_token(ui.references[index]))
+        self.assertEqual(ui.references[index][0]['params']['hp'], 20)
+
+    def test_existing_healing_reports_marginal_benefit_with_assumption(self):
+        from companion.engine import PREFIX
+        game = self.game()
+        game['hero']['buffs'] = [{'__className': PREFIX+'actors.buffs.Healing', 'left': 80,
+                                 'percent': .1, 'flat': 2, 'vial_level': -1}]
+        payload, _ = self.render(game)
+        row = next(row for row in payload['insights'] if row['id'].startswith('resource-'))
+        self.assertEqual(row['summary'], '再喝多恢复 0 HP')
+        self.assertIn('不再受伤', row['assumption'])
+        self.assertIn('不预测敌方伤害', row['body'])
+
+    def test_unknown_harmful_and_unreadable_conditions_do_not_publish_healing_numbers(self):
+        game = self.game(); game.pop('challenges')
+        payload, _ = self.render(game)
+        row = next(row for row in payload['insights'] if row['id'].startswith('resource-'))
+        self.assertEqual(row['summary'], '条件待补全')
+        self.assertIn('挑战条件未确认', row['body'])
+        game = self.game(); game['challenges'] = 4
+        payload, _ = self.render(game)
+        row = next(row for row in payload['insights'] if row['id'].startswith('resource-'))
+        self.assertIn('改为中毒', row['summary'])
+        self.assertNotIn('HP', row['summary'])
+        payload, _ = self.render(self.game(), error='合成读取错误')
+        self.assertEqual(payload['insights'], [])
+        self.assertTrue(payload['source_warning'])
+        self.assertIn('读取受阻', payload['source_brief'])
+        payload, _ = self.render(self.game(), stale=True)
+        self.assertTrue(payload['source_warning'])
+        self.assertIn('旧快照', payload['source_brief'])
+
+    def test_mechanism_summary_keeps_movement_and_water_conditions(self):
+        from companion.engine import PREFIX
+        game = self.game()
+        game['hero']['buffs'] = [{'__className': PREFIX+'actors.buffs.'+kind} for kind in ('Burning', 'Levitation')]
+        payload, _ = self.render(game)
+        burning = next(row for row in payload['insights'] if row['id']=='burning')
+        self.assertEqual(burning['title'], '漂浮时不能用水灭火')
+        game['hero']['buffs'].append({'__className': PREFIX+'actors.buffs.Roots'})
+        payload, _ = self.render(game)
+        burning = next(row for row in payload['insights'] if row['id']=='burning')
+        self.assertEqual(burning['title'], '无法走动，不能立即入水灭火')
+        self.assertIn('漂浮', burning['body'])
+
+
 class NumericControllerTests(ControllerFixture):
     def test_latest_import_replaces_pending_calculation_and_completes(self):
         self.open('items.potions.potionofhealing')

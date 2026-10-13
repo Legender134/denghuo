@@ -5,7 +5,7 @@ const html=fs.readFileSync(path.join(root,'web/index.html'),'utf8');
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 function element(id=''){
   const value={id,value:'',textContent:'',hidden:false,disabled:false,checked:false,open:false,dataset:{},listeners:{},children:[],
-    addEventListener(type,fn){this.listeners[type]=fn;},close(){this.open=false;},showModal(){this.open=true;},contains(){return false;},
+    addEventListener(type,fn){this.listeners[type]=fn;},setAttribute(key,value){this[key]=value;},close(){this.open=false;},showModal(){this.open=true;},contains(){return false;},
     replaceChildren(...items){this.children=items;this.innerHTML='';},querySelectorAll(selector){return selector==='[data-recovery]'?this.children:[];}};
   let markup='';Object.defineProperty(value,'innerHTML',{get:()=>markup,set:text=>{markup=text;value.children=[...text.matchAll(/data-recovery="([^"]+)"/g)].map(match=>{const button=element();button.dataset.recovery=match[1];return button;});}});return value;
 }
@@ -39,6 +39,18 @@ async function ready(h,choice='continue'){const opening=h.open();h.requests.at(-
 (async()=>{
   for(const id of ['backup-recovery','backup-recovery-dialog','backup-recovery-form','backup-recovery-choice','backup-recovery-text','backup-recovery-confirm','backup-recovery-error','backup-recovery-repreview','backup-recovery-submit'])assert(html.includes(`id="${id}"`),id);
   let checks=0;
+  const versions=harness(); versions.context.ageLabel=String;
+  versions.context.fetch=async()=>({ok:true,json:async()=>({context:'c1',current:{empty:true},target:{empty:true},same_run:true,expected_current:'hash'})});
+  for(const version of [null,undefined,833,912]){
+    versions.context.version=version;
+    const card=versions.run("backupCard({id:'test',saved:100,version},'history')");
+    assert.equal(card.includes('不能继续此旧档'),Number.isInteger(version)&&version<850);
+    await versions.run("openRestore({id:'test',slot:1,version},'c1')");
+    const description=versions.get('#restore-description').innerHTML;
+    assert.equal(description.includes('无法继续'),Number.isInteger(version)&&version<850);
+    if(version==null){assert(card.includes('请核对来源游戏版本'));assert(description.includes('来源版本未知'));}
+  }
+  checks++;
   const visible=harness();visible.run('renderBackupRecovery()');assert.match(visible.get('#backup-recovery').innerHTML,/未完成/);assert.equal(visible.get('#backup-recovery').children.length,1);
   visible.get('#backup-recovery').children[0].listeners.click();visible.requests[0].resolve(preview('finish'));await tick();
   assert(visible.get('#backup-recovery-dialog').open);assert.match(visible.get('#backup-recovery-description').innerHTML,/当前进度后来发生变化/);assert.match(visible.get('#backup-recovery-description').innerHTML,/不会移动目录或覆盖当前保存/);assert.match(visible.get('#backup-recovery-description').innerHTML,/该路径当前无目录/);checks++;

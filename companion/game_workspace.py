@@ -66,6 +66,7 @@ class GameWorkspace:
         self.legacy_alchemy = None
         self.confirmation = None
         self.notices = {}
+        self.notice_briefs = {}
         self.names = {row['id']: row['name'] for row in self.session.catalog.entries}
         from .alchemy_flow import family_list, resource_catalog
         self.recipes = family_list(self.session.catalog)
@@ -687,14 +688,11 @@ class GameWorkspace:
             if self.saved.get(page): actions.append(('update', '更新原方案'))
             if page == 'alchemy': actions += [('add_target', '增加目标'), ('remove_target', '移除末项目标'), ('add_resource', '增加独立库存'), ('remove_resource', '移除末项库存'), ('add_path', '指定前置路径'), ('remove_path', '移除末项路径')]
             specs += [field('name', '方案名称', self.raw[page].get('name', ''), section='保存方案'), field('note', '用途 / 假设备注（可选）', self.raw[page].get('note', ''), section='保存方案')]
-            text = self.results.get(page, '填写条件后计算。空白和半输入会原样保留，不会当成零。')
-            source = self.sources.get(page, {})
-            text += '\n\n'+source.get('label', '明确手填假设；不是已经确认的当前实战状态。')
+            text = self.results.get(page, '填写条件后计算。')
             if page == 'equipment' and self.equipment_context().get('character_scene'):
                 from .character_scene import calculate_scene
                 captured = calculate_scene(self.equipment_context()['character_scene'])['strength']
-                text += '\n\n固定角色条件 · '+('总力量 '+str(captured['effective']) if captured['state'] == 'known' else '总力量待确认：'+'；'.join(captured['missing']))+'。在「局势 → 调整角色条件」编辑后，点击「带入角色条件」更新此比较；不会跟随游戏自动变动。'
-            if self.dirty.__contains__(page): text += '\n当前条件尚未命名保存。'
+                text += '\n\n固定角色条件 · '+('总力量 '+str(captured['effective']) if captured['state'] == 'known' else '总力量待确认：'+'；'.join(captured['missing']))+'。展开窗口底部来源，编辑「角色条件」后，再点击「带入角色条件」更新。'
             if page == 'alchemy' and self.legacy_alchemy:
                 specs = []; actions = [('convert_legacy', '复制为可编辑的多目标方案')]
                 text = self.results.get(page, '旧版原方案仍保留。')+'\n\n复制会保留原记录，按原配方每批产出换算目标件数。确认后再编辑并另存。'
@@ -765,6 +763,10 @@ class GameWorkspace:
                 spec['help'] = '仅作为方案说明，不改变计算条件'
             if page == 'alchemy' and re.match(r'r\d+\.', key):
                 spec['help'] = ('来自已知库存；各状态仍需核对' if self.raw[page].get(key.split('.')[0]+'.origin') == 'known' else '手填库存与条件假设')
+            spec['help_visible'] = key not in ('name', 'note') and (spec['raw'] in ('', 'unknown') or
+                task_source.get('stale', False) or self.sources.get(page, {}).get('mixed_snapshots', False))
+            if key not in ('name', 'note') and spec['raw'] in ('', 'unknown'):
+                spec['help'] = '条件未确认；计算前请核对。' + (' '+spec['help'] if task_source.get('stale') else '')
         comparison = copy.deepcopy(self.structured_results.get(page, {})) if page == 'equipment' and page in self.calculated else {}
         for choice in comparison.get('choices', []):
             choice['artwork'] = native_artwork(choice.get('id'))
@@ -776,6 +778,7 @@ class GameWorkspace:
             draft_revision=self.client_revisions.get(page, 0), dirty=page in self.dirty,
             calculated=page in self.calculated, focus_result=self.focus_result == page,
             notice=self.notices.get(page, '') if page not in self.dirty else '',
+            notice_brief=self.notice_briefs.get(page, ''),
             result_details=self.result_details(page),
             map=(self.map_result or self.public_map() or {}).get('map', {}) if page == 'map' else {},
             map_revealed=bool(self.map_result) if page == 'map' else False,
@@ -819,7 +822,9 @@ class GameWorkspace:
         elif action == 'backup_confirm':
             preview = self.backup_preview
             if not preview: raise ValueError('请先重新预览当前与目标进度')
-            self.host.command('game_confirm', page='backups', token=preview['token'], undo=preview['action']=='undo', text=preview['text']+'\n\n请先关闭游戏。确认后原进度会完整保留；不会消耗或删除备份。')
+            self.host.command('game_confirm', page='backups', token=preview['token'], undo=preview['action']=='undo',
+                slot=preview['payload']['slot'], save_root=preview['save_root'],
+                text=preview['text']+'\n\n请先关闭游戏。确认后原进度会完整保留；不会消耗或删除备份。')
         elif action == 'backup_execute':
             preview = copy.deepcopy(self.backup_preview)
             if not preview or item.get('token') != preview['token']: raise ValueError('预览已变化，尚未恢复；请重新预览')
@@ -998,7 +1003,7 @@ class GameWorkspace:
             current = next((r for r in self.rows.get('backups', []) if r['id'] == self.selected.get('backups')), {})
             if error: self.backup_preview = None; self.native.error(error)
             elif current.get('token') == selected:
-                text = f"槽位 {entry['slot']} · "+('恢复备份' if action == 'restore' else '撤回上次回档')+'\n\n当前进度\n'+self.progress_text(result['current'])+'\n\n目标进度\n'+self.progress_text(result['target'])+'\n\n'+('同一次冒险。' if result['same_run'] else '可能属于不同冒险，请仔细核对。')
+                text = f"槽位 {entry['slot']} · "+('恢复备份' if action == 'restore' else '撤回上次回档')+'\n存档目录：'+result['save_root']+'\n\n当前进度\n'+self.progress_text(result['current'])+'\n\n目标进度\n'+self.progress_text(result['target'])+'\n\n'+('同一次冒险。' if result['same_run'] else '可能属于不同冒险，请仔细核对。')
                 request = {**payload, 'action': action, 'expected_current': result['expected_current'],
                     'confirm': ('恢复' if action == 'restore' else '撤回')+f"槽位 {entry['slot']}"}
                 self.backup_preview = {'action': action, 'text': text, 'payload': request, 'token': binding_token([request, text]),
@@ -1021,6 +1026,7 @@ class GameWorkspace:
         else:
             message = '未收到完成回执，请核对存档历史和当前进度后再操作。'
         root = submitted.get('save_root', '')
+        self.notice_briefs['backups'] = f"槽位 {payload['slot']} · "+(operation+'完成 · 原进度已保留' if not error and isinstance(result, dict) and result.get('ok') is True else '未确认完成，请展开回执核对')
         self.notices['backups'] = identity+('\n存档目录：'+root if root else '')+'\n目标进度：'+target+'\n'+message
         self.emit('backups')
         self.reload('backups', preserve_selection=payload['action']+':'+payload['id'] if error else None)
