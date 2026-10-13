@@ -349,7 +349,7 @@ namespace Denghuo.Native {
             FloorNodes(floorBody,Data.Array(guide,"nodes"),""); floorSignature=signature; floorOwner=owner;
             UIElement target=DisclosureTarget(FloorFocusTarget(sameOwner ? key : ""));
             if(key.Length>0) workFocus=target;
-            Dispatcher.BeginInvoke(new Action(delegate {
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded,new Action(delegate {
                 if(floorSignature!=signature) return;
                 if(focused && IsActive && Page=="floor" && !Collapsed && (Object.ReferenceEquals(Keyboard.FocusedElement,oldFocus) || Keyboard.FocusedElement==null || Object.ReferenceEquals(Keyboard.FocusedElement,this))) target.Focus();
                 scroll.ScrollToVerticalOffset(position);
