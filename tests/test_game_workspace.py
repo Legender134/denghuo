@@ -96,7 +96,102 @@ class GameWorkspaceTests(ControllerFixture):
 
     def test_open_plan_cannot_replace_unsaved_work(self):
         self.equipment()
-        with self.assertRaises(ValueError): self.workspace.open_plan({'plan': {'kind': 'equipment'}})
+        before = copy.deepcopy(self.workspace.raw['equipment'])
+        self.assertFalse(self.workspace.open_plan({'plan': {'kind': 'equipment'}}))
+        self.assertEqual(self.workspace.raw['equipment'], before)
+        self.assertEqual(self.host.commands[-1][1]['purpose'], 'game_replace')
+        self.workspace.replace_decision('cancel')
+        self.assertEqual(self.workspace.raw['equipment'], before)
+
+    def test_half_input_switch_preserves_raw_or_explicitly_discards_all_task_kinds(self):
+        from companion.character_scene import empty_scene
+        for page, key in [('equipment', 'level_a'), ('alchemy', 'energy'), ('character', 'base_strength')]:
+            with self.subTest(page=page):
+                self.equipment(); self.alchemy(); self.workspace.load_character(empty_scene(12), dirty=False)
+                self.workspace.calculate(page)
+                self.workspace.raw[page]['name'] = '固定'+page
+                self.workspace.handle({'page': page, 'command': 'save'}); self.finish_job()
+                plan = self.session.knowledge.reopen(self.workspace.saved[page]['id'])
+                self.workspace.open_plan(plan)
+                baseline = copy.deepcopy(self.workspace.raw[page])
+                state = [d for action, d in self.host.commands if action == 'game_state' and d['page'] == page][-1]
+                ui_raw = {**state['raw'], **{spec['key']: spec['raw'] for spec in state['fields']}}
+                self.workspace.edit(page, ui_raw)
+                self.assertIn(page, self.workspace.calculated)
+                self.assertNotIn(page, self.workspace.dirty)
+                raw = {**baseline, key: '1e'}
+                self.workspace.edit(page, raw)
+                raw = copy.deepcopy(self.workspace.raw[page])
+                self.assertFalse(self.workspace.open_plan(plan))
+                self.workspace.replace_decision('cancel')
+                self.assertEqual(self.workspace.raw[page], raw)
+                self.workspace.open_plan(plan); self.workspace.replace_decision('saved')
+                saved = self.session.load_exit_draft(self.session.list_exit_drafts()[0]['id'])
+                self.assertEqual(saved['draft'][page]['values'][key], '1e')
+                self.assertEqual(self.workspace.raw[page], baseline)
+                self.assertNotIn(page, self.workspace.dirty)
+                self.workspace.edit(page, raw); self.workspace.open_plan(plan)
+                self.workspace.replace_decision('discard')
+                self.assertEqual(self.workspace.raw[page], baseline)
+                self.workspace.edit(page, raw)
+                self.workspace.handle({'page': page, 'command': 'undo'})
+                self.assertEqual(self.workspace.raw[page], baseline)
+
+    def test_plan_confirmation_never_discards_newer_input_or_failed_copy(self):
+        self.equipment(); self.workspace.calculate('equipment')
+        self.workspace.raw['equipment']['name'] = '固定武器'
+        self.workspace.handle({'page': 'equipment', 'command': 'save'}); self.finish_job()
+        plan = self.session.knowledge.reopen(self.workspace.saved['equipment']['id'])
+        self.workspace.edit('equipment', {**self.workspace.raw['equipment'], 'level_a': '1e'})
+        self.workspace.open_plan(plan)
+        self.workspace.edit('equipment', {**self.workspace.raw['equipment'], 'level_a': '-'})
+        with self.assertRaisesRegex(ValueError, '变化'):
+            self.workspace.replace_decision('discard')
+        self.workspace.open_plan(plan)
+        from unittest.mock import patch
+        with patch.object(self.session, 'save_exit_draft', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError): self.workspace.replace_decision('saved')
+        self.assertEqual(self.workspace.raw['equipment']['level_a'], '-')
+        self.assertIn('equipment', self.workspace.dirty)
+
+    def test_revealed_equipment_handoff_and_reversible_disclosure_are_read_only(self):
+        from companion.engine import PREFIX
+        root, slot = self.saved_game()
+        path = slot/'game.dat'; game = json.loads(path.read_text(encoding='utf-8'))
+        game['hero']['inventory'].append({'__className': PREFIX+'items.rings.RingOfMight',
+            'level': 2, 'levelKnown': False, 'cursed': False, 'cursedKnown': False})
+        path.write_text(json.dumps(game), encoding='utf-8'); self.session.refresh()
+        original = path.read_bytes()
+        ring = next(r for r in self.workspace.inventory() if r['item']['name'] == '未鉴定戒指')
+        self.select('inventory', ring)
+        with self.assertRaises(ValueError): self.workspace.inventory_action('equip_a')
+        self.workspace.inventory_action('reveal'); self.finish_job()
+        self.workspace.inventory_action('equip_a')
+        self.assertEqual(self.workspace.raw['equipment']['level_a'], '2')
+        self.assertIn('主动揭示', self.workspace.sources['equipment']['fields']['id_a'])
+        self.workspace.inventory_action('hide_reveal')
+        self.assertFalse(self.workspace.revealed)
+        self.workspace.inventory_action('reveal')
+        self.workspace.hide_inventory_reveals(); self.finish_job()
+        self.assertFalse(self.workspace.revealed)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertFalse(self.session.settings['reveal'])
+
+    def test_ready_restores_persisted_plan_list_without_overwriting_lookup_draft(self):
+        from companion.native_manager import NativeManager
+        self.equipment(); self.workspace.calculate('equipment'); self.workspace.raw['equipment']['name'] = '持久方案'
+        self.workspace.handle({'page': 'equipment', 'command': 'save'}); self.finish_job()
+        self.open('items.weapon.melee.sword'); self.lookup.variables['level'].set('1e')
+        ui = NativeManager.__new__(NativeManager)
+        ui.manager, ui.session, ui.host, ui.workspace = self.manager, self.session, self.host, self.workspace
+        ui.layout = SimpleNamespace(values={'page': 'plans'}, original={'page': 'plans'})
+        ui.update, ui.error = Mock(), Mock()
+        ui.report_drafts = Mock()
+        ui.dispatch({'action': 'ready'})
+        ui.error.assert_not_called()
+        plans = [d for action, d in self.host.commands if action == 'plans'][-1]
+        self.assertIn('持久方案', plans['rows'][0]['text'])
+        self.assertEqual(self.lookup.variables['level'].get(), '1e')
 
     def test_backup_execute_requires_unchanged_explicit_preview(self):
         with self.assertRaises(ValueError): self.workspace.handle({'page': 'backups', 'command': 'backup_execute', 'token': 'guess'})
@@ -173,7 +268,7 @@ class GameWorkspaceTests(ControllerFixture):
         rows = self.workspace.inventory(); self.assertEqual(len(rows), 2)
         unknown = next(r for r in rows if not r['item']['known'])
         self.select('inventory', unknown)
-        with self.assertRaisesRegex(ValueError, '已鉴定'): self.workspace.inventory_action('equip_a')
+        with self.assertRaisesRegex(ValueError, '主动揭示'): self.workspace.inventory_action('equip_a')
         self.workspace.inventory_action('reveal'); self.finish_job()
         self.assertTrue(self.workspace.revealed[unknown['id']]['revealed'])
         self.assertFalse(self.workspace.revealed[unknown['id']]['known'])
@@ -221,6 +316,13 @@ class GameWorkspaceTests(ControllerFixture):
         retained = list(root.glob('.denghuo-before-1-*'))
         self.assertEqual(len(retained), 1)
         self.assertEqual({p.name: p.read_bytes() for p in retained[0].iterdir()}, current)
+        self.finish_job()
+        undo = next(r for r in self.workspace.rows['backups'] if r['action'] == 'undo')
+        self.select('backups', undo); self.workspace.preview_backup(); self.finish_job()
+        self.assertEqual(self.workspace.backup_preview['payload']['confirm'], '撤回槽位 1')
+        self.workspace.handle({'page': 'backups', 'command': 'backup_execute', 'token': self.workspace.backup_preview['token']})
+        self.finish_job()
+        self.assertEqual({p.name: p.read_bytes() for p in slot.iterdir()}, current)
 
     def native_update(self):
         from companion.native_manager import NativeManager

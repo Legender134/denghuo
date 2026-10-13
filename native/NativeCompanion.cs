@@ -69,7 +69,8 @@ namespace Denghuo.Native {
         public PlansForm Plans;
         Dialog activeExit;
         NameDialog activeName;
-        public object SaveDraft { get { return activeName!=null && activeName.Dirty ? (object)activeName.Raw() : null; } }
+        string activeNamePage;
+        public object SaveDraft { get { return activeName!=null && activeNamePage==null && activeName.Dirty ? (object)activeName.Raw() : null; } }
         public void CaptureSaveDraft(Dictionary<string,object> raw) { if(activeName!=null) raw["pending_save"]=SaveDraft; }
         public Helper(string key) {
             session=key;
@@ -110,6 +111,7 @@ namespace Denghuo.Native {
                 case "plans": Plans.Render(d); ShowSurface("plans"); break;
                 case "focus_search": ShowSurface("lookup"); Lookup.FocusSearch(); break;
                 case "name_plan": NamePlan(d); break;
+                case "game_name_plan": GameNamePlan(d); break;
                 case "confirm": Confirm(d); break;
                 case "exit_request": ExitRequest(Data.Object(d,"state"),"",false); break;
                 case "exit_save_error": ExitRequest(Data.Object(d,"state"),Data.Text(d,"message","草稿副本未能保存"),true); break;
@@ -149,8 +151,14 @@ namespace Denghuo.Native {
             bool cancelling=false; Action cancel=delegate { if(!canCancel || cancelling || !exitRequests.IsCurrent(id)) return; cancelling=true; dialog.Actions.IsEnabled=false; dialog.Body.Children.Clear(); dialog.Body.Children.Add(UI.Text("正在取消退出；原始输入仍保留。")); Send("exit_decision","request_id",id,"decision","cancel"); };
             var button=UI.Button("取消退出，返回编辑",cancel); button.IsEnabled=canCancel; dialog.Actions.Children.Add(button); dialog.Closing+=delegate(object sender,System.ComponentModel.CancelEventArgs e) { if(!dialog.Silent) { e.Cancel=true; cancel(); } }; activeExit=dialog; dialog.Show();
         }
-        void Confirm(Dictionary<string,object> d) { Lookup.FlushEdit(); Settings.FlushEdit(); string surface=Data.Text(d,"surface","lookup"),purpose=Data.Text(d,"purpose","replace"); var dialog=Decision(Data.Text(d,"title","替换草稿"),Data.Text(d,"text","请核对当前草稿")); dialog.ShowDialog(); Send(purpose=="settings_reload" ? "settings_reload_decision" : "replace_decision","surface",surface,"decision",dialog.Decision); }
-        void GameConfirm(Dictionary<string,object> d) { var dialog=new Dialog(Manager,"核对恢复进度",480,480); dialog.Body.Children.Add(UI.Text(Data.Text(d,"text",""))); dialog.Actions.Children.Add(UI.Button("已关闭游戏，确认恢复",delegate { dialog.Choose("restore"); },true)); dialog.Actions.Children.Add(UI.Button("取消",delegate { dialog.Choose("cancel"); })); if(dialog.ShowDialog()==true) Send("game_action","page","backups","command","backup_execute","token",Data.Text(d,"token","")); }
+        void Confirm(Dictionary<string,object> d) { Lookup.FlushEdit(); Settings.FlushEdit(); Manager.FlushTasks(); string surface=Data.Text(d,"surface","lookup"),purpose=Data.Text(d,"purpose","replace"); var dialog=Decision(Data.Text(d,"title","替换草稿"),Data.Text(d,"text","请核对当前草稿")); dialog.ShowDialog(); if(purpose=="game_replace") Send("game_action","page",Data.Text(d,"page","equipment"),"command","replace_decision","decision",dialog.Decision); else Send(purpose=="settings_reload" ? "settings_reload_decision" : "replace_decision","surface",surface,"decision",dialog.Decision); }
+        void GameConfirm(Dictionary<string,object> d) { bool undo=Data.Flag(d,"undo"); var dialog=new Dialog(Manager,undo ? "核对撤回回档" : "核对恢复进度",480,480); dialog.Body.Children.Add(UI.Text(Data.Text(d,"text",""))); dialog.Actions.Children.Add(UI.Button(undo ? "已关闭游戏，确认撤回" : "已关闭游戏，确认恢复",delegate { dialog.Choose("restore"); },true)); dialog.Actions.Children.Add(UI.Button("取消",delegate { dialog.Choose("cancel"); })); if(dialog.ShowDialog()==true) Send("game_action","page","backups","command","backup_execute","token",Data.Text(d,"token","")); }
+        void GameNamePlan(Dictionary<string,object> d) {
+            string page=Data.Text(d,"page",""); var dialog=new NameDialog(Manager,d); activeName=dialog; activeNamePage=page;
+            dialog.Changed=delegate { if(!Frozen) Manager.SetTaskPlanMetadata(page,dialog.PlanName,dialog.Note); };
+            try { if(dialog.ShowDialog()==true && !Frozen) { Manager.SetTaskPlanMetadata(page,dialog.PlanName,dialog.Note); Send("game_action","page",page,"command",dialog.UpdateOriginal ? "update" : "save"); } }
+            finally { activeName=null; activeNamePage=null; }
+        }
         void NamePlan(Dictionary<string,object> d) {
             var dialog=new NameDialog(Manager,d); activeName=dialog; dialog.Changed=delegate { if(!Frozen) Send("save_dialog_edit","surface","lookup","pending_save",dialog.Dirty ? (object)dialog.Raw() : null); };
             try { if(dialog.ShowDialog()==true && !Frozen) Send("save_named","surface","lookup","name",dialog.PlanName,"note",dialog.Note,"update",dialog.UpdateOriginal); }

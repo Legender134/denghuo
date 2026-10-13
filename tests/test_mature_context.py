@@ -211,11 +211,12 @@ class MatureContextTests(unittest.TestCase):
                 scoped=self.catalog.search(query,'物品')
                 self.assertTrue(all(row['category']=='物品' for row in scoped['entries']))
 
-    def test_direct_panel_default_and_persisted_preference_are_validated(self):
+    def test_native_default_and_persisted_surface_preference_are_validated(self):
         with tempfile.TemporaryDirectory(prefix='lamp-startup-surface-') as d:
             p=Path(d)/'settings.json'
             session=Session(p,catalog=self.catalog)
-            self.assertEqual(session.settings['startup_surface'],'panel')
-            session.update_settings({'startup_surface':'native'})
-            self.assertEqual(Session(p,catalog=self.catalog).settings['startup_surface'],'native')
+            self.assertEqual(session.settings['startup_surface'],'native')
+            for surface in ('panel', 'native'):
+                session.update_settings({'startup_surface':surface})
+                self.assertEqual(Session(p,catalog=self.catalog).settings['startup_surface'],surface)
         with self.assertRaises(ValueError):validate_settings({'startup_surface':'unknown'})

@@ -45,7 +45,7 @@ def open_existing(runtime_path, timeout=3, *, web=False, no_overlay=False):
             if not isinstance(state, dict) or 'catalog_version' not in state or state.get('stopped'):
                 raise ValueError('助手服务尚未就绪')
             if state.get('manager_reuse') or state.get('panel_reuse'):
-                native = state.get('settings', {}).get('startup_surface', 'panel') == 'native'
+                native = state.get('settings', {}).get('startup_surface', 'native') == 'native'
                 action = 'show' if native and state.get('manager_reuse') and not (web or no_overlay) else 'open'
                 request = Request(url+'/api/panel', data=json.dumps({'action':action}).encode(),
                                   headers={'Content-Type':'application/json','X-Companion-Token':state['token']})
@@ -122,7 +122,7 @@ def main(argv=None):
         monitor.start()
         http.start()
         panel_start = not (args.no_browser or args.start_hidden) and (
-            args.web or args.no_overlay or session.settings.get('startup_surface', 'panel') == 'panel')
+            args.web or args.no_overlay or session.settings.get('startup_surface', 'native') == 'panel')
         if panel_start:
             try:
                 session.panel.request()

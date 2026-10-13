@@ -137,6 +137,21 @@ class ScoutingTests(unittest.TestCase):
         self.assertFalse(contents[1]['available'])
         self.assertNotEqual(contents[0]['instance_key'],contents[1]['instance_key'])
 
+    def test_trap_names_use_official_catalog_and_label_unrecognized_classes(self):
+        self.level['traps'][0]['__className'] = PREFIX+'levels.traps.PoisonDartTrap'
+        self.save()
+        original = self.tree()
+        result = inspect_saved(self.session,self.request())
+        self.assertEqual(result['traps'][0]['name'],
+                         self.catalog.messages['levels.traps.poisondarttrap.name'])
+        self.assertEqual(self.tree(),original)
+        self.level['traps'][0]['__className'] = PREFIX+'levels.traps.PoisonTrap'
+        self.save()
+        original = self.tree()
+        result = inspect_saved(self.session,self.request())
+        self.assertEqual(result['traps'][0]['name'],'未识别陷阱（PoisonTrap）')
+        self.assertEqual(self.tree(),original)
+
     def test_historical_branch_is_exact_and_old_timestamp_does_not_impersonate_current_floor(self):
         older = inspect_saved(self.session,self.request(3))
         branch = inspect_saved(self.session,self.request(4,1))

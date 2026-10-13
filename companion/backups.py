@@ -1642,7 +1642,7 @@ class BackupManager:
                 before_summary=before, target_summary=player_summary(game, metadata['saved']),
                 legacy_before=digest, target_backup=identity)
             backup_recovery.run(self, root, pending)
-            self._set_notice(root, f'已恢复槽位 {slot}。回档前进度已完整保留，可点击「撤回上次回档」恢复。')
+            self._set_notice(root, f'已恢复槽位 {slot}。回档前进度已完整保留。在存档历史选择「撤回回档」记录，先预览再确认即可恢复。')
             self.last_tick = 0
             self.slot_health.pop(slot, None)
             return self.notice

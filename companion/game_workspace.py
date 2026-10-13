@@ -55,6 +55,7 @@ class GameWorkspace:
         self.results, self.calculated, self.saved, self.sources, self.undo = {}, {}, {}, {}, {}
         self.dirty, self.selected, self.rows, self.inventory_binding = set(), {}, {}, None
         self.revealed = {}
+        self.inventory_reveal_generation = 0
         self.selected_tokens = {}
         self.client_revisions = {}
         self.focus_result = None
@@ -63,6 +64,8 @@ class GameWorkspace:
         self.map_publication_pending = False
         self.structured_results = {}
         self.legacy_alchemy = None
+        self.confirmation = None
+        self.notices = {}
         self.names = {row['id']: row['name'] for row in self.session.catalog.entries}
         from .alchemy_flow import family_list, resource_catalog
         self.recipes = family_list(self.session.catalog)
@@ -102,6 +105,11 @@ class GameWorkspace:
         if values == self.raw[page]:
             return
         old = self.raw[page]
+        if values == self.display_raw(page):
+            self.raw[page] = values
+            return  # Displaying an existing fallback is not a manual edit.
+        if page not in self.dirty:
+            self.undo[page] = (copy.deepcopy(old), copy.deepcopy(self.sources.get(page, {})))
         if page == 'alchemy':
             for key in list(values):
                 if values[key] != old.get(key):
@@ -110,10 +118,23 @@ class GameWorkspace:
                     if key == 'energy':
                         values['energy_origin'] = 'manual'
         self.raw[page] = values; self.dirty.add(page)
+        self.notices.pop(page, None)
         if {k: v for k, v in values.items() if k not in ('name', 'note')} != {k: v for k, v in old.items() if k not in ('name', 'note')}:
             self.results.pop(page, None); self.calculated.pop(page, None)
             self.mark_manual_source(page, old, values)
         self.native.report_drafts()
+
+    def display_raw(self, page):
+        old = self.raw[page]
+        visible = copy.deepcopy(old)
+        try:
+            specs = [] if old.get('legacy') else (self.equipment_fields() if page == 'equipment' else self.alchemy_fields() if page == 'alchemy' else self.character_fields())
+            for spec in specs:
+                visible.setdefault(spec['key'], spec['raw'])
+            visible.setdefault('name', ''); visible.setdefault('note', '')
+        except (ValueError, KeyError):
+            pass  # Invalid partial structure must still remain editable as raw text.
+        return visible
 
     def mark_manual_source(self, page, old, values):
         source = self.sources.get(page)
@@ -509,6 +530,8 @@ class GameWorkspace:
             row = next((r for r in rows if r['id'] == selected), None)
             if row:
                 item = row['item']; text = item['name']+'\n'+item['location']+'\n\n'+item['description']+'\n\n'+' · '.join(item.get('details', []))
+                if item.get('revealed'):
+                    actions[1] = ('hide_reveal', '收起所选物品揭示')
                 text += '\n\n'+('已主动揭示；游戏鉴定状态未改变。' if item.get('revealed') else '未鉴定身份保持未知。' if not item.get('known') else '已知公开资料。')
                 if item.get('available') is False: text += ' 当前不可用，仅作阅读参考。'
         elif page in self.raw:
@@ -560,6 +583,7 @@ class GameWorkspace:
             raw=copy.deepcopy(self.raw.get(page, {})), revision=self.revision,
             draft_revision=self.client_revisions.get(page, 0), dirty=page in self.dirty,
             calculated=page in self.calculated, focus_result=self.focus_result == page,
+            notice=self.notices.get(page, ''),
             map=(self.map_result or self.public_map() or {}).get('map', {}) if page == 'map' else {},
             map_revealed=bool(self.map_result) if page == 'map' else False,
             progress=copy.deepcopy((self.backup_preview or {}).get('progress', {})) if page == 'backups' else {},
@@ -573,6 +597,8 @@ class GameWorkspace:
         page = item.get('page', self.page)
         if page not in ('inventory', *self.raw, 'map', 'backups'): raise ValueError('工作区不存在')
         self.page = page
+        if item.get('action') == 'game_page' and page != 'inventory':
+            self.hide_inventory_reveals()
         if 'draft_revision' in item:
             revision = item['draft_revision']
             if type(revision) is not int or revision < self.client_revisions.get(page, 0): return
@@ -600,7 +626,7 @@ class GameWorkspace:
         elif action == 'backup_confirm':
             preview = self.backup_preview
             if not preview: raise ValueError('请先重新预览当前与目标进度')
-            self.host.command('game_confirm', page='backups', token=preview['token'], text=preview['text']+'\n\n请先关闭游戏。确认后原进度会完整保留；不会消耗或删除备份。')
+            self.host.command('game_confirm', page='backups', token=preview['token'], undo=preview['action']=='undo', text=preview['text']+'\n\n请先关闭游戏。确认后原进度会完整保留；不会消耗或删除备份。')
         elif action == 'backup_execute':
             preview = copy.deepcopy(self.backup_preview)
             if not preview or item.get('token') != preview['token']: raise ValueError('预览已变化，尚未恢复；请重新预览')
@@ -614,6 +640,10 @@ class GameWorkspace:
             self.raw[page].update(context=json.dumps(context, ensure_ascii=False), **{'context.scene_enabled': '1'})
             self.dirty.add(page); self.results.pop(page, None); self.calculated.pop(page, None)
         elif action == 'convert_legacy': self.convert_legacy()
+        elif action == 'name_plan':
+            if page not in self.calculated: raise ValueError('先计算有效条件，再命名保存')
+            self.host.command('game_name_plan', page=page, name=self.raw[page].get('name', ''),
+                note=self.raw[page].get('note', ''), existing=bool(self.saved.get(page)))
         elif action in ('save', 'update'):
             if page not in self.calculated: raise ValueError('先计算有效条件，再命名保存')
             raw = self.raw[page]; saved = self.saved.get(page); source = self.sources.get(page, {})
@@ -630,6 +660,8 @@ class GameWorkspace:
                 else:
                     if self.raw[page] == captured:
                         self.saved[page] = result['plan']; self.dirty.discard(page)
+                        self.undo.pop(page, None)
+                        self.notices[page] = '已保存「'+result['plan']['name']+'」。'
                         self.results[page] = self.results.get(page, '')+'\n\n已保存「'+result['plan']['name']+'」。'
                     else: self.native.error('先前条件已保存；等待期间的新输入仍是未保存草稿。')
                 self.emit(page)
@@ -651,7 +683,8 @@ class GameWorkspace:
             if self.undo.get(page):
                 self.raw[page], self.sources[page] = self.undo.pop(page); self.dirty.add(page); self.results.pop(page, None); self.calculated.pop(page, None)
         elif action == 'import': self.import_snapshot(page)
-        elif action in ('reference', 'reveal', 'equip_a', 'equip_b'): self.inventory_action(action)
+        elif action in ('reference', 'reveal', 'hide_reveal', 'equip_a', 'equip_b'): self.inventory_action(action)
+        elif action == 'replace_decision': self.replace_decision(item.get('decision'))
         self.emit(page)
 
     def reload(self, page):
@@ -733,7 +766,8 @@ class GameWorkspace:
             if error: self.backup_preview = None; self.native.error(error)
             elif current.get('token') == selected:
                 text = f"槽位 {entry['slot']} · "+('恢复备份' if action == 'restore' else '撤回上次回档')+'\n\n当前进度\n'+self.progress_text(result['current'])+'\n\n目标进度\n'+self.progress_text(result['target'])+'\n\n'+('同一次冒险。' if result['same_run'] else '可能属于不同冒险，请仔细核对。')
-                request = {**payload, 'action': action, 'expected_current': result['expected_current'], 'confirm': f"恢复槽位 {entry['slot']}"}
+                request = {**payload, 'action': action, 'expected_current': result['expected_current'],
+                    'confirm': ('恢复' if action == 'restore' else '撤回')+f"槽位 {entry['slot']}"}
                 self.backup_preview = {'action': action, 'text': text, 'payload': request, 'token': binding_token([request, text]),
                     'progress': {'current': result['current'], 'target': result['target'], 'same_run': result['same_run']}}
             self.emit('backups')
@@ -744,10 +778,14 @@ class GameWorkspace:
         if error: self.native.error(error)
         self.reload('backups')
 
-    def open_plan(self, opened):
+    def open_plan(self, opened, confirmed=False):
         plan = opened['plan']; page = plan['kind']
-        if page in self.dirty:
-            raise ValueError('当前'+{'equipment': '装备', 'alchemy': '炼金', 'character': '角色'}[page]+'已有未保存输入；请先命名保存，原方案尚未载入')
+        if page in self.dirty and not confirmed:
+            self.confirmation = (page, copy.deepcopy(opened), self.display_raw(page), copy.deepcopy(self.sources.get(page, {})))
+            self.host.command('confirm', surface='game', page=page, title='打开方案',
+                text='当前'+{'equipment': '装备', 'alchemy': '炼金', 'character': '角色'}[page]+'有未保存草稿。可保存全部原始输入副本后继续、返回编辑，或明确放弃；半输入也能保留。', purpose='game_replace')
+            return False
+        self.dirty.discard(page); self.undo.pop(page, None); self.notices.pop(page, None)
         params = copy.deepcopy(plan['params'])
         if page == 'character': self.load_character(params, dirty=False)
         elif page == 'equipment':
@@ -768,6 +806,30 @@ class GameWorkspace:
         else:
             self.calculated.pop(page, None); self.results[page] = '当前规则无法计算原记录：'+opened.get('calculation_error', '')+'；原参数和备注仍保留。'
         self.emit(page); self.host.command('game_show', page=page)
+        return True
+
+    def replace_decision(self, decision):
+        captured, self.confirmation = self.confirmation, None
+        if not captured or decision not in ('saved', 'discard'):
+            return
+        page, opened, raw, source = captured
+        if self.display_raw(page) != raw or self.sources.get(page, {}) != source:
+            raise ValueError('确认期间草稿已变化；原输入仍保留，请重新打开方案')
+        if decision == 'saved':
+            self.session.save_exit_draft('native', 'game-workspace', '切换方案前的原始草稿',
+                {page: {'values': raw, 'source': source}})
+        self.open_plan(opened, confirmed=True)
+
+    def hide_inventory_reveals(self):
+        self.inventory_reveal_generation += 1
+        if not self.revealed:
+            return
+        selected = self.selected.get('inventory')
+        self.revealed.clear()
+        current = next((r for r in self.inventory() if r['id'] == selected), None)
+        if current:
+            self.selected['inventory'] = selected
+            self.selected_tokens['inventory'] = current['token']
 
     def load_alchemy(self, params):
         raw = {k: str(params[k]) if params[k] is not None else '' for k in ('energy', 'energy_reserve', 'energy_origin', 'reference_version')}
@@ -809,20 +871,27 @@ class GameWorkspace:
         row = next((r for r in self.inventory() if r['id'] == self.selected.get('inventory')), None)
         if not row or row['token'] != self.selected_tokens.get('inventory'): raise ValueError('请先选择当前背包实例；保存变化后需要重新选择')
         item = row['item']
-        if action == 'reveal':
+        if action == 'hide_reveal':
+            self.revealed.pop(item['instance_key'], None)
+            current = next((r for r in self.inventory() if r['id'] == item['instance_key']), None)
+            if current:
+                self.selected['inventory'] = item['instance_key']
+                self.selected_tokens['inventory'] = current['token']
+        elif action == 'reveal':
             from .inventory_inspection import inspect_item
             binding = self.inventory_binding
+            generation = self.inventory_reveal_generation
             def complete(result, error):
                 self.inventory()
                 if error: self.native.error(error)
-                elif self.inventory_binding == binding:
+                elif self.inventory_binding == binding and self.inventory_reveal_generation == generation:
                     self.revealed[item['instance_key']] = result['item']
                     if self.selected.get('inventory') == item['instance_key']:
                         self.selected_tokens['inventory'] = binding_token([binding, result['item']])
                 self.emit('inventory')
             self.native.queue_io('正在只读揭示所选物品', lambda: inspect_item(self.session, {'expected': row['expected'], 'instance_key': item['instance_key'], 'reveal': True}), complete)
         elif action.startswith('equip_'):
-            if not item.get('known') or item.get('available') is not True or not family(item.get('key')): raise ValueError('请选择已鉴定、当前可用的受支持装备；未知身份不能自动带入')
+            if not (item.get('known') or item.get('revealed')) or item.get('available') is not True or not family(item.get('key')): raise ValueError('请选择身份已知或已主动揭示、当前可用的受支持装备；未知身份不能自动带入')
             self.import_equipment(item, action[-1]); self.emit('equipment'); self.host.command('game_show', page='equipment')
         else:
             if not (item.get('known') or item.get('revealed')): raise ValueError('未知身份只提供说明；需要时可先主动揭示所选物品')
@@ -839,7 +908,10 @@ class GameWorkspace:
         raw['level_known_'+side] = '1' if item.get('level') is not None else '0'
         raw['curse_'+side] = 'unknown' if item.get('cursed') is None else '1' if item['cursed'] else '0'
         raw['infusion_'+side] = 'unknown'; raw['hardened_'+side] = '0'; raw['mastery_'+side] = '0'; raw['augment_'+side] = 'NONE'
-        self.sources['equipment'] = {'label': '装备 '+side.upper()+' · '+item['name']+' · '+item['location']+'，固定带入该背包实例的公开身份、等级与诅咒；其他条件仍需明确核对。'}
+        origin = '主动揭示' if item.get('revealed') else '已知公开'
+        self.sources['equipment'] = {'label': '装备 '+side.upper()+' · '+item['name']+' · '+item['location']+'，固定带入该背包实例的'+origin+'身份、等级与诅咒；游戏鉴定状态未改变，其他条件仍需明确核对。',
+            'fields': {'id_'+side: origin, 'level_'+side: origin if item.get('level') is not None else '未确认',
+                       'curse_'+side: origin if item.get('cursed') is not None else '未确认'}}
         self.dirty.add('equipment'); self.results.pop('equipment', None); self.calculated.pop('equipment', None)
 
     def import_snapshot(self, page):

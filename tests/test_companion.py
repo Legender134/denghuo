@@ -1116,7 +1116,7 @@ class BackupContextTests(unittest.TestCase):
                 self.assertEqual(receipt['root'],expected_root);self.assertEqual(receipt['save_root'],expected_root)
                 self.assertEqual(receipt['context'],context);self.assertEqual(receipt['slot'],1)
                 self.assertEqual(receipt['id'],identity);self.assertTrue(receipt['results'][0]['ok'])
-                self.assertIn(receipt['message'],('已恢复槽位 1。回档前进度已完整保留，可点击「撤回上次回档」恢复。',
+                self.assertIn(receipt['message'],('已恢复槽位 1。回档前进度已完整保留。在存档历史选择「撤回回档」记录，先预览再确认即可恢复。',
                     '已撤回槽位 1 的上次回档；撤回前进度也已完整保留。',
                     '备份已移出活动库；可在下方保留副本中校验并重新加入，原名称会保留。没有删除文件。'))
         frozen=json.loads(json.dumps([restored,undone,removed]))

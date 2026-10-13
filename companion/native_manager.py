@@ -333,6 +333,9 @@ class NativeManager:
                 or self.session._shutdown_requested.is_set()):
             return  # Late completion never reopens controls or replaces a draft at shutdown.
         try:
+            if not job.get('error'):
+                self.manager.action_error = ''
+                self.manager.action_error_until = 0
             if job['finish']:
                 job['finish'](job.get('result'), job.get('error'))
             else:
@@ -349,6 +352,11 @@ class NativeManager:
         submitted = copy.deepcopy(patch)
         return self.queue_io('正在保存连接设置', lambda: self.session.update_settings(
             submitted, expected_revision=revision))
+
+    def reload_connection(self):
+        revision = self.session.snapshot()['settings_revision']
+        return self.queue_io('正在重新读取连接设置；工作区草稿仍保留',
+            lambda: self.session.reload_settings(expected_revision=revision))
 
     def change_preferences(self, patch, finish=None):
         preferences = self.manager.play.preferences
@@ -491,6 +499,11 @@ class NativeManager:
                     self.workspace.handle({'action': 'game_page', 'page': self.layout.values['page']})
                 elif self.layout.values['page'] == 'settings':
                     self.manager.open_play_settings(show=False)
+                elif self.layout.values['page'] == 'plans':
+                    if self.lookup() is None:
+                        from .native_workspace import NumericLookup
+                        self.manager.play.lookup = NumericLookup(self.manager.play)
+                    self.lookup().choose_plan()
                 self.update(self.session.snapshot(), force=True)
             elif action in ('window_layout', 'layout_reset'):
                 self.layout.update(item['layout'], reset=action == 'layout_reset')
@@ -525,9 +538,13 @@ class NativeManager:
                 self.manager.open_play_settings(show=False)
                 self.manager.play_settings.handle(item)
             elif action == 'show_lookup':
+                self.workspace.hide_inventory_reveals()
                 self.manager.open_lookup()
             elif action == 'show_settings':
+                self.workspace.hide_inventory_reveals()
                 self.manager.open_play_settings()
+            elif action == 'leave_inventory':
+                self.workspace.hide_inventory_reveals()
             elif action == 'panel':
                 self.manager.open_panel(item.get('page', 'overview'))
             elif action == 'slot':
@@ -537,6 +554,10 @@ class NativeManager:
                 self.change_connection({'save_root': item['path'], 'mode': 'save', 'slot': 'auto'})
             elif action == 'pin_manager':
                 self.change_connection({'always_on_top': bool(item.get('checked'))})
+            elif action == 'startup_surface':
+                self.change_connection({'startup_surface': item.get('value')})
+            elif action == 'reload_connection':
+                self.reload_connection()
             elif action == 'refresh':
                 self.queue_io('正在读取存档', self.session.refresh)
             elif action == 'reveal_floor':
@@ -691,7 +712,7 @@ class NativeManager:
                     actual = min(next_heal, max(0, hero.get('ht', 0) - hero.get('hp', 0)))
                     remaining += f'；按该局势下一次可回 {actual} 生命'
                 texts.append(f"{buff['name']} · {source}：{remaining}")
-        texts += [tip['title']+'\n'+tip['body'] for tip in data.get('tips', [])]
+        texts += [tip['title']+'\n'+tip['body'].replace('「局势推演」页的计算器', '左侧「装备」中的比较与预算') for tip in data.get('tips', [])]
         references, reference_texts = [], []
         try:
             decisions = self.session.decisions(snap)
@@ -730,10 +751,12 @@ class NativeManager:
             'slot': 0 if snap['settings']['slot'] == 'auto' else snap['settings']['slot'],
             'floor_guide': self.floor_state(snap),
             'io_busy': self.io_busy,
+            'save_root': snap['settings']['save_root'], 'startup_surface': snap['settings']['startup_surface'],
             'topmost': snap['settings']['always_on_top'], 'references': reference_texts,
             'reference_tokens': [binding_token(row) for row in references],
             'capabilities': registration, 'error': '\n'.join(filter(None, [
-                self._io_job['label']+'；磁盘等待期间仍可退出或取消。' if self.io_busy else '', self.manager.action_error,
+                self._io_job['label']+'；磁盘等待期间仍可退出或取消。' if self.io_busy else '',
+                self.manager.action_error if time.monotonic() < getattr(self.manager, 'action_error_until', 0) else '',
                 getattr(getattr(self, 'layout', None), 'error', '')] +
                 [row.get('recovery_error', '') for row in snap.get('exit', {}).get('participants', [])
                  if row['surface_id'] == 'native']))}

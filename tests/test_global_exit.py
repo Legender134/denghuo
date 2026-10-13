@@ -90,8 +90,10 @@ class GlobalExitTests(unittest.TestCase):
         before = self.originals()
         with patch.object(self.session.backups, 'recovery_status', return_value={
                 'available': False, 'blocked_slots': [], 'error': '受控槽位恢复关联损坏'}):
-            result = self.session.backups.final_capture(self.root, time.monotonic() + 2)
-        self.assertEqual((result['ok'], result['state']), (False, 'partial'))
+            # This checks independent protection; controlled-clock tests below
+            # check time budgets without depending on shared CI disk latency.
+            result = self.session.backups.final_capture(self.root, time.monotonic() + 10)
+        self.assertEqual((result['ok'], result['state']), (False, 'partial'), result)
         self.assertIn('槽位恢复关联', result['error'])
         self.assert_global_bytes(result)
         self.assertEqual(self.originals(), before)
