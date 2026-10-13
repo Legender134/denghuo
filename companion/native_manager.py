@@ -607,7 +607,8 @@ class NativeManager:
                 self.workspace.handle(item)
             elif item.get('surface') == 'lookup':
                 if self.lookup() is None:
-                    self.manager.open_lookup()
+                    from .native_workspace import NumericLookup
+                    self.manager.play.lookup = NumericLookup(self.manager.play)
                 self.lookup().handle(item)
             elif item.get('surface') == 'settings':
                 self.manager.open_play_settings(show=False)

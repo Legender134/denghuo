@@ -236,6 +236,25 @@ class NumericControllerTests(ControllerFixture):
         self.assertEqual([action for action, _ in self.host.commands], ['plans', 'lookup_state'])
         self.assertEqual(self.host.commands[0][1]['rows'], [])
 
+    def test_first_plan_actions_initialize_without_opening_handbook(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.save_plan('本次治疗')
+        ui = NativeManager.__new__(NativeManager)
+        ui.manager, ui.session, ui.host = self.manager, self.session, self.host
+        ui.frozen = False
+        ui.update, ui.report_drafts = Mock(), Mock()
+        self.manager.open_lookup = Mock(side_effect=AssertionError('List requests must not navigate'))
+        for action in ('choose_plan', 'filter_plans'):
+            with self.subTest(action=action):
+                self.owner.lookup = None
+                self.host.commands.clear()
+                ui.dispatch({'action': action, 'surface': 'lookup'})
+                self.assertIsInstance(self.owner.lookup, NumericLookup)
+                plans = next(data for command, data in self.host.commands if command == 'plans')
+                self.assertEqual(len(plans['rows']), 1)
+                self.assertFalse(any(command == 'show' for command, _ in self.host.commands))
+        self.manager.open_lookup.assert_not_called()
+
     @unittest.skipUnless(sys.platform == 'win32', 'Windows display controller imports Tk')
     def test_snapshot_update_publishes_changed_origin_without_replacing_result(self):
         from companion.play_overlay import PlayDisplay
