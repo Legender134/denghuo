@@ -222,6 +222,20 @@ class NumericControllerTests(ControllerFixture):
         self.assertFalse(any(action == 'show' for action, data in self.host.commands))
         self.assertTrue(self.host.commands[0][1]['layout']['collapsed'])
 
+    def test_restored_and_filtered_plans_only_publish_list_data(self):
+        ui = NativeManager.__new__(NativeManager)
+        ui.manager, ui.session, ui.host = self.manager, self.session, self.host
+        ui.layout = SimpleNamespace(values={'page': 'plans', 'collapsed': True}, original=b'layout')
+        ui.update, ui.report_drafts = Mock(), Mock()
+        self.host.commands.clear()
+        ui.dispatch({'action': 'ready'})
+        self.assertEqual([action for action, _ in self.host.commands], ['window_layout', 'plans'])
+        self.assertTrue(self.host.commands[0][1]['layout']['collapsed'])
+        self.host.commands.clear()
+        self.lookup.handle({'action': 'filter_plans', 'query': '没有匹配的方案'})
+        self.assertEqual([action for action, _ in self.host.commands], ['plans', 'lookup_state'])
+        self.assertEqual(self.host.commands[0][1]['rows'], [])
+
     @unittest.skipUnless(sys.platform == 'win32', 'Windows display controller imports Tk')
     def test_snapshot_update_publishes_changed_origin_without_replacing_result(self):
         from companion.play_overlay import PlayDisplay

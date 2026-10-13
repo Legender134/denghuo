@@ -318,7 +318,7 @@ namespace Denghuo.Native {
             var items=new List<MenuItem>();
             foreach(string[] pair in new[]{new[]{Data.Flag(state,"favorite") ? "取消收藏" : "收藏此条目","favorite"},new[]{Data.Flag(state,"has_saved_plan") ? "更新或另存方案…" : "保存方案…","save_plan"},new[]{"我的方案…","choose_plan"},new[]{"重新读取当前方案","reload_plan"},new[]{"固定当前参考","pin"},new[]{"查看固定参考","view_pin"},new[]{"清除固定参考","clear_pin"},new[]{"撤回本次条件带入","undo_import"},new[]{"带入最新已知角色条件","use_latest"},new[]{"条件与来源详情…","provenance"}}) {
                 string action=pair[1]; bool enabled=action=="view_pin" || action=="clear_pin" ? Data.Flag(state,"has_pin") : action=="undo_import" ? Data.Flag(state,"undo") : action=="use_latest" ? Data.Flag(state,"can_latest") : action=="save_plan" || action=="pin" ? valid : action=="favorite" || action=="provenance" ? hasEntry : action=="reload_plan" ? Data.Flag(state,"has_saved_plan") : true;
-                items.Add(UI.Item(pair[0],delegate { FlushEdit(); Host.Send(action,"surface","lookup"); },enabled));
+                items.Add(UI.Item(pair[0],delegate { FlushEdit(); if(action=="choose_plan") Host.Manager.OpenPage("plans"); else Host.Send(action,"surface","lookup"); },enabled));
             }
             items.Add(UI.Item("方案与收藏（完整面板）",delegate { Host.Send("panel","page","workspace"); })); UI.Menu(more,items.ToArray());
         }

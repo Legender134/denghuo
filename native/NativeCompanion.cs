@@ -110,7 +110,7 @@ namespace Denghuo.Native {
                 case "game_confirm": GameConfirm(d); break;
                 case "lookup_state": Lookup.Render(d); break;
                 case "settings_state": Settings.Render(d); break;
-                case "plans": Plans.Render(d); ShowSurface("plans"); break;
+                case "plans": Plans.Render(d); break;
                 case "focus_search": ShowSurface("lookup"); Lookup.FocusSearch(); break;
                 case "name_plan": NamePlan(d); break;
                 case "game_name_plan": GameNamePlan(d); break;

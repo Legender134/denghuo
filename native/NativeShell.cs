@@ -272,13 +272,17 @@ namespace Denghuo.Native {
         void QueueLayout() { if (!changingLayout && !Host.Frozen) { layoutTimer.Stop(); layoutTimer.Start(); } }
         void ClampBounds() { var scale = SystemDpi/96; var area = Forms.Screen.FromRectangle(new System.Drawing.Rectangle((int)(Left*scale),(int)(Top*scale),(int)(Width*scale),(int)(Height*scale))).WorkingArea; double x=area.Left/scale,y=area.Top/scale,w=area.Width/scale,h=area.Height/scale; Width = Math.Min(Width,w); Height = Math.Min(Height,h); Left = Math.Max(x,Math.Min(Left,x+w-Width)); Top = Math.Max(y,Math.Min(Top,y+h-Height)); }
         public void Collapse() { if (Collapsed) return; changingLayout = true; if (WindowState != WindowState.Normal) WindowState = WindowState.Normal; expandedBounds = new Rect(Left,Top,Width,Height); Collapsed = true; frame.Visibility = Visibility.Collapsed; MinWidth = MinHeight = 0; ResizeMode = ResizeMode.NoResize; Width = 36; Height = 68; handle.Visibility = Visibility.Visible; ClampBounds(); changingLayout = false; SaveLayout(); Host.VisibilityAll(); }
+        static UIElement DisclosureTarget(UIElement target) {
+            var section=target as Expander; if(section==null) return target;
+            section.ApplyTemplate(); return section.Template.FindName("title",section) as UIElement ?? section;
+        }
         public void RebindTaskFocus(string page,Dictionary<string,Control> before,Dictionary<string,Control> after,UIElement fallback,IInputElement priorFocus) {
             string key=null; Control nearest=null; var focused=workFocus as DependencyObject; foreach(var item in before) if((Object.ReferenceEquals(workFocus,item.Value) || (focused!=null && item.Value.IsAncestorOf(focused))) && (nearest==null || nearest.IsAncestorOf(item.Value))) { key=item.Key; nearest=item.Value; }
             if(key==null) return;
             bool restore=IsActive && !Collapsed && Page==page && priorFocus==workFocus;
             Control target; bool retained=after.TryGetValue(key,out target) && target.IsEnabled;
             bool same=retained && Object.ReferenceEquals(before[key],target);
-            if(!same) { workFocus=retained ? (IInputElement)target : fallback; var section=workFocus as Expander; if(section!=null) { section.ApplyTemplate(); workFocus=section.Template.FindName("title",section) as IInputElement ?? section; } }
+            if(!same) workFocus=DisclosureTarget(retained ? target : fallback);
             if(same && Keyboard.FocusedElement==workFocus) return;
             var next=workFocus as UIElement;
             if(restore) Dispatcher.BeginInvoke(new Action(delegate { if(IsActive && !Collapsed && Page==page && next!=null && next.IsVisible && next.IsEnabled) next.Focus(); }));
@@ -343,7 +347,7 @@ namespace Denghuo.Native {
             floorReveal=UI.Button(Data.Flag(guide,"revealed") ? "收起隐藏内容" : "主动揭示隐藏内容",delegate { Host.Send("reveal_floor","token",floorToken); }); floorReveal.IsEnabled=Data.Flag(guide,"enabled");
             var map=UI.Button("查看已探索地图",delegate { OpenPage("map"); }); floorBody.Children.Add(map); floorControls["|map"]=map;
             FloorNodes(floorBody,Data.Array(guide,"nodes"),""); floorSignature=signature; floorOwner=owner;
-            UIElement target=FloorFocusTarget(sameOwner ? key : "");
+            UIElement target=DisclosureTarget(FloorFocusTarget(sameOwner ? key : ""));
             if(key.Length>0) workFocus=target;
             Dispatcher.BeginInvoke(new Action(delegate {
                 if(floorSignature!=signature) return;
@@ -399,6 +403,7 @@ namespace Denghuo.Native {
             var references=new StackPanel(); int index=0; foreach(object raw in Data.Array(data,"references")) { int selected=index++; if(used.Contains(selected)) continue; var button=UI.Button(Convert.ToString(raw),delegate { if(selected<overviewTokens.Length) Host.Send("reference","index",selected,"token",Convert.ToString(overviewTokens[selected])); }); button.HorizontalContentAlignment=HorizontalAlignment.Left; references.Children.Add(button); }
             if(references.Children.Count>0) { bool opened; insightExpanded.TryGetValue("__references",out opened); var section=UI.Section("资源资料 · "+references.Children.Count,references,opened); section.Expanded+=delegate { insightExpanded["__references"]=true; }; section.Collapsed+=delegate { insightExpanded["__references"]=false; }; summary.Children.Add(section); insightControls["__references"]=section; }
             UIElement targetFocus; if(!insightControls.TryGetValue(focusKey,out targetFocus)) targetFocus=summary;
+            targetFocus=DisclosureTarget(targetFocus);
             if(hadOverviewFocus) { workFocus=targetFocus; if(restore) Dispatcher.BeginInvoke(new Action(delegate { if(IsActive && !Collapsed && Page=="overview" && targetFocus.IsVisible) targetFocus.Focus(); })); }
         }
         public void Render(Dictionary<string,object> d) { rendering=true; try { life.Text=Data.Text(d,"life",""); statistics.Text=Data.Text(d,"statistics",""); snapshotNotes.Text=Data.Text(d,"snapshot_notes",""); source.Text=Data.Text(d,"source","等待游戏保存"); sourceBrief.Text=Data.Text(d,"source_brief",source.Text); sourceBrief.Foreground=Data.Flag(d,"source_warning") ? UI.Gold : UI.Muted; UI.Name(sourceDetails,"存档详情 · "+sourceBrief.Text); protection.Text=Data.Text(d,"protection","等待备份"); Error(Data.Text(d,"error","")); RenderOverview(d); UI.Replace(saveRoot,Data.Text(d,"save_root","")); startup.SelectedIndex=Data.Text(d,"startup_surface","native")=="native" ? 0 : 1; slot.SelectedIndex=(int)Math.Max(0,Math.Min(6,Data.Number(d,"slot"))); top.IsChecked=Data.Flag(d,"topmost"); if(!attached) Topmost=top.IsChecked==true; if(Host.Settings!=null && Host.Settings.Connection!=null) Host.Settings.Connection.IsEnabled=!Data.Flag(d,"io_busy");
