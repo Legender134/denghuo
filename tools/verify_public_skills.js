@@ -42,6 +42,7 @@ const child=require('node:child_process').spawnSync(python,['-B','-c',source],{c
 if(child.error)throw child.error;assert.equal(child.status,0,child.stderr);const fixture=JSON.parse(child.stdout),clone=value=>JSON.parse(JSON.stringify(value));
 const checks=[],tick=()=>new Promise(resolve=>setImmediate(resolve));
 function element(){return {value:'',textContent:'',className:'',disabled:false,open:true,isConnected:true,dataset:{},listeners:{},validity:{valid:true},
+  classList:{toggle(){}},
   querySelector(){return null;},querySelectorAll(){return [];},contains(){return false;},addEventListener(name,fn){this.listeners[name]=fn;},
   setCustomValidity(message){this.validity.valid=!message;},replaceChildren(){},append(){},showModal(){this.open=true;},focus(){},reportValidity(){},remove(){},insertAdjacentHTML(){}};}
 function harness(){

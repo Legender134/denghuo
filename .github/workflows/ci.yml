@@ -42,6 +42,7 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Frontend component checks
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           node tools/verify_frontend.js
           node tools/verify_references.js
           node tests/verify_data_workflows.js
