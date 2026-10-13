@@ -1078,6 +1078,8 @@ class PlayerValues:
             total,schedule=heal_schedule(base,current,maximum,p['vial'])
             rows=[metric('治疗池总量',total,'HP'),metric('最终实际恢复',min(maximum-current,total),'HP'),metric('首次恢复',schedule[0][2],'HP'),metric('治疗池耗尽',len(schedule),'回合'),metric('药水恐惧挑战毒强度',4+hero//2,'点','药水恐惧时不治疗，改为中毒')]
             result.append(block('按你的生命计算',rows,f'当前生命 {current}/{maximum}；凝血试管 '+('未佩戴' if p['vial']<0 else f'+{p["vial"]}')))
+            result[-1]['primary_values'] = [rows[1], rows[2]]
+            result[-1]['summary_note'] = result[-1]['note']+'。药水恐惧挑战下不治疗；未计后续受伤和其他生命变化。'
             result.append(table('每回合恢复明细',['恢复次数','本次治疗池消耗','实际恢复HP','治疗后生命','剩余治疗池'],schedule))
         if identity=='actors.buffs.healing':
             requested.update(('max_hp','hp','power','healing_percent','healing_flat','vial'))
@@ -1085,6 +1087,8 @@ class PlayerValues:
             total,schedule=heal_schedule(int(p['power']),current,maximum,p['vial'],p['healing_percent']/100,p['healing_flat'],apply_vial=False)
             rows=[metric('剩余治疗池',total,'HP'),metric('最终实际恢复',min(maximum-current,total),'HP'),metric('首次恢复',schedule[0][2] if schedule else 0,'HP'),metric('治疗池耗尽',len(schedule),'回合')]
             result.append(block('当前治疗状态',rows,'按所填来源条件计算，不再次放大剩余额度；表中是没有再次受伤的恢复过程，不保证实际行动时机或安全。'))
+            result[-1]['primary_values'] = [rows[1], rows[2]]
+            result[-1]['summary_note'] = result[-1]['note']
             result.append(table('常见治疗速度',['来源','占剩余额度%','额外固定HP/次'],[['治疗药剂/蜂蜜治疗合剂',25,0],['护符返回首领层',0,20]],'已有治疗状态相遇时，分别保留较大的治疗池、百分比和固定治疗值；试管限速按当前来源核对。'))
             result.append(table('每回合恢复明细',['恢复次数','本次治疗池消耗','实际恢复HP','治疗后生命','剩余治疗池'],schedule))
         if identity=='items.potions.exotic.potionofshielding':

@@ -119,5 +119,25 @@ class ReferenceImageTests(unittest.TestCase):
                 self.assertEqual((outputs[0] / filename).read_bytes(), (outputs[1] / filename).read_bytes())
 
 
+class NativeArtworkDisclosureTests(unittest.TestCase):
+    def test_unknown_effect_never_supplies_its_identity_artwork(self):
+        from companion.reference import native_artwork, native_item_artwork
+        item = {'key': 'items.potions.potionofhealing', 'kind': 'UnknownPotion', 'known': False}
+        unknown = native_item_artwork(item)
+        self.assertEqual(unknown['sha256'], native_artwork('unknown.potion')['sha256'])
+        self.assertNotEqual(unknown['sha256'], native_artwork(item['key'])['sha256'])
+        public = {**item, 'appearance_id': 'appearance.potion.magenta'}
+        self.assertEqual(native_item_artwork(public)['sha256'], native_artwork(public['appearance_id'])['sha256'])
+        self.assertEqual(native_item_artwork({**item, 'revealed': True})['sha256'], native_artwork(item['key'])['sha256'])
+
+    def test_native_artwork_contains_the_exact_shipped_pixel_asset(self):
+        import base64
+        from companion.reference import native_artwork, image_path, images
+        identity = 'actors.mobs.rat'
+        self.assertEqual(base64.b64decode(native_artwork(identity)['png']),
+                         image_path(images()['entries'][identity]['url']).read_bytes())
+        self.assertEqual(native_artwork('not.an.official.class'), {})
+
+
 if __name__ == '__main__':
     unittest.main()

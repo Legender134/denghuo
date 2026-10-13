@@ -10,7 +10,7 @@
 
 [Setup]
 AppId=Denghuo.PixelDungeon.Companion
-AppName=灯火 · 地牢助手
+AppName=灯火 · 破碎的像素地牢助手
 AppVersion={#AppVersion}
 AppPublisher=灯火
 DefaultDirName={localappdata}\Programs\Denghuo
@@ -30,7 +30,7 @@ WizardStyle=modern
 DisableProgramGroupPage=yes
 CloseApplications=no
 RestartApplications=no
-UninstallDisplayName=灯火 · 地牢助手
+UninstallDisplayName=灯火 · 破碎的像素地牢助手
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
@@ -43,7 +43,7 @@ Source: "{#AppDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs cre
 
 [Icons]
 Name: "{group}\灯火"; Filename: "{app}\灯火.exe"; WorkingDir: "{app}"
-Name: "{group}\灯火完整面板（键盘与读屏）"; Filename: "{app}\灯火.exe"; Parameters: "--web"; WorkingDir: "{app}"
+Name: "{group}\灯火 · 完整面板"; Filename: "{app}\灯火.exe"; Parameters: "--web"; WorkingDir: "{app}"
 Name: "{autodesktop}\灯火"; Filename: "{app}\灯火.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]

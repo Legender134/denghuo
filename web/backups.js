@@ -13,7 +13,9 @@ function renderBackupHealth(){
   const h=state?.backup_health, el=$('#backup-health');
   if(!state){el.className='connection-banner error';el.textContent='服务未连接 · 自动备份状态尚未确认';return;}
   el.className='connection-banner'+(h?.state==='blocked'?' error':'');
-  el.textContent=h?`${h.slot?`槽位 ${h.slot}：`:''}${healthName(h)}${h.saved?` · 游戏保存距今 ${ageLabel(Date.now()/1000-h.saved)}`:''}${h.last_success?` · 最近检查成功 ${shortTime(h.last_success)}`:''}${h.error?` · ${h.error}`:''}${h.other_errors?` · 其他槽位：${h.other_errors}`:''}`:'自动备份状态尚未确认';
+  const detail=h?`${h.slot?`槽位 ${h.slot}：`:''}${healthName(h)}${h.saved?` · 游戏保存距今 ${ageLabel(Date.now()/1000-h.saved)}`:''}${h.last_success?` · 最近检查成功 ${shortTime(h.last_success)}`:''}${h.error?` · ${h.error}`:''}${h.other_errors?` · 其他槽位：${h.other_errors}`:''}`:'自动备份状态尚未确认';
+  el.title=detail;
+  el.textContent=h&&!h.error&&!h.other_errors?`${h.slot?`槽位 ${h.slot} · `:''}${healthName(h)}`:detail;
   if(h?.global_progress&&typeof globalProgressLabel==='function'){
     el.textContent+=' · '+globalProgressLabel(h.global_progress);
     if(['warning','blocked'].includes(h.global_progress.state))el.classList.add('error');

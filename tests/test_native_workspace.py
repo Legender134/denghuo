@@ -1,5 +1,6 @@
 """Workspace transport and filtering; GUI acceptance uses the isolated live helper."""
 import json
+import copy
 from queue import Queue
 import unittest
 from unittest.mock import Mock
@@ -131,6 +132,130 @@ class NativeWorkspaceTests(unittest.TestCase):
 
 
 class NativeStrengthWorkflowTests(ControllerFixture):
+    def test_failed_then_pending_calculation_reports_state_preserves_raw_and_blocks_repeat(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['hp'].set('  '); self.lookup.calculate()
+        payload=self.host.commands[-1][1]
+        self.assertIn('填写',payload['parameter_error'])
+        self.assertFalse(payload['calculating']); self.assertFalse(payload['can_save'])
+        self.assertEqual(self.lookup.raw_params()['hp'],'  ')
+        self.lookup.variables['hp'].set('3'); self.lookup.calculate()
+        ticket=self.worker.ticket; payload=self.host.commands[-1][1]
+        self.assertTrue(payload['calculating']); self.assertFalse(payload['can_save'])
+        self.assertEqual(payload['primary_values'],[])
+        self.lookup.calculate(); self.assertEqual(self.worker.ticket,ticket)
+        self.finish(); payload=self.host.commands[-1][1]
+        self.assertFalse(payload['calculating']); self.assertEqual(payload['parameter_error'],'')
+        self.assertTrue(payload['can_save']); self.assertTrue(payload['focus_result'])
+
+    def test_edit_during_pending_calculation_cancels_busy_without_accepting_old_answer(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['hp'].set('3'); self.lookup.calculate()
+        self.lookup.variables['hp'].set('  1e  ')
+        self.assertFalse(self.host.commands[-1][1]['calculating'])
+        self.finish()
+        self.assertEqual(self.lookup.raw_params()['hp'],'  1e  ')
+        self.assertFalse(self.host.commands[-1][1]['can_save'])
+        self.assertEqual(self.host.commands[-1][1]['primary_values'],[])
+
+    def test_primary_healing_answer_is_structured_and_revoked_by_half_input(self):
+        self.session.update_manual({'hp': 36, 'ht': 60, 'level': 8})
+        self.open('items.potions.potionofhealing')
+        payload = self.host.commands[-1][1]
+        self.assertEqual([(row['label'], row['value']) for row in payload['primary_values']],
+                         [('最终实际恢复', '24'), ('首次恢复', '16')])
+        self.assertIn('药水恐惧', payload['primary_note'])
+        self.assertIn('手填局势', payload['origin_brief'])
+        self.assertTrue(payload['can_save'])
+        self.lookup.variables['hp'].set('  1e  ')
+        payload = self.host.commands[-1][1]
+        self.assertEqual(payload['primary_values'], [])
+        self.assertFalse(payload['can_save'])
+        self.assertTrue(payload['needs_calculation'])
+        self.assertEqual(next(row['raw'] for row in payload['fields'] if row['key']=='hp'), '  1e  ')
+        self.lookup.variables['hp'].set('30')
+        self.lookup.calculate(); self.finish()
+        self.assertTrue(self.host.commands[-1][1]['focus_result'])
+        self.assertTrue(self.host.commands[-1][1]['can_save'])
+
+    def test_provenance_and_missing_conditions_never_publish_old_primary_answer(self):
+        self.open('items.potions.potionofhealing')
+        self.assertTrue(self.host.commands[-1][1]['primary_values'])
+        self.lookup.handle({'action': 'provenance'})
+        self.assertEqual(self.host.commands[-1][1]['primary_values'], [])
+        self.open('actors.buffs.corrosion')
+        payload = self.host.commands[-1][1]
+        self.assertEqual(payload['primary_values'], [])
+        self.assertFalse(payload['can_save'])
+        self.assertTrue(payload['needs_calculation'])
+
+    def test_favorite_label_state_tracks_the_persisted_toggle(self):
+        self.open('items.potions.potionofhealing')
+        self.assertFalse(self.host.commands[-1][1]['favorite'])
+        self.lookup.favorite()
+        self.assertTrue(self.host.commands[-1][1]['favorite'])
+        self.assertIn(self.lookup.identity, self.session.workspace_status()['favorite_ids'])
+        self.lookup.favorite()
+        self.assertFalse(self.host.commands[-1][1]['favorite'])
+        self.assertNotIn(self.lookup.identity, self.session.workspace_status()['favorite_ids'])
+
+    def test_numeric_sections_keep_columns_current_row_conditions_and_full_result(self):
+        for identity, params in (('items.wands.wandoffireblast', {'level': 3}),
+                                 ('items.weapon.melee.spear', {'level': 3}),
+                                 ('items.potions.potionofhealing', {'hp': 12, 'max_hp': 35})):
+            with self.subTest(identity=identity):
+                self.open(identity)
+                for key, value in params.items(): self.lookup.variables[key].set(str(value))
+                self.lookup.calculate(); self.finish()
+                payload = self.host.commands[-1][1]
+                original = self.lookup.rendered['blocks']
+                sections = payload['numeric_sections']
+                self.assertEqual(len(sections), len(original))
+                for section in sections:
+                    block = original[section['index']]
+                    for key, value in block.items(): self.assertEqual(section[key], value)
+                    self.assertEqual(section['collapsed'], bool(block.get('columns')))
+                    if 'selected_row' in block:
+                        self.assertEqual(section['selected_values'], [{'label': label, 'value': value}
+                            for label, value in zip(block['columns'], block['rows'][block['selected_row']])])
+                self.assertEqual(payload['result'], self.lookup.text.text)
+                self.assertIn(self.lookup.rendered['notice'], payload['result_prose'])
+                self.assertNotIn('装备等级 /', payload['result_prose'])
+                self.assertTrue('values' in sections[0] or sections[0]['selected_values'])
+                before = copy.deepcopy(original)
+                sections[0]['title'] = 'transport edit'
+                self.assertEqual(self.lookup.rendered['blocks'], before)
+
+    def test_numeric_sections_hide_stale_values_and_preserve_sources_or_provenance_text(self):
+        self.lookup.open_reference({'entry': 'items.weapon.melee.spear', 'params': {'level': 3},
+                                    'source_label': '独立存档记录'}, {'mode': 'example'}, '仅基础参考')
+        self.finish(); self.lookup.note.set('玩家用途')
+        payload = self.host.commands[-1][1]
+        for text in ('独立存档记录', '仅基础参考', '玩家用途'):
+            self.assertIn(text, payload['result_prose'])
+        self.lookup.handle({'action': 'provenance'})
+        payload = self.host.commands[-1][1]
+        self.assertEqual(payload['numeric_sections'], [])
+        self.assertEqual(payload['result_prose'], payload['result'])
+        self.lookup.variables['level'].set('1e')
+        payload = self.host.commands[-1][1]
+        self.assertEqual(payload['numeric_sections'], [])
+        self.assertIn('重新计算', payload['result'])
+        for text in ('独立存档记录', '仅基础参考', '玩家用途'):
+            self.assertIn(text, payload['result_prose'])
+        self.assertNotIn('最低基础伤害', payload['result_prose'])
+
+    def test_unknown_damage_family_is_not_labeled_as_healing(self):
+        self.open('actors.buffs.corrosion')
+        self.assertEqual(set(self.lookup.rendered['missing_inputs']), {'power', 'remaining_turns'})
+        self.assertIn('当前条件未确认', self.lookup.origin.text)
+        self.assertNotIn('治疗', self.lookup.origin.text)
+        self.assertIsNone(self.lookup.calculated)
+        self.assertTrue(all(self.lookup.raw_params()[key] == '' for key in ('power', 'remaining_turns')))
+        current = next(section for section in self.host.commands[-1][1]['numeric_sections'] if section['title'] == '当前酸蚀状态')
+        self.assertEqual(current['values'], [])
+        self.assertEqual(current['selected_values'], [])
+
     def set_scene(self, params):
         self.session.update_manual({'hp': 4, 'ht': 30, 'level': 5,
                                     'strength': params['base_strength'], 'character_scene': params})

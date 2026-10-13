@@ -5,8 +5,8 @@ import copy
 from .native_host import Value, TextState, NativeWindow
 from .play_state import PLAY_DEFAULTS, validate_preferences
 
-LABELS = {'capture': '立即备份已落盘进度', 'show': '显示管理窗口', 'library': '数值手册',
-          'backups': '存档历史', 'play_toggle': '开关游玩显示', 'quick': '游戏内只读速查'}
+LABELS = {'capture': '立即备份已保存进度', 'show': '显示随行助手', 'library': '手册',
+          'backups': '存档历史', 'play_toggle': '开关游戏提示', 'quick': '收起或展开随行助手'}
 ANCHORS = {'左上': 'top_left', '右上': 'top_right', '左下': 'bottom_left', '右下': 'bottom_right'}
 FIELDS = [('offset_x', '横向边距'), ('offset_y', '纵向边距'), ('font_scale', '字号倍率（1–2）'),
           ('opacity', '背景不透明度（0.5–1）'), ('notice_seconds', '短提醒时长（3–30秒）')]

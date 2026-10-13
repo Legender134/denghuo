@@ -61,6 +61,9 @@ class NumericLookup:
         self.edit_revision, self.undo_state, self.confirmation = 0, None, None
         self.pending_save = None
         self.focus_result = False
+        self.calculating = False
+        self.operation_receipt = ''
+        self.origin_brief = '参考示例 / 手填条件'
         self.plan_filters = ('', '全部类型', '最近更新')
         self.search()
 
@@ -196,12 +199,13 @@ class NumericLookup:
         self.dirty = self.draft_modified = False
         self.note.value = ''
         self.pending_save = None
+        self.calculating = False
 
     def guard(self, label, action):
         if not self.has_draft():
             action()
             return True
-        self.confirmation = action
+        self.confirmation = (self.edit_revision, action)
         self.host.command('confirm', surface='lookup', title=label,
             text='当前速查有未保存草稿。保存草稿副本、取消，或明确放弃后继续。', purpose='replace')
         return False
@@ -215,6 +219,7 @@ class NumericLookup:
 
     def select_row(self, row):
         self.focus_result = True
+        self.operation_receipt = ''
         self.saved_plan, self.plan_error = None, ''
         self.identity = row['id']
         self.rendered = self.calculated = None
@@ -235,10 +240,13 @@ class NumericLookup:
             self.workspace_error = str(exc)
         self.emit()
 
-    def render(self, detail, error=None):
+    def render(self, detail, error=None, *, show_result=False):
+        if detail and detail.get('id') != self.identity:
+            return  # A late result belongs to the previous selected entry.
         if self.submitted is not None and {key: value.strip() for key, value in self.raw_params().items()} != self.submitted:
             self.changed()
             return
+        self.calculating = False
         if error:
             self.rendered = self.calculated = None
             self.parameter_error = error
@@ -267,11 +275,14 @@ class NumericLookup:
         self.dirty, self.parameter_error = False, ''
         self.refresh_origin(self.owner.manager.session.snapshot())
         self.refresh_text()
+        if self.submitted is not None and self.calculated is not None:
+            self.focus_result = True
+        if show_result:
+            self.host.command('show', surface='lookup')
+            self.focus_result = True
         self.emit()
 
-    def refresh_text(self):
-        if self.rendered is None or self.dirty:
-            return
+    def result_text_parts(self):
         source = (self.context or {}).get('source_label', '')
         bounds = (self.context or {}).get('conditions', '')
         strength_bounds = ((self.context or {}).get('strength_conditions', '') if self.input_origins.get('strength') != '手填' else
@@ -281,17 +292,62 @@ class NumericLookup:
         note = '用户用途/假设备注（未验证）：\n'+self.note.get() if self.note.get() else ''
         item_note = (self.context or {}).get('user_note')
         saved_note = ('游戏中的用户记录（非游戏规则）：\n' + item_note['title'] + '\n' + item_note['body']) if item_note else ''
-        self.show_text('\n\n'.join(text for text in (source, bounds, strength_bounds, saved_note, detail_text(self.rendered), note, self.workspace_error) if text))
+        return (source, bounds, strength_bounds, saved_note), (note, self.workspace_error)
+
+    def refresh_text(self):
+        if self.rendered is None or self.dirty:
+            return
+        before, after = self.result_text_parts()
+        self.show_text('\n\n'.join(text for text in (*before, detail_text(self.rendered), *after) if text))
+
+    def numeric_presentation(self):
+        """Keep tables structured without publishing stale or alternate article content."""
+        before, after = self.result_text_parts()
+        prose = '\n\n'.join(text for text in (*before, (self.rendered or {}).get('notice', ''), *after) if text)
+        if self.dirty or self.parameter_error:
+            return [], '\n\n'.join(text for text in (self.text.text, prose) if text)
+        if not self.rendered:
+            return [], self.text.text
+        full = '\n\n'.join(text for text in (*before, detail_text(self.rendered), *after) if text)
+        if full != self.text.text:
+            return [], self.text.text
+        sections = []
+        for index, block in enumerate(self.rendered.get('blocks', [])):
+            section = copy.deepcopy(block)
+            section.update(index=index, collapsed=bool(block.get('columns')), selected_values=[])
+            selected = block.get('selected_row')
+            rows = block.get('rows', [])
+            if type(selected) is int and 0 <= selected < len(rows):
+                section['selected_values'] = [{'label': label, 'value': value}
+                    for label, value in zip(block.get('columns', []), rows[selected])]
+            sections.append(section)
+        # Values for the selected conditions precede complete reference tables.
+        sections.sort(key=lambda section: (not bool(section.get('values') or section['selected_values']), section['index']))
+        return sections, prose
+
+    def primary_presentation(self, sections):
+        """Use explicit result metadata; never infer the answer by parsing Chinese prose."""
+        if self.dirty or self.calculated is None or self.calculating or self.parameter_error:
+            return [], ''
+        explicit = next((section for section in sections if section.get('primary_values')), None)
+        section = explicit or next((section for section in sections if section.get('values') or section.get('selected_values')), {})
+        values = section.get('primary_values') or section.get('selected_values') or section.get('values') or []
+        return copy.deepcopy(values[:2]), section.get('summary_note') or section.get('note_summary') or section.get('note', '')
 
     def refresh_origin(self, snap):
+        self.origin_brief = '参考示例 / 手填条件'
         if self.parameter_error or self.plan_error or self.workspace_error:
             self.origin.text = self.parameter_error or self.plan_error or self.workspace_error
+            self.origin_brief = '需要核对 · '+self.origin.text
         elif self.dirty:
             self.origin.text = '参数已修改，旧结果不可继续参考；点击计算。'
+            self.origin_brief = '条件已修改 · 待重新计算'
         elif self.rendered and self.rendered.get('missing_inputs'):
-            self.origin.text = '当前治疗条件未确认，请补全空白参数后计算。'
+            self.origin.text = '当前条件未确认，请补全空白参数后计算。'
+            self.origin_brief = '条件未确认 · 需补全参数'
         elif self.saved_plan and not (self.context or {}).get('imported_latest'):
             self.origin.text = '保存的参考方案 · '+self.saved_plan['name']+' · 固定参数，未跟随当前角色'
+            self.origin_brief = '保存方案 · 固定条件，未跟随角色'
         elif self.rendered:
             uses = any(value.startswith(('快照', '手动局势', '参考来源未确认')) for value in self.input_origins.values())
             stamp = (self.context or {}).get('stamp')
@@ -305,15 +361,21 @@ class NumericLookup:
                       ('手动局势' if snap['settings']['mode'] == 'manual' else f"槽位 {snap['active_slot']} 快照")+'；其余示例/手填。' if uses else
                       '示例/手填；未自动读取当前角色。')
             self.origin.text = '百科 '+self.rendered['version']+' · '+source
+            self.origin_brief = ('旧参考 · 请核对条件' if old else '独立参考 · 未绑定当前角色' if independent and not uses else
+                                 '参考来源未确认' if uses and not stamp else '手填局势与参考条件' if uses and snap['settings']['mode']=='manual' else '快照条件与手填假设' if uses else '示例 / 手填条件')
+        if not self.dirty and (self.draft_modified or self.pending_save):
+            self.origin.text += ' · 当前参数、备注或命名有未保存修改；请核对后保存。'
 
     def changed(self, key=None):
         self.edit_revision += 1
         self.ticket = None  # An older worker cannot clear a new draft.
+        self.calculating = False
         self.dirty = self.draft_modified = True
         self.parameter_error = ''
         if key:
             self.input_origins[key] = '手填'
         self.origin.text = '参数已修改，旧结果不可继续参考；点击计算。'
+        self.origin_brief = '条件已修改 · 待重新计算'
         self.show_text('参数已修改，请重新计算。')
         self.emit()
 
@@ -321,13 +383,14 @@ class NumericLookup:
         self.edit_revision += 1
         self.draft_modified = True
         self.refresh_text()
+        self.refresh_origin(self.owner.manager.session.snapshot())
         self.emit()
 
     def raw_params(self):
         return {key: str(value.get()) for key, value in self.variables.items()}
 
     def calculate(self, _=None):
-        if not self.identity:
+        if not self.identity or self.calculating:
             return 'break'
         from .values import integer_parameters
         try:
@@ -343,9 +406,11 @@ class NumericLookup:
                     raise ValueError(f"{field['label']}须在 {field['min']}–{field['max']} 之间")
         except (ValueError, OverflowError) as exc:
             self.parameter_error = self.origin.text = str(exc)
+            self.refresh_origin(self.owner.manager.session.snapshot())
             self.emit()
             return 'break'
         self.ticket = self.owner.worker.request('detail', self.identity, raw)
+        self.calculating = True
         self.submitted, self.parameter_error = dict(raw), ''
         self.show_text('正在计算…')
         self.emit()
@@ -357,7 +422,7 @@ class NumericLookup:
             return
         snap = self.owner.manager.session.snapshot()
         if snap.get('error') or not snap.get('data'):
-            self.origin.text = '当前角色状态未确认；原参数仍保留。'
+            self.operation_receipt = self.origin.text = '当前角色状态未确认；原参数仍保留。'
             self.emit()
             return
         self.undo_state = self.draft(include_result=True)
@@ -385,6 +450,7 @@ class NumericLookup:
         self.context = context
         self.edit_revision += 1
         self.ticket = self.submitted = None
+        self.calculating = False
         self.dirty = self.draft_modified = True
         self.calculate()
         self.emit()
@@ -397,12 +463,14 @@ class NumericLookup:
             self.owner.pinned_note = self.note.get()
             self.owner.peek_key = None
             self.origin.text = '已固定；返回游戏后按速查键查看。固定的是百科参考。'
+        self.operation_receipt = self.origin.text
         self.emit()
 
     def clear_pin(self):
         self.owner.pinned, self.owner.peek_key = None, None
         self.owner.pinned_note = ''
         self.origin.text = '已清除固定；游戏速查恢复装备与局势快照。'
+        self.operation_receipt = self.origin.text
         self.emit()
 
     def favorite(self):
@@ -412,14 +480,19 @@ class NumericLookup:
             session = self.owner.manager.session
             enabled = self.identity not in session.workspace_status()['favorite_ids']
             receipt = session.workspace_action({'action': 'favorite', 'entry': self.identity, 'enabled': enabled})
+            if enabled:
+                self.favorite_ids.add(self.identity)
+            else:
+                self.favorite_ids.discard(self.identity)
             self.origin.text = ('已收藏；重启后保留。' if enabled else '已取消收藏。') + receipt.get('recovery_warning', '')
         except (ValueError, OSError) as exc:
             self.origin.text = str(exc)
+        self.operation_receipt = self.origin.text
         self.emit()
 
     def save_plan(self, name=None, update=False):
         if not self.identity or self.dirty or self.rendered is None or self.calculated is None:
-            self.origin.text = '先计算有效参数，再命名保存。'
+            self.operation_receipt = self.origin.text = '先计算有效参数，再命名保存。'
             self.emit()
             return False
         if name is None:
@@ -444,11 +517,11 @@ class NumericLookup:
             self.pending_save = None
             self.plan_error, self.draft_modified = '', False
             self.refresh_text()
-            self.origin.text = ('已更新原方案「' if update else '已保存「')+name+'」；重启后保留。'+receipt.get('recovery_warning', '')
+            self.operation_receipt = self.origin.text = ('已更新原方案「' if update else '已保存「')+name+'」；重启后保留。'+receipt.get('recovery_warning', '')
             self.emit()
             return True
         except (ValueError, OSError) as exc:
-            self.plan_error = self.origin.text = str(exc)
+            self.operation_receipt = self.plan_error = self.origin.text = str(exc)
             self.emit()
             return False
 
@@ -499,6 +572,8 @@ class NumericLookup:
                 self.show_text(self.origin.text+'\n'+opened.get('calculation_error', '')+
                     '\n可复制下列原记录；在完整面板打开此方案可编辑参数另存或导出资料库。\n\n'+
                     json.dumps(self.saved_plan, ensure_ascii=False, indent=2))
+                self.host.command('show', surface='lookup')
+                self.focus_result = True
                 self.emit()
                 try:
                     self.owner.manager.session.panel.request('workspace', plan_id=record_id)
@@ -507,7 +582,7 @@ class NumericLookup:
                     self.origin.text += ' 完整面板暂时无法打开：'+str(exc)+'；当前原记录仍可复制。'
                 self.emit()
                 return True
-            self.render(opened['result'])
+            self.render(opened['result'], show_result=True)
             return True
         except (ValueError, OSError) as exc:
             self.origin.text = str(exc)
@@ -578,9 +653,13 @@ class NumericLookup:
         self.rendered = copy.deepcopy(draft.get('rendered')) if _runtime else None
         self.dirty, self.draft_modified = True, True
         self.edit_revision += 1
+        self.search(preserve_detail=True)
+        self.show()
+        selected = next((index for index, row in enumerate(self.rows) if row['id'] == self.identity), None)
+        if selected is not None:
+            self.list.selection_set(selected)
         self.origin.text = '已载入未完成草稿；尚未重新计算或保存，不会应用到游戏。'
         self.show_text('原始草稿已恢复，请核对后重新计算。')
-        self.show()
         self.emit()
 
     def undo_import(self):
@@ -683,19 +762,24 @@ class NumericLookup:
         elif action == 'save_dialog_edit':
             self.set_pending_save(item.get('pending_save'))
             self.edit_revision += 1
+            self.refresh_origin(self.owner.manager.session.snapshot())
         elif action == 'save_dialog_closed':
             if item.get('cancelled', True):
                 self.pending_save = None
+                self.refresh_origin(self.owner.manager.session.snapshot())
             self.edit_revision += 1
         elif action == 'filter_plans':
             self.choose_plan(item.get('query', ''), item.get('kind', '全部类型'), item.get('order', '最近更新'))
         elif action == 'open_plan':
             self.open_plan(item['id'])
         elif action == 'replace_decision':
-            callback, self.confirmation = self.confirmation, None
-            if item.get('decision') == 'saved':
-                self.save_draft_copy()
-            if callback and item.get('decision') in ('saved', 'discard'):
+            confirmation, self.confirmation = self.confirmation, None
+            if confirmation and item.get('decision') in ('saved', 'discard'):
+                revision, callback = confirmation
+                if self.edit_revision != revision:
+                    raise ValueError('确认期间草稿已变化；原输入仍保留，请重新选择操作。')
+                if item.get('decision') == 'saved':
+                    self.save_draft_copy()
                 callback()
         elif action in ('favorite', 'pin', 'clear_pin', 'choose_plan', 'save_plan', 'reload_plan', 'undo_import', 'use_latest'):
             getattr(self, action)()
@@ -720,12 +804,27 @@ class NumericLookup:
         return binding_token({'entry': self.identity, 'provenance': (self.rendered or {}).get('provenance', {})})
 
     def emit(self):
+        from .reference import native_artwork
         self.host.revision += 1
+        entry = self.owner.manager.session.catalog.entry_index.get(self.identity, {})
+        sections, prose = self.numeric_presentation()
+        primary_values, primary_note = self.primary_presentation(sections)
         fields = [{**field, 'raw': self.variables[field['key']].get(), 'origin': self.input_origins.get(field['key'], '')} for field in self.inputs if field['key'] in self.variables]
         self.host.command('lookup_state', draft_revision=self.edit_revision, query=self.query.get(),
             focus_result=self.focus_result,
-            rows=[{'text': text, 'token': binding_token(row)} for text, row in zip(self.list.values, self.rows)], fields=fields, note=self.note.get(),
+            rows=[{'text': text, 'token': binding_token(row), 'artwork': native_artwork(row.get('id'))} for text, row in zip(self.list.values, self.rows)], fields=fields, note=self.note.get(),
+            artwork=native_artwork(self.identity), entry_id=self.identity or '',
+            entry_name=entry.get('name') or (self.rendered or {}).get('name', ''),
+            numeric_sections=sections, result_prose=prose,
+            primary_values=primary_values, primary_note=primary_note,
+            origin_brief=getattr(self, 'origin_brief', '参考示例 / 手填条件'),
+            calculating=self.calculating, parameter_error=self.parameter_error,
+            operation_receipt=self.operation_receipt,
             result=self.text.text, status=self.origin.text, dirty=self.has_draft(),
+            needs_calculation=self.dirty or bool((self.rendered or {}).get('missing_inputs')),
+            can_save=bool(self.identity and self.calculated is not None and not self.dirty and self.rendered and not self.calculating and not self.parameter_error),
+            favorite=bool(self.identity and self.identity in self.favorite_ids),
+            has_saved_plan=bool(self.saved_plan),
             can_more=self.suggested or len(self.rows) < self.total, undo=bool(self.undo_state),
             can_latest=bool(self.identity and self.inputs and self.owner.manager.session.snapshot().get('data')),
             sources=self.rendered.get('provenance', {}).get('links', []) if self.rendered else [],

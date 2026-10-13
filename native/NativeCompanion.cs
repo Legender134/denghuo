@@ -102,7 +102,9 @@ namespace Denghuo.Native {
                 case "manager_state": Manager.Render(d); break;
                 case "window_layout": Manager.LayoutRestored=Data.Flag(d,"restored"); Manager.ApplyLayout(Data.Object(d,"layout")); break;
                 case "game_bounds": Manager.FollowGame(d); break;
-                case "collapse": Manager.Collapse(); break;
+                case "collapse":
+                    bool returned=GameFocus.Return(Data.Object(d,"game")); Manager.Collapse();
+                    Send("collapse_result","returned",returned && GameFocus.OwnsForeground(Data.Object(d,"game")),"game_pid",Data.Number(Data.Object(d,"game"),"pid")); break;
                 case "game_state": Manager.RenderTask(d); break;
                 case "game_show": ShowSurface("manager"); Manager.ShowPage(Data.Text(d,"page","inventory")); break;
                 case "game_confirm": GameConfirm(d); break;
@@ -135,12 +137,12 @@ namespace Denghuo.Native {
         void SetFrozen(bool value) { Manager.Editable.IsEnabled=!value; if(activeName!=null) activeName.Editable.IsEnabled=!value; }
         void CloseExitDialog() { var dialog=activeExit; activeExit=null; if(dialog!=null) dialog.CloseSilently(); }
         void CancelExit(string id) { if(!exitRequests.Cancel(id)) return; CloseExitDialog(); Frozen=false; SetFrozen(false); }
-        Dialog Decision(string title,string message) { var dialog=new Dialog(Manager,title,460,350); dialog.Body.Children.Add(UI.Text(message)); dialog.Actions.Children.Add(UI.Button("保存草稿副本后继续",delegate { dialog.Choose("saved"); },true)); dialog.Actions.Children.Add(UI.Button("返回编辑",delegate { dialog.Choose("cancel"); })); dialog.Actions.Children.Add(UI.Button("明确放弃草稿",delegate { dialog.Choose("discard"); })); return dialog; }
+        Dialog Decision(string title,string message,string saveLabel="保存副本并载入",string discardLabel="放弃草稿并载入") { var dialog=new Dialog(Manager,title,460,350); dialog.Body.Children.Add(UI.Text(message)); dialog.Actions.Children.Add(UI.Button(saveLabel,delegate { dialog.Choose("saved"); },true)); dialog.Actions.Children.Add(UI.Button("返回编辑",delegate { dialog.Choose("cancel"); })); dialog.Actions.Children.Add(UI.Button(discardLabel,delegate { dialog.Choose("discard"); })); return dialog; }
         void ExitRequest(Dictionary<string,object> state,string error,bool retry) {
             string id=Data.Text(state,"id",""); if(retry ? !exitRequests.IsCurrent(id) : !exitRequests.Begin(id)) return; CloseExitDialog();
             Lookup.FlushEdit(); Settings.FlushEdit(); Manager.FlushTasks(); Frozen=true; SetFrozen(true);
             var lookup=Lookup.Raw(); var settings=Settings.Raw(); bool dirty=Lookup.Dirty || Settings.Dirty || Manager.TasksDirty || SaveDraft!=null || error.Length>0; string decision="clean";
-            if(dirty) { var dialog=Decision("退出灯火",(error.Length>0 ? "保存副本未完成："+error+"\n原始草稿仍保留。\n" : "")+"当前工作区有未保存草稿。保存副本会保留全部原始输入；返回可继续编辑。"); activeExit=dialog; try { dialog.ShowDialog(); decision=dialog.Decision; } finally { if(activeExit==dialog) activeExit=null; } }
+            if(dirty) { var dialog=Decision("退出灯火",(error.Length>0 ? "保存副本未完成："+error+"\n原始草稿仍保留。\n" : "")+"当前工作区有未保存草稿。退出后将停止后台辅助与自动备份。保存副本会保留全部原始输入。","保存草稿并退出","放弃草稿并退出"); activeExit=dialog; try { dialog.ShowDialog(); decision=dialog.Decision; } finally { if(activeExit==dialog) activeExit=null; } }
             if(!exitRequests.IsCurrent(id)) return;
             Send("exit_decision","request_id",id,"decision",decision,"lookup",Lookup.Dirty || SaveDraft!=null ? (object)lookup : null,"settings",Settings.Dirty ? (object)settings : null,"game",Manager.TaskRaw());
             if(decision=="cancel") { CloseExitDialog(); Frozen=false; SetFrozen(false); } else ExitWaiting(state,"正在保存草稿副本或确认放弃；磁盘等待期间仍可取消退出。",true);
@@ -151,7 +153,7 @@ namespace Denghuo.Native {
             bool cancelling=false; Action cancel=delegate { if(!canCancel || cancelling || !exitRequests.IsCurrent(id)) return; cancelling=true; dialog.Actions.IsEnabled=false; dialog.Body.Children.Clear(); dialog.Body.Children.Add(UI.Text("正在取消退出；原始输入仍保留。")); Send("exit_decision","request_id",id,"decision","cancel"); };
             var button=UI.Button("取消退出，返回编辑",cancel); button.IsEnabled=canCancel; dialog.Actions.Children.Add(button); dialog.Closing+=delegate(object sender,System.ComponentModel.CancelEventArgs e) { if(!dialog.Silent) { e.Cancel=true; cancel(); } }; activeExit=dialog; dialog.Show();
         }
-        void Confirm(Dictionary<string,object> d) { Lookup.FlushEdit(); Settings.FlushEdit(); Manager.FlushTasks(); string surface=Data.Text(d,"surface","lookup"),purpose=Data.Text(d,"purpose","replace"); var dialog=Decision(Data.Text(d,"title","替换草稿"),Data.Text(d,"text","请核对当前草稿")); dialog.ShowDialog(); if(purpose=="game_replace") Send("game_action","page",Data.Text(d,"page","equipment"),"command","replace_decision","decision",dialog.Decision); else Send(purpose=="settings_reload" ? "settings_reload_decision" : "replace_decision","surface",surface,"decision",dialog.Decision); }
+        void Confirm(Dictionary<string,object> d) { Lookup.FlushEdit(); Settings.FlushEdit(); Manager.FlushTasks(); string surface=Data.Text(d,"surface","lookup"),purpose=Data.Text(d,"purpose","replace"); var dialog=Decision(Data.Text(d,"title","替换草稿"),Data.Text(d,"text","请核对当前草稿"),purpose=="settings_reload" ? "保存副本并重新读取" : "保存副本并载入",purpose=="settings_reload" ? "放弃修改并重新读取" : "放弃草稿并载入"); dialog.ShowDialog(); if(purpose=="game_replace") Send("game_action","page",Data.Text(d,"page","equipment"),"command","replace_decision","decision",dialog.Decision); else Send(purpose=="settings_reload" ? "settings_reload_decision" : "replace_decision","surface",surface,"decision",dialog.Decision); }
         void GameConfirm(Dictionary<string,object> d) { bool undo=Data.Flag(d,"undo"); var dialog=new Dialog(Manager,undo ? "核对撤回回档" : "核对恢复进度",480,480); dialog.Body.Children.Add(UI.Text(Data.Text(d,"text",""))); dialog.Actions.Children.Add(UI.Button(undo ? "已关闭游戏，确认撤回" : "已关闭游戏，确认恢复",delegate { dialog.Choose("restore"); },true)); dialog.Actions.Children.Add(UI.Button("取消",delegate { dialog.Choose("cancel"); })); if(dialog.ShowDialog()==true) Send("game_action","page","backups","command","backup_execute","token",Data.Text(d,"token","")); }
         void GameNamePlan(Dictionary<string,object> d) {
             string page=Data.Text(d,"page",""); var dialog=new NameDialog(Manager,d); activeName=dialog; activeNamePage=page;

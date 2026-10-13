@@ -9,6 +9,131 @@ from companion.game_workspace import GameWorkspace
 
 
 class GameWorkspaceTests(ControllerFixture):
+    def test_inventory_comparison_preserves_public_equipment_properties_and_unknowns(self):
+        prefix = 'com.shatteredpixel.shatteredpixeldungeon.'
+        for source, expected in [
+            ({'__className': prefix+'items.armor.WarriorArmor', 'armortier': 5,
+              'mastery_potion_bonus': True, 'augment': 'DEFENSE', 'glyph_hardened': True},
+             {'tier_a': '5', 'mastery_a': '1', 'augment_a': 'DEFENSE', 'hardened_a': '1'}),
+            ({'__className': prefix+'items.weapon.melee.Sword', 'augment': 'SPEED', 'enchant_hardened': True},
+             {'mastery_a': '0', 'augment_a': 'SPEED', 'hardened_a': '1'}),
+            ({'__className': prefix+'items.wands.WandOfFireblast', 'resin_bonus': 2}, {'resin_a': '2'}),
+        ]:
+            public = self.session.catalog.item({**source, 'level': 0, 'levelKnown': True, 'cursedKnown': True}, {})
+            self.workspace.import_equipment(public, 'a')
+            for key, value in expected.items():
+                self.assertEqual(self.workspace.raw['equipment'][key], value)
+                self.assertIn('已知公开', self.workspace.sources['equipment']['fields'][key])
+        public = {'key': 'items.armor.warriorarmor', 'name': '职业护甲', 'location': '背包'}
+        self.workspace.import_equipment(public, 'a')
+        self.assertEqual(self.workspace.raw['equipment']['tier_a'], '')
+        self.assertEqual(self.workspace.raw['equipment']['augment_a'], 'unknown')
+        self.assertEqual(self.workspace.raw['equipment']['hardened_a'], 'unknown')
+        self.assertEqual(self.workspace.sources['equipment']['fields']['tier_a'], '未确认')
+
+    def test_task_actions_explain_requirements_and_do_not_overclaim_snapshot_import(self):
+        self.workspace.emit('inventory')
+        payload = self.host.commands[-1][1]
+        reference = next(row for row in payload['actions'] if row['id']=='reference')
+        self.assertTrue(reference['disabled'])
+        self.assertIn('选择', reference['reason'])
+        self.workspace.emit('equipment')
+        payload = self.host.commands[-1][1]
+        actions = {row['id']: row for row in payload['actions']}
+        self.assertEqual(actions['import']['text'], '带入手填局势力量')
+        self.assertTrue(actions['save']['disabled'])
+        self.equipment(); self.workspace.calculate('equipment'); self.workspace.emit('equipment')
+        self.assertFalse(next(row for row in self.host.commands[-1][1]['actions'] if row['id']=='save')['disabled'])
+        self.workspace.edit('equipment', {**self.workspace.raw['equipment'], 'level_a':'1e'})
+        self.workspace.emit('equipment')
+        self.assertTrue(next(row for row in self.host.commands[-1][1]['actions'] if row['id']=='save')['disabled'])
+
+    def test_known_consumable_has_no_reveal_or_equipment_actions(self):
+        item={'instance_key':'item-0','key':'items.potions.potionofhealing','name':'治疗药剂','quantity':2,
+              'location':'背包','description':'已知种类','details':[],'known':True,'available':True,'has_hidden_details':False}
+        self.session.data['items']=[item]
+        rows=self.workspace.inventory(); self.workspace.selected['inventory']=rows[0]['id']; self.workspace.selected_tokens['inventory']=rows[0]['token']
+        self.workspace.emit('inventory')
+        actions={row['id']:row for row in self.host.commands[-1][1]['actions']}
+        self.assertFalse(actions['reference']['disabled'])
+        self.assertNotIn('reveal',actions)
+        self.assertNotIn('equip_a',actions)
+        self.assertNotIn('equip_b',actions)
+
+    def test_alchemy_goal_is_presented_before_shared_budget_without_changing_inputs(self):
+        before=copy.deepcopy(self.workspace.raw['alchemy'])
+        specs=self.workspace.alchemy_fields()
+        self.assertLess(next(i for i,row in enumerate(specs) if row['key']=='t0.recipe'),
+                        next(i for i,row in enumerate(specs) if row['key']=='energy'))
+        self.assertEqual(self.workspace.raw['alchemy'],before)
+
+    def test_fixed_task_source_marks_new_snapshot_slot_connection_and_errors_without_overwriting(self):
+        from companion.native_workspace import plan_updated_text
+        snap=copy.deepcopy(self.session.snapshot())
+        snap['settings']['mode']='save'; snap.update(active_slot=1,modified=1000,stale=False,error='')
+        snap['data'].pop('character_scene',None); snap['data']['hero']['strength']=12
+        self.session.snapshot=lambda:copy.deepcopy(snap)
+        self.equipment(); self.workspace.import_snapshot('equipment'); self.workspace.calculate('equipment')
+        before=copy.deepcopy((self.workspace.raw,self.workspace.calculated,self.workspace.results))
+        self.workspace.emit('equipment'); payload=self.host.commands[-1][1]
+        self.assertFalse(payload['task_source']['stale'])
+        self.assertIn('槽位 1',payload['task_source']['brief'])
+        self.assertIn(plan_updated_text(1000),payload['task_source']['brief'])
+        self.assertIn('快照',next(row['help'] for row in payload['fields'] if row['key']=='strength'))
+        original=copy.deepcopy(snap)
+        for change in ('new_save','slot','connection','error','expired'):
+            snap=copy.deepcopy(original)
+            if change=='new_save':snap['modified']=2000; snap['data']['hero']['strength']=18
+            elif change=='slot':snap['active_slot']=2
+            elif change=='connection':snap['settings']['save_root']='another-root'
+            elif change=='error':snap['error']='暂时不可读'
+            else:snap['stale']=True
+            self.workspace.emit('equipment'); payload=self.host.commands[-1][1]
+            self.assertTrue(payload['task_source']['stale'],change)
+            self.assertIn('旧参考',payload['task_source']['brief'])
+            self.assertIn('槽位 1',payload['task_source']['brief'])
+            self.assertEqual((self.workspace.raw,self.workspace.calculated,self.workspace.results),before)
+
+    def test_fixed_source_manual_edit_and_explicit_reimport_have_honest_field_labels(self):
+        snap=copy.deepcopy(self.session.snapshot()); snap['settings']['mode']='save'
+        snap.update(active_slot=1,modified=1000,stale=False,error='')
+        snap['data'].pop('character_scene',None); snap['data']['hero']['strength']=12
+        self.session.snapshot=lambda:copy.deepcopy(snap)
+        self.equipment(); self.workspace.import_snapshot('equipment')
+        self.workspace.edit('equipment',{**self.workspace.raw['equipment'],'strength':'  1e  '})
+        self.workspace.emit('equipment')
+        self.assertIn('手填',next(row['help'] for row in self.host.commands[-1][1]['fields'] if row['key']=='strength'))
+        snap['modified']=2000; snap['data']['hero']['strength']=18
+        self.workspace.import_snapshot('equipment'); self.workspace.emit('equipment')
+        self.assertFalse(self.host.commands[-1][1]['task_source']['stale'])
+        self.assertEqual(self.workspace.raw['equipment']['strength'],'18')
+        self.workspace.handle({'action':'game_action','page':'equipment','command':'undo'})
+        self.assertEqual(self.workspace.raw['equipment']['strength'],'  1e  ')
+        self.assertTrue(self.host.commands[-1][1]['task_source']['stale'])
+
+    def test_map_actions_explain_unavailable_selection_and_reveal(self):
+        self.workspace.emit('map')
+        actions={row['id']:row for row in self.host.commands[-1][1]['actions']}
+        self.assertTrue(actions['map_reveal']['disabled'])
+        self.assertIn('选择',actions['map_reveal']['reason'])
+        self.assertTrue(actions['map_hide']['disabled'])
+
+    def test_mixed_equipment_imports_keep_each_field_source_and_do_not_claim_one_current_snapshot(self):
+        snap=copy.deepcopy(self.session.snapshot()); snap['settings']['mode']='save'
+        snap.update(active_slot=1,modified=1000,stale=False,error='')
+        snap['data'].pop('character_scene',None); snap['data']['hero']['strength']=12
+        self.session.snapshot=lambda:copy.deepcopy(snap)
+        self.equipment(); self.workspace.import_snapshot('equipment')
+        first_strength_origin=self.workspace.sources['equipment']['fields']['strength']
+        snap.update(active_slot=2,modified=2000)
+        item={'key':'items.weapon.melee.sword','name':'单手剑','location':'背包','level':1,'cursed':False}
+        self.workspace.import_equipment(item,'a'); self.workspace.emit('equipment')
+        self.assertEqual(self.workspace.sources['equipment']['fields']['strength'],first_strength_origin)
+        self.assertIn('槽位 1',first_strength_origin)
+        self.assertIn('槽位 2',self.workspace.sources['equipment']['fields']['id_a'])
+        self.assertTrue(self.host.commands[-1][1]['task_source']['stale'])
+        self.assertIn('不同保存条件',self.host.commands[-1][1]['task_source']['brief'])
+
     def setUp(self):
         super().setUp()
         self.jobs = []
@@ -56,12 +181,50 @@ class GameWorkspaceTests(ControllerFixture):
         self.workspace.open_plan(self.session.knowledge.reopen(plan['id']))
         self.workspace.calculate('equipment'); self.assertEqual(self.workspace.calculated['equipment'], original)
 
+    def test_comparison_artwork_is_presentation_only_and_keeps_calculated_inputs(self):
+        from companion.reference import native_artwork
+        self.equipment(); self.workspace.calculate('equipment')
+        calculated = copy.deepcopy(self.workspace.calculated['equipment'])
+        structured = copy.deepcopy(self.workspace.structured_results['equipment'])
+        self.workspace.emit('equipment')
+        state = next(value for action, value in reversed(self.host.commands) if action == 'game_state')
+        for choice in state['comparison']['choices']:
+            self.assertEqual(choice['artwork']['sha256'], native_artwork(choice['id'])['sha256'])
+        self.assertEqual(self.workspace.calculated['equipment'], calculated)
+        self.assertEqual(self.workspace.structured_results['equipment'], structured)
+
     def test_pending_save_never_marks_new_input_saved(self):
         self.equipment(); self.workspace.calculate('equipment'); self.workspace.raw['equipment']['name'] = '原条件'
         self.workspace.handle({'page': 'equipment', 'command': 'save'})
-        self.workspace.edit('equipment', {**self.workspace.raw['equipment'], 'level_a': '3'})
+        self.workspace.edit('equipment', {**self.workspace.raw['equipment'], 'level_a': '1e'})
         self.finish_job(); self.assertIn('equipment', self.workspace.dirty)
-        self.assertEqual(self.workspace.raw['equipment']['level_a'], '3'); self.native.error.assert_called_once()
+        self.assertEqual(self.workspace.raw['equipment']['level_a'], '1e'); self.native.error.assert_called_once()
+        self.assertFalse(self.host.commands[-1][1]['notice'])
+        self.assertFalse(self.host.commands[-1][1]['calculated'])
+
+    def test_saved_notice_is_revoked_by_edits_and_not_copied_into_result(self):
+        self.equipment(); self.workspace.calculate('equipment'); self.workspace.raw['equipment']['name'] = '原条件'
+        self.workspace.handle({'page': 'equipment', 'command': 'save'}); self.finish_job()
+        self.assertIn('已保存', self.host.commands[-1][1]['notice'])
+        self.assertNotIn('已保存', self.workspace.results['equipment'])
+        self.workspace.edit('equipment', {**self.workspace.raw['equipment'], 'note': '补充假设'})
+        self.workspace.emit('equipment')
+        self.assertFalse(self.host.commands[-1][1]['notice'])
+        self.assertNotIn('已保存', self.host.commands[-1][1]['text'])
+        self.workspace.edit('equipment', {**self.workspace.raw['equipment'], 'level_a': '1e'})
+        self.workspace.emit('equipment')
+        self.assertEqual(self.workspace.raw['equipment']['level_a'], '1e')
+        self.assertFalse(self.host.commands[-1][1]['notice'])
+        self.assertTrue(self.host.commands[-1][1]['dirty'])
+
+    def test_save_revision_cannot_acknowledge_a_newer_edit_even_with_same_values(self):
+        self.equipment(); self.workspace.calculate('equipment'); self.workspace.raw['equipment']['name'] = '原条件'
+        self.workspace.handle({'page': 'equipment', 'command': 'save', 'draft_revision': 1})
+        self.workspace.handle({'action': 'game_edit', 'page': 'equipment', 'values': copy.deepcopy(self.workspace.raw['equipment']), 'draft_revision': 2})
+        self.finish_job()
+        self.assertIn('equipment', self.workspace.dirty)
+        self.assertFalse(self.host.commands[-1][1]['notice'])
+        self.native.error.assert_called_once()
 
     def test_alchemy_multitarget_shared_budget_roundtrip_and_undo(self):
         self.alchemy(); self.workspace.calculate('alchemy')
@@ -72,6 +235,61 @@ class GameWorkspaceTests(ControllerFixture):
         self.workspace.handle({'page': 'alchemy', 'command': 'add_target'})
         self.workspace.handle({'page': 'alchemy', 'command': 'undo'})
         self.assertEqual(self.workspace.raw['alchemy'], raw)
+
+    def test_alchemy_result_prioritizes_steps_and_separates_unused_stock_without_changing_result(self):
+        from tests.test_alchemy_flow import params, goal, stock
+        original = params([goal('potion-healing')], [stock('items.potions.potionofhealing', 3, key='item-0'),
+            stock('items.weapon.melee.sword', key='item-1')], energy=12)
+        self.workspace.load_alchemy(original); self.workspace.calculate('alchemy')
+        calculated = copy.deepcopy(self.workspace.calculated['alchemy'])
+        structured = copy.deepcopy(self.workspace.structured_results['alchemy'])
+        self.workspace.emit('alchemy'); state = self.host.commands[-1][1]; text = state['text']
+        self.assertLess(text.index('制作顺序'), text.index('实际消耗材料'))
+        self.assertIn('材料：治疗药剂 ×1', text)
+        self.assertIn('能量：12 − 4 = 8', text)
+        self.assertNotIn('单手剑', text)
+        self.assertNotIn('item-0', text); self.assertNotIn('item-1', text)
+        self.assertEqual(len(state['result_details']), 1)
+        detail = state['result_details'][0]
+        self.assertEqual(detail['id'], 'unused_inventory'); self.assertFalse(detail['expanded'])
+        self.assertIn('单手剑', detail['text']); self.assertIn('未消耗', detail['text'])
+        self.assertEqual(self.workspace.calculated['alchemy'], calculated)
+        self.assertEqual(self.workspace.structured_results['alchemy'], structured)
+        self.assertEqual(self.workspace.alchemy_args(), original)
+        self.workspace.edit('alchemy', {**self.workspace.raw['alchemy'], 'energy': '1e'})
+        self.workspace.emit('alchemy')
+        self.assertEqual(self.host.commands[-1][1]['result_details'], [])
+
+    def test_alchemy_shortages_show_local_names_counts_and_specific_candidate_targets(self):
+        from tests.test_alchemy_flow import params, goal, stock
+        for resources, energy, expected in (([], 12, '治疗药剂 · 需用 1 / 可用 0 / 还缺 1'),
+                ([stock('items.potions.potionofhealing')], 0, '能量 · 需用 4 / 可用 0 / 还缺 4')):
+            with self.subTest(expected=expected):
+                self.workspace.load_alchemy(params([goal('potion-healing')], resources, energy=energy))
+                self.workspace.calculate('alchemy'); text = self.workspace.results['alchemy']
+                self.assertIn(expected, text)
+                self.assertIn('缺口 · 目标1 · 奥术护盾合剂', text)
+        state = {'cursed': False, 'is_upgradable': True, 'level': 0, 'tier': 1, 'default_quantity': 3, 'durability': 100}
+        original = params([goal('recipe-telekineticgrab', 8)], [stock('items.weapon.missiles.throwingstone', 3, key='item-0', state=state),
+            stock('items.weapon.missiles.throwingstone', 3, key='item-1', state=state)], energy=13)
+        self.workspace.load_alchemy(original); self.workspace.calculate('alchemy')
+        text = self.workspace.results['alchemy']; result = self.workspace.structured_results['alchemy']
+        self.assertEqual(len(result['shortages'][0]['options']), 2)
+        self.assertIn('缺口 · 目标1', text)
+        self.assertIn(self.workspace.names['items.liquidmetal'], text)
+        self.assertIn('候选1', text); self.assertIn('候选2', text)
+        stock_name = self.workspace.names['items.weapon.missiles.throwingstone']
+        self.assertIn('库存1 · '+stock_name, text); self.assertIn('库存2 · '+stock_name, text)
+        self.assertNotIn('item-0', text); self.assertNotIn('item-1', text)
+        self.assertLess(text.index('待确认'), text.index('实际消耗材料'))
+        original = params([goal('trinket-upgrade', choices={'source_key': 'item-0', 'target_level': 3})],
+            [stock('items.trinkets.ratskull', key='item-0')], energy=0)
+        self.workspace.load_alchemy(original); self.workspace.calculate('alchemy')
+        text = self.workspace.results['alchemy']
+        self.assertIn('需用 1 / 可用 0 / 还缺 1', text)
+        self.assertIn('对应材料：库存1 · '+self.workspace.names['items.trinkets.ratskull'], text)
+        self.assertIn('初始等级与目标等级', text)
+        self.assertNotIn('item-0', text)
 
     def test_character_unknown_and_complete_inputs(self):
         self.workspace.raw['character']['base_strength'] = ''
@@ -304,15 +522,25 @@ class GameWorkspaceTests(ControllerFixture):
         self.workspace.handle({'page': 'backups', 'command': 'backup_confirm'})
         self.assertEqual(self.host.commands[-2][0], 'game_confirm')
         token = self.workspace.backup_preview['token']
+        submitted = copy.deepcopy(self.workspace.backup_preview)
+        selection = self.workspace.selected['backups']
         self.session.backups.closed_check = lambda: (_ for _ in ()).throw(ValueError('游戏仍在运行'))
         self.workspace.handle({'page': 'backups', 'command': 'backup_execute', 'token': token}); self.finish_job()
         self.assertEqual({p.name: p.read_bytes() for p in slot.iterdir()}, current)
         self.assertIn('运行', self.native.error.call_args.args[0])
-        self.finish_job(); self.select('backups', self.workspace.rows['backups'][0])
+        self.assertIn('游戏仍在运行', self.workspace.notices['backups'])
+        self.assertIn(submitted['payload']['id'], self.workspace.notices['backups'])
+        self.assertIsNone(self.workspace.backup_preview)
+        with self.assertRaisesRegex(ValueError, '预览已变化'):
+            self.workspace.handle({'page': 'backups', 'command': 'backup_execute', 'token': token})
+        self.finish_job()
+        self.assertEqual(self.workspace.selected['backups'], selection)
         self.workspace.preview_backup(); self.finish_job()
         self.session.backups.closed_check = lambda: None
         self.workspace.handle({'page': 'backups', 'command': 'backup_execute', 'token': self.workspace.backup_preview['token']}); self.finish_job()
         self.assertEqual({p.name: p.read_bytes() for p in slot.iterdir()}, original)
+        self.assertIn('完整保留', self.workspace.notices['backups'])
+        self.assertIn(submitted['payload']['id'], self.workspace.notices['backups'])
         retained = list(root.glob('.denghuo-before-1-*'))
         self.assertEqual(len(retained), 1)
         self.assertEqual({p.name: p.read_bytes() for p in retained[0].iterdir()}, current)
@@ -518,6 +746,34 @@ class GameWorkspaceTests(ControllerFixture):
         self.assertRegex(text, r'\d{2}:\d{2}:\d{2} UTC[+-]\d{4}')
         self.assertIn(summary['run_id'][:12], text); self.assertNotIn(summary['run_id'], text)
         self.assertNotIn(str(summary['saved']), text)
+
+    def test_native_backup_rows_use_labels_saved_time_and_summary_without_changing_selection(self):
+        from datetime import datetime, timezone
+        from companion.native_host import binding_token
+        saved, observed = 1791809981.25, 1791896381.25
+        history = {'id': 'a'*64, 'slot': 2, 'label': '进入矿洞前', 'name': '不应使用的名称',
+            'saved': saved, 'last_seen': observed, 'class': 'WARRIOR', 'depth': 4, 'hp': 17, 'ht': 40}
+        undo = {'id': 'b'*64, 'slot': 2, 'time': observed,
+            'before': {'saved': saved, 'class': 'MAGE', 'depth': 3, 'hp': 10, 'ht': 30}}
+        status = {'context': {'scope': '测试备份库'}, 'history': [history], 'undo': [undo]}
+        before = copy.deepcopy(status); self.session.backup_status = Mock(return_value=status)
+        self.workspace.reload('backups'); self.finish_job()
+        restore_row, undo_row = self.workspace.rows['backups']
+        stamp = datetime.fromtimestamp(saved, timezone.utc).astimezone().strftime('%Y-%m-%d %H:%M:%S UTC%z')
+        text = restore_row['text']
+        self.assertIn('进入矿洞前', text); self.assertNotIn(history['name'], text)
+        self.assertIn('保存时间（存档文件） '+stamp, text)
+        self.assertLess(text.index('保存时间'), text.index('最近观察'))
+        self.assertIn('战士 · 第 4 层 · 生命 17/40', text)
+        self.assertIn(history['id'][:12], text); self.assertNotIn(history['id'], text)
+        self.assertIn('保存时间（回档前存档） '+stamp, undo_row['text'])
+        self.assertIn('法师 · 第 3 层 · 生命 10/30', undo_row['text'])
+        self.assertIn('回档时间', undo_row['text']); self.assertNotIn('最近观察', undo_row['text'])
+        self.assertEqual(restore_row['id'], 'restore:'+history['id'])
+        self.assertEqual(restore_row['token'], binding_token([status['context'], 'restore', history]))
+        self.assertEqual(undo_row['token'], binding_token([status['context'], 'undo', undo]))
+        self.assertEqual(status, before)
+        self.assertIn('保存时间（存档文件） 未记录', GameWorkspace.backup_row_text('restore', {'id': 'c'*64, 'slot': 1, 'time': observed}))
 
     def test_ready_restores_settings_values_without_creating_or_saving_a_draft(self):
         from companion.native_manager import NativeManager
