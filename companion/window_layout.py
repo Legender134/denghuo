@@ -40,6 +40,8 @@ class WindowLayout:
         self.path = Path(config).with_name('companion-window.json')
         self.values, self.error = copy.deepcopy(DEFAULT), ''
         self.lock, self.pending, self.stop = threading.Lock(), threading.Event(), threading.Event()
+        self.idle = threading.Event()
+        self.idle.set()
         self.original = None
         self.reset_requested = False
         try:
@@ -59,14 +61,15 @@ class WindowLayout:
         with self.lock:
             self.values = value
             self.reset_requested = self.reset_requested or reset
-        self.pending.set()
+            self.idle.clear()
+            self.pending.set()
 
     def persist(self):
         while True:
             self.pending.wait(.2)
             if self.pending.is_set():
-                self.pending.clear()
                 with self.lock:
+                    self.pending.clear()
                     value = copy.deepcopy(self.values)
                     reset, self.reset_requested = self.reset_requested, False
                 try:
@@ -86,9 +89,18 @@ class WindowLayout:
                 except (ValueError, OSError) as exc:
                     self.error = '布局尚未保存：' + str(exc)
                     logging.warning(self.error)
+                finally:
+                    with self.lock:
+                        if not self.pending.is_set():
+                            self.idle.set()
             if self.stop.is_set() and not self.pending.is_set():
                 return
+
+    def flush(self, timeout):
+        """Wait for the latest queued write attempt; errors remain visible in error."""
+        return self.idle.wait(timeout)
 
     def close(self):
         self.stop.set()
         self.worker.join(1)
+        return not self.worker.is_alive()

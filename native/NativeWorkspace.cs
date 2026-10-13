@@ -129,6 +129,7 @@ namespace Denghuo.Native {
         readonly Dictionary<string,double> positions=new Dictionary<string,double>();
         readonly Dictionary<string,bool> resultDetailExpanded=new Dictionary<string,bool>();
         readonly Dictionary<string,Control> resultDetailControls=new Dictionary<string,Control>();
+        readonly Dictionary<string,Control> rowControls=new Dictionary<string,Control>();
         readonly Dictionary<string,Control> actionControls=new Dictionary<string,Control>();
         bool rendering,editing,calculated;
         long revision;
@@ -209,7 +210,7 @@ namespace Denghuo.Native {
                 UI.Name(origin,"任务条件来源 · "+origin.Text); object[] specs=Data.Array(d,"fields"); bool first=fields.Children.Count==0; fields.Render(specs,values); mode.Visibility=specs.Length>0 ? Visibility.Visible : Visibility.Collapsed; if(first && specs.Length>0) SetEditing(true); mode.Content=editing ? calculated ? "查看结果" : "返回说明" : "调整条件"; UI.Name(mode,Convert.ToString(mode.Content));
                 string text=Data.Text(d,"text",""); if(text!=articleText) { articleText=text; UI.IllustratedArticle(article,text,Data.Object(d,"artwork")); if(page=="equipment") RenderComparison(Data.Object(d,"comparison")); }
                 RenderResultDetails(Data.Array(d,"result_details"));
-                map.Render(Data.Object(d,"map")); mapLegend.Visibility=mapDetails.Visibility=map.Visibility; mapCoordinates.Text=map.Description(); var rows=Data.Array(d,"rows"); string next=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(rows)+Data.Text(d,"selected",""); if(next!=rowSignature) { selector.Children.Clear(); foreach(object item in rows) { var row=(Dictionary<string,object>)item; string id=Data.Text(row,"id",""), token=Data.Text(row,"token",""); var button=UI.Button("",delegate { if(!host.Frozen) { host.Send("game_select","page",page,"id",id,"token",token); selection.IsExpanded=false; } }); string caption=Data.Text(row,"summary",Data.Text(row,"text","")); button.Content=UI.ImageRow(caption,Data.Object(row,"artwork")); UI.Name(button,caption); button.HorizontalContentAlignment=HorizontalAlignment.Stretch; button.Margin=new Thickness(0,0,0,5); if(id==Data.Text(d,"selected","")) button.BorderThickness=new Thickness(1); selector.Children.Add(button); } rowSignature=next; } selection.Visibility=rows.Length>0 ? Visibility.Visible : Visibility.Collapsed;
+                map.Render(Data.Object(d,"map")); mapLegend.Visibility=mapDetails.Visibility=map.Visibility; mapCoordinates.Text=map.Description(); var rows=Data.Array(d,"rows"); string next=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(rows)+Data.Text(d,"selected",""); if(next!=rowSignature) { var priorRowFocus=Keyboard.FocusedElement; var previousRows=new Dictionary<string,Control>(rowControls); rowControls.Clear(); selector.Children.Clear(); foreach(object item in rows) { var row=(Dictionary<string,object>)item; string id=Data.Text(row,"id",""), token=Data.Text(row,"token",""); var button=UI.Button("",delegate { if(!host.Frozen) { host.Send("game_select","page",page,"id",id,"token",token); selection.IsExpanded=false; } }); string caption=Data.Text(row,"summary",Data.Text(row,"text","")); button.Content=UI.ImageRow(caption,Data.Object(row,"artwork")); UI.Name(button,caption); button.HorizontalContentAlignment=HorizontalAlignment.Stretch; button.Margin=new Thickness(0,0,0,5); if(id==Data.Text(d,"selected","")) button.BorderThickness=new Thickness(1); selector.Children.Add(button); rowControls[id]=button; } host.Manager.RebindTaskFocus(page,previousRows,rowControls,this,priorRowFocus); rowSignature=next; } selection.Visibility=rows.Length>0 ? Visibility.Visible : Visibility.Collapsed;
                 notice.Text=Data.Text(d,"notice",""); notice.Visibility=notice.Text.Length>0 ? Visibility.Visible : Visibility.Collapsed; if(receipt!=null) { receipt.Visibility=receiptBrief.Visibility=notice.Visibility; receiptBrief.Text=Data.Text(d,"notice_brief","操作回执"); }
                 string nextActions=new JavaScriptSerializer().Serialize(Data.Array(d,"actions"))+"/"+(Data.Text(d,"selected","").Length>0);
                 if(nextActions!=actionSignature) { var priorFocus=Keyboard.FocusedElement; var previousControls=new Dictionary<string,Control>(actionControls); actions.Children.Clear(); actionControls.Clear(); var extras=new List<MenuItem>(); Button more=null;
@@ -238,10 +239,12 @@ namespace Denghuo.Native {
         readonly WrapPanel readingHeader=new WrapPanel(), bottom=new WrapPanel();
         readonly ScrollViewer scroll;
         readonly TextBlock feedback=UI.Text("",13,UI.Gold);
-        readonly Button back, primary, save, more, moreResults;
+        readonly Button back, primary, save, more, moreResults, pinned;
         readonly List<Button> resultButtons=new List<Button>();
         readonly Dictionary<string,double> positions=new Dictionary<string,double>();
         readonly Dictionary<string,bool> openedSections=new Dictionary<string,bool>();
+        readonly Dictionary<string,Expander> articleSections=new Dictionary<string,Expander>();
+        readonly Dictionary<string,Control> articleLinks=new Dictionary<string,Control>();
                 Dictionary<string,object> state=new Dictionary<string,object>();
         bool rendering,changed;
         string mode="search", rowsSignature="", articleSignature="", entry="";
@@ -257,6 +260,7 @@ namespace Denghuo.Native {
             search.ToolTip="搜索名称、别名或用途 · ↓进入结果 · Enter打开首项";
             search.Margin=new Thickness(0,0,0,8);
             searchHeader.Children.Add(search);
+            pinned=UI.Button("查看固定参考 ›",delegate { FlushEdit(); Host.Send("view_pin","surface","lookup"); }); pinned.Visibility=Visibility.Collapsed; pinned.HorizontalAlignment=HorizontalAlignment.Left; searchHeader.Children.Add(pinned);
             Children.Add(searchHeader);
             back=UI.Button("‹ 返回结果",delegate { SetMode("search"); search.Focus(); });
             more=UI.Button("条目操作…",ShowActions);
@@ -312,8 +316,8 @@ namespace Denghuo.Native {
         void ShowActions() {
             bool valid=Data.Flag(state,"can_save"), hasEntry=Data.Text(state,"entry_id","").Length>0;
             var items=new List<MenuItem>();
-            foreach(string[] pair in new[]{new[]{Data.Flag(state,"favorite") ? "取消收藏" : "收藏此条目","favorite"},new[]{Data.Flag(state,"has_saved_plan") ? "更新或另存方案…" : "保存方案…","save_plan"},new[]{"我的方案…","choose_plan"},new[]{"重新读取当前方案","reload_plan"},new[]{"固定此结果到游戏速查","pin"},new[]{"清除速查固定","clear_pin"},new[]{"撤回本次条件带入","undo_import"},new[]{"带入最新已知角色条件","use_latest"},new[]{"条件与来源详情…","provenance"}}) {
-                string action=pair[1]; bool enabled=action=="undo_import" ? Data.Flag(state,"undo") : action=="use_latest" ? Data.Flag(state,"can_latest") : action=="save_plan" || action=="pin" ? valid : action=="favorite" || action=="provenance" ? hasEntry : action=="reload_plan" ? Data.Flag(state,"has_saved_plan") : true;
+            foreach(string[] pair in new[]{new[]{Data.Flag(state,"favorite") ? "取消收藏" : "收藏此条目","favorite"},new[]{Data.Flag(state,"has_saved_plan") ? "更新或另存方案…" : "保存方案…","save_plan"},new[]{"我的方案…","choose_plan"},new[]{"重新读取当前方案","reload_plan"},new[]{"固定当前参考","pin"},new[]{"查看固定参考","view_pin"},new[]{"清除固定参考","clear_pin"},new[]{"撤回本次条件带入","undo_import"},new[]{"带入最新已知角色条件","use_latest"},new[]{"条件与来源详情…","provenance"}}) {
+                string action=pair[1]; bool enabled=action=="view_pin" || action=="clear_pin" ? Data.Flag(state,"has_pin") : action=="undo_import" ? Data.Flag(state,"undo") : action=="use_latest" ? Data.Flag(state,"can_latest") : action=="save_plan" || action=="pin" ? valid : action=="favorite" || action=="provenance" ? hasEntry : action=="reload_plan" ? Data.Flag(state,"has_saved_plan") : true;
                 items.Add(UI.Item(pair[0],delegate { FlushEdit(); Host.Send(action,"surface","lookup"); },enabled));
             }
             items.Add(UI.Item("方案与收藏（完整面板）",delegate { Host.Send("panel","page","workspace"); })); UI.Menu(more,items.ToArray());
@@ -330,11 +334,16 @@ namespace Denghuo.Native {
         }
         Expander RememberSection(string identity,string title,UIElement body,bool initial) {
             bool open; if(!openedSections.TryGetValue(identity,out open)) open=initial; var section=UI.Section(title,body,open);
-            section.Expanded+=delegate { openedSections[identity]=true; }; section.Collapsed+=delegate { openedSections[identity]=false; }; return section;
+            section.Expanded+=delegate { openedSections[identity]=true; }; section.Collapsed+=delegate { openedSections[identity]=false; }; articleSections[identity]=section; return section;
+        }
+        Dictionary<string,Control> ArticleTargets(bool existingHeaders) {
+            var targets=new Dictionary<string,Control>(articleLinks);
+            foreach(var pair in articleSections) { if(!existingHeaders) targets[pair.Key]=pair.Value; else if(pair.Value.Template!=null && VisualTreeHelper.GetChildrenCount(pair.Value)>0) { var title=pair.Value.Template.FindName("title",pair.Value) as Control; if(title!=null) targets[pair.Key]=title; } }
+            return targets;
         }
         void RenderArticle(Dictionary<string,object> data) {
             string signature=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(Data.Map("entry",Data.Text(data,"entry_id",""),"sections",Data.Array(data,"numeric_sections"),"summary",Data.Array(data,"primary_values"),"note",Data.Text(data,"primary_note",""),"text",Data.Text(data,"result",""),"origin",Data.Text(data,"origin_brief",""),"status",Data.Text(data,"status","")));
-            if(signature==articleSignature) return; articleSignature=signature; article.Children.Clear();
+            if(signature==articleSignature) return; var priorFocus=Keyboard.FocusedElement; var previous=ArticleTargets(true); articleSections.Clear(); articleLinks.Clear(); articleSignature=signature; article.Children.Clear();
             string identity=Data.Text(data,"entry_id",""), name=Data.Text(data,"entry_name",""); object[] sections=Data.Array(data,"numeric_sections"), main=Data.Array(data,"primary_values");
             if(name.Length>0) { var title=new DockPanel(); var picture=UI.Artwork(Data.Object(data,"artwork"),24); DockPanel.SetDock(picture,Dock.Left); title.Children.Add(picture); var nameText=UI.Text(name,17); nameText.FontWeight=FontWeights.SemiBold; nameText.VerticalAlignment=VerticalAlignment.Center; title.Children.Add(nameText); title.Margin=new Thickness(0,0,0,4); article.Children.Add(title); }
             var origin=UI.Text(Data.Text(data,"origin_brief","参考条件"),12,UI.Muted); origin.Margin=new Thickness(0,0,0,2); article.Children.Add(origin);
@@ -370,14 +379,15 @@ namespace Denghuo.Native {
             var provenance=new StackPanel(); provenance.Children.Add(UI.Text(Data.Text(data,"status",""),12,UI.Muted));
             string prose=Data.Text(data,"result_prose",""); if(prose.Length>0) UI.Article(provenance,prose+"\n\n"+Data.Text(data,"status",""));
             int sourceIndex=0; string token=Data.Text(data,"sources_token","");
-            foreach(object raw in Data.Array(data,"sources")) { var link=(Dictionary<string,object>)raw; int index=sourceIndex++; provenance.Children.Add(UI.Button("官方依据 · "+Data.Text(link,"label",""),delegate { Host.Send("source_link","surface","lookup","index",index,"token",token); })); }
+            foreach(object raw in Data.Array(data,"sources")) { var link=(Dictionary<string,object>)raw; int index=sourceIndex++; var sourceButton=UI.Button("官方依据 · "+Data.Text(link,"label",""),delegate { Host.Send("source_link","surface","lookup","index",index,"token",token); }); provenance.Children.Add(sourceButton); articleLinks[identity+"/source/"+Data.Text(link,"url",Convert.ToString(index))]=sourceButton; }
             secondary.Children.Add(RememberSection(identity+"/provenance","来源、条件与备注",provenance,false));
             if(main.Length>0) article.Children.Add(RememberSection(identity+"/details","详细数值与说明",secondary,false)); else article.Children.Add(secondary);
+            Host.Manager.RebindTaskFocus("lookup",previous,ArticleTargets(false),mode=="search" ? (UIElement)search : back,priorFocus);
         }
         public void Render(Dictionary<string,object> d) {
             if(Data.Number(d,"draft_revision")<draftRevision) return;
             rendering=true; try {
-                state=d; draftRevision=Data.Number(d,"draft_revision"); Dirty=Data.Flag(d,"dirty");
+                state=d; draftRevision=Data.Number(d,"draft_revision"); Dirty=Data.Flag(d,"dirty"); pinned.Visibility=Data.Flag(d,"has_pin") ? Visibility.Visible : Visibility.Collapsed;
                 if(!search.IsKeyboardFocused) UI.Replace(search,Data.Text(d,"query",""));
                 var rows=Data.Array(d,"rows"); string signature=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(rows)+Data.Flag(d,"can_more");
                 if(signature!=rowsSignature) {
