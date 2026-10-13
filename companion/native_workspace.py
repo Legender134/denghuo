@@ -363,6 +363,9 @@ class NumericLookup:
             self.origin.text = '百科 '+self.rendered['version']+' · '+source
             self.origin_brief = ('旧参考 · 请核对条件' if old else '独立参考 · 未绑定当前角色' if independent and not uses else
                                  '参考来源未确认' if uses and not stamp else '手填局势与参考条件' if uses and snap['settings']['mode']=='manual' else '快照条件与手填假设' if uses else '示例 / 手填条件')
+        if (self.rendered and not self.dirty and not self.parameter_error and
+                self.identity.startswith('plants.') and self.identity.endswith('$seed')):
+            self.origin_brief = '种植触发后 · ' + self.origin_brief
         if not self.dirty and (self.draft_modified or self.pending_save):
             self.origin.text += ' · 当前参数、备注或命名有未保存修改；请核对后保存。'
 

@@ -273,10 +273,13 @@ namespace Denghuo.Native {
         void ClampBounds() { var scale = SystemDpi/96; var area = Forms.Screen.FromRectangle(new System.Drawing.Rectangle((int)(Left*scale),(int)(Top*scale),(int)(Width*scale),(int)(Height*scale))).WorkingArea; double x=area.Left/scale,y=area.Top/scale,w=area.Width/scale,h=area.Height/scale; Width = Math.Min(Width,w); Height = Math.Min(Height,h); Left = Math.Max(x,Math.Min(Left,x+w-Width)); Top = Math.Max(y,Math.Min(Top,y+h-Height)); }
         public void Collapse() { if (Collapsed) return; changingLayout = true; if (WindowState != WindowState.Normal) WindowState = WindowState.Normal; expandedBounds = new Rect(Left,Top,Width,Height); Collapsed = true; frame.Visibility = Visibility.Collapsed; MinWidth = MinHeight = 0; ResizeMode = ResizeMode.NoResize; Width = 36; Height = 68; handle.Visibility = Visibility.Visible; ClampBounds(); changingLayout = false; SaveLayout(); Host.VisibilityAll(); }
         public void RebindTaskFocus(string page,Dictionary<string,Control> before,Dictionary<string,Control> after,UIElement fallback,IInputElement priorFocus) {
-            string key=null; foreach(var item in before) if(Object.ReferenceEquals(workFocus,item.Value)) { key=item.Key; break; }
+            string key=null; var focused=workFocus as DependencyObject; foreach(var item in before) if(Object.ReferenceEquals(workFocus,item.Value) || (focused!=null && item.Value.IsAncestorOf(focused))) { key=item.Key; break; }
             if(key==null) return;
             bool restore=IsActive && !Collapsed && Page==page && priorFocus==workFocus;
-            Control target; workFocus=after.TryGetValue(key,out target) && target.IsEnabled ? (IInputElement)target : fallback;
+            Control target; bool retained=after.TryGetValue(key,out target) && target.IsEnabled;
+            bool same=retained && Object.ReferenceEquals(before[key],target);
+            if(!same) workFocus=retained ? (IInputElement)target : fallback;
+            if(same && Keyboard.FocusedElement==workFocus) return;
             var next=workFocus as UIElement;
             if(restore) Dispatcher.BeginInvoke(new Action(delegate { if(IsActive && !Collapsed && Page==page && next!=null && next.IsVisible && next.IsEnabled) next.Focus(); }));
         }
