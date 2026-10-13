@@ -1,5 +1,7 @@
 """Offline encyclopedia metadata, using public rules and pinned game artwork."""
 from functools import lru_cache
+import base64
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -20,6 +22,34 @@ def image_path(url):
     if not any(row.get('url') == url for row in images()['entries'].values()):
         raise KeyError(url)
     return ROOT / 'web' / url[1:]
+
+
+@lru_cache(maxsize=512)
+def native_artwork(identity):
+    """Use the same pinned artwork in the offline native window, without URL I/O."""
+    row = images()['entries'].get(identity)
+    if not row:
+        return {}
+    try:
+        raw = image_path(row['url']).read_bytes()
+        if len(raw) > 8192 or hashlib.sha256(raw).hexdigest() != row['sha256']:
+            return {}
+    except (OSError, KeyError):
+        return {}
+    captions = {'identity-icon': '效果图标 · 本局外观随机', 'placeholder': '通用外观',
+                'representative-sprite': '代表外观 · 形态可变化', 'public-appearance': '本局公开外观'}
+    return {'png': base64.b64encode(raw).decode('ascii'), 'sha256': row['sha256'],
+            'alt': row['alt'], 'caption': captions.get(row['kind'], '游戏原始图像')}
+
+
+def native_item_artwork(item):
+    # Mirror the player's public appearance. Never infer a hidden effect identity.
+    identity = item.get('appearance_id')
+    if not identity:
+        identity = item.get('key') if item.get('known') or item.get('revealed') is True else {
+            'UnknownPotion': 'unknown.potion', 'UnknownScroll': 'unknown.scroll',
+            'UnknownRing': 'unknown.ring'}.get(item.get('kind'), 'unknown.item')
+    return native_artwork(identity)
 
 
 @lru_cache(maxsize=1)

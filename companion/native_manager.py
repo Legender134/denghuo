@@ -379,6 +379,7 @@ class NativeManager:
 
     def floor_state(self, snap):
         from .floor_guide import floor_encounters
+        from .reference import native_artwork
         data = snap.get('data') or {}
         token = self.floor_token(snap)
         available = bool(type(data.get('depth')) is int and not snap.get('error') and snap['settings']['mode']=='save')
@@ -425,7 +426,7 @@ class NativeManager:
                 name=row['name']+('' if row['group']=='普通轮换' else ' · '+row['group'])
                 node={'id':row.get('reference_key',row['id']),'text':f"{name} · 生命 {row['hp']} · 普攻 {row['damage']} · 减伤 {row['dr']}",
                     'detail':row['condition']+f'\n本层条件参考；角色等级 {hero}；累计成功掉落示例0次。实际财富、掉落次数、临时状态另查完整数值。',
-                    'children':blocks}
+                    'children':blocks, 'artwork': native_artwork(row['id'])}
                 group=row.get('fold_group')
                 if group:
                     if group not in groups:
@@ -499,6 +500,11 @@ class NativeManager:
                     self.workspace.handle({'action': 'game_page', 'page': self.layout.values['page']})
                 elif self.layout.values['page'] == 'settings':
                     self.manager.open_play_settings(show=False)
+                elif self.layout.values['page'] == 'lookup':
+                    if self.lookup() is None:
+                        from .native_workspace import NumericLookup
+                        self.manager.play.lookup = NumericLookup(self.manager.play)
+                    self.lookup().emit()
                 elif self.layout.values['page'] == 'plans':
                     if self.lookup() is None:
                         from .native_workspace import NumericLookup
@@ -510,10 +516,9 @@ class NativeManager:
             elif action == 'collapse':
                 play = self.manager.play
                 target = play.native.remembered_game() if play else None
-                if target and self.host.process:
-                    from .native_focus import return_to_game
-                    return_to_game(play.native, target, self.host.process.pid)
-                self.host.command('collapse')
+                self.host.command('collapse', game={key: target[key] for key in ('hwnd','pid')} if target else {})
+            elif action == 'collapse_result':
+                logging.info('Native collapse returned focus to verified game: %s', item.get('returned') is True)
             elif action == 'visibility':
                 surface = item.get('surface')
                 hwnd = item.get('hwnd')
@@ -712,19 +717,21 @@ class NativeManager:
                     actual = min(next_heal, max(0, hero.get('ht', 0) - hero.get('hp', 0)))
                     remaining += f'；按该局势下一次可回 {actual} 生命'
                 texts.append(f"{buff['name']} · {source}：{remaining}")
-        texts += [tip['title']+'\n'+tip['body'].replace('「局势推演」页的计算器', '左侧「装备」中的比较与预算') for tip in data.get('tips', [])]
-        references, reference_texts = [], []
+        texts += [tip['title']+'\n'+tip['body'] for tip in data.get('tips', [])]
+        references, reference_texts, reference_groups = [], [], []
         try:
             decisions = self.session.decisions(snap)
             for risk in decisions['risks']:
                 for row in risk['references']:
                     references.append((row, row.get('source'), ''))
                     reference_texts.append(risk['title']+' · '+row['name']+'资料')
+                    reference_groups.append(risk['id'])
             for row in decisions['options']:
                 note = '\n'.join(filter(None, (row['restriction'], row['calculation_missing'], row['note'])))
                 texts.append(row['name']+f" ×{row['quantity']} · "+decisions['source']['label']+'\n'+note)
                 references.append((row, row['source'], note))
                 reference_texts.append(row['purpose']+'（参考参数）')
+                reference_groups.append(None)
         except (ValueError, KeyError, OSError):
             logging.exception('Native manager references unavailable')
         self.references = references
@@ -742,10 +749,26 @@ class NativeManager:
             texts.append(snap['draft_recovery_notice'])
         protection = {'protected': '保存已备份', 'blocked': '备份受阻', 'paused': '备份暂停'}.get(backup.get('state'),
             '上次保存已备份' if backup.get('last_save_protected') else '等待保存')
-        source_text = ('手填局势' if snap['settings']['mode'] == 'manual' else '旧快照 · 请先保存游戏' if snap.get('stale') else '存档快照')
-        source_text += f" · 槽位 {snap.get('active_slot') or '?'}"
-        source_text += ' · ' + protection
+        source_text = ('手填局势' if snap['settings']['mode'] == 'manual' else
+                       '尚未读到存档' if not data else
+                       '读取受阻 · 保留的参考' if snap.get('error') else
+                       '旧快照' if snap.get('stale') else '存档快照')
+        selected_slot = snap.get('active_slot') or snap['settings']['slot']
+        source_text += f" · 槽位 {selected_slot if selected_slot != 'auto' else '自动'}"
+        if snap.get('modified'):
+            from .native_workspace import plan_updated_text
+            source_text += ' · '+plan_updated_text(snap['modified'])+' 保存'
+        from .reference import native_artwork
+        advice = sorted(data.get('tips', []), key=lambda tip: {'critical': 0, 'warning': 1}.get(tip.get('severity'), 2))
         state = {'text': '\n\n'.join(filter(None, texts)), 'source': source_text,
+            'protection': protection, 'read_error': snap.get('error') or '',
+            'waiting_for_save': bool(snap.get('waiting_for_save')),
+            'advice': [{**tip, 'body': tip['body'],
+                       'actions': [{'index': index, 'text': references[index][0]['name']+'数值'}
+                                   for index, group in enumerate(reference_groups) if group == tip['id']]}
+                      for tip in advice],
+            'no_data': not bool(data),
+            'hp': hero.get('hp'), 'ht': hero.get('ht'),
             'life': f"{hero.get('hp', '?')} / {hero.get('ht', '?')}  生命" if hero else '等待有效存档',
             'statistics': f"{hero.get('class', '')} Lv.{hero.get('level', '?')} · 第 {data.get('depth', '?')} 层\n基础力量 {hero.get('strength', '?')} · 金币 {data.get('gold', '?')}",
             'slot': 0 if snap['settings']['slot'] == 'auto' else snap['settings']['slot'],
@@ -753,6 +776,7 @@ class NativeManager:
             'io_busy': self.io_busy,
             'save_root': snap['settings']['save_root'], 'startup_surface': snap['settings']['startup_surface'],
             'topmost': snap['settings']['always_on_top'], 'references': reference_texts,
+            'reference_artworks': [native_artwork(row[0].get('entry')) for row in references],
             'reference_tokens': [binding_token(row) for row in references],
             'capabilities': registration, 'error': '\n'.join(filter(None, [
                 self._io_job['label']+'；磁盘等待期间仍可退出或取消。' if self.io_busy else '',
@@ -767,6 +791,12 @@ class NativeManager:
             self.signature = signature
             self.host.command('manager_state', **state)
         workspace = getattr(self, 'workspace', None)
+        if workspace and workspace.page in workspace.raw:
+            task_origin = workspace.source_status(workspace.page, snap)
+            signature = json.dumps([workspace.page, task_origin], ensure_ascii=False, sort_keys=True)
+            if signature != getattr(self, '_task_source_signature', None):
+                self._task_source_signature = signature
+                workspace.emit(workspace.page)
         if workspace and workspace.sync_map_source(snap) and workspace.page == 'map':
             workspace.emit('map')
         if workspace and workspace.page == 'inventory':

@@ -16,7 +16,7 @@ function validRawNumericForm(form){
   return form.reportValidity();
 }
 document.addEventListener('input',event=>{if(event.target.matches?.('[data-raw-number]'))event.target.setCustomValidity('');});
-const names = {overview:'冒险概览',inventory:'背包与装备',scouting:'楼层探查',library:'地牢手册',alchemy:'炼金规划',workspace:'方案与收藏',backups:'存档时光机',migration:'搬机迁移',manual:'局势推演',settings:'连接设置',help:'帮助与关于','play-settings':'游玩显示与快捷键'};
+const names = {overview:'局势',inventory:'背包',scouting:'楼层探查',library:'手册',alchemy:'炼金计划',workspace:'方案与收藏',backups:'存档历史',migration:'搬机迁移',manual:'角色推演',settings:'连接设置',help:'帮助与关于','play-settings':'游戏提示与快捷键'};
 const icons = {WARRIOR:'⚔',MAGE:'✦',ROGUE:'◐',HUNTRESS:'➶',DUELIST:'⚔',CLERIC:'✧'};
 const initialPanelPlan=new URLSearchParams(location.search||'').get('plan');
 let initialPanelPlanHandled=false;
@@ -45,6 +45,7 @@ function navigate(next,historyMode='push'){
   for(const el of $$('.view'))el.hidden=el.id!==`view-${next}`;
   for(const el of $$('.nav')){el.classList.toggle('active',el.dataset.view===next);el.setAttribute('aria-current',el.dataset.view===next?'page':'false');}
   $('#page-name').textContent=names[next];
+  document.title=names[next]+' · 灯火';
   const hash=`#${next}`;
   if(changed&&historyMode==='push')history.pushState(null,'',hash);
   else if(location.hash!==hash||historyMode==='replace')history.replaceState(null,'',hash);
@@ -57,11 +58,11 @@ function navigate(next,historyMode='push'){
   if(next==='alchemy'&&typeof loadAlchemy==='function')loadAlchemy();
   if(next==='help'&&typeof loadHelp==='function')loadHelp();
   if(next==='play-settings'){if(typeof loadPlaySettings==='function')loadPlaySettings();if(typeof loadBackupDestination==='function')loadBackupDestination();}
-  if(changed){
+  if(changed||historyMode==='push'){
     const target=$(`#view-${next}`),heading=target.querySelector('h1');
     const narrow=window.matchMedia('(max-width:800px)').matches;
     const start=narrow?target.getBoundingClientRect().top+window.scrollY:0;
-    window.scrollTo({top:Math.max(start,viewPositions.get(next)||0),behavior:'instant'});
+    window.scrollTo({top:changed?Math.max(start,viewPositions.get(next)||0):start,behavior:'instant'});
     if(narrow&&heading){heading.tabIndex=-1;heading.focus({preventScroll:true});}
   }
 }
@@ -76,6 +77,12 @@ function restoreNavigation(){
   if(names[next]&&view===next)return;
   navigate(next,'restore');
 }
+const navigationBreakpoint=window.matchMedia('(max-width:800px)');
+navigationBreakpoint.addEventListener?.('change',()=>requestAnimationFrame(()=>{
+  const target=$(`#view-${view}`),active=document.activeElement;
+  if(target?.contains(active)&&['INPUT','TEXTAREA','SELECT'].includes(active.tagName))active.scrollIntoView({block:'nearest'});
+  else if(navigationBreakpoint.matches&&target)window.scrollTo({top:target.getBoundingClientRect().top+window.scrollY,behavior:'instant'});
+}));
 window.addEventListener('popstate',restoreNavigation);
 window.addEventListener('hashchange',restoreNavigation);
 window.addEventListener('DOMContentLoaded',()=>{if(view==='alchemy'&&typeof loadAlchemy==='function')loadAlchemy();if(view==='migration'&&typeof loadMigration==='function')loadMigration();});
@@ -97,8 +104,8 @@ function renderStatus(){
   const ago=state.age_seconds===null?'尚未读取':state.age_seconds<60?`${Math.floor(state.age_seconds)} 秒前`:state.age_seconds<3600?`${Math.floor(state.age_seconds/60)} 分钟前`:state.age_seconds<86400?`${Math.floor(state.age_seconds/3600)} 小时前`:`${Math.floor(state.age_seconds/86400)} 天前`;
   const origin=isManual?'手动输入':`槽位 ${state.active_slot ?? '—'} · 存档快照`;
   banner.className='connection-banner'+(state.error?' error':state.stale?'':' fresh');
-  let text=state.error || (waiting?'已准备好 · 游戏保存后自动连接，无需先配置':`${origin} · ${fmtTime(state.modified)} 更新（${ago}）`);
-  if(!state.error&&!waiting)text+=isManual?(state.stale?' · 手动信息已过期，请重新填写当前局势；此模式不会自动跟随游戏。':' · 此模式不会自动跟随游戏，请随局势重新填写。'):state.stale?' · 这是旧快照；请先在游戏中保存，勿当作当前状态。':' · 以游戏画面为准，存档更新后自动同步。';
+  let text=state.error || (waiting?'等待游戏保存 · 自动连接，无需先配置':isManual?`手填局势 · ${ago}${state.stale?' · 已过期':''}`:`槽位 ${state.active_slot??'—'} · 第 ${state.data?.depth??'—'} 层 · ${shortTime(state.modified)} 保存${state.stale?' · 旧快照':''}`);
+  banner.title=waiting?'游戏保存后自动连接，无需先配置':isManual?'手填条件不会自动跟随游戏':`${fmtTime(state.modified)} 保存 · ${ago} · 不是逐回合实时状态，行动前核对游戏画面`;
   if(state.warning && !state.error)text+=' '+state.warning;
   if(state.configuration_notice)text+=' '+state.configuration_notice;
   if(state.settings.reveal)text+=' · 剧透模式已开启';
@@ -336,5 +343,5 @@ $('#stop-service').addEventListener('click',()=>requestWebSessionExit());
 let polling=false;
 const panelClient=crypto.randomUUID();let panelAcknowledged=null,panelHandling=null;
 async function followPanelRequest(){try{const result=await post('/api/panel',{action:'heartbeat',client:panelClient,ack:panelAcknowledged});if(result.command&&panelHandling!==result.command.serial){panelHandling=result.command.serial;try{navigate(result.command.page);if(result.command.plan_id&&typeof openPlan==='function')await openPlan(result.command.plan_id);panelAcknowledged=result.command.serial;window.focus();}finally{panelHandling=null;}}}catch(error){/* Main connection state is handled by poll. */}}
-async function poll(){if(polling)return;polling=true;const writeGeneration=settingsWriteGeneration;try{const response=await fetch('/api/status');if(!response.ok)throw new Error('连接失败');const next=await response.json();if(writeGeneration!==settingsWriteGeneration)return;state=next;token=state.token;syncBackupContext(state.backup_context);render();renderBackupHealth();if(view==='settings')loadSettings();if(typeof refreshItemDisclosure==='function')refreshItemDisclosure();if(typeof refreshNumericalOrigin==='function')refreshNumericalOrigin();if(typeof renderEquipmentComparison==='function')renderEquipmentComparison();if(view==='backups')loadBackups();if(typeof refreshWorkspaceViews==='function')refreshWorkspaceViews();if(typeof refreshScoutingContext==='function')refreshScoutingContext();await followPanelRequest();if(typeof handleWebExitState==='function'&&state.exit)void handleWebExitState(state.exit);if(typeof reportWebExitSurface==='function'&&!['backing-up','finished'].includes(state.exit?.phase))void reportWebExitSurface();if(!initialPanelPlanHandled&&initialPanelPlan&&typeof openPlan==='function'){initialPanelPlanHandled=true;navigate('workspace');await openPlan(initialPanelPlan);} }catch(error){state=null;token=null;syncBackupContext(null);if(typeof refreshScoutingContext==='function')refreshScoutingContext();renderBackupHealth();lastRender='';slotsSignature='';$('#connection-banner').className='connection-banner error';$('#connection-banner').textContent='助手服务已停止或连接中断。重新打开「灯火」，默认会打开完整面板；若正在使用桌面管理窗口，请点击「完整面板」。';$('#connection-short').textContent='服务未连接';$('#sidebar-dot').className='dot error';$('#stop-countdown').textContent='';$('#adventure').hidden=true;$('#empty-state').hidden=false;$('#empty-title').textContent='助手连接已中断';$('#empty-description').textContent='连接中断，上一局势已失效。恢复连接后重新读取。';renderInventory();if(typeof refreshItemDisclosure==='function')refreshItemDisclosure();if(typeof refreshNumericalOrigin==='function')refreshNumericalOrigin();if(typeof decisionRequest!=='undefined'){decisionRequest++;decisionSignature='';decisionState=null;$('#decision-options').replaceChildren();} $('#restore-dialog').close();restoreTarget=null;backupState=null;backupViewKeys.clear();$('#backup-history').replaceChildren();$('#backup-retained').replaceChildren();$('#backup-undo').replaceChildren();$('#backup-nodes').textContent='连接中断，请重新启动助手后查看备份。';$('#backup-status').textContent='自动备份状态尚未确认。';if(typeof renderWebExitReceipt==='function')renderWebExitReceipt();}finally{polling=false;}}
+async function poll(){if(polling)return;polling=true;const writeGeneration=settingsWriteGeneration;try{const response=await fetch('/api/status');if(!response.ok)throw new Error('连接失败');const next=await response.json();if(writeGeneration!==settingsWriteGeneration)return;state=next;token=state.token;syncBackupContext(state.backup_context);render();renderBackupHealth();if(view==='settings')loadSettings();if(typeof refreshItemDisclosure==='function')refreshItemDisclosure();if(typeof refreshNumericalOrigin==='function')refreshNumericalOrigin();if(typeof renderEquipmentComparison==='function')renderEquipmentComparison();if(view==='backups')loadBackups();if(typeof refreshWorkspaceViews==='function')refreshWorkspaceViews();if(typeof refreshScoutingContext==='function')refreshScoutingContext();await followPanelRequest();if(typeof handleWebExitState==='function'&&state.exit)void handleWebExitState(state.exit);if(typeof reportWebExitSurface==='function'&&!['backing-up','finished'].includes(state.exit?.phase))void reportWebExitSurface();if(!initialPanelPlanHandled&&initialPanelPlan&&typeof openPlan==='function'){initialPanelPlanHandled=true;navigate('workspace');await openPlan(initialPanelPlan);} }catch(error){state=null;token=null;syncBackupContext(null);if(typeof refreshScoutingContext==='function')refreshScoutingContext();renderBackupHealth();lastRender='';slotsSignature='';$('#connection-banner').className='connection-banner error';$('#connection-banner').textContent='助手服务已停止或连接中断。重新打开「灯火」；也可从随行窗口的更多菜单打开完整面板。';$('#connection-short').textContent='服务未连接';$('#sidebar-dot').className='dot error';$('#stop-countdown').textContent='';$('#adventure').hidden=true;$('#empty-state').hidden=false;$('#empty-title').textContent='助手连接已中断';$('#empty-description').textContent='连接中断，上一局势已失效。恢复连接后重新读取。';renderInventory();if(typeof refreshItemDisclosure==='function')refreshItemDisclosure();if(typeof refreshNumericalOrigin==='function')refreshNumericalOrigin();if(typeof decisionRequest!=='undefined'){decisionRequest++;decisionSignature='';decisionState=null;$('#decision-options').replaceChildren();} $('#restore-dialog').close();restoreTarget=null;backupState=null;backupViewKeys.clear();$('#backup-history').replaceChildren();$('#backup-retained').replaceChildren();$('#backup-undo').replaceChildren();$('#backup-nodes').textContent='连接中断，请重新启动助手后查看备份。';$('#backup-status').textContent='自动备份状态尚未确认。';if(typeof renderWebExitReceipt==='function')renderWebExitReceipt();}finally{polling=false;}}
 initializeBackups();calculate();navigate(location.hash.slice(1) || 'overview','replace');poll().then(()=>{if(view==='settings')loadSettings();});setInterval(poll,2000);

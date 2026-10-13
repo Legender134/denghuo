@@ -428,7 +428,7 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
         if inventory_counts.get("PotionOfStrength"):
             tip("strength_potion", "info", "有可规划的永久成长资源", "背包中有已鉴定的力量药剂，饮用可提升基础力量。先处理威胁，安全且能行动时再使用；之后重新核对装备需求。", f"已知力量药剂 ×{inventory_counts['PotionOfStrength']}")
         if inventory_counts.get("ScrollOfUpgrade"):
-            tip("upgrade_scroll", "info", "升级卷轴可以纳入装备规划", "先确定近期要使用的装备，再分配升级卷轴。升级降低力量需求有档位，并非每次升级都降低；可用「局势推演」页的计算器预估普通装备。", f"已知升级卷轴 ×{inventory_counts['ScrollOfUpgrade']}")
+            tip("upgrade_scroll", "info", "升级卷轴可以纳入装备规划", "先确定近期要使用的装备，再分配升级卷轴。升级降低力量需求有档位，并非每次升级都降低；可用「背包 → 装备比较」中的比较与预算预估普通装备。", f"已知升级卷轴 ×{inventory_counts['ScrollOfUpgrade']}")
     if challenge_mask & 4:
         tip("pharmacophobia", "warning", "药水恐惧挑战已开启", "普通治疗药剂在此挑战下会伤害你，不能用作救命治疗。", "挑战掩码包含 NO_HEALING")
     branch = int(number(game.get("branch")))

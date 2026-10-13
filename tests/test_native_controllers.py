@@ -9,6 +9,8 @@ from unittest.mock import Mock
 
 from companion.native_workspace import NumericLookup
 from companion.native_settings import PlaySettings
+from companion.native_host import binding_token
+from companion.native_manager import NativeManager
 from companion.service import Session
 
 
@@ -69,6 +71,210 @@ class ControllerFixture(unittest.TestCase):
 
 
 class NumericControllerTests(ControllerFixture):
+    def test_latest_import_replaces_pending_calculation_and_completes(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['hp'].set('5')
+        self.lookup.calculate()
+        abandoned = self.lookup.ticket
+        self.session.update_manual({'hp': 8, 'ht': 30, 'level': 5})
+        self.lookup.use_latest()
+        self.assertGreater(self.lookup.ticket, abandoned)
+        self.assertEqual(self.lookup.ticket, self.worker.ticket)
+        self.assertTrue(self.lookup.calculating)
+        self.assertEqual(self.lookup.raw_params()['hp'], '8')
+        self.finish()
+        self.assertFalse(self.lookup.calculating)
+        self.assertEqual(self.lookup.calculated['hp'], 8)
+        self.assertTrue(self.host.commands[-1][1]['can_save'])
+
+    def test_handbook_operation_receipts_survive_origin_refresh(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.favorite()
+        self.assertIn('已收藏', self.host.commands[-1][1]['operation_receipt'])
+        action = self.session.workspace_action
+        self.session.workspace_action = Mock(side_effect=OSError('资料库只读'))
+        self.lookup.favorite()
+        self.lookup.refresh_origin(self.session.snapshot()); self.lookup.emit()
+        self.assertEqual(self.host.commands[-1][1]['operation_receipt'], '资料库只读')
+        self.session.workspace_action = action
+        self.lookup.save_plan('本次治疗')
+        self.assertIn('已保存「本次治疗」', self.host.commands[-1][1]['operation_receipt'])
+        self.lookup.pin()
+        self.assertIn('已固定', self.host.commands[-1][1]['operation_receipt'])
+
+    def test_ready_initializes_restored_handbook_without_showing_window(self):
+        self.owner.lookup = None
+        ui = NativeManager.__new__(NativeManager)
+        ui.manager, ui.session, ui.host = self.manager, self.session, self.host
+        ui.layout = SimpleNamespace(values={'page': 'lookup', 'collapsed': True}, original=b'layout')
+        ui.update, ui.report_drafts = Mock(), Mock()
+        self.host.commands.clear()
+        ui.dispatch({'action': 'ready'})
+        self.assertIsInstance(self.owner.lookup, NumericLookup)
+        payload = next(data for action, data in self.host.commands if action == 'lookup_state')
+        self.assertTrue(payload['rows'])
+        self.assertFalse(any(action == 'show' for action, data in self.host.commands))
+        self.assertTrue(self.host.commands[0][1]['layout']['collapsed'])
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows display controller imports Tk')
+    def test_snapshot_update_publishes_changed_origin_without_replacing_result(self):
+        from companion.play_overlay import PlayDisplay
+        self.open('items.potions.potionofhealing')
+        fixed = copy.deepcopy((self.lookup.raw_params(), self.lookup.calculated))
+        snap = copy.deepcopy(self.session.snapshot())
+        play = PlayDisplay.__new__(PlayDisplay)
+        play.lookup, play.notices, play.state = self.lookup, Mock(), self.owner.state
+        PlayDisplay.update(play, snap)
+        for change in ('revision', 'active_slot', 'stale', 'error'):
+            updated = copy.deepcopy(snap)
+            updated[change] = True if change == 'stale' else '读取失败' if change == 'error' else 999
+            self.host.commands.clear()
+            PlayDisplay.update(play, updated)
+            payload = next(data for action, data in self.host.commands if action == 'lookup_state')
+            self.assertIn('旧参考', payload['origin_brief'], change)
+            self.assertEqual((self.lookup.raw_params(), self.lookup.calculated), fixed)
+            self.host.commands.clear()
+            PlayDisplay.update(play, updated)
+            self.assertFalse(any(action == 'lookup_state' for action, data in self.host.commands))
+            PlayDisplay.update(play, snap)
+
+    def test_collapse_uses_remembered_game_and_preserves_unfinished_numeric_draft(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['hp'].set('  unfinished  ')
+        draft = copy.deepcopy(self.lookup.draft())
+        ui = NativeManager.__new__(NativeManager)
+        ui.manager, ui.session, ui.host = self.manager, self.session, self.host
+        ui.report_drafts, ui.update = Mock(), Mock()
+        self.owner.native.remembered_game.return_value = {'hwnd': 1234, 'pid': 456, 'rect': (0, 0, 900, 700)}
+        self.host.commands.clear()
+        ui.dispatch({'action': 'collapse', 'game': {'hwnd': 999, 'pid': 888}})
+        self.assertEqual(self.host.commands, [('collapse', {'game': {'hwnd': 1234, 'pid': 456}})])
+        self.assertEqual(self.lookup.draft(), draft)
+        self.owner.native.remembered_game.return_value = None
+        ui.dispatch({'action': 'collapse'})
+        self.assertEqual(self.host.commands[-1], ('collapse', {'game': {}}))
+        self.assertEqual(self.lookup.draft(), draft)
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows shortcut controller imports Tk')
+    def test_quick_shortcut_collapses_expanded_workspace_and_reopens_handle(self):
+        from companion.play_overlay import PlayDisplay
+        ui = SimpleNamespace(workspace=object(), host=self.host, companion_collapsed=False,
+                             dispatch=Mock(), show=Mock())
+        self.manager.native_ui = ui
+        play = PlayDisplay.__new__(PlayDisplay)
+        play.manager = self.manager
+        self.host.visibility['manager'] = True
+        PlayDisplay.toggle_peek(play)
+        ui.dispatch.assert_called_once_with({'action': 'collapse'})
+        ui.show.assert_not_called()
+        ui.companion_collapsed = True
+        PlayDisplay.toggle_peek(play)
+        ui.show.assert_called_once_with()
+        self.assertEqual(ui.dispatch.call_count, 1)
+
+    def test_open_numeric_plan_shows_result_only_after_successful_draft_decision(self):
+        self.open('items.weapon.melee.spear')
+        self.lookup.variables['level'].set('3'); self.lookup.calculate(); self.finish()
+        self.assertTrue(self.lookup.save_plan('任意方案名称'))
+        plan = copy.deepcopy(self.lookup.saved_plan)
+        self.lookup.query.value = '老鼠'
+        self.host.commands.clear()
+        self.assertTrue(self.lookup.open_plan(plan['id']))
+        self.assertIn(('show', {'surface': 'lookup'}), self.host.commands)
+        payload = next(data for action, data in self.host.commands if action == 'lookup_state' and data['focus_result'])
+        self.assertEqual((payload['entry_id'], payload['entry_name'], payload['query']),
+                         ('items.weapon.melee.spear', '长矛', '老鼠'))
+        for decision in ('cancel', 'saved', 'discard'):
+            with self.subTest(decision=decision):
+                self.open('items.potions.potionofhealing')
+                self.lookup.variables['hp'].set('  -  ')
+                self.host.commands.clear()
+                self.assertFalse(self.lookup.open_plan(plan['id']))
+                self.assertFalse(any(action == 'show' for action, _ in self.host.commands))
+                self.lookup.handle({'action': 'replace_decision', 'decision': decision})
+                shows = [data for action, data in self.host.commands if action == 'show']
+                if decision == 'cancel':
+                    self.assertFalse(shows)
+                    self.assertEqual(self.lookup.raw_params()['hp'], '  -  ')
+                    self.lookup.handle({'action': 'replace_decision', 'decision': 'saved'})
+                    self.assertFalse(self.session.list_exit_drafts())
+                    self.assertFalse(any(action == 'show' for action, _ in self.host.commands))
+                else:
+                    self.assertEqual(shows, [{'surface': 'lookup'}])
+                    self.assertEqual(self.lookup.identity, plan['entry'])
+                    self.assertEqual(self.lookup.calculated['level'], 3)
+                    self.assertTrue(any(data['focus_result'] for action, data in self.host.commands if action == 'lookup_state'))
+        raw_copies = self.session.list_exit_drafts()
+        self.assertEqual(len(raw_copies), 1)
+        self.assertEqual(self.session.load_exit_draft(raw_copies[0]['id'])['draft']['raw_params']['hp'], '  -  ')
+
+    def test_late_confirmation_or_failed_copy_never_opens_plan_or_discards_newer_input(self):
+        self.open('items.weapon.melee.spear'); self.lookup.save_plan('保存的参考')
+        plan = self.lookup.saved_plan
+        self.lookup.variables['level'].set('1e')
+        self.lookup.open_plan(plan['id'])
+        self.lookup.variables['level'].set('新输入')
+        self.host.commands.clear()
+        with self.assertRaisesRegex(ValueError, '确认期间草稿已变化'):
+            self.lookup.handle({'action': 'replace_decision', 'decision': 'discard'})
+        self.assertEqual(self.lookup.raw_params()['level'], '新输入')
+        self.assertFalse(any(action == 'show' for action, _ in self.host.commands))
+        self.lookup.open_plan(plan['id'])
+        self.lookup.save_draft_copy = Mock(side_effect=OSError('copy blocked'))
+        with self.assertRaisesRegex(OSError, 'copy blocked'):
+            self.lookup.handle({'action': 'replace_decision', 'decision': 'saved'})
+        self.assertEqual(self.lookup.raw_params()['level'], '新输入')
+        self.assertFalse(any(action == 'show' for action, _ in self.host.commands))
+
+    def test_late_result_does_not_navigate_or_replace_current_entry_name(self):
+        self.open('items.weapon.melee.spear')
+        old = copy.deepcopy(self.lookup.rendered)
+        self.open('items.potions.potionofhealing')
+        self.host.commands.clear()
+        self.lookup.render(old)
+        self.assertFalse(self.host.commands)
+        self.lookup.variables['hp'].set('-')
+        payload = self.host.commands[-1][1]
+        self.assertEqual(payload['entry_name'], '治疗药剂')
+        self.assertEqual(payload['numeric_sections'], [])
+        self.assertFalse(any(action == 'show' for action, _ in self.host.commands))
+
+    def test_restored_query_replaces_old_rows_without_recalculating_half_input(self):
+        self.open('items.weapon.melee.spear')
+        self.lookup.variables['level'].set('  1e  ')
+        self.lookup.query.value = '焰浪'
+        self.lookup.note.set('原始用途')
+        draft = self.lookup.draft()
+        self.lookup.query.set('治疗'); self.lookup.search(preserve_detail=True)
+        old_rows = copy.deepcopy(self.lookup.rows)
+        old_token = binding_token(old_rows[0])
+        ticket = self.worker.ticket
+        self.lookup.restore_draft(draft)
+        expected = self.session.catalog.search('焰浪', limit=30)
+        self.assertEqual(self.lookup.rows, expected['entries'])
+        self.assertEqual(self.lookup.total, expected['total'])
+        self.assertEqual(self.lookup.raw_params(), draft['raw_params'])
+        self.assertEqual(self.lookup.input_origins, draft['origins'])
+        self.assertEqual(self.lookup.context, draft['context'])
+        self.assertEqual(self.lookup.note.get(), draft['note'])
+        self.assertEqual(self.worker.ticket, ticket)
+        self.assertIsNone(self.lookup.calculated)
+        self.assertIsNone(self.lookup.rendered)
+        self.lookup.handle({'action': 'select', 'index': 0, 'token': old_token})
+        self.assertIn('搜索结果已更新', self.lookup.origin.text)
+        self.assertEqual(self.lookup.raw_params()['level'], '  1e  ')
+
+    def test_new_note_or_name_cannot_keep_current_draft_saved_feedback(self):
+        self.open('items.weapon.melee.spear'); self.lookup.save_plan('已存方案')
+        self.assertIn('已保存', self.lookup.origin.text)
+        self.lookup.note.set('更新备注')
+        self.assertIn('未保存', self.lookup.origin.text)
+        self.assertNotIn('已保存', self.lookup.origin.text)
+        self.lookup.save_plan('已存方案', update=True)
+        self.lookup.handle({'action': 'save_dialog_edit', 'pending_save': {'name': '未完成名称', 'note': '更新备注', 'update': False}})
+        self.assertIn('未保存', self.lookup.origin.text)
+        self.assertTrue(self.host.commands[-1][1]['dirty'])
+
     def test_deathmark_visible_health_calculates_saves_and_reopens(self):
         for identity in ('actors.hero.abilities.rogue.deathmark',
                          'actors.hero.abilities.rogue.deathmark$deathmarktracker'):

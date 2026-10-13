@@ -147,6 +147,36 @@ class NativeDiskActionsTests(unittest.TestCase):
         self.assertIn(self.bridge.timer, self.manager.root.jobs)
         self.ui.error.assert_not_called()
 
+    def test_overview_reference_artwork_matches_the_bound_public_entry(self):
+        from companion.reference import native_artwork
+        self.session.update_manual({'hp': 4, 'ht': 30, 'level': 5, 'depth': 4})
+        self.ui.update(self.session.snapshot(), force=True)
+        state = next(payload for action, payload in reversed(self.host.commands) if action == 'manager_state')
+        self.assertTrue(self.ui.references)
+        self.assertEqual(len(state['reference_artworks']), len(state['reference_tokens']))
+        self.assertTrue(any(state['reference_artworks']))
+        for bound, artwork in zip(self.ui.references, state['reference_artworks']):
+            expected = native_artwork(bound[0]['entry'])
+            self.assertEqual(artwork, expected)
+
+    def test_empty_overview_is_not_an_old_snapshot_and_priority_actions_bind_the_entry(self):
+        self.ui.update(self.session.snapshot(), force=True)
+        state = next(payload for action, payload in reversed(self.host.commands) if action == 'manager_state')
+        self.assertTrue(state['no_data'])
+        self.assertIn('尚未读到存档', state['source'])
+        self.assertNotIn('旧快照', state['source'])
+        self.session.update_manual({'hp': 4, 'ht': 30, 'level': 5, 'depth': 4})
+        self.ui.update(self.session.snapshot(), force=True)
+        state = next(payload for action, payload in reversed(self.host.commands) if action == 'manager_state')
+        self.assertFalse(state['no_data'])
+        actionable = [tip for tip in state['advice'] if tip['actions']]
+        self.assertTrue(actionable)
+        for tip in actionable:
+            for action in tip['actions']:
+                bound = self.ui.references[action['index']][0]
+                self.assertEqual(action['text'], bound['name']+'数值')
+                self.assertTrue(state['reference_tokens'][action['index']])
+
     def finish(self):
         if self.ui.io_busy:
             self.assertTrue(self.ui._io_job['done'].wait(5))
