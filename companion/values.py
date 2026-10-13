@@ -673,7 +673,10 @@ class PlayerValues:
             row=section['rows'][selected]
             section['primary_values']=[metric(section['title']+' · '+label,value)
                 for label,value in zip(section['columns'][1:],row[1:])]
-            section['summary_note']=f'当前 {p["level"]:+d}；只佩戴一枚，无其他等级修正。正常与诅咒分别计算。'
+            section['summary_note']=f'当前 {p["level"]:+d} · 单枚，无其他等级修正。'
+            if kind=='tenacity': section['primary_values']=[metric(label,value,'%') for label,value in zip(('正常减伤','诅咒减伤'),row[1:])]
+            if kind=='tenacity': section['summary_note']=f'当前生命 {p["hp"]}/{p["max_hp"]}；负数表示增伤。\n'+section['summary_note']
+            elif kind=='force': section['summary_note']+=f' 有效力量 {p["strength"]}。'
 
     def combat_effects(self, identity, owner, p, result, requested):
         if not owner:return

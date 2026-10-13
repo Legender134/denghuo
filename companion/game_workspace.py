@@ -565,9 +565,25 @@ class GameWorkspace:
             row = row.get('dependency')
         return '\n'.join(lines)
 
-    def alchemy_result_text(self, result):
+    def alchemy_result_summary(self, result):
         labels = self.alchemy_labels(result)
-        lines = ['预算内可完成' if result['within_budget'] else '材料、能量或条件不足']
+        lines = ['可以制作' if result['complete'] else '预算充足 · 产出未确定' if result['within_budget'] else '暂不能完成']
+        if any(row.get('certainty') != 'known' for row in result['outputs']):
+            lines.append('随机或条件产出，不能保证指定物品。')
+        if result['pending_conditions']:
+            lines.append(f"还有 {len(result['pending_conditions'])} 项条件待确认")
+        for row in result['targets']:
+            lines.append(labels[row['key']]+f" · {row['planned_quantity']} / {row['requested_quantity']} 件")
+        energy = result['energy']
+        lines.append(f"耗能 {energy['spent']} · 余 {energy['remaining']}"+
+                     (f" · 保留 {energy['reserve']}" if energy['reserve'] else ''))
+        for row in result['shortages']:
+            lines.append(labels.get(row['target'], '当前目标')+'：还缺 '+labels.get(row['id'], '材料')+f" ×{row['missing']}")
+        return '\n'.join(lines)
+
+    def alchemy_result_text(self, result, *, details_only=False):
+        labels = self.alchemy_labels(result)
+        lines = [self.alchemy_result_summary(result)]
         for row in result['targets']:
             lines.append(labels[row['key']]+f" · 计划 {row['planned_quantity']} / 目标 {row['requested_quantity']} 件")
         energy = result['energy']
@@ -578,6 +594,7 @@ class GameWorkspace:
             steps.append(f"{index}. "+labels.get(step['recipe'], '制作')+f" · {step.get('batches', '?')} 批 · "+target)
             steps.append('   材料：'+('、'.join(self.names.get(row['id'], '原始物品')+' ×'+str(row['quantity']) for row in step['inputs']) or '无需库存材料'))
             cost = step['energy']; steps.append(f"   能量：{cost['before']} − {cost['spent']} = {cost['after']}")
+        if details_only: lines = []
         lines.append('制作顺序（按固定条件模拟）\n'+('\n'.join(steps) if steps else '没有可完成的制作步骤。'))
         for step in result.get('requested_steps', []):
             if step.get('status') != 'pending': continue
@@ -611,10 +628,11 @@ class GameWorkspace:
         if page != 'alchemy' or page not in self.calculated or result.get('format') != 2:
             return []
         unused = [row for row in result['materials'] if not row['spent']]
-        if not unused: return []
+        details = [{'id': 'crafting_steps', 'title': '制作步骤与材料', 'text': self.alchemy_result_text(result, details_only=True), 'expanded': False}]
+        if not unused: return details
         labels = self.alchemy_labels(result)
         text = '\n'.join(labels[row['key']]+f" · 未消耗，余 {row['remaining']}，最低保留 {row['reserve']}" for row in unused)
-        return [{'id': 'unused_inventory', 'title': f'未消耗库存（{len(unused)}项）', 'text': text, 'expanded': False}]
+        return details + [{'id': 'unused_inventory', 'title': f'未消耗库存（{len(unused)}项）', 'text': text, 'expanded': False}]
 
     def inventory(self):
         snap = self.session.snapshot()
@@ -666,17 +684,21 @@ class GameWorkspace:
         if page is not None: self.page = page
         page = self.page; specs, rows, actions = [], [], []
         task_snap = self.session.snapshot()
+        result_details = self.result_details(page)
         if page == 'inventory':
             rows = self.inventory()
             actions = [('reference', '查看物品数值'), ('reveal', '揭示这一件…'), ('equip_a', '加入比较 A'), ('equip_b', '加入比较 B')]
-            text = '每项是实际背包实例；未知身份保持未知。选择物品查看说明。'
+            text = '' if rows else '暂无背包物品；请连接存档并在游戏内保存。'
             selected = self.selected.get(page)
             row = next((r for r in rows if r['id'] == selected), None)
             if row:
-                item = row['item']; text = item['name']+'\n'+item['location']+'\n\n'+item['description']+'\n\n'+' · '.join(item.get('details', []))
+                item = row['item']; text = item['name']+f" ×{item['quantity']}"
+                result_details.append({'id': 'item_description', 'title': '物品说明', 'expanded': False,
+                    'text': item['location']+'\n\n'+item['description']+'\n\n'+' · '.join(item.get('details', []))})
                 if item.get('revealed'):
                     actions[1] = ('hide_reveal', '收起所选物品揭示')
-                text += '\n\n'+('已主动揭示；游戏鉴定状态未改变。' if item.get('revealed') else '未鉴定身份保持未知。' if not item.get('known') else '已知公开资料。')
+                if item.get('revealed'): text += '\n已主动揭示；游戏鉴定状态未改变。'
+                elif not item.get('known'): text += '\n身份未鉴定。'
                 if item.get('available') is False: text += ' 当前不可用，仅作阅读参考。'
         elif page in self.raw:
             if page == 'alchemy': self.legacy_alchemy = json.loads(self.raw[page]['legacy']) if self.raw[page].get('legacy') else None
@@ -693,6 +715,8 @@ class GameWorkspace:
                 from .character_scene import calculate_scene
                 captured = calculate_scene(self.equipment_context()['character_scene'])['strength']
                 text += '\n\n固定角色条件 · '+('总力量 '+str(captured['effective']) if captured['state'] == 'known' else '总力量待确认：'+'；'.join(captured['missing']))+'。展开窗口底部来源，编辑「角色条件」后，再点击「带入角色条件」更新。'
+            if page == 'alchemy' and page in self.calculated and self.structured_results.get(page, {}).get('format') == 2:
+                text = self.alchemy_result_summary(self.structured_results[page])
             if page == 'alchemy' and self.legacy_alchemy:
                 specs = []; actions = [('convert_legacy', '复制为可编辑的多目标方案')]
                 text = self.results.get(page, '旧版原方案仍保留。')+'\n\n复制会保留原记录，按原配方每批产出换算目标件数。确认后再编辑并另存。'
@@ -711,6 +735,12 @@ class GameWorkspace:
                 text = f"当前第 {public['depth']} 层 / 支线 {public['branch']} · 已探索地形\n\n"+public['note']+'\n\n'+text
             else:
                 text = '当前没有可显示的已探索地图；请连接有效存档并在游戏内完成保存。\n\n'+text
+            if self.map_result or public:
+                result_details.append({'id': 'map_discoveries', 'title': '地图说明与发现', 'text': text, 'expanded': False})
+                floor = self.map_result or public
+                text = f"第 {floor['depth']} 层"+(f" · 支线 {floor['branch']}" if floor['branch'] else '')
+                text += ' · 已主动揭示' if self.map_result else ' · 已探索地形'
+                text += '\n存档地图，非实时视野'
         else:
             rows = self.rows.get('backups', [])
             actions = [('reload', '刷新历史'), ('backup_preview', '预览所选进度')]
@@ -779,7 +809,7 @@ class GameWorkspace:
             calculated=page in self.calculated, focus_result=self.focus_result == page,
             notice=self.notices.get(page, '') if page not in self.dirty else '',
             notice_brief=self.notice_briefs.get(page, ''),
-            result_details=self.result_details(page),
+            result_details=result_details,
             map=(self.map_result or self.public_map() or {}).get('map', {}) if page == 'map' else {},
             map_revealed=bool(self.map_result) if page == 'map' else False,
             progress=copy.deepcopy((self.backup_preview or {}).get('progress', {})) if page == 'backups' else {},
