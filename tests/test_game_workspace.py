@@ -537,8 +537,8 @@ class GameWorkspaceTests(ControllerFixture):
         self.assertEqual(self.host.commands[-2][0], 'game_confirm')
         confirmation = self.host.commands[-2][1]
         self.assertEqual(confirmation['slot'], 1)
-        self.assertEqual(confirmation['save_root'], str(root))
-        self.assertIn(str(root), confirmation['text'])
+        self.assertEqual(confirmation['save_root'], str(root.resolve()))
+        self.assertIn(str(root.resolve()), confirmation['text'])
         self.assertFalse(confirmation['undo'])
         token = self.workspace.backup_preview['token']
         submitted = copy.deepcopy(self.workspace.backup_preview)
@@ -569,8 +569,8 @@ class GameWorkspaceTests(ControllerFixture):
         self.assertEqual(self.workspace.backup_preview['payload']['confirm'], '撤回槽位 1')
         self.workspace.handle({'page': 'backups', 'command': 'backup_confirm'})
         confirmation = self.host.commands[-2][1]
-        self.assertEqual(confirmation['save_root'], str(root))
-        self.assertIn(str(root), confirmation['text'])
+        self.assertEqual(confirmation['save_root'], str(root.resolve()))
+        self.assertIn(str(root.resolve()), confirmation['text'])
         self.assertTrue(confirmation['undo'])
         self.workspace.handle({'page': 'backups', 'command': 'backup_execute', 'token': self.workspace.backup_preview['token']})
         self.finish_job()

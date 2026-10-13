@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Web.Script.Serialization;
@@ -135,7 +136,8 @@ namespace Denghuo.Native {
         public bool Dirty;
         public TaskPane(Helper owner,string name) {
             host=owner; page=name; Focusable=true; RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto }); RowDefinitions.Add(new RowDefinition()); RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto });
-            mode=UI.Button("编辑条件",delegate { SetEditing(!editing); }); mode.HorizontalAlignment=HorizontalAlignment.Left; mode.Background=Brushes.Transparent; var taskHeader=new WrapPanel(); taskHeader.Children.Add(mode); if(page=="inventory") taskHeader.Children.Add(UI.Button("装备比较 ›",delegate { host.Manager.OpenPage("equipment"); })); Children.Add(UI.Stack(origin,taskHeader));
+            mode=UI.Button("编辑条件",delegate { SetEditing(!editing); }); mode.HorizontalAlignment=HorizontalAlignment.Left; mode.Background=Brushes.Transparent; var taskHeader=new WrapPanel(); taskHeader.Children.Add(mode); if(page=="inventory") taskHeader.Children.Add(UI.Button("装备比较 ›",delegate { host.Manager.OpenPage("equipment"); }));
+            if(page=="equipment") { var taskHeading=new DockPanel(); DockPanel.SetDock(taskHeader,Dock.Right); taskHeading.Children.Add(taskHeader); origin.VerticalAlignment=VerticalAlignment.Center; taskHeading.Children.Add(origin); Children.Add(taskHeading); } else Children.Add(UI.Stack(origin,taskHeader));
             selection=UI.Section(page=="inventory" ? "选择背包物品" : page=="map" ? "选择保存楼层" : "选择存档记录",selector,true); output.Children.Add(selection); output.Children.Add(map); output.Children.Add(mapLegend); mapDetails=UI.Section("地形与坐标（只读）",mapCoordinates,false); output.Children.Add(mapDetails); if(page=="equipment") { output.Children.Add(comparison); details=UI.Section("完整数值与条件",article,true); output.Children.Add(details); } else output.Children.Add(article); output.Children.Add(resultDetails); scroll=UI.Scroll(output); Grid.SetRow(scroll,1); Children.Add(scroll); actions.Margin=new Thickness(0,10,0,0); if(page=="backups") { receipt=UI.Section("回执详情",notice,false); output.Children.Insert(0,receipt); output.Children.Insert(0,receiptBrief); Grid.SetRow(actions,2); Children.Add(actions); } else { var feedback=UI.Scroll(notice); feedback.MaxHeight=64; var bottom=UI.Stack(feedback,actions); Grid.SetRow(bottom,2); Children.Add(bottom); }
             fields.Changed=delegate(string key,bool structural) { if(rendering || host.Frozen) return; ++revision; Dirty=true; notice.Text=key=="name" || key=="note" ? "备注或名称已修改，尚未保存" : "条件已修改，待重新计算"; notice.Visibility=Visibility.Visible; values=fields.Raw(); host.Send("game_edit","page",page,"values",values,"draft_revision",revision,"structure",structural); if(key!="name" && key!="note") { calculated=false; foreach(string command in new[]{"save","update"}) if(actionControls.ContainsKey(command)) { actionControls[command].IsEnabled=false; actionControls[command].ToolTip="先重新计算有效结果"; } if(editing) { mode.Content="返回说明"; UI.Name(mode,"返回说明"); } articleText="条件已修改，请重新计算。原始输入已保留。"; UI.Article(article,articleText); comparison.Children.Clear(); resultDetails.Children.Clear(); if(details!=null) details.IsExpanded=true; } };
         }
@@ -144,10 +146,35 @@ namespace Denghuo.Native {
         public void Flush() { host.Send("game_edit","page",page,"values",Raw(),"draft_revision",revision); }
         void SetEditing(bool value) { positions[editing ? "edit" : "result"]=scroll.VerticalOffset; editing=value; mode.Content=editing ? calculated ? "查看结果" : "返回说明" : "调整条件"; UI.Name(mode,Convert.ToString(mode.Content)); scroll.Content=editing ? (object)fields : output; double position; scroll.ScrollToVerticalOffset(positions.TryGetValue(editing ? "edit" : "result",out position) ? position : 0); UI.Fade(scroll); }
         void RenderComparison(Dictionary<string,object> data) {
-            comparison.Children.Clear(); var choices=Data.Array(data,"choices"); details.IsExpanded=choices.Length!=2; if(choices.Length!=2) return;
-            foreach(object item in choices) { var choice=(Dictionary<string,object>)item; string side=comparison.Children.Count==0 ? "A" : "B"; comparison.Children.Add(UI.Card(UI.ImageRow(side+" · "+Data.Text(choice,"name",""),Data.Object(choice,"artwork"),true))); }
-            var planning=Data.Object(data,"planning"); if(planning.Count>0) { var pending=new List<string>(); int n=0; foreach(object item in Data.Array(planning,"choices")) { var side=(Dictionary<string,object>)item; string label=n++==0 ? "A" : "B"; if(Data.Flag(side,"upgrade_pending")) pending.Add(label); } if(pending.Count>0) { var notice=UI.Text("预算待确认 · "+String.Join("、",pending.ToArray())+" 注魔假设未确认",13,UI.Gold); notice.Margin=new Thickness(0,12,0,8); comparison.Children.Add(notice); } comparison.Children.Add(UI.Text("预算 "+Data.Text(planning,"upgrade_budget","0")+" 卷 / "+Data.Text(planning,"strength_budget","0")+" 瓶力量药剂；A、B分别使用同一预算，不能同时花费。",12,UI.Muted)); n=0; foreach(object item in Data.Array(planning,"choices")) { var side=(Dictionary<string,object>)item; comparison.Children.Add(UI.Text((n++==0 ? "A" : "B")+" · 投入 "+Data.Text(side,"spent_upgrades","?")+" 卷，余 "+Data.Text(side,"remaining_upgrades","?")+" 卷",12)); } }
-            comparison.Children.Add(UI.Text("当前 → 升级一次",11,UI.Muted)); var grid=new Grid { Margin=new Thickness(0,12,0,14) }; grid.ColumnDefinitions.Add(new ColumnDefinition { Width=new GridLength(1.2,GridUnitType.Star) }); grid.ColumnDefinitions.Add(new ColumnDefinition()); grid.ColumnDefinitions.Add(new ColumnDefinition()); int row=0; foreach(object item in Data.Array(data,"rows")) { var metric=(Dictionary<string,object>)item; var cells=Data.Array(metric,"values"); if(cells.Length!=4) continue; grid.RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto }); var label=UI.Text(Data.Text(metric,"label",""),12,UI.Muted); label.Margin=new Thickness(0,7,6,7); Grid.SetRow(label,row); grid.Children.Add(label); for(int i=0;i<2;i++) { var value=UI.Text((i==0 ? "A " : "B ")+Convert.ToString(cells[i*2])+" → "+Convert.ToString(cells[i*2+1]),12); value.Margin=new Thickness(0,7,5,7); Grid.SetRow(value,row); Grid.SetColumn(value,i+1); value.ToolTip=Data.Text(metric,"condition",""); grid.Children.Add(value); } row++; } comparison.Children.Add(grid); comparison.Children.Add(UI.Text(Data.Text(data,"notice",""),11,UI.Muted));
+            comparison.Children.Clear(); var choices=Data.Array(data,"choices"); var planning=Data.Object(data,"planning");
+            string detailLabel=planning.Count>0 ? "完整比较与预算" : "完整数值与条件"; details.Header=UI.Text(detailLabel,13,UI.Gold); UI.Name(details,detailLabel);
+            details.IsExpanded=choices.Length!=2; if(choices.Length!=2) return;
+            var identities=new UniformGrid { Columns=2, Margin=new Thickness(0,0,0,6) };
+            for(int i=0;i<choices.Length;i++) {
+                var choice=(Dictionary<string,object>)choices[i];
+                var identity=new DockPanel { Margin=new Thickness(0,0,6,0) };
+                var picture=UI.Artwork(Data.Object(choice,"artwork"),16); DockPanel.SetDock(picture,Dock.Left); identity.Children.Add(picture);
+                var name=UI.Text((i==0 ? "A · " : "B · ")+Data.Text(choice,"name",""),13); name.FontWeight=FontWeights.SemiBold; name.VerticalAlignment=VerticalAlignment.Center; identity.Children.Add(name); identities.Children.Add(identity);
+            }
+            comparison.Children.Add(identities);
+            comparison.Children.Add(UI.Text("当前 → 升级一次",12,UI.Muted));
+            var rows=new List<Dictionary<string,object>>(); foreach(object item in Data.Array(data,"rows")) rows.Add((Dictionary<string,object>)item);
+            var primary=new List<Dictionary<string,object>>();
+            foreach(string label in new[]{"力量缺口","最高基础伤害"}) foreach(var metric in rows) if(Data.Text(metric,"label","")==label && primary.Count<2) primary.Add(metric);
+            foreach(var metric in rows) if(primary.Count<2 && !primary.Contains(metric)) primary.Add(metric);
+            var grid=new Grid { Margin=new Thickness(0,4,0,8) }; grid.ColumnDefinitions.Add(new ColumnDefinition { Width=new GridLength(1.1,GridUnitType.Star) }); grid.ColumnDefinitions.Add(new ColumnDefinition()); grid.ColumnDefinitions.Add(new ColumnDefinition());
+            int row=0; foreach(var metric in primary) {
+                var cells=Data.Array(metric,"values"); if(cells.Length!=4) continue;
+                grid.RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto }); string unit=Data.Text(metric,"unit","");
+                var label=UI.Text(Data.Text(metric,"label","")+(unit.Length>0 ? " · "+unit : ""),12,UI.Muted); label.Margin=new Thickness(0,5,6,5); Grid.SetRow(label,row); grid.Children.Add(label);
+                for(int i=0;i<2;i++) { var value=UI.Text((i==0 ? "A " : "B ")+Convert.ToString(cells[i*2])+" → "+Convert.ToString(cells[i*2+1]),13); value.Margin=new Thickness(0,5,5,5); Grid.SetRow(value,row); Grid.SetColumn(value,i+1); value.ToolTip=Data.Text(metric,"condition",""); UI.Name(value,Data.Text(metric,"label","")+" "+value.Text+" "+unit); grid.Children.Add(value); }
+                row++;
+            }
+            comparison.Children.Add(grid);
+            if(planning.Count>0) {
+                var pending=new List<string>(); int n=0; foreach(object item in Data.Array(planning,"choices")) { var side=(Dictionary<string,object>)item; if(Data.Flag(side,"upgrade_pending")) pending.Add(n==0 ? "A" : "B"); n++; }
+                if(pending.Count>0) comparison.Children.Add(UI.Text("预算待确认 · "+String.Join("、",pending.ToArray())+" 注魔假设未确认",12,UI.Gold));
+            }
         }
         public void Render(Dictionary<string,object> d) {
             if(Data.Number(d,"draft_revision")<revision) return; rendering=true; try { revision=Data.Number(d,"draft_revision"); Dirty=Data.Flag(d,"dirty"); calculated=Data.Flag(d,"calculated"); values=new Dictionary<string,object>(Data.Object(d,"raw"));

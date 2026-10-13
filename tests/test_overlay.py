@@ -13,7 +13,7 @@ class OverlayTests(ControllerFixture):
         self.session.register_exit_surface('native',kind='native')
         self.manager.status=TextState('手动局势');self.manager.backup_status=TextState('备份监控中')
         self.manager.hero=TextState('HP 4/30');self.manager.metrics=TextState('基础力量 10')
-        self.manager.action_error='';self.session.data['tips']=[{'title':'风险名称','body':'完整建议正文','severity':'warning'}]
+        self.manager.action_error='';self.session.data['tips']=[{'id':'risk','basis':'test fixture','title':'风险名称','body':'完整建议正文','severity':'warning'}]
         self.session.error='完整错误'+('路径/'*100)
         snap=self.session.snapshot();ui.update(snap)
         state=next(payload for action,payload in reversed(self.host.commands) if action=='manager_state')

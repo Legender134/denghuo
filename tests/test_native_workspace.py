@@ -132,6 +132,25 @@ class NativeWorkspaceTests(unittest.TestCase):
 
 
 class NativeStrengthWorkflowTests(ControllerFixture):
+    def test_monster_primary_answer_deduplicates_health_without_changing_full_table(self):
+        self.open('actors.mobs.rat')
+        payload=self.host.commands[-1][1]
+        self.assertEqual([(r['label'],r['value']) for r in payload['primary_values']],
+                         [('初始生命／上限','8'),('基础伤害范围','1–4')])
+        combat=next(section for section in payload['numeric_sections'] if section['title']=='常规战斗数值')
+        self.assertEqual(len(combat['values']),10)
+        self.assertEqual([r['value'] for r in combat['values'][:2]],['8','8'])
+        self.open('actors.mobs.necromancer$necroskeleton')
+        self.assertEqual([(r['label'],r['value']) for r in self.host.commands[-1][1]['primary_values']],
+                         [('初始生命','20'),('初始最大生命','25')])
+
+    def test_non_attacking_monster_primary_answer_keeps_mechanism_condition(self):
+        self.open('actors.mobs.pylon')
+        payload=self.host.commands[-1][1]
+        self.assertEqual(payload['primary_values'][1]['label'],'激活后邻格电击伤害')
+        self.assertEqual(payload['primary_values'][1]['value'],'10–20')
+        self.assertIn('未激活时不攻击且无敌',payload['primary_note'])
+
     def test_ring_primary_answer_uses_selected_effect_and_both_curse_states(self):
         self.open('items.rings.ringofaccuracy')
         payload=self.host.commands[-1][1]
