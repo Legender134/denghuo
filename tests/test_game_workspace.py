@@ -9,6 +9,20 @@ from companion.game_workspace import GameWorkspace
 
 
 class GameWorkspaceTests(ControllerFixture):
+    def test_field_help_keeps_unknowns_visible_and_moves_routine_origins_to_details(self):
+        self.workspace.emit('equipment')
+        payload=self.host.commands[-1][1]
+        specs={row['key']:row for row in payload['fields']}
+        self.assertFalse(specs['strength']['help_visible'])
+        self.assertIn('手填',specs['strength']['help'])
+        self.assertTrue(specs['id_a']['help_visible'])
+        self.assertFalse(specs['note']['help_visible'])
+        self.workspace.sources['equipment']={'mixed_snapshots':True,'fields':{'strength':'来自两次保存'}}
+        self.workspace.emit('equipment')
+        specs={row['key']:row for row in self.host.commands[-1][1]['fields']}
+        self.assertTrue(specs['strength']['help_visible'])
+        self.assertEqual(specs['strength']['help'],'来自两次保存')
+
     def test_inventory_comparison_preserves_public_equipment_properties_and_unknowns(self):
         prefix = 'com.shatteredpixel.shatteredpixeldungeon.'
         for source, expected in [
@@ -521,6 +535,11 @@ class GameWorkspaceTests(ControllerFixture):
         self.assertIsNotNone(self.workspace.backup_preview)
         self.workspace.handle({'page': 'backups', 'command': 'backup_confirm'})
         self.assertEqual(self.host.commands[-2][0], 'game_confirm')
+        confirmation = self.host.commands[-2][1]
+        self.assertEqual(confirmation['slot'], 1)
+        self.assertEqual(confirmation['save_root'], str(root))
+        self.assertIn(str(root), confirmation['text'])
+        self.assertFalse(confirmation['undo'])
         token = self.workspace.backup_preview['token']
         submitted = copy.deepcopy(self.workspace.backup_preview)
         selection = self.workspace.selected['backups']
@@ -548,6 +567,11 @@ class GameWorkspaceTests(ControllerFixture):
         undo = next(r for r in self.workspace.rows['backups'] if r['action'] == 'undo')
         self.select('backups', undo); self.workspace.preview_backup(); self.finish_job()
         self.assertEqual(self.workspace.backup_preview['payload']['confirm'], '撤回槽位 1')
+        self.workspace.handle({'page': 'backups', 'command': 'backup_confirm'})
+        confirmation = self.host.commands[-2][1]
+        self.assertEqual(confirmation['save_root'], str(root))
+        self.assertIn(str(root), confirmation['text'])
+        self.assertTrue(confirmation['undo'])
         self.workspace.handle({'page': 'backups', 'command': 'backup_execute', 'token': self.workspace.backup_preview['token']})
         self.finish_job()
         self.assertEqual({p.name: p.read_bytes() for p in slot.iterdir()}, current)

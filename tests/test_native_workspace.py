@@ -132,6 +132,20 @@ class NativeWorkspaceTests(unittest.TestCase):
 
 
 class NativeStrengthWorkflowTests(ControllerFixture):
+    def test_ring_primary_answer_uses_selected_effect_and_both_curse_states(self):
+        self.open('items.rings.ringofaccuracy')
+        payload=self.host.commands[-1][1]
+        self.assertEqual([row['value'] for row in payload['primary_values']], ['1.3', '0.591716'])
+        self.assertTrue(all('命中倍率' in row['label'] for row in payload['primary_values']))
+        self.assertIn('正常', payload['primary_values'][0]['label'])
+        self.assertIn('诅咒', payload['primary_values'][1]['label'])
+        self.lookup.variables['level'].set('12'); self.lookup.calculate(); self.finish()
+        payload=self.host.commands[-1][1]
+        self.assertIn('+12', payload['primary_note'])
+        self.assertEqual(payload['primary_values'][0]['value'], '30.2875')
+        self.lookup.variables['level'].set('-'); self.lookup.changed('level')
+        self.assertEqual(self.host.commands[-1][1]['primary_values'], [])
+
     def test_failed_then_pending_calculation_reports_state_preserves_raw_and_blocks_repeat(self):
         self.open('items.potions.potionofhealing')
         self.lookup.variables['hp'].set('  '); self.lookup.calculate()

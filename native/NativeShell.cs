@@ -103,7 +103,7 @@ namespace Denghuo.Native {
         }
         public static FrameworkElement ImageRow(string title, Dictionary<string,object> data, bool heading = false) {
             var row=new DockPanel { LastChildFill=true }; var picture=Artwork(data,heading ? 38 : 26); DockPanel.SetDock(picture,Dock.Left); row.Children.Add(picture); var words=Stack(Text(title,heading ? 17 : 13)); words.VerticalAlignment=VerticalAlignment.Center;
-            if(heading) { ((TextBlock)words.Children[0]).FontWeight=FontWeights.SemiBold; var caption=Data.Text(data,"caption",""); if(caption.Length>0) words.Children.Add(Text(caption,10,Muted)); }
+            if(heading) ((TextBlock)words.Children[0]).FontWeight=FontWeights.SemiBold;
             row.Children.Add(words); return row;
         }
         public static Border Card(UIElement body, bool highlighted = false) { return new Border { Child=body, Background=highlighted ? Brush("#F0E6CF") : Panel, BorderBrush=Line, BorderThickness=new Thickness(1), CornerRadius=new CornerRadius(9), Padding=new Thickness(14), Margin=new Thickness(0,0,0,12) }; }
@@ -144,9 +144,10 @@ namespace Denghuo.Native {
         readonly Helper Host;
         readonly Grid root = new Grid(), frame = new Grid(), workspace = new Grid();
         readonly ContentControl content = new ContentControl();
-        readonly TextBlock heading = UI.Text("最近局势",18), source = UI.Text("等待游戏保存",12,UI.Muted), protection = UI.Text("等待备份",12,UI.Muted), life = UI.Text("—",26), statistics = UI.Text("保存游戏后显示生命与局势",13,UI.Muted);
-        readonly StackPanel summary = new StackPanel(), references = new StackPanel(), overview = new StackPanel(), floorBody = new StackPanel();
-        readonly Border healthCard; readonly WrapPanel overviewActions;
+        readonly TextBlock heading = UI.Text("提示",16), source = UI.Text("等待游戏保存",12,UI.Muted), sourceBrief = UI.Text("等待存档",12,UI.Muted), protection = UI.Text("等待备份",12,UI.Muted), life = UI.Text("",12,UI.Muted), statistics = UI.Text("",12,UI.Muted);
+        readonly StackPanel summary = new StackPanel(), overview = new StackPanel(), floorBody = new StackPanel();
+        readonly TextBlock snapshotNotes = UI.Text("",12,UI.Muted);
+        readonly Expander sourceDetails;
         readonly Dictionary<string,FrameworkElement> pages = new Dictionary<string,FrameworkElement>();
         readonly Dictionary<string,Button> navigation = new Dictionary<string,Button>();
         readonly Dictionary<string,TextBlock> navigationLabels = new Dictionary<string,TextBlock>();
@@ -165,7 +166,7 @@ namespace Denghuo.Native {
         public string Page = "overview";
         public double SystemDpi = 96;
         bool rendering, changingLayout = true, shutdown, attached, handleDragged;
-        Rect expandedBounds = new Rect(0,0,480,600), gameBounds;
+        Rect expandedBounds = new Rect(0,0,380,460), gameBounds;
         int gameX = 16, gameY = 16;
         Point dragStart, dragLocation;
         IInputElement workFocus;
@@ -173,7 +174,9 @@ namespace Denghuo.Native {
         readonly Dictionary<string,UIElement> floorControls = new Dictionary<string,UIElement>();
         Button floorReveal;
         string overviewText = null; bool overviewDetailsExpanded;
-        readonly ProgressBar healthBar = new ProgressBar { Height=4, Minimum=0, Maximum=100, Foreground=UI.Gold, Background=UI.Line, BorderThickness=new Thickness(0), Margin=new Thickness(0,10,0,0) };
+        readonly Dictionary<string,bool> insightExpanded = new Dictionary<string,bool>();
+        readonly Dictionary<string,UIElement> insightControls = new Dictionary<string,UIElement>();
+        object[] overviewTokens = new object[0];
         readonly Dictionary<string,bool> floorExpanded = new Dictionary<string,bool>();
         public IntPtr Handle { get { return new WindowInteropHelper(this).Handle; } }
         public bool Visible { get { return IsVisible; } }
@@ -184,7 +187,7 @@ namespace Denghuo.Native {
         public void RenderTask(Dictionary<string,object> data) { string page = Data.Text(data,"page",""); if (tasks.ContainsKey(page)) tasks[page].Render(data); }
         public ManagerForm(Helper host) {
             UI.Chrome(this);
-            Host = host; Title = "灯火 · 随行"; UI.Name(this,Title); Width = 480; Height = 600; MinWidth = 340; MinHeight = 360; MaxWidth = MaxHeight = 2400; Background = UI.Background; Foreground = UI.Ink; FontFamily = new FontFamily("Segoe UI, Microsoft YaHei UI, Microsoft YaHei"); FontSize = 14;
+            Host = host; Title = "灯火 · 随行"; UI.Name(this,Title); Width = 380; Height = 460; MinWidth = 340; MinHeight = 360; MaxWidth = MaxHeight = 2400; Background = UI.Background; Foreground = UI.Ink; FontFamily = new FontFamily("Segoe UI, Microsoft YaHei UI, Microsoft YaHei"); FontSize = 14;
             WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.CanResize; ShowActivated = false; UseLayoutRounding = true; SnapsToDevicePixels = true;
             Left = SystemParameters.WorkArea.Right-Width-16; Top = SystemParameters.WorkArea.Top+40;
             frame.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) }); frame.RowDefinitions.Add(new RowDefinition()); frame.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -199,21 +202,22 @@ namespace Denghuo.Native {
             Grid.SetColumn(tools,1); chrome.Children.Add(tools); frame.Children.Add(chrome);
             workspace.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); workspace.RowDefinitions.Add(new RowDefinition()); Grid.SetRow(workspace,1);
             var tabs = new UniformGrid { Columns = 5, Margin = new Thickness(8,4,8,3) };
-            foreach (string[] pair in new[] {new[]{"overview","局势"},new[]{"inventory","背包"},new[]{"alchemy","炼金"},new[]{"floor","本层"},new[]{"lookup","手册"}}) {
+            foreach (string[] pair in new[] {new[]{"overview","提示"},new[]{"inventory","背包"},new[]{"alchemy","炼金"},new[]{"floor","本层"},new[]{"lookup","手册"}}) {
                 string key = pair[0]; var icon = UI.Icon(key,15); icon.VerticalAlignment = VerticalAlignment.Center; icon.Margin = new Thickness(0,0,5,0); navigationGlyphs.Add(icon); var name = UI.Text(pair[1],12,UI.Muted); name.VerticalAlignment = VerticalAlignment.Center;
                 var inside = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center }; inside.Children.Add(icon); inside.Children.Add(name);
                 var button = UI.Button("",delegate { OpenPage(key); }); button.Content = inside; button.Padding = new Thickness(2,6,2,6); button.Margin = new Thickness(1,0,1,0); button.Background = Brushes.Transparent; button.ToolTip = pair[1]; UI.Name(button,pair[1]); tabs.Children.Add(button); navigation[key] = button; navigationLabels[key] = name;
             }
             workspace.Children.Add(new Border { BorderBrush = UI.Line, BorderThickness = new Thickness(0,0,0,1), Child = tabs });
-            var area = new Grid { Margin = new Thickness(16,8,14,2) }; area.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); area.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); area.RowDefinitions.Add(new RowDefinition()); heading.FontSize = 18; heading.FontWeight = FontWeights.SemiBold; heading.Margin = new Thickness(0,0,0,8); area.Children.Add(heading); source.Margin=new Thickness(0,0,0,8); Grid.SetRow(source,1); area.Children.Add(source); Grid.SetRow(content,2); area.Children.Add(content); Grid.SetRow(area,1); workspace.Children.Add(area); frame.Children.Add(workspace);
-            var footer = new StackPanel { Margin = new Thickness(16,2,20,3) }; var footerLine=new DockPanel(); var history=UI.Button("存档历史 ›",delegate { OpenPage("backups"); }); history.Background=Brushes.Transparent; history.Padding=new Thickness(7,4,7,4); history.Margin=new Thickness(0); DockPanel.SetDock(history,Dock.Right); footerLine.Children.Add(history); protection.VerticalAlignment=VerticalAlignment.Center; footerLine.Children.Add(protection); footer.Children.Add(footerLine); Status.Margin = new Thickness(0,3,0,0); Status.Visibility = Visibility.Collapsed; footer.Children.Add(Status); footerScroll = UI.Scroll(footer); footerScroll.MaxHeight = 80; Grid.SetRow(footerScroll,2); frame.Children.Add(footerScroll);
+            var area = new Grid { Margin = new Thickness(16,8,14,2) }; area.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); area.RowDefinitions.Add(new RowDefinition()); heading.FontWeight = FontWeights.SemiBold; heading.Margin = new Thickness(0,0,0,8); area.Children.Add(heading); Grid.SetRow(content,1); area.Children.Add(content); Grid.SetRow(area,1); workspace.Children.Add(area); frame.Children.Add(workspace);
+            var footer = new StackPanel { Margin = new Thickness(16,0,20,3) };
+            var stamp = new DockPanel(); DockPanel.SetDock(protection,Dock.Right); protection.Margin=new Thickness(10,0,0,0); stamp.Children.Add(protection); stamp.Children.Add(sourceBrief);
+            sourceDetails=UI.Section("存档详情",UI.Stack(source,life,statistics,snapshotNotes,UI.Buttons(UI.Button("刷新",delegate { Host.Send("refresh"); }),UI.Button("存档历史",delegate { OpenPage("backups"); }),UI.Button("角色条件",delegate { OpenPage("character"); }))),false); sourceDetails.Header=stamp; sourceDetails.Margin=new Thickness(0); footer.Children.Add(sourceDetails);
+            Status.Margin = new Thickness(0,3,0,0); Status.Visibility = Visibility.Collapsed; footer.Children.Add(Status); footerScroll = UI.Scroll(footer); footerScroll.MaxHeight = 170; Grid.SetRow(footerScroll,2); frame.Children.Add(footerScroll);
             SizeChanged += delegate { foreach(var icon in navigationGlyphs) icon.Visibility = ActualWidth < 430 ? Visibility.Collapsed : Visibility.Visible; };
             var grip = UI.Name(new Thumb { Width = 18, Height = 18, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Cursor = Cursors.SizeNWSE, ToolTip = "拖动调整窗口大小" }, "调整窗口大小");
             var gripArea = new FrameworkElementFactory(typeof(Border)); gripArea.SetValue(Border.BackgroundProperty,Brushes.Transparent); var gripVisual = new FrameworkElementFactory(typeof(Path)); gripVisual.SetValue(Path.DataProperty,Geometry.Parse("M 6,16 L 16,6 M 11,16 L 16,11")); gripVisual.SetValue(Path.StrokeProperty,UI.Muted); gripVisual.SetValue(Path.StrokeThicknessProperty,1.0); gripArea.AppendChild(gripVisual); grip.Template = new ControlTemplate(typeof(Thumb)) { VisualTree = gripArea };
             grip.DragDelta += delegate(object sender,DragDeltaEventArgs e) { if (Host.Frozen) return; Width = Math.Max(MinWidth,Math.Min(MaxWidth,Width+e.HorizontalChange)); Height = Math.Max(MinHeight,Math.Min(MaxHeight,Height+e.VerticalChange)); }; grip.DragCompleted += delegate { ClampBounds(); SaveLayout(); }; Grid.SetRow(grip,2); frame.Children.Add(grip);
-            var stats = new DockPanel(); var health = UI.Stack(UI.Text("生命",11,UI.Muted),life); DockPanel.SetDock(health,Dock.Left); health.Margin = new Thickness(0,0,18,0); stats.Children.Add(health); statistics.VerticalAlignment = VerticalAlignment.Center; stats.Children.Add(statistics);
-            healthCard=new Border { Child=UI.Stack(stats,healthBar), Padding=new Thickness(0,0,0,12), BorderBrush=UI.Line, BorderThickness=new Thickness(0,0,0,1), Margin=new Thickness(0,0,0,8) }; overview.Children.Add(healthCard); overviewActions=UI.Buttons(UI.Button("调整角色条件",delegate { OpenPage("character"); }),UI.Button("比较装备",delegate { OpenPage("equipment"); })); overview.Children.Add(overviewActions);
-            summary.Margin = new Thickness(0,10,0,0); overview.Children.Add(summary); references.Margin = new Thickness(0,4,0,0); overview.Children.Add(references);
+            summary.Focusable=true; overview.Children.Add(summary);
 
             pages["overview"] = UI.Scroll(overview); pages["floor"] = UI.Scroll(floorBody);
             foreach (string page in new[]{"inventory","equipment","alchemy","character","map","backups"}) { var pane = new TaskPane(Host,page); tasks[page] = pane; pages[page] = pane; }
@@ -225,7 +229,7 @@ namespace Denghuo.Native {
             root.Children.Add(frame); root.Children.Add(handle); Content = new Border { BorderBrush = UI.Line, BorderThickness = new Thickness(1), Child = root };
             slot.SelectionChanged += delegate { if (!rendering && !Host.Frozen) Host.Send("slot","index",slot.SelectedIndex); }; top.Checked += delegate { PinChanged(); }; top.Unchecked += delegate { PinChanged(); };
             SourceInitialized += delegate { var hwndSource = HwndSource.FromHwnd(Handle); if (hwndSource != null) { SystemDpi = 96*hwndSource.CompositionTarget.TransformToDevice.M11; hwndSource.AddHook(WindowMessage); } };
-            layoutTimer.Interval = TimeSpan.FromMilliseconds(250); layoutTimer.Tick += delegate { layoutTimer.Stop(); SaveLayout(); }; SizeChanged += delegate { bool small=ActualHeight<480 && !Collapsed; frame.RowDefinitions[0].Height=new GridLength(small ? 40 : 46); heading.FontSize=small ? 16 : 18; heading.Margin=new Thickness(0,0,0,small ? 4 : 8); footerScroll.MaxHeight=small ? 58 : 80; QueueLayout(); }; LocationChanged += delegate { QueueLayout(); };
+            layoutTimer.Interval = TimeSpan.FromMilliseconds(250); layoutTimer.Tick += delegate { layoutTimer.Stop(); SaveLayout(); }; SizeChanged += delegate { bool small=ActualHeight<480 && !Collapsed; frame.RowDefinitions[0].Height=new GridLength(small ? 40 : 46); heading.Margin=new Thickness(0,0,0,small ? 4 : 8); footerScroll.MaxHeight=Math.Min(220,Math.Max(120,ActualHeight*.45)); QueueLayout(); }; LocationChanged += delegate { QueueLayout(); };
             IsVisibleChanged += delegate { Host.VisibilityAll(); }; Closing += delegate(object s,CancelEventArgs e) { if (!shutdown) { e.Cancel = true; Host.Send("collapse"); } };
             KeyDown += delegate(object s,KeyEventArgs e) { if (e.Key == Key.Escape && !Host.Frozen) { Host.Send("collapse"); e.Handled = true; } };
             PreviewKeyDown += delegate(object s,KeyEventArgs e) { if (e.Key == Key.F1) Host.Send("panel","page","help"); if (e.Key == Key.F && Keyboard.Modifiers == ModifierKeys.Control) { OpenPage("lookup"); Host.Lookup.FocusSearch(); e.Handled = true; } };
@@ -249,7 +253,7 @@ namespace Denghuo.Native {
             bool changed=Page!=page; if(Page=="inventory" && page!="inventory") Host.Send("leave_inventory");
             Page=page; content.Content=pages[page];
             var names=new Dictionary<string,string> {{"overview","最近局势"},{"inventory","背包"},{"equipment","装备比较"},{"alchemy","炼金计划"},{"floor","本层"},{"lookup","手册"},{"character","角色条件"},{"map","已探索地图"},{"backups","存档历史"},{"plans","我的方案"},{"settings","设置"}};
-            heading.Text=names[page]; heading.Visibility=page=="lookup" ? Visibility.Collapsed : Visibility.Visible;
+            heading.Text=names[page]; heading.Visibility=navigation.ContainsKey(page) ? Visibility.Collapsed : Visibility.Visible;
             string selected=page=="equipment" ? "inventory" : page=="map" ? "floor" : page=="character" ? "overview" : page;
             foreach(var pair in navigation) {
                 bool active=pair.Key==selected; pair.Value.Background=active ? UI.Brush("#EEE2CA") : Brushes.Transparent;
@@ -268,10 +272,18 @@ namespace Denghuo.Native {
         void QueueLayout() { if (!changingLayout) { layoutTimer.Stop(); layoutTimer.Start(); } }
         void ClampBounds() { var scale = SystemDpi/96; var area = Forms.Screen.FromRectangle(new System.Drawing.Rectangle((int)(Left*scale),(int)(Top*scale),(int)(Width*scale),(int)(Height*scale))).WorkingArea; double x=area.Left/scale,y=area.Top/scale,w=area.Width/scale,h=area.Height/scale; Width = Math.Min(Width,w); Height = Math.Min(Height,h); Left = Math.Max(x,Math.Min(Left,x+w-Width)); Top = Math.Max(y,Math.Min(Top,y+h-Height)); }
         public void Collapse() { if (Collapsed) return; changingLayout = true; if (WindowState != WindowState.Normal) WindowState = WindowState.Normal; expandedBounds = new Rect(Left,Top,Width,Height); Collapsed = true; frame.Visibility = Visibility.Collapsed; MinWidth = MinHeight = 0; ResizeMode = ResizeMode.NoResize; Width = 36; Height = 68; handle.Visibility = Visibility.Visible; ClampBounds(); changingLayout = false; SaveLayout(); Host.VisibilityAll(); }
+        public void RebindTaskFocus(string page,Dictionary<string,Control> before,Dictionary<string,Control> after,UIElement fallback,IInputElement priorFocus) {
+            string key=null; foreach(var item in before) if(Object.ReferenceEquals(workFocus,item.Value)) { key=item.Key; break; }
+            if(key==null) return;
+            bool restore=IsActive && !Collapsed && Page==page && priorFocus==workFocus;
+            Control target; workFocus=after.TryGetValue(key,out target) && target.IsEnabled ? (IInputElement)target : fallback;
+            var next=workFocus as UIElement;
+            if(restore) Dispatcher.BeginInvoke(new Action(delegate { if(IsActive && !Collapsed && Page==page && next!=null && next.IsVisible && next.IsEnabled) next.Focus(); }));
+        }
         public void Expand() { if (!Collapsed) return; changingLayout = true; Collapsed = false; handle.Visibility = Visibility.Collapsed; MinWidth = 340; MinHeight = 360; ResizeMode = ResizeMode.CanResize; Left=expandedBounds.X; Top=expandedBounds.Y; Width=expandedBounds.Width; Height=expandedBounds.Height; frame.Visibility = Visibility.Visible; ClampBounds(); changingLayout = false; SaveLayout(); Host.VisibilityAll(); Dispatcher.BeginInvoke(new Action(delegate { var focus=workFocus as UIElement; if(focus!=null && focus.IsVisible && focus.IsEnabled) focus.Focus(); })); }
         public void SaveLayout(bool reset = false) { if (changingLayout) return; LayoutRestored = true; Rect normal = Collapsed ? expandedBounds : new Rect(Left,Top,Width,Height); if (attached) { gameX = (int)Math.Round(Left-gameBounds.Left); gameY = (int)Math.Round(Top-gameBounds.Top); } Host.Send(reset ? "layout_reset" : "window_layout","layout",Data.Map("width",Math.Max(340,(int)Math.Round(normal.Width)),"height",Math.Max(360,(int)Math.Round(normal.Height)),"x",(int)Math.Round(normal.X),"y",(int)Math.Round(normal.Y),"game_x",gameX,"game_y",gameY,"collapsed",Collapsed,"page",Page)); }
         public void ApplyLayout(Dictionary<string,object> d) { changingLayout = true; bool collapsed = Data.Flag(d,"collapsed"); gameX=(int)Data.Number(d,"game_x"); gameY=(int)Data.Number(d,"game_y"); Width=Math.Max(340,Data.Number(d,"width")); Height=Math.Max(360,Data.Number(d,"height")); if (d.ContainsKey("x") && d["x"] != null) { Left=Data.Number(d,"x"); Top=Data.Number(d,"y"); } ClampBounds(); expandedBounds=new Rect(Left,Top,Width,Height); ShowPage(Data.Text(d,"page","overview")); changingLayout=false; if (collapsed) Collapse(); }
-        void ResetLayout() { bool collapsed=Collapsed; Expand(); changingLayout=true; Width=480; Height=600; gameX=gameY=16; Left=attached ? gameBounds.Left+16 : SystemParameters.WorkArea.Right-Width-16; Top=attached ? gameBounds.Top+16 : SystemParameters.WorkArea.Top+40; ClampBounds(); expandedBounds=new Rect(Left,Top,Width,Height); changingLayout=false; if (collapsed) Collapse(); SaveLayout(true); }
+        void ResetLayout() { bool collapsed=Collapsed; Expand(); changingLayout=true; Width=380; Height=460; gameX=gameY=16; Left=attached ? gameBounds.Left+16 : SystemParameters.WorkArea.Right-Width-16; Top=attached ? gameBounds.Top+16 : SystemParameters.WorkArea.Top+40; ClampBounds(); expandedBounds=new Rect(Left,Top,Width,Height); changingLayout=false; if (collapsed) Collapse(); SaveLayout(true); }
         public void FollowGame(Dictionary<string,object> d) { var rect=Data.Array(d,"rect"); if (rect.Length==4) { bool first=!attached; double scale=SystemDpi/96; gameBounds=new Rect(Convert.ToDouble(rect[0])/scale,Convert.ToDouble(rect[1])/scale,(Convert.ToDouble(rect[2])-Convert.ToDouble(rect[0]))/scale,(Convert.ToDouble(rect[3])-Convert.ToDouble(rect[1]))/scale); attached=true; changingLayout=true; Left=gameBounds.Left+gameX; Top=gameBounds.Top+gameY; expandedBounds.X=Left; expandedBounds.Y=Top; ClampBounds(); changingLayout=false; Topmost=true; if(first && !LayoutRestored) Collapse(); } else { attached=false; Topmost=top.IsChecked==true; } if(attached) { if(Data.Flag(d,"visible") && !IsVisible) Show(); else if(!Data.Flag(d,"visible") && IsVisible) Hide(); Host.VisibilityAll(); } }
         public void CloseForShutdown() { shutdown=true; layoutTimer.Stop(); Close(); }
         public void Error(string text) { Status.Text=text; Status.Visibility=String.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible; }
@@ -291,7 +303,10 @@ namespace Denghuo.Native {
             foreach(object raw in nodes) {
                 var row=raw as Dictionary<string,object>; if(row==null) continue;
                 string id=Data.Text(row,"id", ""), identity=path+"/"+id; var children=Data.Array(row,"children"); var body=new StackPanel();
-                string detail=Data.Text(row,"detail",""); if(detail.Length>0) body.Children.Add(UI.Text(detail,12,UI.Muted));
+                string detail=Data.Text(row,"detail",""); if(detail.Length>0) {
+                    if(id=="monsters") { bool conditions; floorExpanded.TryGetValue(identity+"/conditions",out conditions); var scope=UI.Section("出现范围与条件",UI.Text(detail,12,UI.Muted),conditions); scope.Expanded+=delegate { floorExpanded[identity+"/conditions"]=true; }; scope.Collapsed+=delegate { floorExpanded[identity+"/conditions"]=false; }; body.Children.Add(scope); floorControls[identity+"/conditions|header"]=scope; }
+                    else body.Children.Add(UI.Text(detail,12,UI.Muted));
+                }
                 if(id=="hidden" && floorReveal!=null) { body.Children.Add(UI.Text("只在助手显示；不改变游戏。",12,UI.Muted)); body.Children.Add(floorReveal); floorControls[identity+"|reveal"]=floorReveal; }
                 if(identity.StartsWith("/monsters/") && (id.StartsWith("actors.mobs.") || id.StartsWith("levels.") || id.StartsWith("items.quest."))) {
                     var button=UI.Button("查看数值",delegate { Host.Send("floor_reference","id",id,"token",floorToken); }); body.Children.Add(button); floorControls[identity+"|reference"]=button;
@@ -320,6 +335,7 @@ namespace Denghuo.Native {
             if(!sameOwner) floorExpanded.Clear();
             floorBody.Children.Clear(); floorControls.Clear();
             floorBody.Children.Add(UI.Text(Data.Text(guide,"caption","当前楼层"),12,UI.Muted));
+            string warning=Data.Text(guide,"warning",""); if(warning.Length>0) floorBody.Children.Add(UI.Text(warning,12,UI.Gold));
             floorReveal=UI.Button(Data.Flag(guide,"revealed") ? "收起隐藏内容" : "主动揭示隐藏内容",delegate { Host.Send("reveal_floor","token",floorToken); }); floorReveal.IsEnabled=Data.Flag(guide,"enabled");
             var map=UI.Button("查看已探索地图",delegate { OpenPage("map"); }); floorBody.Children.Add(map); floorControls["|map"]=map;
             FloorNodes(floorBody,Data.Array(guide,"nodes"),""); floorSignature=signature; floorOwner=owner;
@@ -331,28 +347,57 @@ namespace Denghuo.Native {
                 scroll.ScrollToVerticalOffset(position);
             }));
         }
-        void RenderOverview(Dictionary<string,object> data) {
-            bool empty=Data.Flag(data,"no_data"); healthCard.Visibility=empty ? Visibility.Collapsed : Visibility.Visible; overviewActions.Visibility=Visibility.Visible;
-            double hp=Data.Number(data,"hp"), ht=Data.Number(data,"ht"); healthBar.Value=ht>0 ? Math.Max(0,Math.Min(100,hp/ht*100)) : 0;
-            string next=Data.Text(data,"text",""); object[] advice=Data.Array(data,"advice"), tokens=Data.Array(data,"reference_tokens");
-            string signature=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(Data.Map("text",next,"advice",advice,"no_data",empty,"tokens",tokens));
-            if(signature==overviewText) return; overviewText=signature; summary.Children.Clear();
-            if(empty) {
-                bool waiting=Data.Flag(data,"waiting_for_save") || Data.Text(data,"read_error","").Length==0;
-                var guide=UI.Stack(UI.Text(waiting ? "等待游戏保存" : "暂时无法读取存档",17),UI.Text(waiting ? "开始一局并在游戏中保存，灯火会自动连接。现在也可以查手册。" : Data.Text(data,"read_error","请检查存档连接。"),14));
-                guide.Children.Add(UI.Buttons(UI.Button(waiting ? "查手册" : "检查连接",delegate { if(waiting) OpenPage("lookup"); else { OpenPage("settings"); Host.Settings.OpenConnection(); } },true),UI.Button(waiting ? "检查连接…" : "重试读取",delegate { if(waiting) { OpenPage("settings"); Host.Settings.OpenConnection(); } else Host.Send("refresh"); })));
-                summary.Children.Add(UI.Card(guide));
-            } else if(advice.Length>0) {
-                var tip=(Dictionary<string,object>)advice[0]; var title=UI.Text(Data.Text(tip,"title","当前建议"),15,UI.Gold); title.FontWeight=FontWeights.SemiBold; title.Margin=new Thickness(0,0,0,6);
-                var body=UI.Stack(UI.Text(Data.Text(tip,"severity","")=="critical" ? "先处理" : "当前留意",11,UI.Muted),title,UI.Text(Data.Text(tip,"body",""),13));
-                var actions=new WrapPanel { Margin=new Thickness(0,10,0,0) };
-                foreach(object raw in Data.Array(tip,"actions")) { var action=raw as Dictionary<string,object>; if(action==null) continue; int index=(int)Data.Number(action,"index"); if(index<0 || index>=tokens.Length) continue; string token=Convert.ToString(tokens[index]); actions.Children.Add(UI.Button(Data.Text(action,"text","查看数值"),delegate { Host.Send("reference","index",index,"token",token); })); }
-                if(actions.Children.Count>0) body.Children.Add(actions); summary.Children.Add(UI.Card(body,true));
+        FrameworkElement Insight(Dictionary<string,object> row) {
+            string id=Data.Text(row,"id",""), title=Data.Text(row,"title",""), detail=Data.Text(row,"body","");
+            var body=UI.Stack(UI.Text(detail,13)); string basis=Data.Text(row,"basis",""); if(basis.Length>0) body.Children.Add(UI.Text(basis,12,UI.Muted));
+            var actions=new WrapPanel(); foreach(object raw in Data.Array(row,"actions")) {
+                var action=raw as Dictionary<string,object>; if(action==null) continue;
+                int index=(int)Data.Number(action,"index"); if(index<0 || index>=overviewTokens.Length) continue;
+                string label=Data.Text(action,"text","查看数值"); var button=UI.Button(label,delegate { if(index<overviewTokens.Length) Host.Send("reference","index",index,"token",Convert.ToString(overviewTokens[index])); });
+                actions.Children.Add(button); insightControls[id+"/"+label]=button;
             }
-            var full=new StackPanel(); UI.Article(full,next); if(full.Children.Count>0) { var section=UI.Section("全部建议与条件",full,overviewDetailsExpanded); section.Expanded+=delegate { overviewDetailsExpanded=true; }; section.Collapsed+=delegate { overviewDetailsExpanded=false; }; summary.Children.Add(section); }
-            if(!empty && next.Length==0 && advice.Length==0) summary.Children.Add(UI.Text("保存游戏后，在这里查看当前局势与建议。",13,UI.Muted));
+            if(actions.Children.Count>0) { actions.Margin=new Thickness(0,8,0,0); body.Children.Add(actions); }
+            bool expanded; insightExpanded.TryGetValue(id,out expanded); var section=UI.Section(title,body,expanded); section.Margin=new Thickness(0,0,0,3);
+            var labelText=UI.Text(title,14,Data.Text(row,"severity","")=="critical" ? UI.Gold : UI.Ink); labelText.FontWeight=FontWeights.SemiBold;
+            var header=UI.Stack(labelText); string brief=Data.Text(row,"summary",""), assumption=Data.Text(row,"assumption","");
+            if(brief.Length>0) { var value=UI.Text(brief,14); value.Margin=new Thickness(0,4,0,0); header.Children.Add(value); }
+            if(assumption.Length>0) header.Children.Add(UI.Text(assumption,12,UI.Muted));
+            section.Header=header; section.Expanded+=delegate { insightExpanded[id]=true; }; section.Collapsed+=delegate { insightExpanded[id]=false; }; insightControls[id]=section;
+            return section;
         }
-        public void Render(Dictionary<string,object> d) { rendering=true; try { life.Text=Data.Text(d,"life","等待有效存档").Replace("  生命",""); statistics.Text=Data.Text(d,"statistics",""); source.Text=Data.Text(d,"source","等待游戏保存"); protection.Text=Data.Text(d,"protection","等待备份"); Error(Data.Text(d,"error","")); RenderOverview(d); references.Children.Clear(); var tokens=Data.Array(d,"reference_tokens"); int index=0; foreach(object raw in Data.Array(d,"references")) { int selected=index++; string token=selected<tokens.Length ? Convert.ToString(tokens[selected]) : ""; var button=UI.Button("",delegate { Host.Send("reference","index",selected,"token",token); }); var pictures=Data.Array(d,"reference_artworks"); button.Content=UI.ImageRow(Convert.ToString(raw),selected<pictures.Length ? (Dictionary<string,object>)pictures[selected] : Data.Map()); UI.Name(button,Convert.ToString(raw)); button.HorizontalContentAlignment=HorizontalAlignment.Left; references.Children.Add(button); } UI.Replace(saveRoot,Data.Text(d,"save_root","")); startup.SelectedIndex=Data.Text(d,"startup_surface","native")=="native" ? 0 : 1; slot.SelectedIndex=(int)Math.Max(0,Math.Min(6,Data.Number(d,"slot"))); top.IsChecked=Data.Flag(d,"topmost"); if(!attached) Topmost=top.IsChecked==true; if(Host.Settings!=null && Host.Settings.Connection!=null) Host.Settings.Connection.IsEnabled=!Data.Flag(d,"io_busy");
+        void RenderOverview(Dictionary<string,object> data) {
+            bool empty=Data.Flag(data,"no_data"); overviewTokens=Data.Array(data,"reference_tokens");
+            var insights=Data.Array(data,"insights"); var secondary=Data.Array(data,"secondary_advice"); string readError=Data.Text(data,"read_error","");
+            string signature=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(Data.Map("insights",insights,"secondary",secondary,"no_data",empty,"read_error",readError,"waiting",Data.Flag(data,"waiting_for_save"),"references",Data.Array(data,"references")));
+            if(signature==overviewText) return; overviewText=signature;
+            string focusKey=""; var focused=workFocus as DependencyObject;
+            foreach(var pair in insightControls) if(pair.Value==focused) { focusKey=pair.Key; break; }
+            if(focusKey.Length==0 && focused!=null) foreach(var pair in insightControls) if(pair.Value.IsAncestorOf(focused)) { focusKey=pair.Key; break; }
+            bool hadOverviewFocus=focusKey.Length>0 || focused!=null && (Object.ReferenceEquals(focused,summary) || summary.IsAncestorOf(focused));
+            bool restore=hadOverviewFocus && IsActive && !Collapsed && Page=="overview" && Keyboard.FocusedElement==workFocus;
+            summary.Children.Clear(); insightControls.Clear();
+            if(empty || readError.Length>0) {
+                bool waiting=empty && readError.Length==0;
+                var guide=UI.Stack(UI.Text(waiting ? "保存一局后，显示相关提示" : "读取受阻，提示已暂停",14));
+                if(!waiting) guide.Children.Add(UI.Section("读取原因",UI.Text(readError,13),false));
+                guide.Children.Add(UI.Buttons(UI.Button(waiting ? "查手册" : "检查连接",delegate { if(waiting) OpenPage("lookup"); else { OpenPage("settings"); Host.Settings.OpenConnection(); } },true),UI.Button(waiting ? "检查连接" : "重试",delegate { if(waiting) { OpenPage("settings"); Host.Settings.OpenConnection(); } else Host.Send("refresh"); })));
+                summary.Children.Add(guide);
+            }
+            var extra=new StackPanel(); int count=0;
+            foreach(object raw in insights) { var row=(Dictionary<string,object>)raw; var target=count++<3 ? summary : extra; target.Children.Add(Insight(row)); }
+            if(!empty && readError.Length==0 && insights.Length==0) {
+                summary.Children.Add(UI.Text("暂无需要展开的提示",14,UI.Muted));
+                summary.Children.Add(UI.Buttons(UI.Button("比较装备",delegate { OpenPage("equipment"); }),UI.Button("查数值",delegate { OpenPage("lookup"); })));
+            }
+            foreach(object raw in secondary) extra.Children.Add(Insight((Dictionary<string,object>)raw));
+            if(extra.Children.Count>0) { var section=UI.Section("其他提示 · "+extra.Children.Count,extra,overviewDetailsExpanded); section.Expanded+=delegate { overviewDetailsExpanded=true; }; section.Collapsed+=delegate { overviewDetailsExpanded=false; }; summary.Children.Add(section); insightControls["__other"]=section; }
+            var used=new HashSet<int>(); foreach(object raw in insights) foreach(object action in Data.Array((Dictionary<string,object>)raw,"actions")) used.Add((int)Data.Number((Dictionary<string,object>)action,"index")); foreach(object raw in secondary) foreach(object action in Data.Array((Dictionary<string,object>)raw,"actions")) used.Add((int)Data.Number((Dictionary<string,object>)action,"index"));
+            var references=new StackPanel(); int index=0; foreach(object raw in Data.Array(data,"references")) { int selected=index++; if(used.Contains(selected)) continue; var button=UI.Button(Convert.ToString(raw),delegate { if(selected<overviewTokens.Length) Host.Send("reference","index",selected,"token",Convert.ToString(overviewTokens[selected])); }); button.HorizontalContentAlignment=HorizontalAlignment.Left; references.Children.Add(button); }
+            if(references.Children.Count>0) { bool opened; insightExpanded.TryGetValue("__references",out opened); var section=UI.Section("资源资料 · "+references.Children.Count,references,opened); section.Expanded+=delegate { insightExpanded["__references"]=true; }; section.Collapsed+=delegate { insightExpanded["__references"]=false; }; summary.Children.Add(section); insightControls["__references"]=section; }
+            UIElement targetFocus; if(!insightControls.TryGetValue(focusKey,out targetFocus)) targetFocus=summary;
+            if(hadOverviewFocus) { workFocus=targetFocus; if(restore) Dispatcher.BeginInvoke(new Action(delegate { if(IsActive && !Collapsed && Page=="overview" && targetFocus.IsVisible) targetFocus.Focus(); })); }
+        }
+        public void Render(Dictionary<string,object> d) { rendering=true; try { life.Text=Data.Text(d,"life",""); statistics.Text=Data.Text(d,"statistics",""); snapshotNotes.Text=Data.Text(d,"snapshot_notes",""); source.Text=Data.Text(d,"source","等待游戏保存"); sourceBrief.Text=Data.Text(d,"source_brief",source.Text); sourceBrief.Foreground=Data.Flag(d,"source_warning") ? UI.Gold : UI.Muted; UI.Name(sourceDetails,"存档详情 · "+sourceBrief.Text); protection.Text=Data.Text(d,"protection","等待备份"); Error(Data.Text(d,"error","")); RenderOverview(d); UI.Replace(saveRoot,Data.Text(d,"save_root","")); startup.SelectedIndex=Data.Text(d,"startup_surface","native")=="native" ? 0 : 1; slot.SelectedIndex=(int)Math.Max(0,Math.Min(6,Data.Number(d,"slot"))); top.IsChecked=Data.Flag(d,"topmost"); if(!attached) Topmost=top.IsChecked==true; if(Host.Settings!=null && Host.Settings.Connection!=null) Host.Settings.Connection.IsEnabled=!Data.Flag(d,"io_busy");
             RenderFloor(Data.Object(d,"floor_guide"));
         } finally { rendering=false; } }
     }

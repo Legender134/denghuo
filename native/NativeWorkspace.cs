@@ -12,6 +12,8 @@ namespace Denghuo.Native {
         readonly Dictionary<string,FrameworkElement> controls = new Dictionary<string,FrameworkElement>();
         readonly Dictionary<string,TextBlock> hints = new Dictionary<string,TextBlock>();
         readonly Dictionary<string,bool> expanded = new Dictionary<string,bool>();
+        readonly StackPanel helpBody = new StackPanel();
+        Expander helpDetails;
         Dictionary<string,object> values = new Dictionary<string,object>();
         string signature = "";
         bool rendering;
@@ -30,12 +32,15 @@ namespace Denghuo.Native {
                     else if(choices.Length>0) { var combo=UI.Combo(label); foreach(object choice in choices) { var option=(Dictionary<string,object>)choice; combo.Items.Add(new Choice(Data.Text(option,"id",""),Data.Text(option,"text",""))); } combo.SelectionChanged+=delegate { Edited(key,!numeric); }; control=combo; }
                     else { var text=UI.Edit(label,numeric ? 80 : 1200); text.TextChanged+=delegate { Edited(key,false); }; if(numeric) text.KeyDown+=delegate(object sender,KeyEventArgs e) { if(e.Key==Key.Enter && Submit!=null) { Submit(); e.Handled=true; } }; control=text; }
                     controls[key]=control; var title=UI.Text(label,12,UI.Muted); title.Margin=new Thickness(0,0,0,6); var hint=UI.Text("",11,UI.Muted); hint.Margin=new Thickness(0,4,0,0); hints[key]=hint; var field=UI.Stack(title,control,hint); field.Margin=new Thickness(0,0,0,14); group.Children.Add(field);
-                } signature=next; }
+                } if(helpDetails!=null) helpDetails.Content=null; helpDetails=UI.Section("输入说明与来源",helpBody,expanded.ContainsKey("__help") && expanded["__help"]); helpDetails.Expanded+=delegate { expanded["__help"]=true; }; helpDetails.Collapsed+=delegate { expanded["__help"]=false; }; Children.Add(helpDetails); signature=next; }
+                helpBody.Children.Clear();
                 foreach(object item in fields) { var spec=(Dictionary<string,object>)item; string key=Data.Text(spec,"key",""), value=Data.Text(values,key,Data.Text(spec,"raw","")); var control=controls[key]; var text=control as TextBox; var combo=control as ComboBox; var multi=control as StackPanel;
                     if(text!=null) UI.Replace(text,value); else if(combo!=null) { int found=-1; for(int i=0;i<combo.Items.Count;i++) if(((Choice)combo.Items[i]).Id==value) found=i; if(found<0) found=combo.Items.Add(new Choice(value,"需核对的原始输入："+value)); combo.SelectedIndex=found; }
                     else if(multi!=null) { var selected=new HashSet<string>(value.Split('|')); foreach(string id in selected) { bool found=id.Length==0; foreach(CheckBox check in multi.Children) if((string)check.Tag==id) found=true; if(!found) { var check=UI.Name(new CheckBox { Content=UI.Text("需核对的原始实例："+id),Tag=id },"需核对的原始实例："+id); check.Checked+=delegate { Edited(key,false); }; check.Unchecked+=delegate { Edited(key,false); }; multi.Children.Add(check); } } foreach(CheckBox check in multi.Children) check.IsChecked=selected.Contains((string)check.Tag); }
-                    string help=numeric ? Data.Text(spec,"origin","")+(key=="corrosion_public" ? " · 游戏显示值给范围；精确值仅为手填假设" : " · "+Data.Text(spec,"min","")+"–"+Data.Text(spec,"max","")) : Data.Text(spec,"help",""); hints[key].Text=help; hints[key].Visibility=help.Length>0 ? Visibility.Visible : Visibility.Collapsed; System.Windows.Automation.AutomationProperties.SetHelpText(control,help);
+                    string help=numeric ? Data.Text(spec,"origin","")+(key=="corrosion_public" ? " · 游戏显示值给范围；精确值仅为手填假设" : " · "+Data.Text(spec,"min","")+"–"+Data.Text(spec,"max","")) : Data.Text(spec,"help",""); hints[key].Text=help; hints[key].Visibility=help.Length>0 && (Data.Flag(spec,"help_visible") || numeric && (value.Trim().Length==0 || key=="corrosion_public")) ? Visibility.Visible : Visibility.Collapsed; control.ToolTip=help; System.Windows.Automation.AutomationProperties.SetHelpText(control,help);
+                    if(help.Length>0) { var line=UI.Text(Data.Text(spec,"label",key)+" · "+help,12,UI.Muted); line.Margin=new Thickness(0,0,0,8); helpBody.Children.Add(line); }
                 }
+                if(helpDetails!=null) helpDetails.Visibility=helpBody.Children.Count>0 ? Visibility.Visible : Visibility.Collapsed;
                 if(rebuild && focused!=null && controls.ContainsKey(focused)) { controls[focused].Focus(); var text=controls[focused] as TextBox; if(text!=null) text.CaretIndex=Math.Min(caret,text.Text.Length); }
             } finally { rendering=false; }
         }
@@ -114,6 +119,8 @@ namespace Denghuo.Native {
         readonly ScrollViewer scroll;
         readonly WrapPanel actions=new WrapPanel();
         readonly TextBlock notice=UI.Text("",12,UI.Gold);
+        readonly TextBlock receiptBrief=UI.Text("",13,UI.Gold);
+        Expander receipt;
         readonly TextBlock origin=UI.Text("",12,UI.Muted);
         readonly Button mode;
         readonly Expander selection;
@@ -123,13 +130,13 @@ namespace Denghuo.Native {
         readonly Dictionary<string,Control> actionControls=new Dictionary<string,Control>();
         bool rendering,editing,calculated;
         long revision;
-        string articleText="", rowSignature="";
+        string articleText="", rowSignature="", actionSignature="";
         Dictionary<string,object> values=new Dictionary<string,object>();
         public bool Dirty;
         public TaskPane(Helper owner,string name) {
-            host=owner; page=name; RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto }); RowDefinitions.Add(new RowDefinition()); RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto });
+            host=owner; page=name; Focusable=true; RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto }); RowDefinitions.Add(new RowDefinition()); RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto });
             mode=UI.Button("编辑条件",delegate { SetEditing(!editing); }); mode.HorizontalAlignment=HorizontalAlignment.Left; mode.Background=Brushes.Transparent; var taskHeader=new WrapPanel(); taskHeader.Children.Add(mode); if(page=="inventory") taskHeader.Children.Add(UI.Button("装备比较 ›",delegate { host.Manager.OpenPage("equipment"); })); Children.Add(UI.Stack(origin,taskHeader));
-            selection=UI.Section(page=="inventory" ? "选择背包物品" : page=="map" ? "选择保存楼层" : "选择存档记录",selector,true); output.Children.Add(selection); output.Children.Add(map); output.Children.Add(mapLegend); mapDetails=UI.Section("地形与坐标（只读）",mapCoordinates,false); output.Children.Add(mapDetails); if(page=="equipment") { output.Children.Add(comparison); details=UI.Section("完整数值与条件",article,true); output.Children.Add(details); } else output.Children.Add(article); output.Children.Add(resultDetails); scroll=UI.Scroll(output); Grid.SetRow(scroll,1); Children.Add(scroll); actions.Margin=new Thickness(0,10,0,0); var bottom=UI.Stack(notice,actions); Grid.SetRow(bottom,2); Children.Add(bottom);
+            selection=UI.Section(page=="inventory" ? "选择背包物品" : page=="map" ? "选择保存楼层" : "选择存档记录",selector,true); output.Children.Add(selection); output.Children.Add(map); output.Children.Add(mapLegend); mapDetails=UI.Section("地形与坐标（只读）",mapCoordinates,false); output.Children.Add(mapDetails); if(page=="equipment") { output.Children.Add(comparison); details=UI.Section("完整数值与条件",article,true); output.Children.Add(details); } else output.Children.Add(article); output.Children.Add(resultDetails); scroll=UI.Scroll(output); Grid.SetRow(scroll,1); Children.Add(scroll); actions.Margin=new Thickness(0,10,0,0); if(page=="backups") { receipt=UI.Section("回执详情",notice,false); output.Children.Insert(0,receipt); output.Children.Insert(0,receiptBrief); Grid.SetRow(actions,2); Children.Add(actions); } else { var feedback=UI.Scroll(notice); feedback.MaxHeight=64; var bottom=UI.Stack(feedback,actions); Grid.SetRow(bottom,2); Children.Add(bottom); }
             fields.Changed=delegate(string key,bool structural) { if(rendering || host.Frozen) return; ++revision; Dirty=true; notice.Text=key=="name" || key=="note" ? "备注或名称已修改，尚未保存" : "条件已修改，待重新计算"; notice.Visibility=Visibility.Visible; values=fields.Raw(); host.Send("game_edit","page",page,"values",values,"draft_revision",revision,"structure",structural); if(key!="name" && key!="note") { calculated=false; foreach(string command in new[]{"save","update"}) if(actionControls.ContainsKey(command)) { actionControls[command].IsEnabled=false; actionControls[command].ToolTip="先重新计算有效结果"; } if(editing) { mode.Content="返回说明"; UI.Name(mode,"返回说明"); } articleText="条件已修改，请重新计算。原始输入已保留。"; UI.Article(article,articleText); comparison.Children.Clear(); resultDetails.Children.Clear(); if(details!=null) details.IsExpanded=true; } };
         }
         public void SetPlanMetadata(string name,string note) { fields.SetMetadata(name,note); values=fields.Raw(); Dirty=true; ++revision; Flush(); }
@@ -151,8 +158,9 @@ namespace Denghuo.Native {
                 string text=Data.Text(d,"text",""); if(text!=articleText) { articleText=text; UI.IllustratedArticle(article,text,Data.Object(d,"artwork")); if(page=="equipment") RenderComparison(Data.Object(d,"comparison")); }
                 resultDetails.Children.Clear(); foreach(object raw in Data.Array(d,"result_details")) { var extra=raw as Dictionary<string,object>; if(extra==null) continue; var body=new StackPanel(); UI.Article(body,Data.Text(extra,"text","")); string identity=Data.Text(extra,"id",""); bool expanded; if(!resultDetailExpanded.TryGetValue(identity,out expanded)) expanded=Data.Flag(extra,"expanded"); var section=UI.Section(Data.Text(extra,"title","详细记录"),body,expanded); section.Expanded+=delegate { resultDetailExpanded[identity]=true; }; section.Collapsed+=delegate { resultDetailExpanded[identity]=false; }; resultDetails.Children.Add(section); }
                 map.Render(Data.Object(d,"map")); mapLegend.Visibility=mapDetails.Visibility=map.Visibility; mapCoordinates.Text=map.Description(); var rows=Data.Array(d,"rows"); string next=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(rows)+Data.Text(d,"selected",""); if(next!=rowSignature) { selector.Children.Clear(); foreach(object item in rows) { var row=(Dictionary<string,object>)item; string id=Data.Text(row,"id",""), token=Data.Text(row,"token",""); var button=UI.Button("",delegate { if(!host.Frozen) { host.Send("game_select","page",page,"id",id,"token",token); selection.IsExpanded=false; } }); string caption=Data.Text(row,"summary",Data.Text(row,"text","")); button.Content=UI.ImageRow(caption,Data.Object(row,"artwork")); UI.Name(button,caption); button.HorizontalContentAlignment=HorizontalAlignment.Stretch; button.Margin=new Thickness(0,0,0,5); if(id==Data.Text(d,"selected","")) button.BorderThickness=new Thickness(1); selector.Children.Add(button); } rowSignature=next; } selection.Visibility=rows.Length>0 ? Visibility.Visible : Visibility.Collapsed;
-                notice.Text=Data.Text(d,"notice",""); notice.Visibility=notice.Text.Length>0 ? Visibility.Visible : Visibility.Collapsed;
-                actions.Children.Clear(); actionControls.Clear(); var extras=new List<MenuItem>(); Button more=null;
+                notice.Text=Data.Text(d,"notice",""); notice.Visibility=notice.Text.Length>0 ? Visibility.Visible : Visibility.Collapsed; if(receipt!=null) { receipt.Visibility=receiptBrief.Visibility=notice.Visibility; receiptBrief.Text=Data.Text(d,"notice_brief","操作回执"); }
+                string nextActions=new JavaScriptSerializer().Serialize(Data.Array(d,"actions"))+"/"+(Data.Text(d,"selected","").Length>0);
+                if(nextActions!=actionSignature) { var priorFocus=Keyboard.FocusedElement; var previousControls=new Dictionary<string,Control>(actionControls); actions.Children.Clear(); actionControls.Clear(); var extras=new List<MenuItem>(); Button more=null;
                 string primaryCommand=page=="inventory" ? "reference" : page=="backups" ? "backup_preview" : page=="map" ? "map_known" : "calculate";
                 if(page=="backups") foreach(object item in Data.Array(d,"actions")) if(Data.Text((Dictionary<string,object>)item,"id","")=="backup_confirm") primaryCommand="backup_confirm";
                 foreach(object item in Data.Array(d,"actions")) {
@@ -162,7 +170,8 @@ namespace Denghuo.Native {
                     if(command==primaryCommand) { var button=UI.Button(label,clicked,true); button.IsEnabled=!disabled; if(reason.Length>0) { button.ToolTip=reason; System.Windows.Controls.ToolTipService.SetShowOnDisabled(button,true); System.Windows.Automation.AutomationProperties.SetHelpText(button,reason); } actions.Children.Add(button); actionControls[command]=button; }
                     else if(!(page=="inventory" && Data.Text(d,"selected","").Length==0)) { var menuItem=UI.Item(label,clicked,!disabled); if(reason.Length>0) { menuItem.ToolTip=reason; System.Windows.Controls.ToolTipService.SetShowOnDisabled(menuItem,true); System.Windows.Automation.AutomationProperties.SetHelpText(menuItem,reason); } extras.Add(menuItem); actionControls[command]=menuItem; }
                 }
-                if(extras.Count>0) { more=UI.Button("更多操作",delegate { UI.Menu(more,extras.ToArray()); }); actions.Children.Add(more); }
+                if(extras.Count>0) { more=UI.Button("更多操作",delegate { UI.Menu(more,extras.ToArray()); }); actions.Children.Add(more); actionControls["__more"]=more; }
+                host.Manager.RebindTaskFocus(page,previousControls,actionControls,this,priorFocus); actionSignature=nextActions; }
                 if(Data.Flag(d,"focus_result")) { SetEditing(false); scroll.ScrollToTop(); }
             } finally { rendering=false; }
         }
@@ -194,8 +203,8 @@ namespace Denghuo.Native {
             RowDefinitions.Add(new RowDefinition());
             RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto });
             search.ToolTip="搜索名称、别名或用途 · ↓进入结果 · Enter打开首项";
+            search.Margin=new Thickness(0,0,0,8);
             searchHeader.Children.Add(search);
-            var hint=UI.Text("物品、怪物、技能 · 支持别名与用途",12,UI.Muted); hint.Margin=new Thickness(0,5,0,8); searchHeader.Children.Add(hint);
             Children.Add(searchHeader);
             back=UI.Button("‹ 返回结果",delegate { SetMode("search"); search.Focus(); });
             more=UI.Button("条目操作…",ShowActions);
@@ -209,7 +218,7 @@ namespace Denghuo.Native {
             bottom.Children.Add(primary); bottom.Children.Add(save); bottom.Margin=new Thickness(0,8,0,0); var footer=UI.Stack(feedback,bottom); Grid.SetRow(footer,2); Children.Add(footer); bottom.Visibility=Visibility.Collapsed; feedback.Visibility=Visibility.Collapsed;
             fields.Submit=Calculate; fields.Changed=delegate { Edited(); };
             note.AcceptsReturn=true; note.MinHeight=80; note.TextWrapping=TextWrapping.Wrap; note.TextChanged+=delegate { Edited(false); };
-            parameterBody.Children.Add(UI.Text("调整本次参考条件",16)); parameterBody.Children.Add(fields);
+            parameterBody.Children.Add(fields);
             parameterBody.Children.Add(UI.Section("用途与假设备注",UI.Field("备注（可选，未验证）",note),false));
             search.TextChanged+=delegate { if(!rendering && !Host.Frozen) Host.Send("query","surface","lookup","text",search.Text); };
             search.KeyDown+=delegate(object sender,KeyEventArgs e) {

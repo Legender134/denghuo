@@ -12,7 +12,7 @@ import threading
 from .backups import atomic_json
 
 
-DEFAULT = {'width': 480, 'height': 600, 'x': None, 'y': None,
+DEFAULT = {'width': 380, 'height': 460, 'x': None, 'y': None,
            'game_x': 16, 'game_y': 16, 'collapsed': False, 'page': 'overview'}
 PAGES = {'overview', 'inventory', 'lookup', 'equipment', 'alchemy', 'character',
          'floor', 'map', 'backups', 'plans', 'settings'}

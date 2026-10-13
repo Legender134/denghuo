@@ -79,7 +79,7 @@ class PlayOverlayTests(unittest.TestCase):
         self.assertTrue(self.native.style(card.background)&TRANSPARENT)
         card.hide();self.assertFalse(card.visible)
 
-    def test_default_game_display_shows_health_and_risk_without_shortcut(self):
+    def test_default_game_display_shows_conditional_advice_without_repeating_health(self):
         self.session.update_manual({'hp':4,'ht':30,'buffs':['Burning']})
         self.play.update(self.session.snapshot())
         self.play.game={'rect':(0,0,1280,720)}
@@ -87,16 +87,16 @@ class PlayOverlayTests(unittest.TestCase):
         self.assertTrue(self.play.status.visible)
         self.assertFalse(self.play.peek_open)
         summary=self.play.status.labels[1].cget('text')
-        self.assertIn('HP 4/30',summary)
-        self.assertIn(self.session.data['tips'][0]['title'],summary)
+        self.assertNotIn('HP 4/30',summary)
+        self.assertIn('接触水',summary)
+        self.assertNotIn('危险血量',summary)
 
     def test_healthy_game_display_keeps_class_advice_in_full_reference(self):
         self.play.update(self.session.snapshot())
         self.play.game={'rect':(0,0,1280,720)}
         self.play.draw()
         summary=self.play.status.labels[1].cget('text')
-        self.assertIn('HP 20/30',summary)
-        self.assertIn('暂无特殊风险',summary)
+        self.assertEqual('',summary)
         self.assertNotIn('战士：检查纹章和护甲',summary)
         self.assertIn('战士：检查纹章和护甲',str(self.session.data['tips']))
 

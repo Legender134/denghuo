@@ -648,6 +648,7 @@ class PlayerValues:
             return
 
         levels=sorted(set([*range(11),p['level']]))
+        first_ring_section=len(result)
         for label,base,unit in formulas.get(kind,[]):
             result.append(table(label,['戒指等级','正常（'+unit+'）','诅咒（'+unit+'）'],[[f'{l:+d}',display(base**(l+1)),display(base**min(0,l-2))] for l in levels], '只佩戴一枚，无其他天赋或临时等级修正。'))
         if kind in ('might','sharpshooting','force'):
@@ -665,6 +666,14 @@ class PlayerValues:
                 rows.append([f'{level:+d}',normal,brawler,cursed,cursed_brawler])
             result.append(table('徒手与拳击架势',['戒指等级','普通徒手伤害','拳击架势伤害','诅咒徒手伤害','诅咒拳击架势伤害'],rows,
                 f'有效力量 {p["strength"]}；只佩戴一枚，未加其他修正。诅咒不保证随升级解除；拳击架势需要决斗家主动开启。'))
+
+        for section in result[first_ring_section:]:
+            selected=levels.index(p['level'])
+            section['selected_row']=selected
+            row=section['rows'][selected]
+            section['primary_values']=[metric(section['title']+' · '+label,value)
+                for label,value in zip(section['columns'][1:],row[1:])]
+            section['summary_note']=f'当前 {p["level"]:+d}；只佩戴一枚，无其他等级修正。正常与诅咒分别计算。'
 
     def combat_effects(self, identity, owner, p, result, requested):
         if not owner:return

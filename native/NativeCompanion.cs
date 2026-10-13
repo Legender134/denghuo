@@ -154,7 +154,19 @@ namespace Denghuo.Native {
             var button=UI.Button("取消退出，返回编辑",cancel); button.IsEnabled=canCancel; dialog.Actions.Children.Add(button); dialog.Closing+=delegate(object sender,System.ComponentModel.CancelEventArgs e) { if(!dialog.Silent) { e.Cancel=true; cancel(); } }; activeExit=dialog; dialog.Show();
         }
         void Confirm(Dictionary<string,object> d) { Lookup.FlushEdit(); Settings.FlushEdit(); Manager.FlushTasks(); string surface=Data.Text(d,"surface","lookup"),purpose=Data.Text(d,"purpose","replace"); var dialog=Decision(Data.Text(d,"title","替换草稿"),Data.Text(d,"text","请核对当前草稿"),purpose=="settings_reload" ? "保存副本并重新读取" : "保存副本并载入",purpose=="settings_reload" ? "放弃修改并重新读取" : "放弃草稿并载入"); dialog.ShowDialog(); if(purpose=="game_replace") Send("game_action","page",Data.Text(d,"page","equipment"),"command","replace_decision","decision",dialog.Decision); else Send(purpose=="settings_reload" ? "settings_reload_decision" : "replace_decision","surface",surface,"decision",dialog.Decision); }
-        void GameConfirm(Dictionary<string,object> d) { bool undo=Data.Flag(d,"undo"); var dialog=new Dialog(Manager,undo ? "核对撤回回档" : "核对恢复进度",480,480); dialog.Body.Children.Add(UI.Text(Data.Text(d,"text",""))); dialog.Actions.Children.Add(UI.Button(undo ? "已关闭游戏，确认撤回" : "已关闭游戏，确认恢复",delegate { dialog.Choose("restore"); },true)); dialog.Actions.Children.Add(UI.Button("取消",delegate { dialog.Choose("cancel"); })); if(dialog.ShowDialog()==true) Send("game_action","page","backups","command","backup_execute","token",Data.Text(d,"token","")); }
+        internal Dialog BackupConfirmation(Dictionary<string,object> d) {
+            bool undo=Data.Flag(d,"undo"); string slot=Data.Text(d,"slot",""), root=Data.Text(d,"save_root","");
+            var dialog=new Dialog(Manager,undo ? "核对撤回回档" : "核对恢复进度",480,480);
+            dialog.Body.Children.Add(UI.Text(Data.Text(d,"text","")));
+            var confirmed=UI.Name(new CheckBox { Content=UI.Text("已关闭游戏，并核对上述目录的槽位 "+slot), Margin=new Thickness(0,16,0,8) },"确认目标目录与槽位 "+slot);
+            dialog.Body.Children.Add(confirmed);
+            var execute=UI.Button(undo ? "确认撤回" : "确认恢复",delegate { if(confirmed.IsChecked==true && slot.Length>0 && root.Length>0) dialog.Choose("restore"); },true);
+            execute.IsEnabled=false;
+            confirmed.Checked+=delegate { execute.IsEnabled=slot.Length>0 && root.Length>0; }; confirmed.Unchecked+=delegate { execute.IsEnabled=false; };
+            dialog.Actions.Children.Add(execute); dialog.Actions.Children.Add(UI.Button("取消",delegate { dialog.Choose("cancel"); }));
+            return dialog;
+        }
+        void GameConfirm(Dictionary<string,object> d) { var dialog=BackupConfirmation(d); if(dialog.ShowDialog()==true) Send("game_action","page","backups","command","backup_execute","token",Data.Text(d,"token","")); }
         void GameNamePlan(Dictionary<string,object> d) {
             string page=Data.Text(d,"page",""); var dialog=new NameDialog(Manager,d); activeName=dialog; activeNamePage=page;
             dialog.Changed=delegate { if(!Frozen) Manager.SetTaskPlanMetadata(page,dialog.PlanName,dialog.Note); };

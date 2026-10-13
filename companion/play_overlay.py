@@ -10,7 +10,7 @@ import tkinter as tk
 import webbrowser
 from tkinter import ttk, simpledialog, messagebox
 
-from .play_state import SnapshotNotices, place, source_label
+from .play_state import SnapshotNotices, place, source_label, risk_summary
 from .quick_reference import detail_text, peek_reference
 from .windows import WindowsDisplay
 
@@ -347,8 +347,9 @@ class PlayDisplay:
         heading = '拖动入口 · 双击锁定' if self.editing else f'灯火 · {short_source} · {backup_text}'
         data = self.snap.get('data') or {}
         hero = data.get('hero')
-        tip = next((tip for tip in data.get('tips', []) if tip['severity'] in ('critical', 'warning')), None)
-        summary = (f"HP {hero['hp']:g}/{hero['ht']:g} · " + (tip['title'] if tip else '暂无特殊风险')) if hero else ''
+        tips = [tip for tip in data.get('tips', []) if tip['severity'] in ('critical', 'warning')]
+        tip = next((tip for tip in tips if tip['id'] in ('burning', 'ooze', 'corrosion', 'dot', 'roots')), next(iter(tips), None))
+        summary = risk_summary(data, tip) if tip and not self.snap.get('error') else ''
         severity = tip['severity'] if tip and not self.snap['stale'] else 'info'
         width = min(self.pixels(290), rect[2] - rect[0])
         width, height = self.status.content(heading, summary, '', scale, width, self.state['opacity'], severity)
