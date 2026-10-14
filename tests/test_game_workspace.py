@@ -177,6 +177,67 @@ class GameWorkspaceTests(ControllerFixture):
         with self.assertRaises(ValueError):
             self.session.knowledge.save('无效绑定', 'equipment', None, params, {'mode': 'save', 'context_token': 'plain-directory'})
 
+    def test_new_native_inventory_comparison_saves_both_public_objects_and_reopens_their_records(self):
+        from companion.engine import PREFIX, analyze
+        items, records = [], []
+        for index, (effect, title) in enumerate((('Blazing', '主武器'), ('Chilling', '备用武器'))):
+            items.append({'__className': PREFIX+'items.weapon.melee.Sword', 'level': 2,
+                'levelKnown': True, 'cursedKnown': True, 'cursed': False, 'custom_note_id': index+1,
+                'enchantment': {'__className': PREFIX+'items.weapon.enchantments.'+effect}})
+            records.append({'__className': PREFIX+'journal.Notes$CustomRecord', 'id_number': index+1,
+                'title': title, 'body': title+'的独立用途'})
+        self.session.data = analyze({'version': self.session.catalog.data['version_code'], 'depth': 2,
+            'challenges': 0, 'hero': {'class': 'WARRIOR', 'lvl': 5, 'HP': 4, 'HT': 30,
+                'STR': 14, 'inventory': items, 'buffs': []}, 'records': records}, self.session.catalog)
+        expected = {side: {'id': item['key'], 'name': item['name'],
+            'effect_id': item['equipment_state']['effect_id'], 'user_note': copy.deepcopy(item['user_note'])}
+            for side, item in zip(('a', 'b'), self.session.data['items'])}
+        for index, side in enumerate(('a', 'b')):
+            row = self.workspace.inventory()[index]
+            self.workspace.handle({'action': 'game_select', 'page': 'inventory', 'id': row['id'], 'token': row['token']})
+            self.workspace.handle({'action': 'game_action', 'page': 'inventory', 'command': 'equip_'+side})
+            self.assertEqual(self.workspace.sources['equipment'].get('references', {}).get(side), expected[side])
+        self.workspace.raw['equipment'].update(planning='0', name='小窗新建比较')
+        self.workspace.handle({'page': 'equipment', 'command': 'calculate', 'values': self.workspace.display_raw('equipment')})
+        params = copy.deepcopy(self.workspace.calculated['equipment'])
+        self.workspace.handle({'page': 'equipment', 'command': 'save'}); self.finish_job()
+        self.native.error.assert_not_called()
+        saved = self.workspace.saved['equipment']
+        opened = self.session.knowledge.reopen(saved['id'])  # Shared native/web reopen contract.
+        self.assertEqual(opened['plan']['origin']['references'], expected)
+        self.workspace.open_plan(opened, confirmed=True)
+        self.assertEqual(self.workspace.calculated['equipment'], params)
+        for reference in expected.values():
+            for text in (reference['name'], self.workspace.names[reference['effect_id']], reference['user_note']['title'], reference['user_note']['body']):
+                self.assertIn(text, self.workspace.results['equipment'])
+        self.assertIn('效果身份仅用于辨认，未计额外收益', self.workspace.results['equipment'])
+        self.assertEqual(self.workspace.structured_results['equipment']['rows'], opened['result']['rows'])
+        self.workspace.emit('equipment')
+        self.assertEqual(self.host.commands[-1][1]['result_details'], [])  # Reuse existing expandable full comparison.
+
+    def test_single_native_object_completes_manual_counterpart_and_identity_edit_clears_old_record(self):
+        self.equipment()
+        item = {'key': 'items.weapon.melee.sword', 'name': '烈焰单手剑 +2', 'location': '背包',
+            'level': 2, 'cursed': False, 'mastery': False, 'augmentation': 'NONE',
+            'equipment_state': {'hardened': False, 'effect_id': 'items.weapon.enchantments.blazing'},
+            'user_note': {'title': '主武器', 'body': '保留此记录', 'scope': 'specific_item'}}
+        self.workspace.import_equipment(item, 'a')
+        self.workspace.raw['equipment'].update(planning='0', name='背包与手填比较')
+        self.workspace.calculate('equipment')
+        references = copy.deepcopy(self.workspace.sources['equipment']['references'])
+        self.assertEqual(references['b'], {'id': 'items.weapon.melee.longsword', 'name': '长剑', 'effect_id': None, 'user_note': None})
+        self.workspace.handle({'page': 'equipment', 'command': 'save'}); self.finish_job()
+        self.native.error.assert_not_called()
+        self.assertEqual(self.session.knowledge.reopen(self.workspace.saved['equipment']['id'])['plan']['origin']['references'], references)
+        self.workspace.edit('equipment', {**self.workspace.raw['equipment'], 'id_a': 'items.weapon.melee.shortsword'})
+        self.workspace.calculate('equipment')
+        self.assertEqual(self.workspace.sources['equipment']['references']['b'], references['b'])
+        self.assertIsNone(self.workspace.sources['equipment']['references']['a']['user_note'])
+        self.assertNotIn('保留此记录', self.workspace.results['equipment'])
+        self.workspace.handle({'page': 'equipment', 'command': 'undo'})
+        self.workspace.calculate('equipment')
+        self.assertEqual(self.workspace.sources['equipment']['references'], references)
+
     def test_native_equipment_roundtrip_retains_references_and_only_replaces_the_selected_object(self):
         self.equipment(); self.workspace.raw['equipment']['planning'] = '0'; self.workspace.calculate('equipment')
         references = {side: {'id': self.workspace.raw['equipment']['id_'+side], 'name': side+' 捕获的装备',

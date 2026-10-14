@@ -557,6 +557,13 @@ class GameWorkspace:
         from .knowledge import canonical_plan
         args = self.equipment_args() if page == 'equipment' else self.alchemy_args() if page == 'alchemy' else self.character_args()
         canonical, result = canonical_plan(self.session, page, None, args)
+        if page == 'equipment' and self.sources.get(page, {}).get('references'):
+            references = self.sources[page]['references']
+            for side in ('a', 'b'):
+                identity = canonical['id_'+side]
+                if references.get(side, {}).get('id') != identity:
+                    references[side] = {'id': identity, 'name': self.names.get(identity, identity),
+                                        'effect_id': None, 'user_note': None}
         self.calculated[page] = canonical
         self.structured_results[page] = copy.deepcopy(result)
         self.results[page] = self.result_text(page, result)
@@ -565,6 +572,15 @@ class GameWorkspace:
     def result_text(self, page, result):
         if page == 'equipment':
             lines = [f"A · {result['choices'][0]['name']}    /    B · {result['choices'][1]['name']}"]
+            references = self.sources.get(page, {}).get('references', {})
+            if references:
+                lines.append('公开装备固定参考（捕获时名称；效果身份仅用于辨认，未计额外收益；数值以所填支持条件为准）')
+                for side in ('a', 'b'):
+                    reference = references[side]
+                    lines.append(side.upper()+' · '+reference['name']+
+                        ('；公开效果：'+self.names.get(reference['effect_id'], reference['effect_id']) if reference.get('effect_id') else ''))
+                    note = reference.get('user_note')
+                    if note: lines.append('用户记录（非游戏事实）：'+note['title']+'\n'+note['body'])
             planning = result.get('planning')
             if planning:
                 pending = ['AB'[index] for index, choice in enumerate(planning['choices']) if choice.get('upgrade_pending')]
@@ -1325,10 +1341,9 @@ class GameWorkspace:
             {**{key+'_'+side: provenance if value is not None else '未确认' for key, value in public.items()},
              'infusion_'+side: '未确认'},
             '装备 '+side.upper()+' · '+item['name']+' · '+item['location']+'，固定带入该背包实例的'+origin+'装备条件；游戏鉴定状态未改变，未确认的条件仍需明确核对。')
-        if self.sources['equipment'].get('references'):
-            self.sources['equipment']['references'][side] = {'id': item['key'], 'name': item['name'],
-                'effect_id': (item.get('equipment_state') or {}).get('effect_id'),
-                'user_note': copy.deepcopy(item.get('user_note'))}
+        self.sources['equipment'].setdefault('references', {})[side] = {'id': item['key'], 'name': item['name'],
+            'effect_id': (item.get('equipment_state') or {}).get('effect_id'),
+            'user_note': copy.deepcopy(item.get('user_note'))}
         self.dirty.add('equipment'); self.results.pop('equipment', None); self.calculated.pop('equipment', None)
 
     def import_snapshot(self, page):
