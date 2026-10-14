@@ -41,6 +41,68 @@ def field(key, label, value='', choices=None, section='条件'):
             'choices': [{'id': str(k), 'text': v} for k, v in choices] if choices is not None else [], 'section': section}
 
 
+def comparison_summary(result):
+    """Select decision metrics; reuse every calculated outcome without new arithmetic."""
+    choices, params = result['choices'], result['params']
+    kind = result['family']
+    notes = []
+    branch_labels = []
+    state_names = {'infusion': {'1': '注魔保留', '0': '注魔消失'},
+                   'curse': {'1': '诅咒保留', '0': '解咒', 'unknown': '诅咒未确认'},
+                   'hardened': {'1': '硬化保留', '0': '无硬化', 'unknown': '硬化未确认'}}
+    for side, choice in zip(('a', 'b'), choices):
+        augment = {'SPEED': '速度', 'DAMAGE': '伤害', 'EVASION': '闪避', 'DEFENSE': '防御'}.get(params.get('augment_'+side))
+        choice['summary_name'] = choice['name']+f" {choice['level']:+d}"+(f' · {augment}' if augment else '')
+        if params.get('level_known_'+side) == '0': choice['summary_name'] += '（假设）'
+        if choice.get('upgrade_pending'): notes.append(side.upper()+' 注魔未确认，升级待计算')
+        branches = choice.get('upgrade_branches', [])
+        if len(branches) > 1:
+            # Order is shared with every metric's possible outcomes below.
+            dimensions = [key for key in state_names if len({branch[key] for branch in branches}) > 1]
+            if len({branch['resin'] for branch in branches}) > 1: dimensions.append('resin')
+            names = [' · '.join('树脂'+str(branch[key]) if key == 'resin' else state_names[key][branch[key]]
+                                for key in dimensions) or f"{branch['level']:+d}" for branch in branches]
+            branch_labels.append(side.upper()+' 升级可能：'+' / '.join(names))
+
+    def outcomes(choice, label):
+        branches = choice.get('upgrade_branches', [])
+        if not branches: return choice['upgraded'].get(label, '待确认')
+        cells = [branch['metrics'].get(label, '—') for branch in branches]
+        return cells[0] if len(set(cells)) == 1 else ' / '.join(cells)
+
+    rows = result['rows']
+    by_label = {row['label']: row for row in rows}
+    selected = []
+    def add(label, default=None):
+        if label not in by_label: return
+        values = [choice['current'].get(label, '—') for choice in choices]
+        values += [branch['metrics'].get(label, '—') for choice in choices for branch in choice.get('upgrade_branches', [])]
+        if default is not None and all(value == default for value in values): return
+        selected.append(label)
+
+    add('力量缺口', '0')
+    if kind in ('weapon', 'missile'):
+        add('最高基础伤害')
+        add('攻击耗时' if kind == 'weapon' else '目标投掷耗时')
+        if kind == 'weapon':
+            add('命中倍率', '1'); add('攻击距离', '1'); add('力量与武器允许偷袭', '是')
+        else:
+            add('相邻投掷命中倍率'); add('非相邻投掷命中倍率')
+            notes.append('投掷按目标位置分别判断；未确认快速投掷就绪。')
+    elif kind == 'armor':
+        add('常规减伤'); add('护甲闪避惩罚倍率', '1')
+        add('护甲强化闪避加值', '0'); add('移动速度倍率', '1')
+    else:
+        selected = [row['label'] for row in rows[:2]]
+    if any(len(choice.get('upgrade_branches', [])) > 1 for choice in choices):
+        notes.append('升级分支为可能结果，非保证。')
+    result['summary_rows'] = [{**by_label[label], 'values': [value for choice in choices
+        for value in (choice['current'].get(label, '—'), outcomes(choice, label))]} for label in selected]
+    result['summary_branches'] = branch_labels
+    result['summary_notes'] = notes
+    return result
+
+
 class GameWorkspace:
     def __init__(self, native):
         self.native, self.session, self.host = native, native.session, native.host
@@ -494,6 +556,12 @@ class GameWorkspace:
             lines.append('条件与投入明细')
             for row in result['rows']:
                 if row.get('condition'): lines.append(row['label']+' · '+row['condition'])
+            for side, choice in zip(('A', 'B'), result['choices']):
+                if len(choice.get('upgrade_branches', [])) > 1:
+                    lines.append(side+' · 升级一次的可能结果')
+                    for branch in choice['upgrade_branches']:
+                        lines.append(f"{branch['level']:+d} · "+branch['condition'])
+                        lines += [cell['label']+' '+cell['value']+' '+cell.get('unit', '') for cell in branch['metric_rows']]
             if planning:
                 for index, choice in enumerate(planning['choices']):
                     lines.append('AB'[index]+' · '+choice['name']+' · '+choice.get('explanation', ''))
@@ -681,8 +749,9 @@ class GameWorkspace:
 
     def emit(self, page=None):
         from .reference import native_artwork, native_item_artwork
-        if page is not None: self.page = page
-        page = self.page; specs, rows, actions = [], [], []
+        # Background receipts refresh their own pane without changing navigation.
+        page = self.page if page is None else page
+        specs, rows, actions = [], [], []
         task_snap = self.session.snapshot()
         result_details = self.result_details(page)
         if page == 'inventory':
@@ -798,6 +867,7 @@ class GameWorkspace:
             if key not in ('name', 'note') and spec['raw'] in ('', 'unknown'):
                 spec['help'] = '条件未确认；计算前请核对。' + (' '+spec['help'] if task_source.get('stale') else '')
         comparison = copy.deepcopy(self.structured_results.get(page, {})) if page == 'equipment' and page in self.calculated else {}
+        if comparison: comparison_summary(comparison)
         for choice in comparison.get('choices', []):
             choice['artwork'] = native_artwork(choice.get('id'))
         self.host.command('game_state', page=page, fields=specs, rows=rendered_rows,
@@ -1088,6 +1158,7 @@ class GameWorkspace:
             self.focus_result = page
         else:
             self.calculated.pop(page, None); self.results[page] = '当前规则无法计算原记录：'+opened.get('calculation_error', '')+'；原参数和备注仍保留。'
+        self.page = page
         self.emit(page); self.host.command('game_show', page=page)
         return True
 
@@ -1175,7 +1246,8 @@ class GameWorkspace:
             self.native.queue_io('正在只读揭示所选物品', lambda: inspect_item(self.session, {'expected': row['expected'], 'instance_key': item['instance_key'], 'reveal': True}), complete)
         elif action.startswith('equip_'):
             if not (item.get('known') or item.get('revealed')) or item.get('available') is not True or not family(item.get('key')): raise ValueError('请选择身份已知或已主动揭示、当前可用的受支持装备；未知身份不能自动带入')
-            self.import_equipment(item, action[-1]); self.emit('equipment'); self.host.command('game_show', page='equipment')
+            self.import_equipment(item, action[-1]); self.page = 'equipment'
+            self.emit('equipment'); self.host.command('game_show', page='equipment')
         else:
             if not (item.get('known') or item.get('revealed')): raise ValueError('未知身份只提供说明；需要时可先主动揭示所选物品')
             from .native_workspace import NumericLookup

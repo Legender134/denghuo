@@ -344,7 +344,8 @@ class PlayDisplay:
         backup_text = {'blocked': '备份受阻', 'paused': '备份暂停', 'protected': '保存已备份'}.get(backup, '等待保存')
         if backup == 'waiting' and health.get('last_save_protected'):
             backup_text = '上次保存已备份'
-        heading = '拖动入口 · 双击锁定' if self.editing else f'灯火 · {short_source} · {backup_text}'
+        status_text = short_source if short_source == backup_text else f'{short_source} · {backup_text}'
+        heading = '拖动入口 · 双击锁定' if self.editing else f'灯火 · {status_text}'
         data = self.snap.get('data') or {}
         hero = data.get('hero')
         tips = [tip for tip in data.get('tips', []) if tip['severity'] in ('critical', 'warning')]

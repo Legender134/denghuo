@@ -61,12 +61,14 @@ class MonsterReferenceTests(unittest.TestCase):
                 combat=self.detail(name)['blocks'][0]
                 selected=combat['primary_values'][1]
                 self.assertEqual(selected,self.mechanisms(name)[label])
-                self.assertIn(selected['condition'],combat['summary_note'])
+                self.assertTrue(selected['condition'])
+                self.assertNotIn(selected['condition'],combat['summary_note'])
                 self.assertEqual(combat['values'][2]['value'],'不使用普通攻击')
         yog=self.detail('yogdzewa')['blocks'][0]
         self.assertEqual(yog['primary_values'][1]['value'],'无敌')
         self.assertIn('古神之拳',yog['primary_values'][1]['label'])
-        self.assertIn('任意古神之拳仍存活',yog['summary_note'])
+        self.assertIn('任意古神之拳仍存活',yog['primary_values'][1]['condition'])
+        self.assertNotIn('任意古神之拳仍存活',yog['summary_note'])
 
     def test_primary_summoned_skeleton_keeps_different_initial_and_maximum_health(self):
         combat=self.detail('necromancer$necroskeleton')['blocks'][0]

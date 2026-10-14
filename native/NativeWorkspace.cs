@@ -180,27 +180,30 @@ namespace Denghuo.Native {
                 var choice=(Dictionary<string,object>)choices[i];
                 var identity=new DockPanel { Margin=new Thickness(0,0,6,0) };
                 var picture=UI.Artwork(Data.Object(choice,"artwork"),16); DockPanel.SetDock(picture,Dock.Left); identity.Children.Add(picture);
-                var name=UI.Text((i==0 ? "A · " : "B · ")+Data.Text(choice,"name",""),13); name.FontWeight=FontWeights.SemiBold; name.VerticalAlignment=VerticalAlignment.Center; identity.Children.Add(name); identities.Children.Add(identity);
+                var name=UI.Text((i==0 ? "A · " : "B · ")+Data.Text(choice,"summary_name",Data.Text(choice,"name","")),13); name.FontWeight=FontWeights.SemiBold; name.VerticalAlignment=VerticalAlignment.Center; identity.Children.Add(name); identities.Children.Add(identity);
             }
             comparison.Children.Add(identities);
-            comparison.Children.Add(UI.Text("当前 → 升级一次",12,UI.Muted));
-            var rows=new List<Dictionary<string,object>>(); foreach(object item in Data.Array(data,"rows")) rows.Add((Dictionary<string,object>)item);
+            var branches=Data.Array(data,"summary_branches");
+            if(branches.Length==0) comparison.Children.Add(UI.Text("基础参考 · 当前 → 升级一次",12,UI.Muted));
+            else foreach(object branch in branches) comparison.Children.Add(UI.Text(Convert.ToString(branch),12,UI.Gold));
             var primary=new List<Dictionary<string,object>>();
-            foreach(string label in new[]{"力量缺口","最高基础伤害"}) foreach(var metric in rows) if(Data.Text(metric,"label","")==label && primary.Count<2) primary.Add(metric);
-            foreach(var metric in rows) if(primary.Count<2 && !primary.Contains(metric)) primary.Add(metric);
+            foreach(object item in Data.Array(data,"summary_rows")) primary.Add((Dictionary<string,object>)item);
             var grid=new Grid { Margin=new Thickness(0,4,0,8) }; grid.ColumnDefinitions.Add(new ColumnDefinition { Width=new GridLength(1.1,GridUnitType.Star) }); grid.ColumnDefinitions.Add(new ColumnDefinition()); grid.ColumnDefinitions.Add(new ColumnDefinition());
             int row=0; foreach(var metric in primary) {
                 var cells=Data.Array(metric,"values"); if(cells.Length!=4) continue;
                 grid.RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto }); string unit=Data.Text(metric,"unit","");
                 var label=UI.Text(Data.Text(metric,"label","")+(unit.Length>0 ? " · "+unit : ""),12,UI.Muted); label.Margin=new Thickness(0,5,6,5); Grid.SetRow(label,row); grid.Children.Add(label);
-                for(int i=0;i<2;i++) { var value=UI.Text((i==0 ? "A " : "B ")+Convert.ToString(cells[i*2])+" → "+Convert.ToString(cells[i*2+1]),13); value.Margin=new Thickness(0,5,5,5); Grid.SetRow(value,row); Grid.SetColumn(value,i+1); value.ToolTip=Data.Text(metric,"condition",""); UI.Name(value,Data.Text(metric,"label","")+" "+value.Text+" "+unit); grid.Children.Add(value); }
+                for(int i=0;i<2;i++) {
+                    string current=Convert.ToString(cells[i*2]), upgraded=Convert.ToString(cells[i*2+1]);
+                    var value=UI.Text(current==upgraded ? current : current+"→"+upgraded.Replace(" / ","/"),13);
+                    value.VerticalAlignment=VerticalAlignment.Top; value.Margin=new Thickness(0,5,5,5);
+                    Grid.SetRow(value,row); Grid.SetColumn(value,i+1); value.ToolTip=Data.Text(metric,"condition","");
+                    UI.Name(value,(i==0 ? "A " : "B ")+Data.Text(metric,"label","")+" "+value.Text+" "+unit); grid.Children.Add(value);
+                }
                 row++;
             }
             comparison.Children.Add(grid);
-            if(planning.Count>0) {
-                var pending=new List<string>(); int n=0; foreach(object item in Data.Array(planning,"choices")) { var side=(Dictionary<string,object>)item; if(Data.Flag(side,"upgrade_pending")) pending.Add(n==0 ? "A" : "B"); n++; }
-                if(pending.Count>0) comparison.Children.Add(UI.Text("预算待确认 · "+String.Join("、",pending.ToArray())+" 注魔假设未确认",12,UI.Gold));
-            }
+            foreach(object note in Data.Array(data,"summary_notes")) comparison.Children.Add(UI.Text(Convert.ToString(note),12,UI.Gold));
         }
         public void Render(Dictionary<string,object> d) {
             if(Data.Number(d,"draft_revision")<revision) return; rendering=true; try { revision=Data.Number(d,"draft_revision"); Dirty=Data.Flag(d,"dirty"); calculated=Data.Flag(d,"calculated"); values=new Dictionary<string,object>(Data.Object(d,"raw"));

@@ -168,6 +168,93 @@ class GameWorkspaceTests(ControllerFixture):
             curse_a='0', curse_b='0', planning='1', upgrade_budget='2')
         self.workspace.dirty.add('equipment')
 
+    def test_late_background_receipts_preserve_active_inventory_and_its_refresh(self):
+        from companion.engine import PREFIX
+        from companion.native_manager import NativeManager
+        item = self.session.catalog.item({'__className': PREFIX+'items.potions.PotionOfHealing',
+            'quantity': 1}, {'PotionOfHealing_known': True})
+        item.update(instance_key='item-0', location='背包', available=True)
+        self.session.data['items'] = [item]
+        for job in ('backups', 'save'):
+            with self.subTest(job=job):
+                if job == 'backups':
+                    self.workspace.handle({'action': 'game_page', 'page': 'backups'})
+                else:
+                    self.equipment(); self.workspace.calculate('equipment')
+                    self.workspace.raw['equipment']['name'] = '后台保存'
+                    self.workspace.handle({'page': 'equipment', 'command': 'save'})
+                self.workspace.handle({'action': 'game_page', 'page': 'inventory'})
+                self.finish_job()
+                self.assertEqual(self.workspace.page, 'inventory')
+                self.assertFalse(self.native.error.called)
+                self.host.commands.clear()
+                self.session.data['items'][0]['quantity'] += 1
+                self.session.revision += 1
+                ui = NativeManager.__new__(NativeManager)
+                ui.manager, ui.session, ui.host, ui.workspace = self.manager, self.session, self.host, self.workspace
+                ui.process_exit, ui.report_drafts = Mock(), Mock()
+                ui.exit_state, ui.signature = None, None
+                ui.update(self.session.snapshot(), force=True)
+                updates = [state for action, state in self.host.commands
+                           if action == 'game_state' and state['page'] == 'inventory']
+                self.assertEqual(len(updates), 1)
+                self.assertIn('×'+str(self.session.data['items'][0]['quantity']), updates[0]['rows'][0]['text'])
+
+    def test_comparison_summary_keeps_speed_tradeoff_and_distinct_equipment_identity(self):
+        self.equipment()
+        self.workspace.raw['equipment'].update(id_b='items.weapon.melee.sword', strength='16',
+            augment_a='SPEED', augment_b='DAMAGE', level_known_a='1', level_known_b='1')
+        self.workspace.calculate('equipment'); self.workspace.emit('equipment')
+        comparison = self.host.commands[-1][1]['comparison']
+        self.assertEqual([choice['summary_name'] for choice in comparison['choices']],
+                         ['单手剑 +0 · 速度', '单手剑 +0 · 伤害'])
+        rows = {row['label']: row['values'] for row in comparison['summary_rows']}
+        self.assertEqual(rows['最高基础伤害'], ['14', '17', '30', '36'])
+        self.assertEqual(rows['攻击耗时'], ['0.666667', '0.666667', '1.66667', '1.66667'])
+        self.assertNotIn('力量缺口', rows)
+        self.workspace.raw['equipment'].update(id_a='items.weapon.melee.flail', strength='10')
+        self.workspace.calculate('equipment'); self.workspace.emit('equipment')
+        rows = {row['label']: row['values'] for row in self.host.commands[-1][1]['comparison']['summary_rows']}
+        self.assertIn('力量缺口', rows); self.assertIn('命中倍率', rows)
+        self.assertEqual(rows['力量与武器允许偷袭'][0], '否')
+
+    def test_comparison_primary_includes_both_random_upgrade_outcomes_and_pending_conditions(self):
+        self.equipment()
+        self.workspace.raw['equipment'].update(strength='20', level_a='6', infusion_a='1', hardened_a='0', planning='0')
+        self.workspace.calculate('equipment'); self.workspace.emit('equipment')
+        comparison = self.host.commands[-1][1]['comparison']
+        damage = next(row for row in comparison['summary_rows'] if row['label'] == '最高基础伤害')
+        self.assertEqual(damage['values'][1], '52 / 44')
+        self.assertEqual(comparison['summary_branches'], ['A 升级可能：注魔保留 / 注魔消失'])
+        self.assertIn('非保证', ' '.join(comparison['summary_notes']))
+        self.assertEqual(len(comparison['choices'][0]['upgrade_branches']), 2)
+        self.assertIn('+8 ·', self.host.commands[-1][1]['text'])
+        self.assertIn('+6 ·', self.host.commands[-1][1]['text'])
+        self.workspace.raw['equipment'].update(infusion_a='unknown', planning='0')
+        self.workspace.calculate('equipment'); self.workspace.emit('equipment')
+        comparison = self.host.commands[-1][1]['comparison']
+        self.assertIn('A 注魔未确认，升级待计算', comparison['summary_notes'])
+        self.assertFalse(comparison.get('planning'))
+
+    def test_armor_and_missile_summaries_keep_their_relevant_penalties_and_conditions(self):
+        self.equipment()
+        self.workspace.raw['equipment'].update(id_a='items.armor.platearmor', id_b='items.armor.platearmor',
+            strength='16', augment_a='EVASION', augment_b='DEFENSE')
+        self.workspace.calculate('equipment'); self.workspace.emit('equipment')
+        comparison = self.host.commands[-1][1]['comparison']
+        labels = [row['label'] for row in comparison['summary_rows']]
+        for label in ('常规减伤', '力量缺口', '护甲闪避惩罚倍率', '护甲强化闪避加值', '移动速度倍率'):
+            self.assertIn(label, labels)
+        self.workspace.raw['equipment'].update(id_a='items.weapon.missiles.shuriken',
+            id_b='items.weapon.missiles.throwingknife', augment_a='NONE', augment_b='NONE')
+        self.workspace.calculate('equipment'); self.workspace.emit('equipment')
+        comparison = self.host.commands[-1][1]['comparison']
+        self.assertIn('未确认快速投掷就绪', ' '.join(comparison['summary_notes']))
+        labels = [row['label'] for row in comparison['summary_rows']]
+        self.assertIn('目标投掷耗时', labels)
+        self.assertIn('相邻投掷命中倍率', labels); self.assertIn('非相邻投掷命中倍率', labels)
+        self.assertNotIn('快速投掷就绪耗时', labels)
+
     def alchemy(self):
         self.workspace.raw['alchemy'].update(energy='12', resources='1', **{
             'r0.id': 'items.potions.potionofhealing', 'r0.quantity': '3', 'r0.reserve': '1', 'r0.origin': 'manual',
@@ -193,6 +280,7 @@ class GameWorkspaceTests(ControllerFixture):
         self.finish_job(); self.assertFalse(self.native.error.called)
         plan = self.workspace.saved['equipment']; self.assertNotIn('equipment', self.workspace.dirty)
         self.workspace.open_plan(self.session.knowledge.reopen(plan['id']))
+        self.assertEqual(self.workspace.page, 'equipment')
         self.workspace.calculate('equipment'); self.assertEqual(self.workspace.calculated['equipment'], original)
 
     def test_comparison_artwork_is_presentation_only_and_keeps_calculated_inputs(self):

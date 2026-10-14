@@ -147,6 +147,23 @@ class CompactOverviewTests(ControllerFixture):
 
 
 class NumericControllerTests(ControllerFixture):
+    def test_upgrade_scroll_primary_tracks_selected_level_and_exclusive_risk_conditions(self):
+        self.open('items.scrolls.scrollofupgrade')
+        for level, normal, hardened in ((0, '0', '0'), (6, '40', '10'), (10, '100', '100')):
+            with self.subTest(level=level):
+                self.lookup.variables['level'].set(str(level))
+                self.lookup.calculate(); self.finish()
+                state = self.host.commands[-1][1]
+                primary = state['primary_values']
+                self.assertEqual([(row['label'], row['value'], row['unit']) for row in primary],
+                    [('普通附魔 / 刻印消失', normal, '%'), ('硬化保护消失', hardened, '%')])
+                self.assertIn('未硬化', primary[0]['condition'])
+                self.assertIn('已硬化', primary[1]['condition'])
+                self.assertIn('本次保留效果', primary[1]['condition'])
+                self.assertIn(f'{level:+d} → {level+1:+d}', state['primary_note'])
+                self.assertIn('分别判断', state['primary_note'])
+                self.assertTrue(any('诅咒' in str(section) for section in state['numeric_sections']))
+
     def test_latest_import_replaces_pending_calculation_and_completes(self):
         self.open('items.potions.potionofhealing')
         self.lookup.variables['hp'].set('5')
