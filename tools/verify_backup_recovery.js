@@ -40,15 +40,23 @@ async function ready(h,choice='continue'){const opening=h.open();h.requests.at(-
   for(const id of ['backup-recovery','backup-recovery-dialog','backup-recovery-form','backup-recovery-choice','backup-recovery-text','backup-recovery-confirm','backup-recovery-error','backup-recovery-repreview','backup-recovery-submit'])assert(html.includes(`id="${id}"`),id);
   let checks=0;
   const versions=harness(); versions.context.ageLabel=String;
-  versions.context.fetch=async()=>({ok:true,json:async()=>({context:'c1',current:{empty:true},target:{empty:true},same_run:true,expected_current:'hash'})});
+  versions.context.fetch=async()=>({ok:true,json:async()=>({context:'c1',current:{empty:true},target:{version:versions.context.version},same_run:true,expected_current:'hash'})});
   for(const version of [null,undefined,833,912]){
     versions.context.version=version;
     const card=versions.run("backupCard({id:'test',saved:100,version},'history')");
-    assert.equal(card.includes('不能继续此旧档'),Number.isInteger(version)&&version<850);
+    assert.equal(card.includes('无法继续此旧档'),Number.isInteger(version)&&version<850);
     await versions.run("openRestore({id:'test',slot:1,version},'c1')");
     const description=versions.get('#restore-description').innerHTML;
     assert.equal(description.includes('无法继续'),Number.isInteger(version)&&version<850);
     if(version==null){assert(card.includes('请核对来源游戏版本'));assert(description.includes('来源版本未知'));}
+  }
+  for(const [rowVersion,targetVersion] of [[922,849],[849,922],[922,null]]){
+    versions.context.rowVersion=rowVersion;versions.context.version=targetVersion;
+    await versions.run("openRestore({id:'test',slot:1,version:rowVersion},'c1','undo')");
+    const description=versions.get('#restore-description').innerHTML;
+    assert.equal(description.includes('无法继续'),Number.isInteger(targetVersion)&&targetVersion<850);
+    assert.equal(description.includes('来源版本未知'),targetVersion==null);
+    assert.equal(versions.run('restoreTarget.summary.version'),targetVersion);
   }
   checks++;
   const visible=harness();visible.run('renderBackupRecovery()');assert.match(visible.get('#backup-recovery').innerHTML,/未完成/);assert.equal(visible.get('#backup-recovery').children.length,1);

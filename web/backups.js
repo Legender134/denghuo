@@ -43,10 +43,14 @@ function syncBackupContext(context){
   renderBackupMetadataDrafts();
   if(changed&&context)toast('存档历史的确认状态已更新，请重新选择备份并预览。');
 }
+function backupCompatibility(row){
+  if(!row||row.empty)return '';
+  return Number.isInteger(row.version)?(row.version<850?`当前${escapeHTML(state?.catalog_version||'参考游戏')}无法继续此旧档，需对应旧版游戏。`:''):'来源版本未知，请核对来源游戏版本。';
+}
 function backupSummary(row){
   if(!row || row.empty)return `<p>没有可读取的完整进度</p>${row?.warning?`<p>${escapeHTML(row.warning)}</p>`:''}`;
   const items=(row.equipment||[]).map(i=>`${escapeHTML(i.location)}：${escapeHTML(i.name)} ${escapeHTML((i.details||[]).join(' · '))}`).join('<br>');
-  return `<p><strong>${escapeHTML(classNames[row.class]||row.class)} Lv.${escapeHTML(row.level??'未知')} · 第 ${escapeHTML(row.depth)} 层${row.branch?'（支线）':''}</strong><br>生命 ${escapeHTML(row.hp??'未知')}/${escapeHTML(row.ht??'未知')} · 金币 ${escapeHTML(row.gold??'未知')} · 基础力量 ${escapeHTML(row.strength??'未知')}${row.duration!=null?`<br>本局行动时间 ${escapeHTML(row.duration)} 回合`:''}<br>游戏保存 ${fmtTime(row.saved)}${items?`<br>${items}`:''}</p>`;
+  return `<p><strong>${escapeHTML(classNames[row.class]||row.class)} Lv.${escapeHTML(row.level??'未知')} · 第 ${escapeHTML(row.depth)} 层${row.branch?'（支线）':''}</strong><br>生命 ${escapeHTML(row.hp??'未知')}/${escapeHTML(row.ht??'未知')} · 金币 ${escapeHTML(row.gold??'未知')} · 基础力量 ${escapeHTML(row.strength??'未知')}${row.duration!=null?`<br>本局行动时间 ${escapeHTML(row.duration)} 回合`:''}<br>版本码 ${escapeHTML(row.version??'未知')} · 游戏保存 ${fmtTime(row.saved)}${items?`<br>${items}`:''}</p>`;
 }
 async function loadBackups(){
   if(typeof loadGlobalHistory==='function')void loadGlobalHistory();
@@ -77,10 +81,11 @@ async function loadBackups(){
 }
 function backupCard(row, labels='', mode='history'){
   const invalid=row.integrity?.valid===false;
+  const compatibility=backupCompatibility(row);
   const tags=Array.isArray(labels)?`<div class="node-tags">${labels.map(label=>`<span>${escapeHTML(label)}</span>`).join('')}</div>`:'';
   const recovered=row.metadata_recovered?'原名称和固定状态无法确认；恢复时默认全部固定，请逐份核对。':'';
   const imported=row.imported_at?`<br>导入登记 ${fmtTime(row.imported_at)}`:'';
-  return `<article class="panel backup-card"><span class="tiny-label">${escapeHTML(row.label||'未命名进度')}${row.locked?' · 已固定':''}</span>${tags}<p class="restore-age" data-backup-saved="${row.saved}">将回到 ${ageLabel(Date.now()/1000-row.saved)}前保存的进度</p>${backupSummary(row)}<p class="muted">${row.recovered_at?'原观察时间未知 · 最近登记':mode==='history'?'最近观察':'观察时间'} <span data-backup-observed="${row.id}" data-backup-mode="${mode}">${fmtTime(mode==='history'?row.last_seen:row.time)}</span>${imported}${recovered?`<br>${recovered}`:''}<br>版本码 ${escapeHTML(row.version??'未知（请核对来源游戏版本）')}${Number.isInteger(row.version)&&row.version<850?` · 当前${escapeHTML(state?.catalog_version||'参考游戏')}不能继续此旧档`:''}${invalid?`<br>不可用：${escapeHTML(row.integrity.error)}`:''}</p><div class="backup-actions"><button class="secondary" data-restore="${row.id}" ${invalid?'disabled':''}>预览并恢复</button><button class="quiet" data-manage="${row.id}">命名 / 固定</button><button class="quiet" data-export="${row.id}" ${invalid?'disabled':''}>导出</button><button class="quiet" data-remove="${row.id}" ${row.locked?'disabled':''}>移出</button></div></article>`;
+  return `<article class="panel backup-card"><span class="tiny-label">${escapeHTML(row.label||'未命名进度')}${row.locked?' · 已固定':''}</span>${tags}<p class="restore-age" data-backup-saved="${row.saved}">将回到 ${ageLabel(Date.now()/1000-row.saved)}前保存的进度</p>${backupSummary(row)}<p class="muted">${row.recovered_at?'原观察时间未知 · 最近登记':mode==='history'?'最近观察':'观察时间'} <span data-backup-observed="${row.id}" data-backup-mode="${mode}">${fmtTime(mode==='history'?row.last_seen:row.time)}</span>${imported}${recovered?`<br>${recovered}`:''}${compatibility?`<br>${compatibility}`:''}${invalid?`<br>不可用：${escapeHTML(row.integrity.error)}`:''}</p><div class="backup-actions"><button class="secondary" data-restore="${row.id}" ${invalid?'disabled':''}>预览并恢复</button><button class="quiet" data-manage="${row.id}">命名 / 固定</button><button class="quiet" data-export="${row.id}" ${invalid?'disabled':''}>导出</button><button class="quiet" data-remove="${row.id}" ${row.locked?'disabled':''}>移出</button></div></article>`;
 }
 function setBackupContent(selector,key,html){
   if(backupViewKeys.get(selector)===key)return false;
@@ -171,11 +176,11 @@ async function openRestore(row,context,operation='restore'){
     summary:operation==='undo'&&preview.original_existed===false?{empty:true}:preview.target},operation,preview.context);
   const targetTitle=operation==='undo'?'撤回后回到的进度':'将恢复的进度';
   const target=operation==='undo'&&preview.original_existed===false?'<p>回档前槽位为空；撤回后当前进度会完整保留，活动槽位将恢复为空。</p>':backupSummary(preview.target);
-  $('#restore-description').innerHTML=`<div class="restore-comparison"><section><h3>现在的进度</h3>${backupSummary(preview.current)}</section><section><h3>${targetTitle}</h3>${target}</section></div><p>${preview.same_run?'种子和职业一致，请核对是否同一局冒险。':'不同冒险或无法确认是否同一局，请核对目标。'}${Number.isInteger(row.version)&&row.version<850?` 此旧档当前${escapeHTML(state?.catalog_version||'参考游戏')}无法继续。`:!Number.isInteger(row.version)?' 来源版本未知，请核对游戏版本。':''}</p>`;
+  $('#restore-description').innerHTML=`<div class="restore-comparison"><section><h3>现在的进度</h3>${backupSummary(preview.current)}</section><section><h3>${targetTitle}</h3>${target}</section></div><p>${preview.same_run?'种子和职业一致，请核对是否同一局冒险。':'不同冒险或无法确认是否同一局，请核对目标。'} ${backupCompatibility(preview.target)}</p>`;
 }
 function backupReceiptSummary(row){
   if(!row||typeof row!=='object')return null;
-  const fields=['class','level','depth','branch','hp','ht','gold','strength','duration','saved','equipment','empty','warning'];
+  const fields=['class','level','depth','branch','hp','ht','gold','strength','duration','saved','version','equipment','empty','warning'];
   const known=fields.filter(key=>Object.prototype.hasOwnProperty.call(row,key));
   return known.length?JSON.parse(JSON.stringify(Object.fromEntries(known.map(key=>[key,row[key]])))):null;
 }

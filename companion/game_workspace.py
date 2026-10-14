@@ -41,6 +41,76 @@ def field(key, label, value='', choices=None, section='条件'):
             'choices': [{'id': str(k), 'text': v} for k, v in choices] if choices is not None else [], 'section': section}
 
 
+def backup_version_text(summary):
+    if summary.get('empty'): return ''
+    version = summary.get('version')
+    if type(version) is not int: return '来源版本未知，请核对游戏版本。'
+    # SPD 4.0.2 GamesInProgress rejects versions before v3_1_1 (850).
+    return '版本码 '+str(version)+(' · 当前参考游戏无法继续此旧档，需对应旧版游戏。' if version < 850 else '')
+
+
+def comparison_summary(result):
+    """Select decision metrics; reuse every calculated outcome without new arithmetic."""
+    choices, params = result['choices'], result['params']
+    kind = result['family']
+    notes = []
+    branch_labels = []
+    state_names = {'infusion': {'1': '注魔保留', '0': '注魔消失'},
+                   'curse': {'1': '诅咒保留', '0': '解咒', 'unknown': '诅咒未确认'},
+                   'hardened': {'1': '硬化保留', '0': '无硬化', 'unknown': '硬化未确认'}}
+    for side, choice in zip(('a', 'b'), choices):
+        augment = {'SPEED': '速度', 'DAMAGE': '伤害', 'EVASION': '闪避', 'DEFENSE': '防御'}.get(params.get('augment_'+side))
+        choice['summary_name'] = choice['name']+f" {choice['level']:+d}"+(f' · {augment}' if augment else '')
+        if params.get('level_known_'+side) == '0': choice['summary_name'] += '（假设）'
+        if choice.get('upgrade_pending'): notes.append(side.upper()+' 注魔未确认，升级待计算')
+        branches = choice.get('upgrade_branches', [])
+        if len(branches) > 1:
+            # Order is shared with every metric's possible outcomes below.
+            dimensions = [key for key in state_names if len({branch[key] for branch in branches}) > 1]
+            if len({branch['resin'] for branch in branches}) > 1: dimensions.append('resin')
+            names = [' · '.join('树脂'+str(branch[key]) if key == 'resin' else state_names[key][branch[key]]
+                                for key in dimensions) or f"{branch['level']:+d}" for branch in branches]
+            branch_labels.append(side.upper()+' 升级可能：'+' / '.join(names))
+
+    def outcomes(choice, label):
+        branches = choice.get('upgrade_branches', [])
+        if not branches: return choice['upgraded'].get(label, '待确认')
+        cells = [branch['metrics'].get(label, '—') for branch in branches]
+        return cells[0] if len(set(cells)) == 1 else ' / '.join(cells)
+
+    rows = result['rows']
+    by_label = {row['label']: row for row in rows}
+    selected = []
+    def add(label, default=None):
+        if label not in by_label: return
+        values = [choice['current'].get(label, '—') for choice in choices]
+        values += [branch['metrics'].get(label, '—') for choice in choices for branch in choice.get('upgrade_branches', [])]
+        if default is not None and all(value == default for value in values): return
+        selected.append(label)
+
+    add('力量缺口', '0')
+    if kind in ('weapon', 'missile'):
+        add('最高基础伤害')
+        add('攻击耗时' if kind == 'weapon' else '目标投掷耗时')
+        if kind == 'weapon':
+            add('命中倍率', '1'); add('攻击距离', '1'); add('力量与武器允许偷袭', '是')
+        else:
+            add('相邻投掷命中倍率'); add('非相邻投掷命中倍率')
+            notes.append('投掷按目标位置分别判断；未确认快速投掷就绪。')
+    elif kind == 'armor':
+        add('常规减伤'); add('护甲闪避惩罚倍率', '1')
+        add('护甲强化闪避加值', '0'); add('移动速度倍率', '1')
+    else:
+        selected = [row['label'] for row in rows[:2]]
+    if any(len(choice.get('upgrade_branches', [])) > 1 for choice in choices):
+        notes.append('升级分支为可能结果，非保证。')
+    result['summary_rows'] = [{**by_label[label], 'values': [value for choice in choices
+        for value in (choice['current'].get(label, '—'), outcomes(choice, label))]} for label in selected]
+    result['summary_branches'] = branch_labels
+    result['summary_notes'] = notes
+    return result
+
+
 class GameWorkspace:
     def __init__(self, native):
         self.native, self.session, self.host = native, native.session, native.host
@@ -494,6 +564,12 @@ class GameWorkspace:
             lines.append('条件与投入明细')
             for row in result['rows']:
                 if row.get('condition'): lines.append(row['label']+' · '+row['condition'])
+            for side, choice in zip(('A', 'B'), result['choices']):
+                if len(choice.get('upgrade_branches', [])) > 1:
+                    lines.append(side+' · 升级一次的可能结果')
+                    for branch in choice['upgrade_branches']:
+                        lines.append(f"{branch['level']:+d} · "+branch['condition'])
+                        lines += [cell['label']+' '+cell['value']+' '+cell.get('unit', '') for cell in branch['metric_rows']]
             if planning:
                 for index, choice in enumerate(planning['choices']):
                     lines.append('AB'[index]+' · '+choice['name']+' · '+choice.get('explanation', ''))
@@ -623,6 +699,9 @@ class GameWorkspace:
     def result_details(self, page):
         if page == 'backups':
             row = next((r for r in self.rows.get(page, []) if r['id'] == self.selected.get(page)), None)
+            if row and self.backup_preview:
+                return [{'id': 'record_details', 'title': '进度详情与保存时间', 'expanded': False,
+                         'text': self.backup_preview['text']+'\n\n核验 ID '+str(row['entry']['id'])[:12]}]
             return [{'id': 'record_details', 'title': '记录时间与校验信息', 'text': row['text'], 'expanded': False}] if row else []
         result = self.structured_results.get(page, {})
         if page != 'alchemy' or page not in self.calculated or result.get('format') != 2:
@@ -681,8 +760,9 @@ class GameWorkspace:
 
     def emit(self, page=None):
         from .reference import native_artwork, native_item_artwork
-        if page is not None: self.page = page
-        page = self.page; specs, rows, actions = [], [], []
+        # Background receipts refresh their own pane without changing navigation.
+        page = self.page if page is None else page
+        specs, rows, actions = [], [], []
         task_snap = self.session.snapshot()
         result_details = self.result_details(page)
         if page == 'inventory':
@@ -751,7 +831,7 @@ class GameWorkspace:
             if self.backup_catalog:
                 text += '\n\n'+self.backup_catalog.get('error', '')+'\n'+self.backup_catalog.get('notice', '')
             if self.backup_preview:
-                text = self.backup_preview['text']
+                text = self.backup_preview['brief']
                 actions.append(('backup_confirm', '核对并恢复此进度…' if self.backup_preview['action'] == 'restore' else '核对并撤回上次回档…'))
         self.revision += 1
         rendered_rows = [{**{k: r[k] for k in ('id', 'text', 'token')},
@@ -798,6 +878,7 @@ class GameWorkspace:
             if key not in ('name', 'note') and spec['raw'] in ('', 'unknown'):
                 spec['help'] = '条件未确认；计算前请核对。' + (' '+spec['help'] if task_source.get('stale') else '')
         comparison = copy.deepcopy(self.structured_results.get(page, {})) if page == 'equipment' and page in self.calculated else {}
+        if comparison: comparison_summary(comparison)
         for choice in comparison.get('choices', []):
             choice['artwork'] = native_artwork(choice.get('id'))
         self.host.command('game_state', page=page, fields=specs, rows=rendered_rows,
@@ -981,10 +1062,10 @@ class GameWorkspace:
         label = row.get('label') or ('未命名备份' if action == 'restore' else '回档前进度')
         saved = summary.get('saved')
         stamp = plan_updated_text(saved)+' 保存' if type(saved) in (int, float) else '保存时间未记录'
-        progress = '空槽位' if summary.get('empty') else ' · '.join([
+        progress = GameWorkspace.progress_brief(summary) if summary.get('empty') else ' · '.join([
             CLASSES.get(summary.get('class'), summary.get('class') or '职业未记录'),
             '第 '+str(summary.get('depth', '?'))+' 层', '生命 '+str(summary.get('hp', '?'))+'/'+str(summary.get('ht', '?'))])
-        return ('备份' if action == 'restore' else '撤回回档')+f" · 槽位 {row['slot']} · "+label+'\n'+progress+'\n'+stamp
+        return ('备份' if action == 'restore' else '撤回回档')+f" · 槽位 {row['slot']} · "+label+'\n'+progress+'\n'+stamp+('\n'+backup_version_text(summary) if not summary.get('empty') else '')+('\n'+summary['warning'] if summary.get('warning') else '')
 
     @staticmethod
     def backup_row_text(action, row):
@@ -998,31 +1079,39 @@ class GameWorkspace:
         label = row.get('label') or ('未命名备份' if action == 'restore' else '回档前进度')
         lines = [('备份' if action == 'restore' else '撤回回档')+f" · 槽位 {row['slot']} · "+label,
                  '保存时间（'+('存档文件' if action == 'restore' else '回档前存档')+'） '+timestamp(summary.get('saved'))]
-        if summary.get('empty'): lines.append('空槽位')
+        if summary.get('empty'): lines.append(GameWorkspace.progress_brief(summary))
         elif summary:
             lines.append(' · '.join([CLASSES.get(summary.get('class'), summary.get('class') or '职业未记录'),
                 '第 '+str(summary.get('depth', '?'))+' 层', '生命 '+str(summary.get('hp', '?'))+'/'+str(summary.get('ht', '?'))]))
         else: lines.append('角色摘要未记录；请预览核对')
+        if summary.get('warning'): lines.append(summary['warning'])
+        if not summary.get('empty'): lines.append(backup_version_text(summary))
         observed = row.get('last_seen', row.get('time')) if action == 'restore' else row.get('time')
         if observed is not None: lines.append(('最近观察 ' if action == 'restore' else '回档时间 ')+timestamp(observed))
         lines.append('核验 ID '+str(row['id'])[:12])
         return '\n'.join(lines)
 
     @staticmethod
-    def progress_text(summary):
-        if summary.get('empty'): return '空槽位'
-        from datetime import datetime, timezone
+    def progress_brief(summary):
+        if summary.get('empty'): return '进度无法读取' if summary.get('warning') else '空槽位'
         from .engine import CLASSES
-        progress = ' · '.join(label+' '+str(CLASSES.get(summary[key], summary[key]) if key == 'class' else summary[key])
-            for key, label in [('class', '职业'), ('level', '等级'), ('depth', '层数'), ('hp', '生命'), ('ht', '最大生命')] if key in summary)
+        return ' · '.join([str(CLASSES.get(summary.get('class'), summary.get('class') or '职业未记录'))+
+            ' Lv.'+str(summary.get('level','?')), '第 '+str(summary.get('depth','?'))+' 层',
+            '生命 '+str(summary.get('hp','?'))+'/'+str(summary.get('ht','?'))])
+
+    @staticmethod
+    def progress_text(summary):
+        if summary.get('empty'):
+            return GameWorkspace.progress_brief(summary)+('\n'+summary['warning'] if summary.get('warning') else '')
+        from datetime import datetime, timezone
+        progress = GameWorkspace.progress_brief(summary)
         saved = summary.get('saved')
         try:
             stamp = datetime.fromtimestamp(saved, timezone.utc).astimezone() if type(saved) in (int, float) else None
             saved_text = stamp.strftime('%Y-%m-%d %H:%M:%S UTC%z') if stamp else '未记录'
         except (ValueError, OSError, OverflowError):
             saved_text = '时间超出本机显示范围'
-        identity = str(summary.get('run_id') or '')
-        return progress+'\n保存时间 '+saved_text+(' · 冒险 '+identity[:12] if identity else '')+('\n'+summary['warning'] if summary.get('warning') else '')
+        return progress+'\n'+backup_version_text(summary)+'\n保存时间 '+saved_text+('\n'+summary['warning'] if summary.get('warning') else '')
 
     def preview_backup(self):
         row = next((r for r in self.rows.get('backups', []) if r['id'] == self.selected.get('backups')), None)
@@ -1033,10 +1122,13 @@ class GameWorkspace:
             current = next((r for r in self.rows.get('backups', []) if r['id'] == self.selected.get('backups')), {})
             if error: self.backup_preview = None; self.native.error(error)
             elif current.get('token') == selected:
-                text = f"槽位 {entry['slot']} · "+('恢复备份' if action == 'restore' else '撤回上次回档')+'\n存档目录：'+result['save_root']+'\n\n当前进度\n'+self.progress_text(result['current'])+'\n\n目标进度\n'+self.progress_text(result['target'])+'\n\n'+('同一次冒险。' if result['same_run'] else '可能属于不同冒险，请仔细核对。')
+                text = f"槽位 {entry['slot']} · "+('恢复备份' if action == 'restore' else '撤回上次回档')+'\n存档目录：'+result['save_root']+'\n\n当前进度\n'+self.progress_text(result['current'])+'\n\n目标进度\n'+self.progress_text(result['target'])+'\n\n'+('种子和职业一致，请核对是否同一局冒险。' if result['same_run'] else '不同冒险或无法确认是否同一局，请核对目标。')
+                brief = '\n\n'.join(title+(' · '+backup_version_text(result[key]) if not result[key].get('empty') else '')+
+                    '\n'+self.progress_brief(result[key])+('\n'+result[key]['warning'] if result[key].get('warning') else '')
+                    for key,title in [('target','目标进度'),('current','当前进度')])
                 request = {**payload, 'action': action, 'expected_current': result['expected_current'],
                     'confirm': ('恢复' if action == 'restore' else '撤回')+f"槽位 {entry['slot']}"}
-                self.backup_preview = {'action': action, 'text': text, 'payload': request, 'token': binding_token([request, text]),
+                self.backup_preview = {'action': action, 'text': text, 'brief': brief, 'payload': request, 'token': binding_token([request, text]),
                     'save_root': result.get('save_root', ''),
                     'progress': {'current': result['current'], 'target': result['target'], 'same_run': result['same_run']}}
             self.emit('backups')
@@ -1088,6 +1180,7 @@ class GameWorkspace:
             self.focus_result = page
         else:
             self.calculated.pop(page, None); self.results[page] = '当前规则无法计算原记录：'+opened.get('calculation_error', '')+'；原参数和备注仍保留。'
+        self.page = page
         self.emit(page); self.host.command('game_show', page=page)
         return True
 
@@ -1175,7 +1268,8 @@ class GameWorkspace:
             self.native.queue_io('正在只读揭示所选物品', lambda: inspect_item(self.session, {'expected': row['expected'], 'instance_key': item['instance_key'], 'reveal': True}), complete)
         elif action.startswith('equip_'):
             if not (item.get('known') or item.get('revealed')) or item.get('available') is not True or not family(item.get('key')): raise ValueError('请选择身份已知或已主动揭示、当前可用的受支持装备；未知身份不能自动带入')
-            self.import_equipment(item, action[-1]); self.emit('equipment'); self.host.command('game_show', page='equipment')
+            self.import_equipment(item, action[-1]); self.page = 'equipment'
+            self.emit('equipment'); self.host.command('game_show', page='equipment')
         else:
             if not (item.get('known') or item.get('revealed')): raise ValueError('未知身份只提供说明；需要时可先主动揭示所选物品')
             from .native_workspace import NumericLookup

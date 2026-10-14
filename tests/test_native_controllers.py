@@ -102,6 +102,30 @@ class CompactOverviewTests(ControllerFixture):
         self.assertEqual(payload['reference_tokens'][index], binding_token(ui.references[index]))
         self.assertEqual(ui.references[index][0]['params']['hp'], 20)
 
+    def test_source_warning_and_startup_notices_are_discoverable_and_clear_without_changing_drafts(self):
+        from companion.game_workspace import GameWorkspace
+        workspace=GameWorkspace(SimpleNamespace(session=self.session,host=self.host,report_drafts=Mock()))
+        workspace.raw['equipment']['level_a']='1e'; workspace.dirty.add('equipment')
+        drafts=workspace.drafts()
+        payload,ui=self.render(self.game())
+        ui.workspace=workspace
+        self.assertFalse(payload['source_warning']); self.assertNotIn('有提示',payload['source_brief'])
+        for warning,notice in [('存档版本码 913 与参考版本不同',''),('当前楼层地图尚未保存',''),
+                               ('','上次结束时的最后一次备份未完成。'),
+                               ('','无法打开默认浏览器；请访问 http://127.0.0.1:12345/')]:
+            with self.subTest(warning=warning,notice=notice):
+                snap=self.session.snapshot();snap.update(warning=warning,configuration_notice=notice)
+                ui.update(snap)
+                payload=next(value for action,value in reversed(self.host.commands) if action=='manager_state')
+                self.assertTrue(payload['source_warning']);self.assertIn('有提示',payload['source_brief'])
+                self.assertIn(warning or notice,payload['snapshot_notes'])
+                self.assertEqual(workspace.drafts(),drafts)
+        snap.update(warning='',configuration_notice='');ui.update(snap)
+        payload=next(value for action,value in reversed(self.host.commands) if action=='manager_state')
+        self.assertFalse(payload['source_warning']);self.assertNotIn('有提示',payload['source_brief'])
+        self.assertNotIn('最后一次备份',payload['snapshot_notes'])
+        self.assertEqual(workspace.drafts(),drafts)
+
     def test_existing_healing_reports_marginal_benefit_with_assumption(self):
         from companion.engine import PREFIX
         game = self.game()
@@ -147,6 +171,23 @@ class CompactOverviewTests(ControllerFixture):
 
 
 class NumericControllerTests(ControllerFixture):
+    def test_upgrade_scroll_primary_tracks_selected_level_and_exclusive_risk_conditions(self):
+        self.open('items.scrolls.scrollofupgrade')
+        for level, normal, hardened in ((0, '0', '0'), (6, '40', '10'), (10, '100', '100')):
+            with self.subTest(level=level):
+                self.lookup.variables['level'].set(str(level))
+                self.lookup.calculate(); self.finish()
+                state = self.host.commands[-1][1]
+                primary = state['primary_values']
+                self.assertEqual([(row['label'], row['value'], row['unit']) for row in primary],
+                    [('普通附魔 / 刻印消失', normal, '%'), ('硬化保护消失', hardened, '%')])
+                self.assertIn('未硬化', primary[0]['condition'])
+                self.assertIn('已硬化', primary[1]['condition'])
+                self.assertIn('本次保留效果', primary[1]['condition'])
+                self.assertIn(f'{level:+d} → {level+1:+d}', state['primary_note'])
+                self.assertIn('分别判断', state['primary_note'])
+                self.assertTrue(any('诅咒' in str(section) for section in state['numeric_sections']))
+
     def test_latest_import_replaces_pending_calculation_and_completes(self):
         self.open('items.potions.potionofhealing')
         self.lookup.variables['hp'].set('5')

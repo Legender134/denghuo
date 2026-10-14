@@ -823,7 +823,8 @@ class NativeManager:
             texts.append(snap['draft_recovery_notice'])
         snapshot_notes = '\n'.join(filter(None, (
             texts[0] if global_health and global_health.get('state') not in ('waiting', 'working', 'unknown') else '',
-            '备份受阻：'+backup['error'] if backup.get('error') else '', snap.get('draft_recovery_notice', ''))))
+            '备份受阻：'+backup['error'] if backup.get('error') else '', snap.get('draft_recovery_notice', ''),
+            snap.get('warning', ''), snap.get('configuration_notice', ''))))
         protection = {'protected': '保存已备份', 'blocked': '备份受阻', 'paused': '备份暂停'}.get(backup.get('state'),
             '上次保存已备份' if backup.get('last_save_protected') else '等待保存')
         source_text = ('手填局势' if snap['settings']['mode'] == 'manual' else
@@ -848,8 +849,10 @@ class NativeManager:
                         '旧快照' if snap.get('stale') else '存档快照')
         if data:
             brief_source += f" · {data.get('depth', '?')} 层"
+        source_notice = bool(snap.get('warning') or snap.get('configuration_notice'))
+        if source_notice: brief_source += ' · 有提示'
         state = {'text': '\n\n'.join(filter(None, texts)), 'source': source_text,
-            'source_brief': brief_source, 'source_warning': bool(snap.get('stale') or snap.get('error')),
+            'source_brief': brief_source, 'source_warning': bool(snap.get('stale') or snap.get('error') or source_notice),
             'snapshot_notes': snapshot_notes,
             'insights': insights, 'secondary_advice': secondary,
             'protection': protection, 'read_error': snap.get('error') or '',

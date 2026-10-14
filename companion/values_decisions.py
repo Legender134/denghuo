@@ -33,7 +33,7 @@ def add_operation_values(identity, p, result, requested):
     if identity == 'items.scrolls.scrollofupgrade':
         requested.add('level')
         level = p['level']
-        result.append(block(f'从 {level:+d} 升到 {level+1:+d} 的风险', [
+        risk = block(f'从 {level:+d} 升到 {level+1:+d} 的风险', [
             metric('普通附魔 / 刻印消失', upgrade_risk(level), '%', '普通近战/投掷武器的正常附魔或护甲正常刻印，且未硬化'),
             metric('硬化保护消失', upgrade_risk(level, True), '%', '近战/投掷武器或护甲已硬化且有附魔或刻印，包括诅咒效果；本次保留效果，只判定硬化保护'),
             metric('无附魔 / 刻印时硬化保护消失', 0, '%', '无附魔或刻印的硬化装备，升级不会触发损失判定'),
@@ -43,7 +43,13 @@ def add_operation_values(identity, p, result, requested):
             metric('投掷武器绑定诅咒解除', 100/3, '%', '原本被诅咒，带诅咒附魔且未硬化；仅移除该附魔时同时解除，附魔保留则绑定诅咒保留'),
             metric('硬化诅咒投掷武器解咒', 0, '%', '原本被诅咒且带硬化诅咒附魔；本次只判定硬化损失，即使硬化消失仍保留附魔与绑定诅咒'),
             metric('无诅咒附魔投掷武器解咒', 100, '%', '原本被诅咒但没有诅咒附魔；普通升级解除绑定诅咒'),
-        ], '等级填写升级前的装备等级。普通、硬化、诅咒三种分支分别判断，不把概率相加。护甲刻印的普通概率按无蜕变刻印转移天赋计算。'))
+        ], '等级填写升级前的装备等级。普通、硬化、诅咒三种分支分别判断，不把概率相加。护甲刻印的普通概率按无蜕变刻印转移天赋计算。')
+        risk['primary_values'] = [
+            {**risk['values'][0], 'condition': '未硬化的普通附魔／刻印；护甲按无刻印转移天赋'},
+            {**risk['values'][1], 'condition': '已硬化且有附魔／刻印（含诅咒）；本次保留效果'},
+        ]
+        risk['summary_note'] = f'{level:+d} → {level+1:+d}。两种条件分别判断；无附魔／刻印时硬化损失为 0%。'
+        result.append(risk)
         result.append(table('普通附魔与硬化风险对照', ['升级前等级', '普通附魔 / 刻印消失%', '硬化保护消失%'],
                             [[f'+{n}', upgrade_risk(n), upgrade_risk(n, True)] for n in range(11)],
                             '损失概率仅用于已有附魔或刻印的装备；无附魔/刻印的硬化装备为0%。使用注魔菱晶升级时保留附魔、刻印与诅咒，和升级卷轴不同。'))

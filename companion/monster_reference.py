@@ -954,7 +954,7 @@ def add_monster_values(values, identity, p, result, requested):
         elif row['dynamic'] == 'sentry':
             primary[1] = stat_rows[5]
     combat['primary_values'] = primary
-    summary = [primary[1]['condition']] if primary[1]['condition'] else []
+    summary = []  # Each primary metric already carries its mechanism condition.
     summary.append('绝命头目：只计入已核对的变化，其余按普通参考。' if stronger else '普通基础参考；未计精英、飞升或额外状态。')
     if row['dynamic']: summary.append(f'生成层数 {depth}。')
     if name in ('fungalcore','fungalsentry','fungalspinner'): summary.append('4.0.2菌类任务未实装，正常新局不会生成。')

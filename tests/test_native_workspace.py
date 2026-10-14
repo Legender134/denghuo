@@ -165,7 +165,8 @@ class NativeStrengthWorkflowTests(ControllerFixture):
         payload=self.host.commands[-1][1]
         self.assertEqual(payload['primary_values'][1]['label'],'激活后邻格电击伤害')
         self.assertEqual(payload['primary_values'][1]['value'],'10–20')
-        self.assertIn('未激活时不攻击且无敌',payload['primary_note'])
+        self.assertIn('未激活时不攻击且无敌',payload['primary_values'][1]['condition'])
+        self.assertNotIn(payload['primary_values'][1]['condition'],payload['primary_note'])
 
     def test_ring_primary_answer_uses_selected_effect_and_both_curse_states(self):
         self.open('items.rings.ringofaccuracy')
