@@ -229,6 +229,11 @@ class PlayDisplay:
         self.editing, self.drag = False, None
 
     def unlock_layout(self, *, persist=True):
+        native_ui = getattr(self.manager, 'native_ui', None)
+        if native_ui and getattr(native_ui.host, 'ready', False):
+            self.editing, self.drag = False, None
+            native_ui.show()
+            return
         if persist:
             self.manager.native_ui.change_preferences({'enabled': True}, lambda: self.unlock_layout(persist=False))
             return

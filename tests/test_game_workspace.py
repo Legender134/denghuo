@@ -148,6 +148,60 @@ class GameWorkspaceTests(ControllerFixture):
         self.assertTrue(self.host.commands[-1][1]['task_source']['stale'])
         self.assertIn('不同保存条件',self.host.commands[-1][1]['task_source']['brief'])
 
+    def test_saved_connection_binding_survives_reopen_and_old_unbound_records_remain_readable(self):
+        snap = copy.deepcopy(self.session.snapshot()); snap['settings']['mode'] = 'save'
+        snap.update(active_slot=1, modified=1000, stale=False, error='')
+        snap['data'].pop('character_scene', None); snap['data']['hero']['strength'] = 12
+        snap['settings']['save_root'] = 'synthetic-original-root'
+        self.session.snapshot = lambda: copy.deepcopy(snap)
+        self.equipment(); self.workspace.import_snapshot('equipment'); self.workspace.calculate('equipment')
+        params = copy.deepcopy(self.workspace.calculated['equipment'])
+        self.workspace.raw['equipment']['name'] = '固定连接'
+        self.workspace.handle({'page': 'equipment', 'command': 'save'}); self.finish_job()
+        saved = copy.deepcopy(self.workspace.saved['equipment'])
+        self.assertEqual(len(saved['origin']['context_token']), 64)
+        self.assertNotIn('synthetic-original-root', json.dumps(saved['origin']))
+        snap['settings']['save_root'] = 'synthetic-other-root'
+        self.assertTrue(self.workspace.source_status('equipment')['stale'])
+        self.workspace.dirty.clear(); self.workspace.open_plan(self.session.knowledge.reopen(saved['id']))
+        self.assertTrue(self.workspace.source_status('equipment')['stale'])
+        self.assertEqual(self.workspace.calculated['equipment'], params)
+        legacy = {key: value for key, value in saved['origin'].items() if key not in ('context_token', 'state_revision')}
+        old = self.session.knowledge.save('旧格式固定条件', 'equipment', None, params, legacy)
+        self.workspace.dirty.clear(); self.workspace.open_plan(self.session.knowledge.reopen(old['id']))
+        self.assertIn('来源连接未确认', self.workspace.source_status('equipment')['brief'])
+        self.assertEqual(self.workspace.calculated['equipment'], params)
+        with self.assertRaises(ValueError):
+            self.session.knowledge.save('无效绑定', 'equipment', None, params, {'mode': 'save', 'context_token': 'plain-directory'})
+
+    def test_independent_restored_drafts_cannot_update_an_unrelated_saved_plan(self):
+        for page in ('equipment', 'alchemy', 'character'):
+            with self.subTest(page=page):
+                if page == 'equipment': self.equipment()
+                elif page == 'alchemy': self.alchemy()
+                else: self.workspace.raw[page]['base_strength'] = '14'
+                self.workspace.calculate(page); self.workspace.raw[page]['name'] = '原方案 A '+page
+                self.workspace.handle({'page': page, 'command': 'save'}); self.finish_job()
+                original = copy.deepcopy(self.workspace.saved[page])
+                others = {key: copy.deepcopy(value) for key, value in self.workspace.saved.items() if key != page}
+                values = {**self.workspace.raw[page], 'name': '独立草稿 B '+page, 'note': 'B 的独立备注'}
+                if page == 'equipment': values['level_a'] = '7'
+                elif page == 'character': values['base_strength'] = '20'
+                else: values['t0.quantity'] = '3'
+                self.workspace.restore_draft({page: {'values': values, 'source': {'mode': 'example'}}})
+                self.workspace.calculate(page); self.workspace.emit(page)
+                self.assertNotIn(page, self.workspace.saved)
+                self.assertFalse(any(row['id'] == 'update' for row in self.host.commands[-1][1]['actions']))
+                self.workspace.handle({'page': page, 'command': 'name_plan'})
+                dialog = next(data for command, data in reversed(self.host.commands) if command == 'game_name_plan')
+                self.assertFalse(dialog['existing'])
+                with self.assertRaises(ValueError): self.workspace.handle({'page': page, 'command': 'update'})
+                self.assertEqual(self.session.knowledge.reopen(original['id'])['plan'], original)
+                self.workspace.handle({'page': page, 'command': 'save'}); self.finish_job()
+                self.assertNotEqual(self.workspace.saved[page]['id'], original['id'])
+                self.assertEqual(self.session.knowledge.reopen(original['id'])['plan'], original)
+                for key, prior in others.items(): self.assertEqual(self.workspace.saved[key], prior)
+
     def setUp(self):
         super().setUp()
         self.jobs = []

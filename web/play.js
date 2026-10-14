@@ -1,7 +1,7 @@
 'use strict';
 let playSaved=null,playRevision=null,playSeenRevision=null,playRequest=0,playDraftGeneration=0,playDirty=false,playConflict=false,playRuntime=null,playRawBaseline=null;
 const playFields=['enabled','alerts','anchor','offset_x','offset_y','font_scale','opacity','notice_seconds'];
-const bindingLabels={capture:'立即备份已保存进度',show:'显示随行助手',library:'手册',backups:'存档历史',play_toggle:'开关游戏提示',quick:'收起或展开随行助手'};
+const bindingLabels={capture:'立即备份已保存进度',show:'显示随行助手',library:'手册',backups:'存档历史',play_toggle:'开关游戏跟随',quick:'收起或展开随行助手'};
 function playRawValues(){return {...Object.fromEntries(playFields.map(key=>['play-'+key,['enabled','alerts'].includes(key)?$('#play-'+key).checked:$('#play-'+key).value])),...Object.fromEntries($$('#play-bindings [data-binding]').map(input=>['binding.'+input.dataset.binding,input.value]))};}
 function playSavedRaw(settings){return {...Object.fromEntries(playFields.map(key=>['play-'+key,['enabled','alerts'].includes(key)?settings[key]:String(settings[key])])),...Object.fromEntries(Object.entries(settings.bindings).map(([key,value])=>['binding.'+key,value]))};}
 function capturePlayDraft(){const raw=playRawValues();return {format:2,raw,baseline:playRawBaseline?{...playRawBaseline}:null,changed:Object.keys(raw).filter(key=>!playRawBaseline||raw[key]!==playRawBaseline[key])};}
@@ -15,7 +15,7 @@ function renderPlayDraftNotice(){
 function renderPlayRuntime(result){
   const caps=result.desktop_status||{},live=result.desktop_available===true;
   const applied=live&&Number.isInteger(caps.applied_revision)&&caps.applied_revision===result.revision;
-  $('#play-runtime').textContent=(live?(applied?'桌面游玩窗口已应用当前保存配置。':'桌面游玩窗口可用，当前配置应用状态尚未确认。'):'当前没有可用的原生游玩窗口；设置会保存供下次启用。')+(caps.hotkeys_ready===true?' 全局快捷键注册已完成；各项状态见表单。':' 全局快捷键注册尚未确认，配置键不能视为已生效。')+(caps.error?' '+caps.error:'');
+  $('#play-runtime').textContent=(live?(caps.native_helper_ready===true?(applied?'原生随行窗口已应用跟随与快捷键配置。':'原生随行窗口可用，跟随与快捷键应用状态尚未确认。'):(applied?'桌面游玩窗口已应用当前保存配置。':'桌面游玩窗口可用，当前配置应用状态尚未确认。')):'当前没有可用的桌面游玩窗口；设置会保存供下次启用。')+(caps.native_helper_ready===true?' 外观与短提示参数仅供备用提示卡。':'')+(caps.hotkeys_ready===true?' 全局快捷键注册已完成；各项状态见表单。':' 全局快捷键注册尚未确认，配置键不能视为已生效。')+(caps.error?' '+caps.error:'');
   for(const input of $$('#play-bindings [data-binding]')){const key=input.dataset.binding,configured=result.settings?.bindings?.[key]||'',actual=caps.bindings?.[key]||'',unavailable=(caps.hotkeys_unavailable||[]).some(item=>typeof item==='string'?(item===key||item===configured):(item.action===key||item.name===key||item.key===key));const status=$(`[data-binding-state="${key}"]`);if(status)status.textContent=!configured?'已禁用':unavailable?'注册失败或被占用，请更换后保存':caps.hotkeys_ready===true&&actual===configured?`已注册：${actual}`:`已配置：${configured}；注册未确认`;}
 }
 async function loadPlaySettings(force=false){

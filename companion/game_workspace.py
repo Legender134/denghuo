@@ -12,7 +12,7 @@ from .values_investment import family
 BOOL = [('', '未确认'), ('false', '否'), ('true', '是')]
 FLAGS = [('0', '否'), ('1', '是')]
 CURSE = [('unknown', '未确认'), ('0', '无诅咒'), ('1', '有诅咒')]
-ORIGIN_KEYS = ('kind', 'mode', 'slot', 'snapshot_at', 'fields', 'references', 'mixed_snapshots')
+ORIGIN_KEYS = ('kind', 'mode', 'slot', 'snapshot_at', 'fields', 'references', 'mixed_snapshots', 'context_token', 'state_revision')
 
 
 def integer(value, label, optional=False):
@@ -164,6 +164,8 @@ class GameWorkspace:
         for page, values in captured.items():
             self.raw[page] = values
             self.sources[page] = copy.deepcopy(draft[page]['source'])
+            self.saved.pop(page, None); self.undo.pop(page, None)
+            self.structured_results.pop(page, None)
             self.results.pop(page, None); self.calculated.pop(page, None); self.dirty.add(page)
         self.emit()
 
@@ -255,13 +257,15 @@ class GameWorkspace:
         if not origin:
             return {'brief': '手填条件 · 未绑定游戏', 'detail': '按明确手填假设计算，不代表当前实战状态。', 'stale': False}
         captured = self.captured_source(snap)
+        unbound = origin.get('mode') in ('save', 'manual') and (not origin.get('context_token') or
+            origin.get('mode') == 'manual' and 'state_revision' not in origin)
         old = bool(origin.get('mode') in ('save', 'manual') and (snap.get('error') or not snap.get('data') or
             origin['mode'] != captured['mode'] or origin.get('slot') != captured['slot'] or
             origin.get('snapshot_at') != captured['snapshot_at'] or
-            origin.get('context_token', captured['context_token']) != captured['context_token'] or
+            origin.get('context_token') != captured['context_token'] or
             origin.get('mode') == 'save' and snap.get('stale') or
             origin.get('mode') == 'manual' and origin.get('state_revision', snap.get('revision')) != snap.get('revision')))
-        old = old or bool(origin.get('mixed_snapshots'))
+        old = old or bool(origin.get('mixed_snapshots')) or bool(unbound)
         prefix = '旧参考' if old else '固定方案' if page in self.saved else '固定参考'
         parts = [prefix]
         if origin.get('mode') == 'save':
@@ -276,6 +280,8 @@ class GameWorkspace:
             parts.append('含手填假设')
         if origin.get('mixed_snapshots'):
             parts.append('含不同保存条件；逐项核对')
+        if unbound:
+            parts.append('来源连接未确认')
         detail = origin.get('label', '固定条件')+'\n'+('当前局势或连接已变化；原条件保留，请核对后主动重新带入。' if old else '条件固定，后续游戏变化不会覆盖输入。')
         return {'brief': ' · '.join(parts), 'detail': detail, 'stale': old}
 
@@ -972,6 +978,8 @@ class GameWorkspace:
         elif action in ('save', 'update'):
             if page not in self.calculated: raise ValueError('先计算有效条件，再命名保存')
             raw = self.raw[page]; saved = self.saved.get(page); source = self.sources.get(page, {})
+            if action == 'update' and not saved:
+                raise ValueError('当前草稿未关联原方案，请另存新方案。')
             payload = {'action': 'save', 'kind': page, 'entry': None, 'name': raw.get('name', ''), 'note': raw.get('note', ''),
                        'params': self.calculated[page], 'source': {k: copy.deepcopy(source[k]) for k in ORIGIN_KEYS if k in source}}
             if 'fields' in payload['source']:

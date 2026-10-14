@@ -673,6 +673,37 @@ class NumericControllerTests(ControllerFixture):
 
 
 class SettingsControllerTests(ControllerFixture):
+    def test_native_settings_apply_only_follow_and_shortcuts_preserving_legacy_raw_drafts(self):
+        self.host.ready = True
+        settings = self.manager.play_settings = PlaySettings(self.manager)
+        before = copy.deepcopy(self.session.play_preferences.values)
+        settings.vars['enabled'].set(False); settings.bindings['quick'].set('')
+        settings.vars['offset_x'].set(' 1e '); settings.vars['opacity'].set('unfinished')
+        self.assertTrue(settings.save())
+        after = self.session.play_preferences.values
+        self.assertFalse(after['enabled']); self.assertEqual(after['bindings']['quick'], '')
+        for key in ('alerts', 'anchor', 'offset_x', 'offset_y', 'font_scale', 'opacity', 'notice_seconds'):
+            self.assertEqual(after[key], before[key])
+        self.assertEqual(settings.vars['offset_x'].get(), ' 1e ')
+        self.assertEqual(settings.vars['opacity'].get(), 'unfinished')
+        self.assertTrue(settings.has_draft())
+        self.assertIn('备用提示卡草稿未应用', settings.status.text)
+        self.manager.play_apply_error = '跟随配置尚未应用，请重试'
+        self.assertTrue(settings.save())
+        self.assertEqual(settings.status.text, self.manager.play_apply_error)
+
+    def test_old_native_unlock_action_shows_real_window_without_saving_or_hiding_it(self):
+        self.host.ready = True
+        self.manager.native_ui.show = Mock(); self.manager.native_ui.queue_io = Mock()
+        settings = self.manager.play_settings = PlaySettings(self.manager)
+        settings.vars['offset_x'].set(' 1e ')
+        before = copy.deepcopy(settings.draft())
+        settings.save_async(unlock=True)
+        self.manager.native_ui.show.assert_called_once()
+        self.manager.native_ui.queue_io.assert_not_called()
+        self.assertEqual(settings.draft(), before)
+        self.assertIn('标题栏或灯柄', settings.status.text)
+
     def test_actual_wire_values_become_clean_after_edit_and_revert(self):
         settings = self.manager.play_settings = PlaySettings(self.manager)
         values, bindings = settings.draft_values()
