@@ -41,6 +41,14 @@ def field(key, label, value='', choices=None, section='条件'):
             'choices': [{'id': str(k), 'text': v} for k, v in choices] if choices is not None else [], 'section': section}
 
 
+def backup_version_text(summary):
+    if summary.get('empty'): return ''
+    version = summary.get('version')
+    if type(version) is not int: return '来源版本未知，请核对游戏版本。'
+    # SPD 4.0.2 GamesInProgress rejects versions before v3_1_1 (850).
+    return '版本码 '+str(version)+(' · 当前参考游戏无法继续此旧档，需对应旧版游戏。' if version < 850 else '')
+
+
 def comparison_summary(result):
     """Select decision metrics; reuse every calculated outcome without new arithmetic."""
     choices, params = result['choices'], result['params']
@@ -691,6 +699,9 @@ class GameWorkspace:
     def result_details(self, page):
         if page == 'backups':
             row = next((r for r in self.rows.get(page, []) if r['id'] == self.selected.get(page)), None)
+            if row and self.backup_preview:
+                return [{'id': 'record_details', 'title': '进度详情与保存时间', 'expanded': False,
+                         'text': self.backup_preview['text']+'\n\n核验 ID '+str(row['entry']['id'])[:12]}]
             return [{'id': 'record_details', 'title': '记录时间与校验信息', 'text': row['text'], 'expanded': False}] if row else []
         result = self.structured_results.get(page, {})
         if page != 'alchemy' or page not in self.calculated or result.get('format') != 2:
@@ -820,7 +831,7 @@ class GameWorkspace:
             if self.backup_catalog:
                 text += '\n\n'+self.backup_catalog.get('error', '')+'\n'+self.backup_catalog.get('notice', '')
             if self.backup_preview:
-                text = self.backup_preview['text']
+                text = self.backup_preview['brief']
                 actions.append(('backup_confirm', '核对并恢复此进度…' if self.backup_preview['action'] == 'restore' else '核对并撤回上次回档…'))
         self.revision += 1
         rendered_rows = [{**{k: r[k] for k in ('id', 'text', 'token')},
@@ -1051,10 +1062,10 @@ class GameWorkspace:
         label = row.get('label') or ('未命名备份' if action == 'restore' else '回档前进度')
         saved = summary.get('saved')
         stamp = plan_updated_text(saved)+' 保存' if type(saved) in (int, float) else '保存时间未记录'
-        progress = '空槽位' if summary.get('empty') else ' · '.join([
+        progress = GameWorkspace.progress_brief(summary) if summary.get('empty') else ' · '.join([
             CLASSES.get(summary.get('class'), summary.get('class') or '职业未记录'),
             '第 '+str(summary.get('depth', '?'))+' 层', '生命 '+str(summary.get('hp', '?'))+'/'+str(summary.get('ht', '?'))])
-        return ('备份' if action == 'restore' else '撤回回档')+f" · 槽位 {row['slot']} · "+label+'\n'+progress+'\n'+stamp
+        return ('备份' if action == 'restore' else '撤回回档')+f" · 槽位 {row['slot']} · "+label+'\n'+progress+'\n'+stamp+('\n'+backup_version_text(summary) if not summary.get('empty') else '')+('\n'+summary['warning'] if summary.get('warning') else '')
 
     @staticmethod
     def backup_row_text(action, row):
@@ -1068,31 +1079,39 @@ class GameWorkspace:
         label = row.get('label') or ('未命名备份' if action == 'restore' else '回档前进度')
         lines = [('备份' if action == 'restore' else '撤回回档')+f" · 槽位 {row['slot']} · "+label,
                  '保存时间（'+('存档文件' if action == 'restore' else '回档前存档')+'） '+timestamp(summary.get('saved'))]
-        if summary.get('empty'): lines.append('空槽位')
+        if summary.get('empty'): lines.append(GameWorkspace.progress_brief(summary))
         elif summary:
             lines.append(' · '.join([CLASSES.get(summary.get('class'), summary.get('class') or '职业未记录'),
                 '第 '+str(summary.get('depth', '?'))+' 层', '生命 '+str(summary.get('hp', '?'))+'/'+str(summary.get('ht', '?'))]))
         else: lines.append('角色摘要未记录；请预览核对')
+        if summary.get('warning'): lines.append(summary['warning'])
+        if not summary.get('empty'): lines.append(backup_version_text(summary))
         observed = row.get('last_seen', row.get('time')) if action == 'restore' else row.get('time')
         if observed is not None: lines.append(('最近观察 ' if action == 'restore' else '回档时间 ')+timestamp(observed))
         lines.append('核验 ID '+str(row['id'])[:12])
         return '\n'.join(lines)
 
     @staticmethod
-    def progress_text(summary):
-        if summary.get('empty'): return '空槽位'
-        from datetime import datetime, timezone
+    def progress_brief(summary):
+        if summary.get('empty'): return '进度无法读取' if summary.get('warning') else '空槽位'
         from .engine import CLASSES
-        progress = ' · '.join(label+' '+str(CLASSES.get(summary[key], summary[key]) if key == 'class' else summary[key])
-            for key, label in [('class', '职业'), ('level', '等级'), ('depth', '层数'), ('hp', '生命'), ('ht', '最大生命')] if key in summary)
+        return ' · '.join([str(CLASSES.get(summary.get('class'), summary.get('class') or '职业未记录'))+
+            ' Lv.'+str(summary.get('level','?')), '第 '+str(summary.get('depth','?'))+' 层',
+            '生命 '+str(summary.get('hp','?'))+'/'+str(summary.get('ht','?'))])
+
+    @staticmethod
+    def progress_text(summary):
+        if summary.get('empty'):
+            return GameWorkspace.progress_brief(summary)+('\n'+summary['warning'] if summary.get('warning') else '')
+        from datetime import datetime, timezone
+        progress = GameWorkspace.progress_brief(summary)
         saved = summary.get('saved')
         try:
             stamp = datetime.fromtimestamp(saved, timezone.utc).astimezone() if type(saved) in (int, float) else None
             saved_text = stamp.strftime('%Y-%m-%d %H:%M:%S UTC%z') if stamp else '未记录'
         except (ValueError, OSError, OverflowError):
             saved_text = '时间超出本机显示范围'
-        identity = str(summary.get('run_id') or '')
-        return progress+'\n保存时间 '+saved_text+(' · 冒险 '+identity[:12] if identity else '')+('\n'+summary['warning'] if summary.get('warning') else '')
+        return progress+'\n'+backup_version_text(summary)+'\n保存时间 '+saved_text+('\n'+summary['warning'] if summary.get('warning') else '')
 
     def preview_backup(self):
         row = next((r for r in self.rows.get('backups', []) if r['id'] == self.selected.get('backups')), None)
@@ -1103,10 +1122,13 @@ class GameWorkspace:
             current = next((r for r in self.rows.get('backups', []) if r['id'] == self.selected.get('backups')), {})
             if error: self.backup_preview = None; self.native.error(error)
             elif current.get('token') == selected:
-                text = f"槽位 {entry['slot']} · "+('恢复备份' if action == 'restore' else '撤回上次回档')+'\n存档目录：'+result['save_root']+'\n\n当前进度\n'+self.progress_text(result['current'])+'\n\n目标进度\n'+self.progress_text(result['target'])+'\n\n'+('同一次冒险。' if result['same_run'] else '可能属于不同冒险，请仔细核对。')
+                text = f"槽位 {entry['slot']} · "+('恢复备份' if action == 'restore' else '撤回上次回档')+'\n存档目录：'+result['save_root']+'\n\n当前进度\n'+self.progress_text(result['current'])+'\n\n目标进度\n'+self.progress_text(result['target'])+'\n\n'+('种子和职业一致，请核对是否同一局冒险。' if result['same_run'] else '不同冒险或无法确认是否同一局，请核对目标。')
+                brief = '\n\n'.join(title+(' · '+backup_version_text(result[key]) if not result[key].get('empty') else '')+
+                    '\n'+self.progress_brief(result[key])+('\n'+result[key]['warning'] if result[key].get('warning') else '')
+                    for key,title in [('target','目标进度'),('current','当前进度')])
                 request = {**payload, 'action': action, 'expected_current': result['expected_current'],
                     'confirm': ('恢复' if action == 'restore' else '撤回')+f"槽位 {entry['slot']}"}
-                self.backup_preview = {'action': action, 'text': text, 'payload': request, 'token': binding_token([request, text]),
+                self.backup_preview = {'action': action, 'text': text, 'brief': brief, 'payload': request, 'token': binding_token([request, text]),
                     'save_root': result.get('save_root', ''),
                     'progress': {'current': result['current'], 'target': result['target'], 'same_run': result['same_run']}}
             self.emit('backups')

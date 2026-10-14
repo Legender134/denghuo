@@ -616,6 +616,95 @@ class GameWorkspaceTests(ControllerFixture):
     def select(self, page, row):
         self.workspace.handle({'action': 'game_select', 'page': page, 'id': row['id'], 'token': row['token']})
 
+    def test_backup_target_version_survives_history_preview_confirmation_and_receipt(self):
+        for version in (849, 922, None):
+            with self.subTest(version=version):
+                root, slot = self.saved_game()
+                game_path = slot/'game.dat'; game = json.loads(game_path.read_text())
+                if version is None: game.pop('version')
+                else: game['version'] = version
+                game_path.write_text(json.dumps(game), encoding='utf-8')
+                level_path=slot/'depth2.dat'; level=json.loads(level_path.read_text())
+                level['level']['version']=version if version is not None else 922
+                level_path.write_text(json.dumps(level),encoding='utf-8')
+                self.session.refresh(); self.session.backups.closed_check = lambda: None
+                self.session.backup_action({'action': 'capture'})
+                self.saved_game(hp=3)
+                before = {p.name:p.read_bytes() for p in slot.iterdir()}
+                self.workspace.reload('backups'); self.finish_job()
+                row = next(row for row in self.workspace.rows['backups'] if row['action']=='restore'
+                           and row['entry'].get('version')==version and row['entry'].get('hp')==20)
+                self.select('backups', row); self.workspace.preview_backup(); self.finish_job()
+                submitted = copy.deepcopy(self.workspace.backup_preview)
+                state=self.host.commands[-1][1]
+                self.assertTrue(state['text'].startswith('目标进度'))
+                self.assertNotIn('保存时间',state['text'])
+                self.assertFalse(state['result_details'][0]['expanded'])
+                self.assertIn(submitted['text'],state['result_details'][0]['text'])
+                self.workspace.handle({'page':'backups','command':'backup_confirm'})
+                confirmation = next(value for action,value in reversed(self.host.commands) if action=='game_confirm')
+                expected = '来源版本未知' if version is None else '版本码 '+str(version)
+                for text in (row['text'], self.workspace.backup_row_summary('restore',row['entry']), state['text'],
+                             submitted['text'], confirmation['text']):
+                    self.assertIn(expected,text)
+                    if version==849:self.assertIn('无法继续此旧档',text)
+                self.assertEqual(submitted['progress']['target']['version'],version)
+                self.assertEqual({p.name:p.read_bytes() for p in slot.iterdir()},before)
+                self.workspace.backup_done({'ok':True},None,submitted)
+                self.assertIn(expected,self.workspace.notices['backups'])
+                self.finish_job()
+
+    def test_undo_preview_uses_preserved_original_version_and_same_seed_does_not_prove_identity(self):
+        root, slot = self.saved_game()
+        self.session.backups.closed_check = lambda: None
+        self.session.backup_action({'action':'capture'})
+        self.saved_game(hp=3)
+        game_path=slot/'game.dat'; game=json.loads(game_path.read_text())
+        game.update(version=849,depth=1,duration=0,generated_levels=[1])
+        game['hero'].update(lvl=1)
+        game_path.write_text(json.dumps(game),encoding='utf-8')
+        (slot/'depth1.dat').write_bytes((slot/'depth2.dat').read_bytes())
+        self.session.refresh()
+        before={p.name:p.read_bytes() for p in slot.iterdir()}
+        self.workspace.reload('backups'); self.finish_job()
+        row=next(row for row in self.workspace.rows['backups'] if row['action']=='restore')
+        self.select('backups',row); self.workspace.preview_backup(); self.finish_job()
+        preview=self.workspace.backup_preview
+        self.assertTrue(preview['progress']['same_run'])
+        self.assertIn('种子和职业一致，请核对是否同一局',preview['text'])
+        self.assertNotIn('同一次冒险',preview['text'])
+        self.assertNotIn(preview['progress']['target']['run_id'][:12],preview['text'])
+        self.workspace.handle({'page':'backups','command':'backup_execute','token':preview['token']})
+        self.finish_job(); self.finish_job()
+        row=next(row for row in self.workspace.rows['backups'] if row['action']=='undo')
+        self.select('backups',row); self.workspace.preview_backup(); self.finish_job()
+        preview=self.workspace.backup_preview
+        self.assertEqual(preview['progress']['current']['version'],922)
+        self.assertEqual(preview['progress']['target']['version'],849)
+        self.workspace.handle({'page':'backups','command':'backup_confirm'})
+        confirmation=next(value for action,value in reversed(self.host.commands) if action=='game_confirm')
+        self.assertIn('版本码 849',confirmation['text']); self.assertIn('无法继续此旧档',confirmation['text'])
+        self.workspace.handle({'page':'backups','command':'backup_execute','token':preview['token']})
+        self.finish_job(); self.finish_job()
+        self.assertEqual({p.name:p.read_bytes() for p in slot.iterdir()},before)
+        self.assertIn('版本码 849',self.workspace.notices['backups'])
+
+    def test_unreadable_current_progress_is_not_presented_as_an_empty_slot(self):
+        root,slot=self.saved_game();self.session.backups.closed_check=lambda:None
+        self.session.backup_action({'action':'capture'})
+        (slot/'game.dat').write_bytes(b'{broken json')
+        self.session.refresh();before={p.name:p.read_bytes() for p in slot.iterdir()}
+        self.workspace.reload('backups');self.finish_job()
+        row=next(row for row in self.workspace.rows['backups'] if row['action']=='restore')
+        self.select('backups',row);self.workspace.preview_backup();self.finish_job()
+        preview=self.workspace.backup_preview;warning=preview['progress']['current']['warning']
+        self.assertTrue(warning);self.assertIn('进度无法读取',preview['brief'])
+        self.assertNotIn('空槽位',preview['brief'])
+        self.workspace.handle({'page':'backups','command':'backup_confirm'})
+        confirmation=next(value for action,value in reversed(self.host.commands) if action=='game_confirm')
+        self.assertIn(warning,confirmation['text']);self.assertIn(warning,preview['brief'])
+        self.assertEqual({p.name:p.read_bytes() for p in slot.iterdir()},before)
+
     def test_inventory_unknown_reading_explicit_reveal_and_stale_selection(self):
         root, slot = self.saved_game()
         original = {p.name: p.read_bytes() for p in slot.iterdir()}
@@ -889,12 +978,12 @@ class GameWorkspaceTests(ControllerFixture):
                 self.workspace.raw['equipment'].update(id_a=identity, id_b=identity)
                 self.workspace.calculate('equipment')
 
-    def test_restore_progress_uses_local_datetime_class_and_short_identity(self):
+    def test_restore_progress_uses_local_datetime_class_without_opaque_run_identity(self):
         summary = {'class': 'MAGE', 'level': 3, 'depth': 2, 'hp': 20, 'ht': 30, 'saved': 1791809981.25, 'run_id': 'abc12345'*8}
         text = GameWorkspace.progress_text(summary)
-        self.assertIn('职业 法师', text); self.assertIn('2026-', text)
+        self.assertIn('法师 Lv.3', text); self.assertIn('2026-', text)
         self.assertRegex(text, r'\d{2}:\d{2}:\d{2} UTC[+-]\d{4}')
-        self.assertIn(summary['run_id'][:12], text); self.assertNotIn(summary['run_id'], text)
+        self.assertNotIn(summary['run_id'][:12], text)
         self.assertNotIn(str(summary['saved']), text)
 
     def test_native_backup_rows_use_labels_saved_time_and_summary_without_changing_selection(self):

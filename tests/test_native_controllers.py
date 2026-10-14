@@ -102,6 +102,30 @@ class CompactOverviewTests(ControllerFixture):
         self.assertEqual(payload['reference_tokens'][index], binding_token(ui.references[index]))
         self.assertEqual(ui.references[index][0]['params']['hp'], 20)
 
+    def test_source_warning_and_startup_notices_are_discoverable_and_clear_without_changing_drafts(self):
+        from companion.game_workspace import GameWorkspace
+        workspace=GameWorkspace(SimpleNamespace(session=self.session,host=self.host,report_drafts=Mock()))
+        workspace.raw['equipment']['level_a']='1e'; workspace.dirty.add('equipment')
+        drafts=workspace.drafts()
+        payload,ui=self.render(self.game())
+        ui.workspace=workspace
+        self.assertFalse(payload['source_warning']); self.assertNotIn('有提示',payload['source_brief'])
+        for warning,notice in [('存档版本码 913 与参考版本不同',''),('当前楼层地图尚未保存',''),
+                               ('','上次结束时的最后一次备份未完成。'),
+                               ('','无法打开默认浏览器；请访问 http://127.0.0.1:12345/')]:
+            with self.subTest(warning=warning,notice=notice):
+                snap=self.session.snapshot();snap.update(warning=warning,configuration_notice=notice)
+                ui.update(snap)
+                payload=next(value for action,value in reversed(self.host.commands) if action=='manager_state')
+                self.assertTrue(payload['source_warning']);self.assertIn('有提示',payload['source_brief'])
+                self.assertIn(warning or notice,payload['snapshot_notes'])
+                self.assertEqual(workspace.drafts(),drafts)
+        snap.update(warning='',configuration_notice='');ui.update(snap)
+        payload=next(value for action,value in reversed(self.host.commands) if action=='manager_state')
+        self.assertFalse(payload['source_warning']);self.assertNotIn('有提示',payload['source_brief'])
+        self.assertNotIn('最后一次备份',payload['snapshot_notes'])
+        self.assertEqual(workspace.drafts(),drafts)
+
     def test_existing_healing_reports_marginal_benefit_with_assumption(self):
         from companion.engine import PREFIX
         game = self.game()
