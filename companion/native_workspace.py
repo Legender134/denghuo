@@ -52,6 +52,7 @@ class NumericLookup:
         self.note = Value('', self.note_changed)
         self.list, self.origin, self.text = Rows(), TextState(), TextState()
         self.rows, self.inputs, self.variables, self.input_origins = [], [], {}, {}
+        self.search_suggestions, self.search_error = [], ''
         self.identity = self.context = self.saved_plan = self.rendered = self.calculated = None
         self.workspace_error = self.plan_error = self.parameter_error = ''
         self.workspace_revision, self.favorite_ids = None, set()
@@ -140,6 +141,7 @@ class NumericLookup:
         self.pending = None
         session = self.owner.manager.session
         query = self.query.get().strip()[:200]
+        self.search_suggestions, self.search_error = [], ''
         self.suggested = not query
         if self.suggested:
             status = session.workspace_status()
@@ -162,6 +164,7 @@ class NumericLookup:
         else:
             result = session.catalog.search(query, limit=30)
             self.rows, self.total = result['entries'], result['total']
+            self.search_suggestions = result['suggestions']
         self.list.delete()
         for row in self.rows:
             self.list.insert('end', row.get('lookup_label', row['name']+' · '+row['type_label']))
@@ -776,6 +779,18 @@ class NumericLookup:
             self.select()
         elif action == 'first':
             self.open_first_result()
+        elif action == 'suggestion':
+            if self.pending:
+                self.search()
+            index = item.get('index', -1)
+            if (type(index) is not int or not 0 <= index < len(self.search_suggestions)
+                    or item.get('token') != binding_token(self.search_suggestions[index])):
+                self.search_error = '搜索建议已更新，请重新选择；当前草稿仍保留。'
+                self.emit()
+                return
+            self.search_error = ''
+            row = copy.deepcopy(self.search_suggestions[index])
+            self.guard('切换资料', lambda: self.select_row(row))
         elif action == 'more':
             self.more_results()
         elif action == 'calculate':
@@ -839,6 +854,9 @@ class NumericLookup:
         self.host.command('lookup_state', draft_revision=self.edit_revision, query=self.query.get(),
             focus_result=self.focus_result,
             rows=[{'text': text, 'token': binding_token(row), 'artwork': native_artwork(row.get('id'))} for text, row in zip(self.list.values, self.rows)], fields=fields, note=self.note.get(),
+            suggestions=[{'text': row['name']+' · '+row['type_label'], 'token': binding_token(row),
+                          'artwork': native_artwork(row['id'])} for row in self.search_suggestions],
+            search_error=self.search_error,
             artwork=native_artwork(self.identity), entry_id=self.identity or '',
             entry_name=entry.get('name') or (self.rendered or {}).get('name', ''),
             numeric_sections=sections, result_prose=prose,

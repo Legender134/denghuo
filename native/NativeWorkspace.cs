@@ -237,6 +237,8 @@ namespace Denghuo.Native {
     sealed class LookupForm : Grid {
         readonly Helper Host;
         readonly TextBox search=UI.Edit("搜索物品、敌人或技能",200), note=UI.Edit("用户用途或假设备注",1200);
+        readonly TextBlock searchHint=UI.Text("搜索名称、别名或用途",13,UI.Muted);
+        readonly Button clearSearch;
         readonly FieldEditor fields=new FieldEditor();
         readonly StackPanel article=new StackPanel(), candidates=new StackPanel(), parameterBody=new StackPanel();
         readonly StackPanel searchHeader=new StackPanel();
@@ -262,8 +264,12 @@ namespace Denghuo.Native {
             RowDefinitions.Add(new RowDefinition());
             RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto });
             search.ToolTip="搜索名称、别名或用途 · ↓进入结果 · Enter打开首项";
-            search.Margin=new Thickness(0,0,0,8);
-            searchHeader.Children.Add(search);
+            var searchLine=new Grid { Margin=new Thickness(0,0,0,8) };
+            search.Padding=new Thickness(10,7,38,7); searchLine.Children.Add(search);
+            searchHint.IsHitTestVisible=false; searchHint.VerticalAlignment=VerticalAlignment.Center; searchHint.Margin=new Thickness(12,0,42,0); searchHint.TextWrapping=TextWrapping.NoWrap; searchHint.TextTrimming=TextTrimming.CharacterEllipsis; searchLine.Children.Add(searchHint);
+            clearSearch=UI.Button("×",delegate { if(!Host.Frozen) { search.Clear(); search.Focus(); } }); UI.Name(clearSearch,"清空搜索"); clearSearch.ToolTip="清空搜索";
+            clearSearch.FontSize=20; clearSearch.Width=30; clearSearch.MinHeight=30; clearSearch.Height=30; clearSearch.Padding=new Thickness(0); clearSearch.Margin=new Thickness(0,0,5,0); clearSearch.HorizontalAlignment=HorizontalAlignment.Right; clearSearch.VerticalAlignment=VerticalAlignment.Center; clearSearch.Background=Brushes.Transparent; clearSearch.BorderThickness=new Thickness(0); clearSearch.Visibility=Visibility.Collapsed; searchLine.Children.Add(clearSearch);
+            searchHeader.Children.Add(searchLine);
             pinned=UI.Button("查看固定参考 ›",delegate { FlushEdit(); Host.Send("view_pin","surface","lookup"); }); pinned.Visibility=Visibility.Collapsed; pinned.HorizontalAlignment=HorizontalAlignment.Left; searchHeader.Children.Add(pinned);
             Children.Add(searchHeader);
             back=UI.Button("‹ 返回结果",delegate { SetMode("search"); search.Focus(); });
@@ -280,7 +286,7 @@ namespace Denghuo.Native {
             note.AcceptsReturn=true; note.MinHeight=80; note.TextWrapping=TextWrapping.Wrap; note.TextChanged+=delegate { Edited(false); };
             parameterBody.Children.Add(fields);
             parameterBody.Children.Add(UI.Section("用途与假设备注",UI.Field("备注（可选，未验证）",note),false));
-            search.TextChanged+=delegate { if(!rendering && !Host.Frozen) Host.Send("query","surface","lookup","text",search.Text); };
+            search.TextChanged+=delegate { searchHint.Visibility=search.Text.Length==0 ? Visibility.Visible : Visibility.Collapsed; clearSearch.Visibility=search.Text.Length==0 ? Visibility.Collapsed : Visibility.Visible; if(!rendering && !Host.Frozen) Host.Send("query","surface","lookup","text",search.Text); };
             search.KeyDown+=delegate(object sender,KeyEventArgs e) {
                 if(e.Key==Key.Enter) { Host.Send("first","surface","lookup"); e.Handled=true; }
                 else if(e.Key==Key.Down && resultButtons.Count>0) { resultButtons[0].Focus(); e.Handled=true; }
@@ -296,10 +302,10 @@ namespace Denghuo.Native {
         }
         void UpdateActions() {
             bool busy=Data.Flag(state,"calculating");
-            feedback.Text=Data.Text(state,"parameter_error",busy ? "正在计算…" : "");
-            if(feedback.Text.Length==0 && busy) feedback.Text="正在计算…";
-            if(feedback.Text.Length==0) feedback.Text=Data.Text(state,"operation_receipt","");
-            feedback.Visibility=mode!="search" && feedback.Text.Length>0 ? Visibility.Visible : Visibility.Collapsed;
+            feedback.Text=mode=="search" ? Data.Text(state,"search_error","") : Data.Text(state,"parameter_error",busy ? "正在计算…" : "");
+            if(mode!="search" && feedback.Text.Length==0 && busy) feedback.Text="正在计算…";
+            if(mode!="search" && feedback.Text.Length==0) feedback.Text=Data.Text(state,"operation_receipt","");
+            feedback.Visibility=feedback.Text.Length>0 ? Visibility.Visible : Visibility.Collapsed;
             bool hasEntry=Data.Text(state,"entry_id","").Length>0;
             bottom.Visibility=hasEntry && mode!="search" ? Visibility.Visible : Visibility.Collapsed;
             primary.Visibility=Data.Array(state,"fields").Length>0 ? Visibility.Visible : Visibility.Collapsed;
@@ -317,6 +323,10 @@ namespace Denghuo.Native {
         public Dictionary<string,object> Raw() { var raw=Data.Map("values",fields.Raw(),"note",UI.Note(note.Text),"draft_revision",draftRevision); Host.CaptureSaveDraft(raw); return raw; }
         public void FlushEdit() { if(!changed) return; changed=false; var raw=Raw(); Host.Send("edit","surface","lookup","values",raw["values"],"note",raw["note"],"draft_revision",draftRevision); }
         public void FocusSearch() { SetMode("search"); search.Focus(); search.SelectAll(); }
+        void AddResultButton(Button button,int index) {
+            button.KeyDown+=delegate(object sender,KeyEventArgs e) { if(e.Key==Key.Down && index+1<resultButtons.Count) { resultButtons[index+1].Focus(); e.Handled=true; } else if(e.Key==Key.Up) { if(index>0) resultButtons[index-1].Focus(); else search.Focus(); e.Handled=true; } };
+            resultButtons.Add(button); candidates.Children.Add(button);
+        }
         void ShowActions() {
             bool valid=Data.Flag(state,"can_save"), hasEntry=Data.Text(state,"entry_id","").Length>0;
             var items=new List<MenuItem>();
@@ -393,17 +403,24 @@ namespace Denghuo.Native {
             rendering=true; try {
                 state=d; draftRevision=Data.Number(d,"draft_revision"); Dirty=Data.Flag(d,"dirty"); pinned.Visibility=Data.Flag(d,"has_pin") ? Visibility.Visible : Visibility.Collapsed;
                 if(!search.IsKeyboardFocused) UI.Replace(search,Data.Text(d,"query",""));
-                var rows=Data.Array(d,"rows"); string signature=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(rows)+Data.Flag(d,"can_more");
+                var rows=Data.Array(d,"rows"); var suggestions=Data.Array(d,"suggestions"); var serializer=new JavaScriptSerializer { MaxJsonLength=524288 }; string signature=serializer.Serialize(rows)+serializer.Serialize(suggestions)+Data.Flag(d,"can_more");
                 if(signature!=rowsSignature) {
                     int focused=resultButtons.FindIndex(delegate(Button b) { return b.IsKeyboardFocusWithin; }); candidates.Children.Clear(); resultButtons.Clear();
                     foreach(object item in rows) {
                         var row=(Dictionary<string,object>)item; int index=resultButtons.Count; string token=Data.Text(row,"token","");
                         var button=UI.Button("",delegate { if(!Host.Frozen) Host.Send("select","surface","lookup","index",index,"token",token); });
                         string text=Data.Text(row,"text",""); button.Content=UI.ImageRow(text,Data.Object(row,"artwork")); UI.Name(button,text); button.HorizontalContentAlignment=HorizontalAlignment.Stretch;
-                        button.KeyDown+=delegate(object sender,KeyEventArgs e) { if(e.Key==Key.Down && index+1<resultButtons.Count) { resultButtons[index+1].Focus(); e.Handled=true; } else if(e.Key==Key.Up) { if(index>0) resultButtons[index-1].Focus(); else search.Focus(); e.Handled=true; } };
-                        resultButtons.Add(button); candidates.Children.Add(button);
+                        AddResultButton(button,index);
                     }
-                    if(rows.Length==0) candidates.Children.Add(UI.Text("没有匹配条目。试试别名或用途，或清空搜索。",13,UI.Muted));
+                    if(rows.Length==0 && suggestions.Length>0) {
+                        var prompt=UI.Text("是否要找",13,UI.Muted); prompt.Margin=new Thickness(0,0,0,6); candidates.Children.Add(prompt);
+                        foreach(object item in suggestions) {
+                            var row=(Dictionary<string,object>)item; int index=resultButtons.Count; string token=Data.Text(row,"token","");
+                            var button=UI.Button("",delegate { if(!Host.Frozen) Host.Send("suggestion","surface","lookup","index",index,"token",token); });
+                            string text=Data.Text(row,"text",""); button.Content=UI.ImageRow(text,Data.Object(row,"artwork")); UI.Name(button,"近似建议 · "+text); button.HorizontalContentAlignment=HorizontalAlignment.Stretch;
+                            AddResultButton(button,index);
+                        }
+                    } else if(rows.Length==0) candidates.Children.Add(UI.Text("没有匹配条目。试试别名或用途，或清空搜索。",13,UI.Muted));
                     if(Data.Flag(d,"can_more")) candidates.Children.Add(moreResults);
                     if(focused>=0 && focused<resultButtons.Count && mode=="search") resultButtons[focused].Focus(); rowsSignature=signature;
                 }

@@ -644,6 +644,73 @@ class NumericControllerTests(ControllerFixture):
         self.assertEqual(self.lookup.raw_params()['max_hp'], '88')
         self.assertTrue(self.lookup.has_draft())
 
+    def test_empty_search_suggestions_require_an_explicit_selection(self):
+        for query, identity in [('隐形药水', 'items.potions.potionofinvisibility'),
+                                ('治疗药计', 'items.potions.potionofhealing')]:
+            with self.subTest(query=query):
+                self.lookup.query.set(query); self.lookup.search()
+                payload = next(data for action, data in reversed(self.host.commands) if action == 'lookup_state')
+                self.assertEqual(payload['rows'], [])
+                suggestion = payload['suggestions'][0]
+                self.assertTrue(suggestion['text'].startswith(self.session.catalog.entry_index[identity]['name']))
+                previous, ticket = self.lookup.identity, self.worker.ticket
+                self.lookup.handle({'action': 'first'})
+                self.assertEqual((self.lookup.identity, self.worker.ticket), (previous, ticket))
+                self.lookup.handle({'action': 'suggestion', 'index': 0, 'token': suggestion['token']})
+                self.finish()
+                self.assertEqual(self.lookup.identity, identity)
+
+    def test_suggestion_switch_can_cancel_or_preserve_a_half_input_copy(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['hp'].set(' 1e '); self.lookup.note.set('未完成的治疗条件')
+        self.lookup.query.set('隐形药水'); self.lookup.search()
+        payload = next(data for action, data in reversed(self.host.commands) if action == 'lookup_state')
+        selection = {'action': 'suggestion', 'index': 0, 'token': payload['suggestions'][0]['token']}
+        self.lookup.handle(selection)
+        self.assertIsNotNone(self.lookup.confirmation)
+        self.assertEqual(self.lookup.identity, 'items.potions.potionofhealing')
+        self.lookup.handle({'action': 'replace_decision', 'decision': 'cancel'})
+        self.assertEqual(self.lookup.raw_params()['hp'], ' 1e ')
+        self.assertEqual(self.lookup.note.get(), '未完成的治疗条件')
+        self.lookup.handle(selection)
+        self.lookup.handle({'action': 'replace_decision', 'decision': 'saved'})
+        self.finish()
+        self.assertEqual(self.lookup.identity, 'items.potions.potionofinvisibility')
+        saved = self.session.load_exit_draft(self.session.list_exit_drafts()[0]['id'])
+        self.assertEqual(saved['draft']['raw_params']['hp'], ' 1e ')
+        self.assertEqual(saved['draft']['note'], '未完成的治疗条件')
+
+    def test_pending_new_query_rejects_a_stale_suggestion_without_losing_draft(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['hp'].set(' 1e '); self.lookup.note.set('保留输入')
+        for next_query in ('治疗药计', '长剑'):
+            with self.subTest(next_query=next_query):
+                self.lookup.query.set('隐形药水'); self.lookup.search()
+                payload = next(data for action, data in reversed(self.host.commands) if action == 'lookup_state')
+                old_token = payload['suggestions'][0]['token']
+                ticket = self.worker.ticket
+                self.lookup.query.set(next_query)
+                self.lookup.handle({'action': 'suggestion', 'index': 0, 'token': old_token})
+                updated = next(data for action, data in reversed(self.host.commands) if action == 'lookup_state')
+                self.assertIn('搜索建议已更新', updated['search_error'])
+                self.assertEqual(self.lookup.identity, 'items.potions.potionofhealing')
+                self.assertEqual(self.worker.ticket, ticket)
+                self.assertEqual(self.lookup.raw_params()['hp'], ' 1e ')
+                self.assertEqual(self.lookup.note.get(), '保留输入')
+
+    def test_suggestions_do_not_leak_into_exact_alias_intent_or_common_results(self):
+        self.lookup.query.set('隐形药水'); self.lookup.search()
+        for query in ('治疗药水', '血瓶', '怎么逃跑', '力量不足', '', '完全没有这种物品'):
+            with self.subTest(query=query):
+                self.lookup.query.set(query); self.lookup.search()
+                payload = next(data for action, data in reversed(self.host.commands) if action == 'lookup_state')
+                self.assertEqual(payload['suggestions'], [])
+                if query != '完全没有这种物品':
+                    self.assertTrue(payload['rows'])
+                else:
+                    self.assertEqual(payload['rows'], [])
+                    self.assertFalse(payload['can_more'])
+
     def test_unfinished_save_dialog_raw_fields_restore_without_application(self):
         self.open('items.weapon.melee.sword')
         self.lookup.variables['level'].set('  invalid  ')
