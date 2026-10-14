@@ -1394,6 +1394,8 @@ class Session:
             age = max(0, time.time() - self.modified) if self.modified else None
             return copy.deepcopy({"data": self.data, "slots": self.slots, "settings": self.settings,
                                   "inventory_snapshot": snapshot_token(self),
+                                  "snapshot_content": (self._fingerprint[3].hex() if self.settings['mode'] == 'save'
+                                      and self.data and not self.error and self._fingerprint and len(self._fingerprint) > 3 else None),
                                   "settings_revision": self.settings_revision,
                                   "error": self.error, "warning": self.warning, "modified": self.modified,
                                   "waiting_for_save": self.waiting_for_save,

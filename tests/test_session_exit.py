@@ -378,8 +378,9 @@ class FinalCaptureTests(unittest.TestCase):
         first = self.manager.capture(self.root, 1)
         self.write(34)
         original = self.hashes()
-        final = self.manager.final_capture(self.root, time.monotonic() + 1)
-        self.assertTrue(final['ok'])
+        # Match the product shutdown budget; deadline behavior has separate clock-controlled tests.
+        final = self.manager.final_capture(self.root, time.monotonic() + 3)
+        self.assertTrue(final['ok'], final)
         self.assertNotEqual(first['id'], final['captured'][0]['id'])
         metadata, payloads, game, identity = self.manager.checked_archive(self.root, final['captured'][0]['id'], 1)
         self.assertEqual(payloads['game.dat'], (self.folder / 'game.dat').read_bytes())

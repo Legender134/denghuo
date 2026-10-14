@@ -1,11 +1,14 @@
 """Real calculator, plan and draft contracts for the in-game workspace."""
 import copy
 import json
+import os
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 from tests.test_native_controllers import ControllerFixture
 from companion.game_workspace import GameWorkspace
+from companion.character_scene import calculate_scene, empty_scene
 
 
 class GameWorkspaceTests(ControllerFixture):
@@ -85,7 +88,7 @@ class GameWorkspaceTests(ControllerFixture):
         from companion.native_workspace import plan_updated_text
         snap=copy.deepcopy(self.session.snapshot())
         snap['settings']['mode']='save'; snap.update(active_slot=1,modified=1000,stale=False,error='')
-        snap['data'].pop('character_scene',None); snap['data']['hero']['strength']=12
+        snap['data']['character_scene']=calculate_scene(empty_scene(12)); snap['data']['hero']['strength']=12
         self.session.snapshot=lambda:copy.deepcopy(snap)
         self.equipment(); self.workspace.import_snapshot('equipment'); self.workspace.calculate('equipment')
         before=copy.deepcopy((self.workspace.raw,self.workspace.calculated,self.workspace.results))
@@ -111,13 +114,13 @@ class GameWorkspaceTests(ControllerFixture):
     def test_fixed_source_manual_edit_and_explicit_reimport_have_honest_field_labels(self):
         snap=copy.deepcopy(self.session.snapshot()); snap['settings']['mode']='save'
         snap.update(active_slot=1,modified=1000,stale=False,error='')
-        snap['data'].pop('character_scene',None); snap['data']['hero']['strength']=12
+        snap['data']['character_scene']=calculate_scene(empty_scene(12)); snap['data']['hero']['strength']=12
         self.session.snapshot=lambda:copy.deepcopy(snap)
         self.equipment(); self.workspace.import_snapshot('equipment')
         self.workspace.edit('equipment',{**self.workspace.raw['equipment'],'strength':'  1e  '})
         self.workspace.emit('equipment')
         self.assertIn('手填',next(row['help'] for row in self.host.commands[-1][1]['fields'] if row['key']=='strength'))
-        snap['modified']=2000; snap['data']['hero']['strength']=18
+        snap['modified']=2000; snap['data']['hero']['strength']=18; snap['data']['character_scene']=calculate_scene(empty_scene(18))
         self.workspace.import_snapshot('equipment'); self.workspace.emit('equipment')
         self.assertFalse(self.host.commands[-1][1]['task_source']['stale'])
         self.assertEqual(self.workspace.raw['equipment']['strength'],'18')
@@ -135,7 +138,7 @@ class GameWorkspaceTests(ControllerFixture):
     def test_mixed_equipment_imports_keep_each_field_source_and_do_not_claim_one_current_snapshot(self):
         snap=copy.deepcopy(self.session.snapshot()); snap['settings']['mode']='save'
         snap.update(active_slot=1,modified=1000,stale=False,error='')
-        snap['data'].pop('character_scene',None); snap['data']['hero']['strength']=12
+        snap['data']['character_scene']=calculate_scene(empty_scene(12)); snap['data']['hero']['strength']=12
         self.session.snapshot=lambda:copy.deepcopy(snap)
         self.equipment(); self.workspace.import_snapshot('equipment')
         first_strength_origin=self.workspace.sources['equipment']['fields']['strength']
@@ -151,7 +154,7 @@ class GameWorkspaceTests(ControllerFixture):
     def test_saved_connection_binding_survives_reopen_and_old_unbound_records_remain_readable(self):
         snap = copy.deepcopy(self.session.snapshot()); snap['settings']['mode'] = 'save'
         snap.update(active_slot=1, modified=1000, stale=False, error='')
-        snap['data'].pop('character_scene', None); snap['data']['hero']['strength'] = 12
+        snap['data']['character_scene'] = calculate_scene(empty_scene(12)); snap['data']['hero']['strength'] = 12
         snap['settings']['save_root'] = 'synthetic-original-root'
         self.session.snapshot = lambda: copy.deepcopy(snap)
         self.equipment(); self.workspace.import_snapshot('equipment'); self.workspace.calculate('equipment')
@@ -173,6 +176,96 @@ class GameWorkspaceTests(ControllerFixture):
         self.assertEqual(self.workspace.calculated['equipment'], params)
         with self.assertRaises(ValueError):
             self.session.knowledge.save('无效绑定', 'equipment', None, params, {'mode': 'save', 'context_token': 'plain-directory'})
+
+    def test_native_equipment_roundtrip_retains_references_and_only_replaces_the_selected_object(self):
+        self.equipment(); self.workspace.raw['equipment']['planning'] = '0'; self.workspace.calculate('equipment')
+        references = {side: {'id': self.workspace.raw['equipment']['id_'+side], 'name': side+' 捕获的装备',
+            'effect_id': 'items.weapon.enchantments.'+effect,
+            'user_note': {'title': side+' 的用途', 'body': '这件装备的独立记录', 'scope': 'specific_item'}}
+            for side, effect in (('a','blazing'),('b','chilling'))}
+        saved = self.session.workspace_action({'action':'save','kind':'equipment','entry':None,'name':'双侧固定参考',
+            'note':'共同备注','params':self.workspace.calculated['equipment'],
+            'source':{'mode':'example','references':references}})['plan']
+        self.workspace.open_plan(self.session.knowledge.reopen(saved['id']), confirmed=True)
+        self.workspace.handle({'page':'equipment','command':'import','values':self.workspace.display_raw('equipment')})
+        self.assertEqual(self.workspace.sources['equipment'].get('references'), references)
+        self.workspace.calculate('equipment');self.workspace.handle({'page':'equipment','command':'update'});self.finish_job()
+        self.assertEqual(self.session.knowledge.reopen(saved['id'])['plan']['origin'].get('references'),references)
+        self.workspace.raw['character']['base_strength']='14'
+        self.workspace.handle({'page':'equipment','command':'use_character'})
+        self.assertEqual(self.workspace.sources['equipment'].get('references'),references)
+        self.workspace.handle({'page':'equipment','command':'undo'})
+        item={'key':'items.weapon.melee.sword','name':'新捕获的单手剑','location':'背包','level':3,'cursed':False,
+            'mastery':False,'augmentation':'NONE','equipment_state':{'hardened':False,'effect_id':'items.weapon.enchantments.kinetic'},
+            'user_note':{'title':'新用途','body':'替换 A 的记录','scope':'specific_item'}}
+        self.workspace.import_equipment(item,'a')
+        self.assertEqual(self.workspace.sources['equipment']['references']['b'],references['b'])
+        self.assertEqual(self.workspace.sources['equipment']['references']['a'],
+            {'id':item['key'],'name':item['name'],'effect_id':item['equipment_state']['effect_id'],'user_note':item['user_note']})
+        self.workspace.calculate('equipment');self.workspace.handle({'page':'equipment','command':'update'});self.finish_job()
+        self.assertEqual(self.session.knowledge.reopen(saved['id'])['plan']['origin']['references'],self.workspace.sources['equipment']['references'])
+
+    def test_native_equipment_reopen_keeps_disabled_planning_off_through_real_action_payloads(self):
+        self.equipment();self.workspace.raw['equipment'].update(planning='0',name='无预算方案')
+        self.workspace.calculate('equipment');self.workspace.handle({'page':'equipment','command':'save'});self.finish_job()
+        saved=self.workspace.saved['equipment'];self.assertNotIn('planning',saved['params'])
+        self.workspace.open_plan(self.session.knowledge.reopen(saved['id']),confirmed=True)
+        specs={row['key']:row for row in self.workspace.equipment_fields()}
+        self.assertEqual(specs['planning']['raw'],'0');self.assertNotIn('upgrade_budget',specs)
+        self.workspace.handle({'page':'equipment','command':'calculate','values':self.workspace.display_raw('equipment')})
+        self.workspace.handle({'page':'equipment','command':'update','values':self.workspace.display_raw('equipment')});self.finish_job()
+        self.assertNotIn('planning',self.session.knowledge.reopen(saved['id'])['plan']['params'])
+        self.workspace.raw['equipment']['planning']='1'
+        self.assertIn('upgrade_budget',{row['key'] for row in self.workspace.equipment_fields()})
+
+    def test_snapshot_strength_requires_confirmed_total_and_preserves_input_before_explicit_manual_use(self):
+        from tests.test_character_scene import game,ring
+        for condition,fields in [('known',{}),('unknown_level',{'levelKnown':False}),('unknown_curse',{'cursedKnown':False})]:
+            with self.subTest(condition=condition):
+                fixture=GameWorkspaceTests();fixture.setUp();root,slot=fixture.saved_game()
+                data=game(ring=ring(**fields));data.update(challenges=0,generated_levels=[2],branch=0,seed=9)
+                (slot/'game.dat').write_text(json.dumps(data),encoding='utf-8')
+                stamp=(slot/'game.dat').stat().st_mtime_ns+1_000_000_000
+                os.utime(slot/'depth2.dat',ns=(stamp,stamp));fixture.session.refresh();fixture.equipment()
+                fixture.workspace.raw['equipment']['planning']='0'
+                if condition=='known':
+                    fixture.workspace.import_snapshot('equipment')
+                    self.assertEqual(fixture.workspace.raw['equipment']['strength'],'14')
+                else:
+                    before=copy.deepcopy((fixture.workspace.raw,fixture.workspace.sources,fixture.workspace.undo))
+                    with self.assertRaisesRegex(ValueError,'总力量未确认.*手填游戏面板总力量'):
+                        fixture.workspace.import_snapshot('equipment')
+                    self.assertEqual((fixture.workspace.raw,fixture.workspace.sources,fixture.workspace.undo),before)
+                    fixture.workspace.edit('equipment',{**fixture.workspace.display_raw('equipment'),'strength':'14'})
+                fixture.workspace.calculate('equipment');fixture.workspace.raw['equipment']['name']=condition
+                fixture.workspace.handle({'page':'equipment','command':'save'});fixture.finish_job()
+                saved=fixture.workspace.saved['equipment'];fixture.workspace.dirty.clear()
+                fixture.workspace.open_plan(fixture.session.knowledge.reopen(saved['id']))
+                self.assertEqual(fixture.workspace.calculated['equipment']['strength'],14)
+
+    def test_same_mtime_game_and_floor_changes_mark_fixed_sources_old_across_reopen_and_session(self):
+        from companion.service import Session
+        root,slot=self.saved_game();stamp=int(time.time())
+        for file in slot.iterdir():os.utime(file,(stamp,stamp))
+        self.session.refresh();self.equipment();self.workspace.import_snapshot('equipment');self.workspace.calculate('equipment')
+        self.workspace.raw['equipment']['name']='固定快照';self.workspace.handle({'page':'equipment','command':'save'});self.finish_job()
+        saved=copy.deepcopy(self.workspace.saved['equipment']);before=copy.deepcopy((self.workspace.raw,self.workspace.results))
+        original=self.session.snapshot();file=slot/'game.dat';stat=file.stat();data=json.loads(file.read_text())
+        data['hero']['STR']=18;file.write_text(json.dumps(data),encoding='utf-8');os.utime(file,ns=(stat.st_atime_ns,stat.st_mtime_ns))
+        self.session.refresh();changed=self.session.snapshot()
+        self.assertEqual(changed['modified'],original['modified'])
+        self.assertTrue(self.workspace.source_status('equipment')['stale']);self.assertEqual((self.workspace.raw,self.workspace.results),before)
+        self.workspace.open_plan(self.session.knowledge.reopen(saved['id']),confirmed=True)
+        self.assertTrue(self.workspace.source_status('equipment')['stale'])
+        restarted=Session(self.session.config_path);restarted.refresh();restarted.revision=saved['origin']['state_revision']
+        self.workspace.session=restarted;self.assertTrue(self.workspace.source_status('equipment')['stale']);self.workspace.session=self.session
+        self.workspace.import_snapshot('equipment');self.assertFalse(self.workspace.source_status('equipment')['stale'])
+        file=slot/'depth2.dat';stat=file.stat();data=json.loads(file.read_text());data['level']['visited'][0]=True
+        file.write_text(json.dumps(data),encoding='utf-8');os.utime(file,ns=(stat.st_atime_ns,stat.st_mtime_ns));self.session.refresh()
+        self.assertTrue(self.workspace.source_status('equipment')['stale'])
+        self.workspace.import_snapshot('equipment')
+        self.session.update_settings({'always_on_top':True});self.session.refresh()
+        self.assertFalse(self.workspace.source_status('equipment')['stale'])
 
     def test_independent_restored_drafts_cannot_update_an_unrelated_saved_plan(self):
         for page in ('equipment', 'alchemy', 'character'):
