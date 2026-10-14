@@ -183,6 +183,7 @@ namespace Denghuo.Native {
                 var name=UI.Text((i==0 ? "A · " : "B · ")+Data.Text(choice,"summary_name",Data.Text(choice,"name","")),13); name.FontWeight=FontWeights.SemiBold; name.VerticalAlignment=VerticalAlignment.Center; identity.Children.Add(name); identities.Children.Add(identity);
             }
             comparison.Children.Add(identities);
+            string context=Data.Text(data,"summary_context",""); if(context.Length>0) comparison.Children.Add(UI.Text(context,12,UI.Gold));
             var branches=Data.Array(data,"summary_branches");
             if(branches.Length==0) comparison.Children.Add(UI.Text("基础参考 · 当前 → 升级一次",12,UI.Muted));
             else foreach(object branch in branches) comparison.Children.Add(UI.Text(Convert.ToString(branch),12,UI.Gold));

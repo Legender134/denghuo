@@ -7,6 +7,7 @@ import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from queue import Queue
 
 from companion.service import Session
 from companion.tray import Tray
@@ -39,6 +40,36 @@ class TrayNoticeTests(unittest.TestCase):
                        {'state':'blocked','error':'third'}):tray.update(health)
         self.assertEqual(tray.icon.notify.call_count,2)
         self.assertEqual(tray.icon.notify.call_args.args[0],'third')
+
+
+@unittest.skipUnless(tk is not None, 'Tk display controller import')
+class PassiveOwnershipTests(unittest.TestCase):
+    def test_native_workspace_and_handle_suppress_old_cards_with_fallback_preserved(self):
+        from companion.play_state import PLAY_DEFAULTS
+        for ready in (True, False):
+            for collapsed in (True, False):
+                for burning in (True, False):
+                    with self.subTest(ready=ready, collapsed=collapsed, burning=burning):
+                        game = {'rect': (0, 0, 1280, 720)}
+                        host = SimpleNamespace(process=SimpleNamespace(pid=2), ready=ready, visibility={'manager': ready})
+                        ui = SimpleNamespace(host=host, companion_collapsed=collapsed, track_game=Mock())
+                        play = PlayDisplay.__new__(PlayDisplay)
+                        play.manager = SimpleNamespace(root=SimpleNamespace(after=Mock()), native_ui=ui)
+                        play.native = SimpleNamespace(game=lambda: game, remembered_game=lambda: game,
+                                                      foreground=lambda: 1, process=lambda _: 1)
+                        play.closed, play.lookup = False, None
+                        play.worker = SimpleNamespace(results=Queue())
+                        play.state = dict(PLAY_DEFAULTS)
+                        play.snap = {'data': {'tips': [{'id': 'burning'}] if burning else []}}
+                        play.status, play.notice, play.peek = Mock(), Mock(), Mock()
+                        play.draw = Mock()
+                        play.poll()
+                        ui.track_game.assert_called_once_with(game, True)
+                        if ready:
+                            play.draw.assert_not_called()
+                            for card in (play.status, play.notice, play.peek): card.hide.assert_called_once()
+                        else:
+                            play.draw.assert_called_once()
 
 
 @unittest.skipUnless(tk is not None and os.name=='nt','Windows passive display component')

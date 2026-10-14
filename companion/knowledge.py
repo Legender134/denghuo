@@ -74,7 +74,7 @@ def identity(value):
 
 def origin(raw=None):
     raw = {} if raw is None else raw
-    if not isinstance(raw, dict) or set(raw)-{'kind','mode','snapshot_at','slot','fields','references'}:
+    if not isinstance(raw, dict) or set(raw)-{'kind','mode','snapshot_at','slot','fields','references','mixed_snapshots'}:
         raise ValueError('方案来源不正确')
     mode = raw.get('mode', 'example')
     if mode not in ('example','manual','save'):
@@ -86,6 +86,9 @@ def origin(raw=None):
         raise ValueError('方案槽位不正确')
     # Opening any plan remains a fixed reference, regardless of original mode.
     result = {'kind':'saved_reference', 'mode':mode, 'snapshot_at':at, 'slot':slot}
+    if 'mixed_snapshots' in raw:
+        if type(raw['mixed_snapshots']) is not bool: raise ValueError('混合保存来源标记不正确')
+        result['mixed_snapshots'] = raw['mixed_snapshots']
     if 'fields' in raw:
         fields=raw['fields']
         if not isinstance(fields,dict) or len(fields)>64 or any(not isinstance(key,str) or not re.fullmatch(r'[a-z0-9_]{1,80}',key) for key in fields):
