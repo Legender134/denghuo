@@ -6,7 +6,7 @@ from .native_host import Value, TextState, NativeWindow
 from .play_state import PLAY_DEFAULTS, validate_preferences
 
 LABELS = {'capture': '立即备份已保存进度', 'show': '显示随行助手', 'library': '手册',
-          'backups': '存档历史', 'play_toggle': '开关游戏提示', 'quick': '收起或展开随行助手'}
+          'backups': '存档历史', 'play_toggle': '开关游戏跟随', 'quick': '收起或展开随行助手'}
 ANCHORS = {'左上': 'top_left', '右上': 'top_right', '左下': 'bottom_left', '右下': 'bottom_right'}
 FIELDS = [('offset_x', '横向边距'), ('offset_y', '纵向边距'), ('font_scale', '字号倍率（1–2）'),
           ('opacity', '背景不透明度（0.5–1）'), ('notice_seconds', '短提醒时长（3–30秒）')]
@@ -50,6 +50,10 @@ class PlaySettings:
 
     def prepare_save(self):
         submitted_values, submitted_bindings = copy.deepcopy(self.draft_values())
+        if getattr(self.host, 'ready', False):
+            patch = {'enabled': submitted_values['enabled'], 'bindings': submitted_bindings}
+            validate_preferences(patch)
+            return patch, (submitted_values, submitted_bindings)
         patch = dict(submitted_values)
         patch['anchor'] = ANCHORS[patch['anchor']]
         for key in ('offset_x', 'offset_y'):
@@ -72,8 +76,16 @@ class PlaySettings:
         self.revision = receipt['revision']
         self.saved_baseline = copy.deepcopy(receipt['settings'])
         self.draft_baseline = submitted
+        if getattr(self.host, 'ready', False):
+            baseline = copy.deepcopy(submitted[0]); saved = self.wire_values(receipt['settings'])
+            for key in baseline:
+                if key != 'enabled': baseline[key] = saved[key]
+            self.draft_baseline = baseline, submitted[1]
         self.status.text = self.manager.play_apply_error or ('本次提交已保存；之后的新编辑仍未保存。'
-            if self.has_draft() else '已保存；注册状态见下方。透明度只作用于背景。')
+            if self.has_draft() else '已保存；注册状态见下方。')
+        if not self.manager.play_apply_error and getattr(self.host, 'ready', False) and any(self.vars[key].get() != value
+                for key, value in self.draft_baseline[0].items() if key != 'enabled'):
+            self.status.text = '跟随与快捷键已保存；备用提示卡草稿未应用，原始输入仍保留。'
         self.emit()
 
     def save(self):
@@ -89,6 +101,11 @@ class PlaySettings:
             return False
 
     def save_async(self, unlock=False):
+        if unlock and getattr(self.host, 'ready', False):
+            self.manager.native_ui.show()
+            self.status.text = '拖动随行窗口标题栏或灯柄即可调整位置，拖动边缘可缩放。'
+            self.emit()
+            return
         try:
             if unlock:
                 self.vars['enabled'].set(True)

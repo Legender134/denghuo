@@ -74,7 +74,7 @@ def identity(value):
 
 def origin(raw=None):
     raw = {} if raw is None else raw
-    if not isinstance(raw, dict) or set(raw)-{'kind','mode','snapshot_at','slot','fields','references','mixed_snapshots'}:
+    if not isinstance(raw, dict) or set(raw)-{'kind','mode','snapshot_at','slot','fields','references','mixed_snapshots','context_token','state_revision'}:
         raise ValueError('方案来源不正确')
     mode = raw.get('mode', 'example')
     if mode not in ('example','manual','save'):
@@ -89,6 +89,14 @@ def origin(raw=None):
     if 'mixed_snapshots' in raw:
         if type(raw['mixed_snapshots']) is not bool: raise ValueError('混合保存来源标记不正确')
         result['mixed_snapshots'] = raw['mixed_snapshots']
+    if 'context_token' in raw:
+        if not isinstance(raw['context_token'], str) or not re.fullmatch(r'[0-9a-f]{64}', raw['context_token']):
+            raise ValueError('方案来源绑定不正确')
+        result['context_token'] = raw['context_token']
+    if 'state_revision' in raw:
+        if type(raw['state_revision']) is not int or not 0 <= raw['state_revision'] < 2**63:
+            raise ValueError('手填来源版本不正确')
+        result['state_revision'] = raw['state_revision']
     if 'fields' in raw:
         fields=raw['fields']
         if not isinstance(fields,dict) or len(fields)>64 or any(not isinstance(key,str) or not re.fullmatch(r'[a-z0-9_]{1,80}',key) for key in fields):

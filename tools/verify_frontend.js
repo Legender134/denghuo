@@ -1544,6 +1544,12 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   const playSettings={enabled:true,alerts:true,anchor:'top_left',offset_x:16,offset_y:100,font_scale:1,opacity:.9,notice_seconds:5,bindings:{capture:'Ctrl+Alt+B',library:'Ctrl+Alt+H'}};
   let playServer={settings:playSettings,revision:1,error:'',desktop_available:false,desktop_status:{hotkeys_ready:false,bindings:{}}};play.context.getJSON=async()=>structuredClone(playServer);play.load('play.js');await play.run('loadPlaySettings()');
   assert(play.get('#play-runtime').textContent.includes('尚未确认'));assert(play.get('#play-runtime').textContent.includes('下次启用'));
+  play.run('renderPlayRuntime({revision:1,desktop_available:true,desktop_status:{applied_revision:1,native_helper_ready:true,hotkeys_ready:true}})');
+  assert(play.get('#play-runtime').textContent.includes('已应用跟随与快捷键配置'));
+  assert(play.get('#play-runtime').textContent.includes('外观与短提示参数仅供备用提示卡'));
+  play.run('renderPlayRuntime({revision:1,desktop_available:true,desktop_status:{applied_revision:1,native_helper_ready:false,hotkeys_ready:true}})');
+  assert(play.get('#play-runtime').textContent.includes('桌面游玩窗口已应用当前保存配置'));
+  assert(!play.get('#play-runtime').textContent.includes('仅供备用提示卡'));
   assert.deepEqual(Object.keys(JSON.parse(play.run('JSON.stringify(playFormValues())'))).sort(),Object.keys(playSettings).sort());
   play.get('#play-offset_x').value='777';play.get('#play-form').listeners.input();playServer.revision=2;await play.run('loadPlaySettings()');
   assert.equal(play.get('#play-offset_x').value,'777');assert(play.run('playConflict'));assert.equal(play.run('playRevision'),1);

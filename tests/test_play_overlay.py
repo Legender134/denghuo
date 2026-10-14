@@ -44,6 +44,21 @@ class TrayNoticeTests(unittest.TestCase):
 
 @unittest.skipUnless(tk is not None, 'Tk display controller import')
 class PassiveOwnershipTests(unittest.TestCase):
+    def test_unlock_uses_the_native_window_and_preserves_legacy_fallback(self):
+        for ready in (True, False):
+            with self.subTest(ready=ready):
+                ui = SimpleNamespace(host=SimpleNamespace(ready=ready), show=Mock())
+                play = PlayDisplay.__new__(PlayDisplay)
+                play.manager = SimpleNamespace(native_ui=ui, hide_to_tray=Mock())
+                play.editing, play.drag = False, None
+                play.unlock_layout(persist=False)
+                if ready:
+                    ui.show.assert_called_once(); play.manager.hide_to_tray.assert_not_called()
+                    self.assertFalse(play.editing)
+                else:
+                    ui.show.assert_not_called(); play.manager.hide_to_tray.assert_called_once()
+                    self.assertTrue(play.editing)
+
     def test_native_workspace_and_handle_suppress_old_cards_with_fallback_preserved(self):
         from companion.play_state import PLAY_DEFAULTS
         for ready in (True, False):
