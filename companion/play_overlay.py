@@ -291,7 +291,8 @@ class PlayDisplay:
                 # Turning off passive play display leaves the explicitly opened workspace usable.
                 native_ui.track_game((target or remembered) if self.state['enabled'] else None, bool(target and self.state['enabled']))
             if self.game and self.state['enabled']:
-                if native_ui and native_ui.host.visibility.get('manager') and not getattr(native_ui, 'companion_collapsed', True):
+                if native_ui and getattr(native_ui.host, 'ready', False):
+                    # The native frame and its lamp handle own the in-game surface.
                     self.hide()
                 else:
                     self.draw()

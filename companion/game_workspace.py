@@ -12,7 +12,7 @@ from .values_investment import family
 BOOL = [('', '未确认'), ('false', '否'), ('true', '是')]
 FLAGS = [('0', '否'), ('1', '是')]
 CURSE = [('unknown', '未确认'), ('0', '无诅咒'), ('1', '有诅咒')]
-ORIGIN_KEYS = ('kind', 'mode', 'slot', 'snapshot_at', 'fields', 'references')
+ORIGIN_KEYS = ('kind', 'mode', 'slot', 'snapshot_at', 'fields', 'references', 'mixed_snapshots')
 
 
 def integer(value, label, optional=False):
@@ -104,6 +104,11 @@ def comparison_summary(result):
         selected = [row['label'] for row in rows[:2]]
     if any(len(choice.get('upgrade_branches', [])) > 1 for choice in choices):
         notes.append('升级分支为可能结果，非保证。')
+    result['summary_context'] = ''
+    if params.get('character_scene'):
+        strengths = [str(choice['character_scene']['strength']['effective']) for choice in choices]
+        strength = strengths[0] if len(set(strengths)) == 1 else 'A '+strengths[0]+' / B '+strengths[1]
+        result['summary_context'] = '当前角色力量 '+strength+' · 覆盖独立力量'
     result['summary_rows'] = [{**by_label[label], 'values': [value for choice in choices
         for value in (choice['current'].get(label, '—'), outcomes(choice, label))]} for label in selected]
     result['summary_branches'] = branch_labels
@@ -332,9 +337,10 @@ class GameWorkspace:
                     if spec['key'] in ('hp', 'max_hp', 'hero_level', 'depth', 'target_hp', 'target_max_hp', 'enemy_exp', 'minor', 'major', 'charges'):
                         key = spec['key']+'_'+side
                         result.append(field(key, INPUTS[spec['key']][0]+'（手填条件）', raw.get(key, str(spec['value'])), section=group))
-        result += [field('strength', '有效力量', raw.get('strength', ''), section='共同条件'),
-                   field('planning', '启用升级预算', raw.get('planning', '1'), FLAGS, '共同条件')]
         context = self.equipment_context()
+        shared = bool(context.get('character_scene') and raw.get('context.scene_enabled', '1') != '0')
+        result += [field('strength', '独立力量（停用角色条件后生效）' if shared else '有效力量', raw.get('strength', ''), section='共同条件'),
+                   field('planning', '启用升级预算', raw.get('planning', '1'), FLAGS, '共同条件')]
         kind = family(raw.get('id_a'))
         if raw.get('planning') == '1':
             result += [field('upgrade_budget', '升级卷轴预算', raw.get('upgrade_budget', '0'), section='共同条件'),
@@ -791,7 +797,7 @@ class GameWorkspace:
             if page == 'alchemy': actions += [('add_target', '增加目标'), ('remove_target', '移除末项目标'), ('add_resource', '增加独立库存'), ('remove_resource', '移除末项库存'), ('add_path', '指定前置路径'), ('remove_path', '移除末项路径')]
             specs += [field('name', '方案名称', self.raw[page].get('name', ''), section='保存方案'), field('note', '用途 / 假设备注（可选）', self.raw[page].get('note', ''), section='保存方案')]
             text = self.results.get(page, '填写条件后计算。')
-            if page == 'equipment' and self.equipment_context().get('character_scene'):
+            if page == 'equipment' and self.equipment_context().get('character_scene') and self.raw[page].get('context.scene_enabled', '1') != '0':
                 from .character_scene import calculate_scene
                 captured = calculate_scene(self.equipment_context()['character_scene'])['strength']
                 text += '\n\n固定角色条件 · '+('总力量 '+str(captured['effective']) if captured['state'] == 'known' else '总力量待确认：'+'；'.join(captured['missing']))+'。展开窗口底部来源，编辑「角色条件」后，再点击「带入角色条件」更新。'
@@ -948,6 +954,15 @@ class GameWorkspace:
             context = self.equipment_context(); context['character_scene'] = self.character_args()
             self.undo[page] = (copy.deepcopy(self.raw[page]), copy.deepcopy(self.sources.get(page, {})))
             self.raw[page].update(context=json.dumps(context, ensure_ascii=False), **{'context.scene_enabled': '1'})
+            captured = copy.deepcopy(self.sources.get('character', {})) or {'mode': 'example'}
+            captured.setdefault('mode', 'example')
+            provenance = self.captured_field_label(captured, '固定角色条件') if captured['mode'] in ('save', 'manual') else '手填 · 固定角色条件'
+            if any(str(value).startswith('手填') for value in captured.get('fields', {}).values()):
+                provenance += ' · 含手填假设'
+            prior = self.sources.get(page, {})
+            origin = self.equipment_source(captured, {'character_scene': provenance}, '固定带入角色条件；停用共享条件后才使用独立力量。')
+            if prior.get('references'): origin['references'] = copy.deepcopy(prior['references'])
+            self.sources[page] = origin
             self.dirty.add(page); self.results.pop(page, None); self.calculated.pop(page, None)
         elif action == 'convert_legacy': self.convert_legacy()
         elif action == 'name_plan':

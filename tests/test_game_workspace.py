@@ -572,6 +572,58 @@ class GameWorkspaceTests(ControllerFixture):
         with self.assertRaises(ValueError): self.workspace.calculate('equipment')
         self.assertEqual(self.workspace.raw['equipment']['context.target.evasion'], '1e')
 
+    def test_shared_character_transfer_keeps_old_source_actual_strength_and_saved_origin(self):
+        from companion.character_scene import empty_scene, calculate_scene
+        snap = copy.deepcopy(self.session.snapshot())
+        snap['settings']['mode'] = 'save'
+        snap.update(active_slot=1, modified=1000, stale=False, error='')
+        snap['data']['character_scene'] = calculate_scene(empty_scene(10))
+        self.session.snapshot = lambda: copy.deepcopy(snap)
+        self.equipment(); self.workspace.import_snapshot('character')
+        snap.update(active_slot=2, modified=2000)
+        snap['data']['character_scene'] = calculate_scene(empty_scene(18))
+        self.workspace.import_snapshot('equipment')
+        original = copy.deepcopy((self.workspace.raw['equipment'], self.workspace.sources['equipment']))
+        self.workspace.handle({'page': 'equipment', 'command': 'use_character'})
+        self.workspace.calculate('equipment'); self.workspace.emit('equipment')
+        data = self.host.commands[-1][1]
+        self.assertTrue(data['task_source']['stale'])
+        self.assertIn('不同保存条件', data['task_source']['brief'])
+        self.assertEqual(self.workspace.sources['equipment']['slot'], 1)
+        self.assertIn('槽位 1', self.workspace.sources['equipment']['fields']['character_scene'])
+        self.assertIn('槽位 2', self.workspace.sources['equipment']['fields']['strength'])
+        strength = next(row for row in data['fields'] if row['key'] == 'strength')
+        self.assertEqual(strength['raw'], '18')
+        self.assertIn('停用角色条件后生效', strength['label'])
+        self.assertEqual(data['comparison']['summary_context'], '当前角色力量 10 · 覆盖独立力量')
+        self.assertEqual(data['comparison']['choices'][0]['character_scene']['strength']['effective'], 10)
+        self.workspace.raw['equipment']['name'] = '跨槽位角色'
+        self.workspace.handle({'page': 'equipment', 'command': 'save'}); self.finish_job()
+        saved = self.workspace.saved['equipment']
+        self.assertTrue(saved['origin']['mixed_snapshots'])
+        self.workspace.dirty.clear(); self.workspace.open_plan(self.session.knowledge.reopen(saved['id']))
+        self.assertTrue(self.workspace.sources['equipment']['mixed_snapshots'])
+        self.assertTrue(self.workspace.source_status('equipment')['stale'])
+        self.assertIn('槽位 1', self.workspace.sources['equipment']['fields']['character_scene'])
+        self.workspace.raw['equipment']['context.scene_enabled'] = '0'
+        self.workspace.calculate('equipment'); self.workspace.emit('equipment')
+        self.assertNotIn('character_scene', self.workspace.calculated['equipment'])
+        self.assertFalse(self.host.commands[-1][1]['comparison']['summary_context'])
+        # The transfer can also be undone without changing either original source.
+        self.workspace.raw['equipment'], self.workspace.sources['equipment'] = copy.deepcopy(original)
+        self.workspace.handle({'page': 'equipment', 'command': 'use_character'})
+        self.workspace.handle({'page': 'equipment', 'command': 'undo'})
+        self.assertEqual((self.workspace.raw['equipment'], self.workspace.sources['equipment']), original)
+
+    def test_manual_character_transfer_has_no_claim_of_current_snapshot(self):
+        self.equipment()
+        self.workspace.raw['character']['base_strength'] = '14'
+        self.workspace.handle({'page': 'equipment', 'command': 'use_character'})
+        self.workspace.calculate('equipment'); self.workspace.emit('equipment')
+        self.assertEqual(self.workspace.sources['equipment']['mode'], 'example')
+        self.assertIn('手填', self.workspace.sources['equipment']['fields']['character_scene'])
+        self.assertIn('含手填假设', self.host.commands[-1][1]['task_source']['brief'])
+
     def test_alchemy_saved_instance_keys_and_hidden_state_roundtrip(self):
         from tests.test_alchemy_flow import params, goal, stock
         original = params([goal('resin', 6, {'source_keys': ['saved-wand']}, key='retained-target')],
