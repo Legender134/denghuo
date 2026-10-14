@@ -246,7 +246,8 @@ class GameWorkspace:
     def captured_source(snap):
         from .decisions import source
         return {**source(snap), 'context_token': binding_token([
-            snap['settings'].get('save_root'), snap['settings']['mode'], snap.get('active_slot')]),
+            snap['settings'].get('save_root'), snap['settings']['mode'], snap.get('active_slot'),
+            snap.get('snapshot_content') or [snap.get('started'), snap.get('revision')]]),
             'state_revision': snap.get('revision')}
 
     def source_status(self, page, snap=None):
@@ -298,7 +299,8 @@ class GameWorkspace:
         retained = {key:value for key,value in prior.get('fields', {}).items() if key not in fields}
         remaining_snapshot = any(not str(value).startswith(('手填', '未确认')) for value in retained.values())
         different = any(prior.get(key) != captured.get(key) for key in ('mode','slot','snapshot_at','context_token'))
-        return {**captured, 'label': label, 'fields': {**retained, **fields},
+        return {**captured, **({'references': copy.deepcopy(prior['references'])} if prior.get('references') else {}),
+                'label': label, 'fields': {**retained, **fields},
                 'mixed_snapshots': bool(remaining_snapshot and (different or prior.get('mixed_snapshots')))}
 
     def equipment_choices(self):
@@ -346,7 +348,7 @@ class GameWorkspace:
         context = self.equipment_context()
         shared = bool(context.get('character_scene') and raw.get('context.scene_enabled', '1') != '0')
         result += [field('strength', '独立力量（停用角色条件后生效）' if shared else '有效力量', raw.get('strength', ''), section='共同条件'),
-                   field('planning', '启用升级预算', raw.get('planning', '1'), FLAGS, '共同条件')]
+                   field('planning', '启用升级预算', raw.get('planning', '0'), FLAGS, '共同条件')]
         kind = family(raw.get('id_a'))
         if raw.get('planning') == '1':
             result += [field('upgrade_budget', '升级卷轴预算', raw.get('upgrade_budget', '0'), section='共同条件'),
@@ -965,10 +967,7 @@ class GameWorkspace:
             provenance = self.captured_field_label(captured, '固定角色条件') if captured['mode'] in ('save', 'manual') else '手填 · 固定角色条件'
             if any(str(value).startswith('手填') for value in captured.get('fields', {}).values()):
                 provenance += ' · 含手填假设'
-            prior = self.sources.get(page, {})
-            origin = self.equipment_source(captured, {'character_scene': provenance}, '固定带入角色条件；停用共享条件后才使用独立力量。')
-            if prior.get('references'): origin['references'] = copy.deepcopy(prior['references'])
-            self.sources[page] = origin
+            self.sources[page] = self.equipment_source(captured, {'character_scene': provenance}, '固定带入角色条件；停用共享条件后才使用独立力量。')
             self.dirty.add(page); self.results.pop(page, None); self.calculated.pop(page, None)
         elif action == 'convert_legacy': self.convert_legacy()
         elif action == 'name_plan':
@@ -1188,6 +1187,7 @@ class GameWorkspace:
         if page == 'character': self.load_character(params, dirty=False)
         elif page == 'equipment':
             self.raw[page] = {k: str(v) for k, v in params.items() if not isinstance(v, (dict, list))}
+            self.raw[page].setdefault('planning', '0')
             context = {k: params[k] for k in ('character_scene', 'scene_ring_slot', 'combat_model', 'target_context', 'investment_mode') if k in params}
             if context: self.raw[page]['context'] = json.dumps(context, ensure_ascii=False)
         else:
@@ -1325,12 +1325,21 @@ class GameWorkspace:
             {**{key+'_'+side: provenance if value is not None else '未确认' for key, value in public.items()},
              'infusion_'+side: '未确认'},
             '装备 '+side.upper()+' · '+item['name']+' · '+item['location']+'，固定带入该背包实例的'+origin+'装备条件；游戏鉴定状态未改变，未确认的条件仍需明确核对。')
+        if self.sources['equipment'].get('references'):
+            self.sources['equipment']['references'][side] = {'id': item['key'], 'name': item['name'],
+                'effect_id': (item.get('equipment_state') or {}).get('effect_id'),
+                'user_note': copy.deepcopy(item.get('user_note'))}
         self.dirty.add('equipment'); self.results.pop('equipment', None); self.calculated.pop('equipment', None)
 
     def import_snapshot(self, page):
         from .decisions import source, public_context
         snap = self.session.snapshot()
         if snap.get('error') or not snap.get('data'): raise ValueError('当前没有可带入的有效快照；原始输入保留')
+        if page == 'equipment':
+            total = snap['data'].get('character_scene', {}).get('strength', {})
+            if total.get('usable') is not True:
+                missing = '、'.join(total.get('missing') or ['戒指、天赋与临时状态'])
+                raise ValueError('总力量未确认：'+missing+'。原输入保留；请补全角色条件，或明确手填游戏面板总力量。')
         self.undo[page] = (copy.deepcopy(self.raw[page]), copy.deepcopy(self.sources.get(page, {})))
         if page == 'alchemy':
             from .alchemy import resources_from_snapshot

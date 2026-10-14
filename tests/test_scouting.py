@@ -61,7 +61,8 @@ class ScoutingTests(unittest.TestCase):
         self.write_floor(4, 1, self.level)
         self.write_floor(5, 0, self.level)  # stray file: not part of generated_levels
         now = (self.slot/'game.dat').stat().st_mtime_ns
-        os.utime(self.slot/'depth4.dat', ns=(now+100000, now+100000))
+        # Keep the saved pair ordered when a filesystem rounds utime to seconds.
+        os.utime(self.slot/'depth4.dat', ns=(now+1_000_000_000, now+1_000_000_000))
         os.utime(self.slot/'depth3.dat', ns=(now-20_000_000_000, now-20_000_000_000))
 
     def write_floor(self, depth, branch, level):
