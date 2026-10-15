@@ -4,16 +4,24 @@ README 中的图片来自灯火 0.7.0 候选版本的真实原生窗口和网页
 
 演示角色的力量为 14，已知长剑为 +2。装备比较中的另一列是手动设为 +3 的假设；治疗、炼金和装备数值仅适用于画面中的条件。旧快照提示保留在截图中。介绍图之间展示不同界面状态，不表示实时读取游戏内存。
 
-短片使用这些截图制作镜头运动与转场，配乐由脚本合成，没有借用歌曲、采样音频或配音。游戏图像的权利与来源见 [第三方声明](../THIRD_PARTY_NOTICES.md)。
+## 36 秒操作短片
+
+[观看短片](https://github.com/Legender134/denghuo/releases/download/v0.7.0/denghuo-introduction-0.7.0.mp4) · [下载制作源码与录屏](https://github.com/Legender134/denghuo/releases/download/v0.7.0/denghuo-film-source-0.7.0.zip)
+
+从“长剑还差 1 点力量”开始，实际展开依据、把试算等级从 +2 改为 +3、查看力量门槛，再收起和展开小窗。它是一条经过剪辑的操作演示；游戏开场来自另一个独立演示局，不表示助手正在读取这一局的实时状态。
+
+画面来自已安装的灯火 0.7.0 与实际启动的游戏。剪掉操作间的等待，以及收起、展开录屏中的四帧未完成重绘画面，其余录屏保持原速。镜头放大、位移、字幕、鼠标强调和转场由代码制作，产品界面和数值没有重绘。灯柄镜头只保留收起后的实际窗口边界，裁掉录制器保留的边界外旧画面；镜头动画不代表软件自身动画。24–30 秒把小窗叠放在独立游戏录屏上，画面标有「画面合成 · 非同一局」，用于展示收起后腾出的空间。
+
+配乐、鼓点、点击音与转场音均由脚本合成，没有借用歌曲或采样音频，没有配音。游戏图像的权利与来源见 [第三方声明](../THIRD_PARTY_NOTICES.md)。
 
 ## 用代码重新生成
 
-需要 Python 3.10+、Pillow、FFmpeg，以及本机已安装的中文字体。它们仅用于制作宣传片，使用灯火不需要安装。
+需要 Python 3.10+、Pillow、NumPy、FFmpeg，以及本机已安装的中文字体。它们仅用于制作宣传片，使用灯火不需要安装。先下载并解压上面的制作包，在解压目录中运行命令。包内包含此版制作脚本、灯火图标、十段实际录屏，以及记录录屏尺寸、时长、SHA-256 的 `manifest.json`。
 
 ```powershell
-python tools/make_promo.py --output dist/media-0.7.0 --font C:/Windows/Fonts/msyh.ttc
+python tools/make_promo.py --footage footage/manifest.json --output dist/media-0.7.0-motion --font C:/Windows/Fonts/msyh.ttc --bold-font C:/Windows/Fonts/msyhbd.ttc
 ```
 
-Linux 可通过 `--font` 指定本机中文字体路径。输出目录必须尚不存在，避免覆盖成品。`--preview-only` 只生成各镜头画面，不调用 FFmpeg。
+Linux 可通过 `--font`、`--bold-font` 指定本机中文字体；`--ffmpeg` 可指定 FFmpeg 的完整路径。字体不随素材包分发。输出目录必须尚不存在，避免覆盖成品；输入录屏的哈希不匹配时停止制作。
 
-产物包括 1920 × 1080、30 帧/秒的 58 秒 MP4、原始合成音轨、分镜画面和带输入哈希的 `render.json`。视频发布在 GitHub Releases；共享更新服务器只保存最新安装包与必要版本信息，不存宣传素材。
+产物包括 1920 × 1080、30 帧/秒的 36 秒 MP4、原始合成音轨、分镜抽帧和带输入及脚本哈希的 `render.json`。成片可以独立播放，无需这些制作依赖。视频与素材包发布在 GitHub Releases；共享更新服务器只保存最新安装包与必要版本信息，不存宣传素材。

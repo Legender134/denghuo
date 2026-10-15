@@ -3,7 +3,7 @@
 <h1 align="center">灯火</h1>
 <p align="center"><strong>把地牢里的关键选择，看得更清楚。</strong><br>《破碎的像素地牢》的 Windows 随行助手</p>
 
-<p align="center"><a href="https://room.riftbuddy.dpdns.org/denghuo/Denghuo-Setup.exe">下载 Windows 安装包</a> · <a href="https://github.com/Legender134/denghuo/releases/latest">GitHub 下载 / 免安装版</a> · <a href="https://github.com/Legender134/denghuo/releases/download/v0.7.0/denghuo-introduction-0.7.0.mp4">观看产品短片</a></p>
+<p align="center"><a href="https://room.riftbuddy.dpdns.org/denghuo/Denghuo-Setup.exe">下载 Windows 安装包</a> · <a href="https://github.com/Legender134/denghuo/releases/latest">GitHub 下载 / 免安装版</a> · <a href="https://github.com/Legender134/denghuo/releases/download/v0.7.0/denghuo-introduction-0.7.0.mp4">观看 36 秒操作短片</a></p>
 
 ![灯火：随行提醒、图鉴与决策工具](docs/images/overview.png)
 
