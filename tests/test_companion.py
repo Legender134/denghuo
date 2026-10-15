@@ -337,6 +337,15 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.catalog.search("蛇")["entries"][0]["name"],"下水道巨蛇")
         self.assertGreater(self.catalog.search("PotionOfHealing")["total"],0)
 
+    def test_ordinary_rat_is_found_by_common_player_names(self):
+        for query in ('老鼠', '耗子'):
+            with self.subTest(query=query):
+                result = self.catalog.search(query)
+                self.assertEqual(result['entries'][0]['id'], 'actors.mobs.rat')
+                self.assertEqual(result['entries'][0]['name'], '啮齿小鼠')
+                self.assertEqual(self.catalog.search(query, '物品')['total'],
+                                 len([row for row in result['entries'] if row['category'] == '物品']))
+
 
 class SaveTests(unittest.TestCase):
     def setUp(self):

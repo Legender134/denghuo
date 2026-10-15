@@ -271,6 +271,8 @@ class NumericLookup:
         self.guard('切换资料', lambda: self.select_row(row))
 
     def select_row(self, row):
+        if self.pending:
+            self.search(preserve_detail=True)
         self.focus_result = True
         self.operation_receipt = ''
         self.saved_plan, self.plan_error = None, ''
@@ -691,6 +693,8 @@ class NumericLookup:
                 return True
             if confirm_draft:
                 return self.guard('打开方案', lambda: self.open_plan(record_id, False))
+            if self.pending:
+                self.search(preserve_detail=True)
             self.ticket = self.submitted = None
             self.clear_params()
             self.saved_plan, self.identity = opened['plan'], opened['plan']['entry']
@@ -731,6 +735,8 @@ class NumericLookup:
         captured = reference.get('stamp')
         stamp = tuple(captured) if isinstance(captured, (list, tuple)) and len(captured) == 6 else None
         def apply():
+            if self.pending:
+                self.search(preserve_detail=True)
             self.focus_result = True
             self.undo_state = self.draft(include_result=True)
             snap = self.owner.manager.session.snapshot()

@@ -4,6 +4,7 @@ import json
 import unicodedata
 
 ALIASES = {
+    'actors.mobs.rat': ('老鼠', '耗子'),
     'items.potions.potionofhealing': ('血瓶', '治疗药水', '补血药', '回血药'),
     'items.potions.potionofstrength': ('力量药水', '力量药'),
     'items.scrolls.scrollofupgrade': ('升级卷', '强化卷'),

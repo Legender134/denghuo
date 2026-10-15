@@ -364,13 +364,37 @@ class NativeFloorGuideTests(unittest.TestCase):
         reference,source,note=calls[0]
         self.assertEqual(reference['entry'],'actors.mobs.crab')
         self.assertEqual(reference['params'],{'depth':4,'hero_level':5,'loot_count':0})
-        self.assertEqual(reference['source'],{'mode':'save'})
+        self.assertEqual(reference['source'],{'mode':'save','slot':snap['active_slot'],'snapshot_at':snap['modified']})
         self.assertEqual(reference['stamp'][4],snap['revision'])
         self.assertIn('下水道螃蟹',reference['source_label'])
         self.assertIn('0次示例',reference['source_label'])
         self.assertIn('未读取本局计数',reference['conditions'])
         self.assertIsNone(source)
         self.assertEqual(self.ui.manager.action_error,'')
+
+    def test_saved_floor_reference_keeps_its_captured_slot_and_time(self):
+        from tests.test_native_controllers import ControllerFixture
+        controller = ControllerFixture()
+        controller.setUp()
+        self.addCleanup(controller.doCleanups)
+        controller.session = self.session
+        controller.manager.session = self.session
+        self.ui.manager.open_reference = controller.lookup.open_reference
+        self.ui.frozen = False
+        snap = self.session.snapshot()
+        public = self.ui.floor_state(snap)
+        self.ui.dispatch({'action': 'floor_reference', 'token': public['token'], 'id': 'actors.mobs.crab'})
+        controller.finish()
+        self.assertTrue(controller.lookup.save_plan('本层螃蟹参考'))
+        record_id = controller.lookup.saved_plan['id']
+        expected = {'slot': snap['active_slot'], 'snapshot_at': snap['modified']}
+        self.session.update_settings({'slot': 2})
+        self.session.refresh()
+        self.assertTrue(controller.lookup.open_plan(record_id, False))
+        origin = controller.lookup.saved_plan['origin']
+        self.assertEqual({key: origin[key] for key in expected}, expected)
+        self.assertEqual(origin['fields']['hero_level'], '快照')
+        self.assertEqual(controller.lookup.calculated['hero_level'], 5)
 
     def test_native_public_mechanism_preview_discloses_its_example_inputs(self):
         public=self.ui.floor_state(self.session.snapshot())

@@ -966,6 +966,37 @@ class NumericControllerTests(ControllerFixture):
         self.assertEqual(self.lookup.raw_params()['max_hp'], '88')
         self.assertTrue(self.lookup.has_draft())
 
+    def test_pending_search_cannot_close_an_explicitly_opened_entry(self):
+        identity = 'items.potions.potionofhealing'
+        for route in ('select', 'reference', 'plan'):
+            with self.subTest(route=route):
+                self.lookup = self.owner.lookup = NumericLookup(self.owner)
+                if route == 'plan':
+                    self.open(identity)
+                    self.assertTrue(self.lookup.save_plan('治疗参考'))
+                    record_id = self.lookup.saved_plan['id']
+                self.lookup.query.set('治'); self.lookup.search()
+                self.lookup.query.set('治疗')
+                pending = self.lookup.pending
+                if route == 'select':
+                    index = next(i for i, row in enumerate(self.lookup.rows) if row['id'] == identity)
+                    self.lookup.handle({'action': 'select', 'index': index,
+                                        'token': binding_token(self.lookup.rows[index])})
+                elif route == 'reference':
+                    self.lookup.open_reference({'entry': identity, 'params': {}}, {'mode': 'example'})
+                else:
+                    self.lookup.open_plan(record_id, False)
+                callback = self.manager.root.jobs.pop(pending, None)
+                if callback:
+                    callback()
+                self.assertEqual(self.lookup.identity, identity)
+                self.assertIsNone(self.lookup.pending)
+                if route != 'plan':
+                    self.finish()
+                self.assertEqual(self.lookup.rendered['id'], identity)
+                expected = self.session.catalog.search('治疗', limit=30)['entries']
+                self.assertEqual([row['id'] for row in self.lookup.rows], [row['id'] for row in expected])
+
     def test_empty_search_suggestions_require_an_explicit_selection(self):
         for query, identity in [('隐形药水', 'items.potions.potionofinvisibility'),
                                 ('治疗药计', 'items.potions.potionofhealing')]:

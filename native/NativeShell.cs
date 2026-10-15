@@ -488,10 +488,10 @@ namespace Denghuo.Native {
                 var row=raw as Dictionary<string,object>; if(row==null) continue;
                 string id=Data.Text(row,"id", ""), identity=path+"/"+id; var children=Data.Array(row,"children"); var body=new StackPanel();
                 string detail=Data.Text(row,"detail",""); if(detail.Length>0) {
-                    if(id=="monsters") { bool conditions; floorExpanded.TryGetValue(identity+"/conditions",out conditions); var scope=UI.Section("出现范围与条件",UI.Text(detail,12,UI.Muted),conditions); scope.Expanded+=delegate { floorExpanded[identity+"/conditions"]=true; }; scope.Collapsed+=delegate { floorExpanded[identity+"/conditions"]=false; }; body.Children.Add(scope); floorControls[identity+"/conditions|header"]=scope; }
+                    if(id=="monsters" || id=="hidden") { bool conditions; floorExpanded.TryGetValue(identity+"/conditions",out conditions); var explanation=UI.Stack(UI.Text(detail,12,UI.Muted)); if(id=="hidden") explanation.Children.Add(UI.Text("只在助手显示；不改变游戏。",12,UI.Muted)); var scope=UI.Section(id=="hidden" ? "读取范围与说明" : "出现范围与条件",explanation,conditions); scope.Expanded+=delegate { floorExpanded[identity+"/conditions"]=true; }; scope.Collapsed+=delegate { floorExpanded[identity+"/conditions"]=false; }; body.Children.Add(scope); floorControls[identity+"/conditions|header"]=scope; }
                     else body.Children.Add(UI.Text(detail,12,UI.Muted));
                 }
-                if(id=="hidden" && floorReveal!=null) { body.Children.Add(UI.Text("只在助手显示；不改变游戏。",12,UI.Muted)); body.Children.Add(floorReveal); floorControls[identity+"|reveal"]=floorReveal; }
+                if(id=="hidden" && floorReveal!=null) { body.Children.Add(floorReveal); floorControls[identity+"|reveal"]=floorReveal; }
                 if(identity.StartsWith("/monsters/") && (id.StartsWith("actors.mobs.") || id.StartsWith("levels.") || id.StartsWith("items.quest."))) {
                     var button=UI.Button("查看数值",delegate { Host.Send("floor_reference","id",id,"token",floorToken); }); body.Children.Add(button); floorControls[identity+"|reference"]=button;
                 }

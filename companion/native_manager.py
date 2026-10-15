@@ -674,11 +674,11 @@ class NativeManager:
                     if kind=='mobs':
                         caption+=' · '+('保存生命未确认' if row.get('hp') is None else f"保存生命 {row['hp']}")
                         if row.get('ht') is not None:caption+=f" / {row['ht']}"
-                    entries.append({'id':f'{kind}-{i}','text':caption,'detail':floor['note'],'children':children})
+                    entries.append({'id':f'{kind}-{i}','text':caption,'children':children})
                 if entries:
                     label='地上物品与容器' if kind=='heaps' else '本层已保存生物'
                     contents.append({'id':'hidden-'+kind,'text':f'{label} · {len(entries)} 处',
-                        'detail':floor['note'],'children':entries})
+                        'children':entries})
         result['nodes']=[{'id':'hidden','text':'本层隐藏内容 · '+('已主动揭示' if hidden else '尚未揭示'),
             'detail':hidden['result']['note'] if hidden else '点击“揭示本层隐藏内容”后只读查看；保存快照更新后自动收起。',
             'children':contents,'expanded':bool(hidden)},self._floor_public_nodes]
@@ -800,7 +800,8 @@ class NativeManager:
                 from .native_workspace import NumericLookup
                 selected=rows[identity]
                 name=selected['name']
-                row={'entry':selected['id'],'source':{'mode':snap['settings']['mode']},
+                row={'entry':selected['id'],'source':{'mode':snap['settings']['mode'],
+                        'slot':snap['active_slot'],'snapshot_at':snap['modified']},
                     'stamp':NumericLookup.source_stamp(snap),
                     'source_label':name+' · 本层敌人条件参考 · 角色等级来自所选存档；掉落次数为0次示例',
                     'params':{'depth':selected.get('reference_depth',snap['data']['depth']),'hero_level':hero,'loot_count':0,**selected.get('reference_params',{})},
