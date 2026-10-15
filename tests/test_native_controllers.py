@@ -10,7 +10,8 @@ from unittest.mock import Mock
 from companion.native_workspace import NumericLookup
 from companion.native_settings import PlaySettings
 from companion.native_host import binding_token
-from companion.native_manager import NativeManager
+from companion.native_manager import NativeManager, overview_insights, pinned_reference_state
+from companion.engine import PREFIX, analyze
 from companion.service import Session
 
 
@@ -94,10 +95,13 @@ class CompactOverviewTests(ControllerFixture):
         payload, ui = self.render(self.game())
         row = next(row for row in payload['insights'] if row['id'].startswith('resource-'))
         self.assertIn('首次 +24 HP', row['summary'])
-        self.assertIn('合计 +80 HP', row['summary'])
+        self.assertIn('单瓶', row['summary'])
+        self.assertIn('库存 2', row['title'])
+        self.assertIn('最终最多 +80 HP', row['summary'])
         self.assertIn('不再受伤', row['assumption'])
         self.assertNotIn('20 / 100', row['summary'])
-        self.assertIn('critical_hp', [row['id'] for row in payload['secondary_advice']])
+        self.assertEqual(payload['insights'][0]['id'], 'critical_hp')
+        self.assertIn('逐回合', payload['insights'][0]['summary'])
         index = row['actions'][0]['index']
         self.assertEqual(payload['reference_tokens'][index], binding_token(ui.references[index]))
         self.assertEqual(ui.references[index][0]['params']['hp'], 20)
@@ -126,16 +130,200 @@ class CompactOverviewTests(ControllerFixture):
         self.assertNotIn('最后一次备份',payload['snapshot_notes'])
         self.assertEqual(workspace.drafts(),drafts)
 
+    def test_food_escape_and_strength_are_visible_only_with_supported_current_conditions(self):
+        game = self.game()
+        game['hero']['inventory'] = [
+            {'__className': PREFIX+'items.food.Food', 'quantity': 2},
+            {'__className': PREFIX+'items.potions.PotionOfInvisibility', 'quantity': 1}]
+        game['PotionOfInvisibility_known'] = True
+        game['hero']['buffs'] = [{'__className': PREFIX+'actors.buffs.Hunger', 'level': 320}]
+        payload, _ = self.render(game)
+        primary = {row['id']: row for row in payload['insights']}
+        food = primary['resource-items.food.food']
+        self.assertIn('每份参考饱食 +300', food['summary'])
+        self.assertIn('3 回合', food['summary'])
+        self.assertIn('非即时回血', food['assumption'])
+        self.assertIn('库存 2', food['title'])
+        self.assertIn('多数攻击和施法', primary['resource-items.potions.potionofinvisibility']['assumption'])
+        game['PotionOfInvisibility_known'] = False
+        game['hero']['HP'] = 35
+        payload, _ = self.render(game)
+        self.assertNotIn('resource-items.potions.potionofinvisibility', {row['id'] for row in payload['insights']+payload['secondary_advice']})
+        self.assertIn('未饥饿时再休息', next(row for row in payload['insights'] if row['id']=='low_hp')['summary'])
+        game['hero']['buffs'] = []
+        payload, _ = self.render(game)
+        self.assertIn('饱食未知', next(row for row in payload['insights'] if row['id']=='low_hp')['summary'])
+        game['hero']['HP'] = 0
+        payload, _ = self.render(game)
+        self.assertFalse(any(row['id'].startswith('resource-') for row in payload['insights']))
+
+    def test_food_detail_keeps_captured_modifiers_and_does_not_save_them_as_generic_parameters(self):
+        for challenge, cursed, expected in ((0, False, '300'), (1, False, '100'), (0, True, '201'), (1, True, '67')):
+            with self.subTest(challenge=challenge, cursed=cursed):
+                game = self.game()
+                game['challenges'] = challenge
+                game['hero']['inventory'] = [{'__className': PREFIX+'items.food.Food', 'quantity': 2}]
+                game['hero']['buffs'] = [{'__className': PREFIX+'actors.buffs.Hunger', 'level': 350}]
+                if cursed:
+                    game['hero']['artifact'] = {'__className': PREFIX+'items.artifacts.HornOfPlenty',
+                        'cursedKnown': True, 'cursed': True, 'levelKnown': True, 'level': 0}
+                _, ui = self.render(game)
+                row, source, note = next(ref for ref in ui.references if ref[0]['entry'] == 'items.food.food' and 'quantity' in ref[0])
+                self.lookup.open_reference(row, source, note)
+                self.finish()
+                data = self.host.commands[-1][1]
+                self.assertEqual(data['primary_values'][0]['value'], expected)
+                self.assertEqual(data['primary_values'][1]['value'], '3')
+                self.assertEqual('饥饿游戏' in data['primary_note'], bool(challenge))
+                self.assertEqual('已知诅咒丰饶之角' in data['primary_note'], cursed)
+                self.assertIn('非即时回血', data['primary_note'])
+                original = next(section for section in data['numeric_sections'] if section['title'] == '进食数值')
+                self.assertEqual(original['values'][0]['value'], '300')
+                self.assertFalse(data['can_save'])
+                self.assertFalse(self.lookup.save_plan('捕获食物'))
+                self.assertIn('参考', data['origin_brief'])
+                self.open('items.food.food')
+                self.assertEqual(self.host.commands[-1][1]['primary_values'][0]['value'], '300')
+                self.assertNotIn('food_reference', self.lookup.context or {})
+        game['hero']['artifact']['cursedKnown'] = False
+        _, ui = self.render(game)
+        row = next(ref[0] for ref in ui.references if ref[0]['entry'] == 'items.food.food' and 'quantity' in ref[0])
+        self.assertIn('诅咒状态未确认', row['calculation_missing'])
+        self.assertNotIn('food_reference', row)
+
+    def test_confirmed_strength_deficit_is_primary_but_unknowns_do_not_claim_overweight(self):
+        tip = {'id':'strength_主武器','title':'原提示','body':'完整条件','severity':'warning'}
+        data = {'items':[{'name':'长剑 +2','location':'主武器','available':True,'level_known':True,'strength_requirement':15}],
+                'character_scene':{'strength':{'usable':True,'effective':14}}}
+        primary, _ = overview_insights(data, [tip], [])
+        self.assertIn('力量差 1', primary[0]['title'])
+        self.assertIn('命中与攻速', primary[0]['summary'])
+        for field in ('level', 'strength'):
+            unknown = copy.deepcopy(data)
+            if field == 'level': unknown['items'][0]['level_known'] = False
+            else: unknown['character_scene']['strength']['usable'] = False
+            primary, _ = overview_insights(unknown, [tip], [])
+            self.assertNotIn('力量差', primary[0]['title'])
+            self.assertIn('不能断定超重', primary[0]['summary'])
+
     def test_existing_healing_reports_marginal_benefit_with_assumption(self):
         from companion.engine import PREFIX
         game = self.game()
         game['hero']['buffs'] = [{'__className': PREFIX+'actors.buffs.Healing', 'left': 80,
-                                 'percent': .1, 'flat': 2, 'vial_level': -1}]
+                                 'percent': 0, 'flat': 1, 'vial_level': -1}]
         payload, _ = self.render(game)
         row = next(row for row in payload['insights'] if row['id'].startswith('resource-'))
-        self.assertEqual(row['summary'], '再喝多恢复 0 HP')
+        self.assertEqual(row['summary'], '再喝一瓶 · 首次恢复 1 → 25 HP · 最终额外恢复 0 HP')
         self.assertIn('不再受伤', row['assumption'])
         self.assertIn('不预测敌方伤害', row['body'])
+
+    def test_water_summary_distinguishes_immediate_and_vial_recovery(self):
+        game = self.game()
+        game['hero']['inventory'] = [{'__className': PREFIX+'items.Waterskin', 'volume': 20}]
+        payload, _ = self.render(game)
+        row = next(row for row in payload['insights'] if row['id']=='resource-items.waterskin')
+        self.assertEqual(row['summary'], '本次饮用 · 即时恢复 +80 HP · 消耗 16 滴，剩 4 滴')
+        self.assertNotIn('逐回合', row['assumption'])
+        game['hero']['inventory'].append({'__className': PREFIX+'items.trinkets.VialOfBlood',
+                                         'level': 0, 'levelKnown': True})
+        payload, _ = self.render(game)
+        row = next(row for row in payload['insights'] if row['id']=='resource-items.waterskin')
+        self.assertIn('首次 +19 HP', row['summary'])
+        self.assertIn('最终最多 +80 HP', row['summary'])
+        self.assertIn('消耗 15 滴，剩 5 滴', row['summary'])
+        self.assertIn('逐回合', row['assumption'])
+
+    def test_water_cost_and_remainder_are_visible_in_overview_and_compact_reference(self):
+        game = self.game()
+        game['hero'].update(HP=32, HT=90)
+        for volume, cost, remaining in ((14, 13, 1), (20, 13, 7), (0, 0, 0)):
+            with self.subTest(volume=volume):
+                game['hero']['inventory'] = [{'__className': PREFIX+'items.Waterskin', 'volume': volume}]
+                payload, _ = self.render(game)
+                row = next(row for row in payload['insights'] if row['id']=='resource-items.waterskin')
+                result = self.session.values.detail('items.waterskin', {'hp':32,'max_hp':90,'dew_volume':volume,'vial':-1,'shielding_dew':0,'current_shield':0})
+                if volume:
+                    text = f'消耗 {cost} 滴，剩 {remaining} 滴'
+                    self.assertIn(text, row['summary'])
+                    self.assertIn(text, result['blocks'][0]['summary_note'])
+                else:
+                    self.assertEqual(row['summary'], '水袋已空')
+                    self.assertEqual(row['assumption'], '')
+                    self.assertIn('无法饮用', result['blocks'][0]['summary_note'])
+
+    def test_scroll_reading_limits_do_not_block_other_escape_resources(self):
+        game = self.game()
+        game.update(ScrollOfTeleportation_known=True, PotionOfInvisibility_known=True)
+        game['hero']['inventory'] += [
+            {'__className': PREFIX+'items.scrolls.ScrollOfTeleportation'},
+            {'__className': PREFIX+'items.potions.PotionOfInvisibility'},
+            {'__className': PREFIX+'items.stones.StoneOfBlink'},
+            {'__className': PREFIX+'items.Waterskin','volume':14},
+        ]
+        for kind, label in (('Blindness','失明'), ('MagicImmune','魔法免疫'), (None,None)):
+            with self.subTest(kind=kind):
+                game['hero']['buffs'] = [{'__className':PREFIX+'actors.buffs.'+kind}] if kind else []
+                payload, ui = self.render(game)
+                options = {ref[0]['entry']:ref[0] for ref in ui.references if 'quantity' in ref[0]}
+                scroll = next(row for row in payload['insights'] if row['id']=='resource-items.scrolls.scrollofteleportation')
+                if kind:
+                    self.assertIn(label+'期间无法阅读卷轴', scroll['summary'])
+                    self.assertNotIn('本层另一处', scroll['summary'])
+                    self.assertEqual(scroll['assumption'], '')
+                else:
+                    self.assertIn('本层另一处', scroll['summary'])
+                    self.assertEqual(options['items.scrolls.scrollofteleportation']['restriction'], '')
+                for identity in ('items.potions.potionofhealing','items.potions.potionofinvisibility','items.stones.stoneofblink','items.waterskin'):
+                    self.assertEqual(options[identity]['restriction'], '')
+
+    def test_water_answer_keeps_amount_and_origin_visible_with_editor_collapsed(self):
+        from companion.decisions import context_actions
+        self.open('items.waterskin')
+        self.assertIn('露珠 20 滴（示例', self.host.commands[-1][1]['primary_note'])
+        for volume, healing in ((2, '10'), (20, '80')):
+            game = self.game()
+            game['hero']['inventory'] = [{'__className': PREFIX+'items.Waterskin', 'volume': volume}]
+            snap = self.session.snapshot()
+            snap.update(data=analyze(game, self.session.catalog), active_slot=1)
+            snap['settings']['mode'] = 'save'
+            reference = next(row for row in context_actions(self.session, snap)['options'] if row['entry']=='items.waterskin')
+            self.lookup.open_reference(reference); self.finish()
+            state = self.host.commands[-1][1]
+            self.assertIn(f'露珠 {volume} 滴（快照', state['primary_note'])
+            self.assertEqual(state['primary_values'][0]['value'], healing)
+
+    def test_current_boss_handoff_and_explicit_latest_import_confirmed_challenge_only(self):
+        from companion.decisions import context_actions
+        game = self.game(); game.update(depth=14, challenges=256)
+        snap = self.session.snapshot()
+        snap.update(data=analyze(game, self.session.catalog), active_slot=1)
+        snap['settings']['mode'] = 'save'
+        self.session.snapshot = Mock(return_value=snap)
+        reference = next(row for row in context_actions(self.session, snap)['risks'] if row['id']=='boss_next')['references'][0]
+        self.assertEqual(reference['params']['stronger_bosses'], 1)
+        self.lookup.open_reference(reference); self.finish()
+        self.assertEqual(self.lookup.calculated['stronger_bosses'], 1)
+        state = self.host.commands[-1][1]
+        self.assertIn('绝命头目（快照', state['primary_note'])
+        self.assertTrue(any('3座' in note for note in state['reading_notes']))
+        self.open('actors.mobs.dm300')
+        self.assertEqual(self.lookup.calculated['stronger_bosses'], 0, 'Generic encyclopedia remains an independent example')
+        self.assertTrue(self.lookup.save_plan('普通首领参考'))
+        self.lookup.use_latest(); self.finish()
+        self.assertEqual(self.lookup.calculated['stronger_bosses'], 1)
+        self.lookup.undo_import()
+        self.assertEqual(self.lookup.calculated['stronger_bosses'], 0)
+        self.assertIsNotNone(self.lookup.saved_plan)
+        self.lookup.use_latest(); self.finish()
+        snap['data'].update(challenges_known=False, challenges_mask=None)
+        self.lookup.use_latest(); self.finish()
+        self.assertEqual(self.lookup.calculated['stronger_bosses'], 1)
+        self.assertIn('最新记录未确认', self.lookup.input_origins['stronger_bosses'])
+        self.assertIn('最新记录未确认', self.host.commands[-1][1]['primary_note'])
+        snap['data'].update(challenges_known=True, challenges_mask=0)
+        self.lookup.use_latest(); self.finish()
+        self.assertEqual(self.lookup.calculated['stronger_bosses'], 0)
+        self.assertIn('普通首领（快照', self.host.commands[-1][1]['primary_note'])
 
     def test_unknown_harmful_and_unreadable_conditions_do_not_publish_healing_numbers(self):
         game = self.game(); game.pop('challenges')
@@ -145,7 +333,7 @@ class CompactOverviewTests(ControllerFixture):
         self.assertIn('挑战条件未确认', row['body'])
         game = self.game(); game['challenges'] = 4
         payload, _ = self.render(game)
-        row = next(row for row in payload['insights'] if row['id'].startswith('resource-'))
+        row = next(row for row in payload['insights']+payload['secondary_advice'] if row['id'].startswith('resource-'))
         self.assertIn('改为中毒', row['summary'])
         self.assertNotIn('HP', row['summary'])
         payload, _ = self.render(self.game(), error='合成读取错误')
@@ -168,6 +356,140 @@ class CompactOverviewTests(ControllerFixture):
         burning = next(row for row in payload['insights'] if row['id']=='burning')
         self.assertEqual(burning['title'], '无法走动，不能立即入水灭火')
         self.assertIn('漂浮', burning['body'])
+
+
+    def test_critical_lock_without_a_second_tip_is_still_primary_and_roots_do_not_block_items(self):
+        tip={'id':'critical_hp','title':'生命值很低','body':'原始行动限制','basis':'原始阈值','actions':[]}
+        important,secondary=overview_insights({'buffs':[{'kind':'Paralysis'}]},[tip],[])
+        self.assertEqual(important[0]['title'],'麻痹期间不能移动或使用保命物品')
+        self.assertEqual(important[0]['body'],tip['body'])
+        self.assertEqual(secondary,[])
+        resource={'id':'resource-items.waterskin','summary':'保留数值','body':'保留完整条件'}
+        important,secondary=overview_insights({'buffs':[{'kind':'Roots'}]},[tip],[resource])
+        self.assertEqual({row['id'] for row in important}, {'critical_hp', resource['id']})
+        self.assertEqual(next(row for row in important if row['id']==resource['id'])['summary'],resource['summary'])
+        self.assertEqual(secondary,[])
+
+
+    def test_each_action_lock_is_primary_without_repeating_hud_or_resource_restriction(self):
+        for kind, name in [('Paralysis', '麻痹'), ('Frost', '冰冻'), ('MagicalSleep', '魔法睡眠'), ('TimeStasis', '时间静止')]:
+            with self.subTest(kind=kind):
+                game = self.game()
+                game['hero']['buffs'] = [{'__className':PREFIX+'actors.buffs.'+kind}]
+                payload, ui = self.render(game)
+                alert = next(row for row in payload['insights'] if row['id']=='critical_hp')
+                self.assertEqual(alert['title'], name+'期间不能移动或使用保命物品')
+                self.assertEqual(alert['group'], '行动限制')
+                self.assertNotIn('生命值很低', alert['title'])
+                self.assertNotIn('paralysis', [row['id'] for row in payload['insights']+payload['secondary_advice']])
+                original = analyze(game, self.session.catalog)['tips']
+                for tip in original:
+                    if tip['id'] in ('critical_hp', 'paralysis'):
+                        self.assertIn(tip['body'], alert['body'])
+                        self.assertIn(tip['basis'], alert['basis'])
+                resource = next(row for row in payload['secondary_advice'] if row['id'].startswith('resource-'))
+                self.assertIn('限制主动行动', resource['summary'])
+                self.assertEqual(resource['group'], '随身资源')
+                self.assertFalse(any(row['id'].startswith('resource-') for row in payload['insights']))
+                for action in alert['actions']+resource['actions']:
+                    self.assertEqual(payload['reference_tokens'][action['index']], binding_token(ui.references[action['index']]))
+
+
+    def test_healing_challenge_restriction_is_main_once_and_full_resource_conditions_remain(self):
+        game=self.game(); game['challenges']=4
+        payload, ui=self.render(game)
+        restriction=next(row for row in payload['insights'] if row['id']=='pharmacophobia')
+        self.assertEqual(restriction['title'], '治疗药剂会改为中毒')
+        self.assertEqual(restriction['group'], '恢复限制')
+        resource=next(row for row in payload['secondary_advice'] if row['id']=='resource-items.potions.potionofhealing')
+        self.assertIn('改为中毒', resource['body'])
+        self.assertNotIn('HP', resource['summary'])
+        self.assertEqual(ui.references[resource['actions'][0]['index']][0]['restriction'],resource['summary'])
+
+
+    def test_routine_groups_are_player_tasks_and_defaults_do_not_emphasize_health(self):
+        advice=[{'id':id,'title':id,'body':'完整条件','basis':'原依据','actions':[], 'severity':'info'} for id in
+                ('critical_hp','low_hp','hungry','class','unknown','strength_potion','upgrade_scroll','strength_主武器')]
+        important, secondary=overview_insights({'buffs':[]},advice,[])
+        self.assertEqual({row['id'] for row in important}, {'critical_hp','low_hp','strength_主武器'})
+        groups={row['id']:row['group'] for row in important+secondary}
+        self.assertEqual(groups['critical_hp'],'恢复准备')
+        self.assertEqual(groups['strength_主武器'],'装备准备')
+        self.assertEqual(groups['unknown'],'鉴定与未知')
+        self.assertEqual(groups['class'],'职业准备')
+        self.assertTrue(all(row['body']=='完整条件' and row['basis']=='原依据' for row in secondary))
+
+
+    def test_each_boss_name_and_action_uses_the_existing_exact_reference(self):
+        for depth, identity in [(4,'goo'),(9,'tengu'),(14,'dm300'),(19,'dwarfking'),(24,'yogdzewa')]:
+            with self.subTest(depth=depth):
+                game=self.game();game['depth']=depth
+                payload,ui=self.render(game)
+                boss=next(row for row in payload['insights'] if row['id']=='boss_next')
+                index=boss['actions'][0]['index']
+                bound=ui.references[index]
+                self.assertEqual(bound[0]['entry'],'actors.mobs.'+identity)
+                self.assertEqual(boss['title'],'下一层：'+bound[0]['name'])
+                self.assertEqual(boss['group'],'首领准备')
+                self.assertEqual(payload['reference_tokens'][index],binding_token(bound))
+                ui.frozen=False;ui.manager.open_reference=Mock();ui.error=Mock()
+                ui.dispatch({'action':'reference','index':index,'token':payload['reference_tokens'][index]})
+                ui.manager.open_reference.assert_called_once_with(*bound)
+                ui.dispatch({'action':'reference','index':index,'token':'stale-token'})
+                self.assertEqual(ui.manager.open_reference.call_count,1)
+                ui.error.assert_called_once()
+
+
+    def test_pin_keeps_original_params_and_reports_manual_old_and_unknown_conditions(self):
+        snap=self.session.snapshot();snap['settings']['mode']='manual'
+        self.owner.pinned=('items.weapon.melee.sword',{'level':0,'strength':10})
+        self.owner.pinned_context={'mode':'manual','stamp':NumericLookup.source_stamp(snap),'params':{'level':0,'strength':10},
+            'level_unknown':True,'fixed_origins':{'level':'等级未知 · +0示例','strength':'手填','hp':'手动局势'}}
+        original=copy.deepcopy((self.owner.pinned,self.owner.pinned_context))
+        row=pinned_reference_state(self.owner,snap,self.session.catalog)
+        self.assertIn('固定参数，不跟随角色',row['summary'])
+        self.assertIn('手填局势来源',row['summary'])
+        self.assertIn('含手填参数',row['summary'])
+        self.assertIn('含未知条件',row['summary'])
+        snap['stale']=True
+        self.assertIn('旧手填局势',pinned_reference_state(self.owner,snap,self.session.catalog)['summary'])
+        self.assertEqual((self.owner.pinned,self.owner.pinned_context),original)
+        self.assertEqual(row['action'],{'action':'view_pin','surface':'lookup','text':'查看固定参考'})
+        self.owner.pinned=None
+        self.assertIsNone(pinned_reference_state(self.owner,snap,self.session.catalog))
+
+
+    def test_pin_remains_independent_during_empty_or_failed_read_and_does_not_duplicate_results(self):
+        snap=self.session.snapshot();snap['settings']['mode']='save'
+        self.owner.pinned=('items.potions.potionofinvisibility',{})
+        self.owner.pinned_context={'mode':'example','source_label':'固定参考','fixed_origins':{}}
+        row=pinned_reference_state(self.owner,{**snap,'data':None,'error':'合成读取错误'},self.session.catalog)
+        self.assertEqual(row['title'],'固定 · 隐形药剂')
+        self.assertNotIn('20',row['summary'])
+        self.assertNotIn('旧快照',row['summary'])
+        payload,ui=self.render(self.game(),error='合成读取错误')
+        self.assertEqual(payload['insights'],[])
+        self.assertEqual(payload['pinned_reference']['title'],row['title'])
+        self.assertTrue(payload['source_warning'])
+        self.owner.pinned=('missing.entry',{'level':0});self.owner.pinned_context={}
+        missing=pinned_reference_state(self.owner,snap,self.session.catalog)
+        self.assertIn('当前资料不可用',missing['summary'])
+        self.assertIn('参数来源未确认',missing['summary'])
+
+
+    def test_view_pin_action_reuses_the_existing_unsaved_draft_guard(self):
+        self.open('items.weapon.melee.sword')
+        self.lookup.pin()
+        pinned=copy.deepcopy(self.owner.pinned)
+        self.lookup.variables['level'].set('1e')
+        payload,ui=self.render(self.game())
+        ui.frozen=False
+        ui.dispatch(payload['pinned_reference']['action'])
+        self.assertIsNotNone(self.lookup.confirmation)
+        self.assertEqual(self.lookup.variables['level'].get(),'1e')
+        self.assertEqual(self.owner.pinned,pinned)
+        self.assertTrue(any(action=='confirm' and value['surface']=='lookup' for action,value in self.host.commands))
+
 
 
 class NumericControllerTests(ControllerFixture):
@@ -213,7 +535,7 @@ class NumericControllerTests(ControllerFixture):
         fixed = copy.deepcopy(self.lookup.calculated)
         origins = dict(self.lookup.input_origins)
         self.assertTrue(self.host.commands[-1][1]['has_pin'])
-        self.assertIn('条目操作', self.lookup.operation_receipt)
+        self.assertIn('固定到随行', self.lookup.operation_receipt)
         self.open('actors.mobs.rat')
         self.session.update_manual({'hp': 1, 'ht': 200, 'level': 8})
         self.lookup.handle({'action': 'view_pin'}); self.finish()
@@ -656,6 +978,9 @@ class NumericControllerTests(ControllerFixture):
                 previous, ticket = self.lookup.identity, self.worker.ticket
                 self.lookup.handle({'action': 'first'})
                 self.assertEqual((self.lookup.identity, self.worker.ticket), (previous, ticket))
+                response = next(data for action, data in reversed(self.host.commands) if action == 'lookup_state')
+                self.assertTrue(response['focus_suggestions'])
+                self.assertIn('请选择', response['search_error'])
                 self.lookup.handle({'action': 'suggestion', 'index': 0, 'token': suggestion['token']})
                 self.finish()
                 self.assertEqual(self.lookup.identity, identity)

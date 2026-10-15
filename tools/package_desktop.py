@@ -48,7 +48,15 @@ def package(app,python_root,build_env,inno):
     shutil.copy2(upstream,sources/upstream.name)
     source_zip,digest=build_release()
     shutil.copy2(source_zip,sources/source_zip.name)
-    for name in ('README.md','BUILD.md','LICENSE.txt','THIRD_PARTY_NOTICES.md'):shutil.copy2(ROOT/name,app/name)
+    for name in ('README.md','BUILD.md','CONTRIBUTING.md','CHANGELOG.md','LICENSE.txt','THIRD_PARTY_NOTICES.md'):
+        shutil.copy2(ROOT/name,app/name)
+    # Keep the current introduction and its relative image/guide links usable offline.
+    for name in ('docs/guide.md','docs/media.md','docs/updates.md','data/lamp.png',
+                 'docs/images/overview.png','docs/images/companion.png','docs/images/library.png',
+                 'docs/images/planning.png','docs/images/alchemy.png','docs/images/history.png'):
+        target=app/name
+        target.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(ROOT/name,target)
     target=ROOT/'dist'/f'灯火免安装-{__version__}.zip'
     manifest={}
     with ZipFile(target,'w',compression=ZIP_DEFLATED,compresslevel=6) as archive:

@@ -44,6 +44,7 @@ jobs:
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
           node tools/verify_frontend.js
+          node tools/verify_updates.js
           node tools/verify_references.js
           node tests/verify_data_workflows.js
           node tools/verify_web_exit_receipt.js

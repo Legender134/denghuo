@@ -439,7 +439,9 @@ class PlayerValuesTests(unittest.TestCase):
         health=next(b for b in goo['blocks'] if b['title']=='粘咕血量与挑战')['rows']
         self.assertEqual(health[0],['普通','100','50','1'])
         self.assertEqual(health[1][1:3],['120','60'])
-        damage=next(b for b in goo['blocks'] if b['title']=='粘咕攻击阶段')['rows']
+        damage=next(b for b in goo['blocks'] if b['title']=='粘咕生命阶段与蓄力攻击')['rows']
+        self.assertFalse(any(b['title']=='粘咕攻击阶段' for b in goo['blocks']))
+        self.assertEqual(damage[0][1:3],['1–8','3–24'])
         self.assertEqual(damage[-1][1:3],['1–12','3–36'])
         dm=self.detail('actors.mobs.dm300')
         self.assertEqual(next(b for b in dm['blocks'] if b['title']=='DM-300血量与超充')['rows'][1][1:4],['400','300 / 200 / 100','3'])

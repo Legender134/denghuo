@@ -9,6 +9,7 @@ import json
 import hashlib
 import logging
 import os
+import re
 from pathlib import Path
 from queue import Queue
 import threading
@@ -158,7 +159,8 @@ class Session:
         self._consumed_stop_at = None
         from .session_exit import ExitCoordinator, ExitDraftStore, ExitRecoveryJournal
         self.exit_drafts = ExitDraftStore(self.config_path.parent / 'exit-drafts')
-        self.exit_recovery = ExitRecoveryJournal(self.config_path.parent / 'exit-recovery', self.exit_drafts)
+        self.exit_recovery = ExitRecoveryJournal(self.config_path.parent / 'exit-recovery', self.exit_drafts,
+            surface_active=lambda surface: self.exit_coordinator.is_online(surface))
         self.exit_coordinator = ExitCoordinator(self.prepare_shutdown, self.save_exit_draft,
             on_finished=self._exit_finished, checkpoint=self.exit_recovery.checkpoint,
             verify_checkpoint=self.exit_recovery.verify_checkpoint)
@@ -262,6 +264,27 @@ class Session:
         self.manager_available = False
         self.ui_capabilities = {}
         self.log_path = self.config_path.parent / 'companion.log'
+        from .updates import Updates
+        self.updates = Updates(self.config_path.parent / 'updates', self.stop)
+
+    def update_action(self, payload):
+        action = payload.get('action')
+        if self.exit_status()['phase'] in ('confirming', 'backing-up', 'finished'):
+            raise ValueError('请先完成或取消当前退出确认')
+        if action == 'check':
+            return self.updates.check()
+        if action == 'download':
+            return self.updates.download()
+        if action == 'cancel':
+            return self.updates.cancel_download()
+        if action == 'install':
+            surface = payload.get('surface_id', 'native')
+            def request():
+                if self.exit_status()['phase'] in ('confirming', 'backing-up', 'finished'):
+                    raise ValueError('已有退出正在处理，安装包已保留')
+                return self.request_exit(surface, '安装新版灯火')
+            return self.updates.install(request)
+        raise ValueError('不支持的更新操作')
 
     def register_exit_surface(self, surface_id, *, kind='native', label='', notify=None):
         return self.exit_coordinator.register(surface_id, kind=kind, label=label, notify=notify)
@@ -291,16 +314,16 @@ class Session:
         if include_archived:
             rows += self.exit_recovery.list_preserved()
         count = sum(bool(row.get('recovery')) for row in rows)
-        self.draft_recovery_notice = (f'找到 {count} 份之前或其他会话自动保留的未完成输入；'
+        self.draft_recovery_notice = (f'找到 {count} 份自动保留的未完成输入；'
             '请从未完成草稿列表核对、明确载入或归档。' if count else '')
         return sorted(rows, key=lambda row: row['saved'], reverse=True)
 
-    def load_exit_draft(self, identity):
+    def load_exit_draft(self, identity, expected_revision=None):
         if isinstance(identity, str) and identity.startswith('raw-'):
             raise ValueError('这是仅保留字节的原始文件，不能载入为表单；请核对或获取原始文件')
         if self.exit_recovery.contains(identity):
-            return self.exit_recovery.load(identity)
-        return self.exit_drafts.load(identity)
+            return self.exit_recovery.load(identity, expected_revision)
+        return self.exit_drafts.load(identity, expected_revision)
 
     def set_exit_draft_lifecycle(self, identity, state, expected_revision):
         if isinstance(identity, str) and identity.startswith('raw-'):
@@ -345,7 +368,10 @@ class Session:
             return {'drafts': rows if include_archived else [row for row in rows if row.get('state') != 'archived'],
                     'archived_count': sum(row.get('state') == 'archived' for row in rows)}
         elif action == 'draft-load':
-            return {'draft': self.load_exit_draft(payload.get('id'))}
+            expected = payload.get('expected_revision')
+            if not isinstance(expected, str) or not re.fullmatch(r'[a-f0-9]{64}', expected):
+                raise ValueError('请重新读取未完成草稿列表后载入；原副本保留')
+            return {'draft': self.load_exit_draft(payload.get('id'), expected)}
         elif action == 'draft-preserve-raw':
             return {'draft_state': self.exit_recovery.preserve_raw(payload.get('id'),
                 payload.get('expected_revision'), payload.get('confirmed'))}
@@ -1390,6 +1416,7 @@ class Session:
     def snapshot(self):
         from .inventory_inspection import snapshot_token
         exit_state = self.exit_status()
+        update_state = self.updates.snapshot(exit_state)
         with self.lock:
             age = max(0, time.time() - self.modified) if self.modified else None
             return copy.deepcopy({"data": self.data, "slots": self.slots, "settings": self.settings,
@@ -1417,6 +1444,7 @@ class Session:
                                   'backup_health': self._cached_backup_health(),
                                   'backup_context': self.backup_context,
                                   "exit": exit_state,
+                                  "update": update_state,
                                   "stopped": self.stop.is_set()})
 
     def run(self):

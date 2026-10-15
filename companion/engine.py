@@ -123,6 +123,49 @@ class Catalog:
                 '武器技能' if identity.endswith('.ability') else
                 '植物种子' if identity.startswith('plants.') and identity.endswith('$seed') else
                 '状态效果' if '$' in identity or identity.startswith('actors.buffs.') else row['category'])
+        names = {}
+        for row in self.entries:
+            names[row['name']] = names.get(row['name'], 0) + 1
+        for row in self.entries:
+            row['display_hint'] = self.entry_variant(row) if names[row['name']] > 1 else ''
+
+    def entry_variant(self, row):
+        """Disambiguate equal game names without exposing implementation class names."""
+        identity = row['id']
+        named = {
+            'actors.mobs.npcs.imp': '任务',
+            'actors.mobs.npcs.impshopkeeper': '商店',
+            'actors.buffs.monkenergy$monkability$focus': '武僧技能',
+            'actors.buffs.monkenergy$monkability$focus$focusbuff': '技能状态',
+            'actors.mobs.monk$focus': '敌人状态',
+        }
+        if identity in named:
+            return named[identity]
+        if identity.endswith('.ability'):
+            owner = self.entry_index.get(identity.removesuffix('.ability'))
+            if owner:
+                return owner['name'] + '武技'
+        for prefix, ordinary, effect in (
+            ('actors.hero.spells.', '法术', '法术效果'),
+            ('actors.hero.abilities.', '护甲能力', '能力效果'),
+            ('items.weapon.enchantments.', '附魔', '附魔效果'),
+            ('items.weapon.curses.', '诅咒', '诅咒效果'),
+        ):
+            if identity.startswith(prefix):
+                if identity.endswith(('$shadowally', '$hawkally')):
+                    return '召唤物'
+                return effect if '$' in identity else ordinary
+        if identity.startswith('actors.hero.talent.'):
+            return '天赋'
+        if identity.startswith('actors.hero.talent$'):
+            return '天赋效果'
+        if identity.startswith('actors.blobs.'):
+            return '环境效果'
+        if identity.startswith('items.') and '$' in identity:
+            owner = self.entry_index.get(identity.split('$', 1)[0])
+            if owner:
+                return owner['name']
+        return row['type_label']
 
     def key(self, obj):
         return str(obj.get("__className", "")).removeprefix(PREFIX).lower()

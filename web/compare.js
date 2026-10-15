@@ -79,7 +79,7 @@ function renderEquipmentComparison(preserveInputs=false){
     for(const side of ['a','b']){const item=previous[side];if(item?.key.startsWith(prefix)&&(item.owned||item.reference)&&deliberate(side)){held[side]={...item,owned:false,reference:true,token:item.reference?item.token:'reference:'+side+':'+item.token};compareItems.push(held[side]);}}
     for(const suffix of ['a','b']){
       const select=$('#compare-'+suffix),prior=(held[suffix]||previous[suffix])?.token;
-      select.innerHTML=compareItems.map((i,n)=>`<option value="${n}">${escapeHTML((i.reference?`固定装备参考 · ${i.location} · ${i.name}`:i.owned?`${i.location} · ${i.name}${i.level===null?' · 等级未知':''}${i.revealed?' · 已主动揭示':''}`:`手册 · ${i.name}`)+(i.user_note?.title?' · 用户记录：'+i.user_note.title:''))}</option>`).join('');
+      select.innerHTML=compareItems.map((i,n)=>`<option value="${n}">${escapeHTML((i.reference?`固定装备参考 · ${i.location} · ${i.name}`:i.owned?`${i.location} · ${i.name}${i.level===null?' · 等级未知':''}${i.revealed?' · 已主动揭示':''}`:`图鉴 · ${i.name}`)+(i.user_note?.title?' · 用户记录：'+i.user_note.title:''))}</option>`).join('');
       const index=held[suffix]?compareItems.indexOf(held[suffix]):compareItems.findIndex(i=>i.token===prior);
       const edited=index>=0&&deliberate(suffix);
       const equipped=compareItems.findIndex(i=>i.owned&&i.location===(kind==='armor'?'护甲':'主武器'));
@@ -89,7 +89,7 @@ function renderEquipmentComparison(preserveInputs=false){
       const augment=$('#compare-augment-'+suffix);
       augment.innerHTML=(kind==='armor'?[['NONE','无强化'],['EVASION','闪避'],['DEFENSE','防御']]:['weapon','missile'].includes(kind)?[['NONE','无强化'],['SPEED','速度'],['DAMAGE','伤害']]:[['NONE','不适用']]).map(([value,label])=>`<option value="${value}">${label}</option>`).join('');
       const preserve=retained||(preserveInputs&&!previous[suffix]);
-      if(preserve&&augment.dataset.manual)augment.value=oldAugment[suffix];
+      if(preserve&&(augment.dataset.manual||augment.dataset.edited))augment.value=oldAugment[suffix];
       fillCompareChoice(suffix,preserve);
     }
     compareDirty=true;
@@ -105,14 +105,16 @@ function fillCompareChoice(suffix,preserveManual=false){
   const item=compareItems[Number($('#compare-'+suffix).value)];
   const level=$('#compare-level-'+suffix),mastery=$('#compare-mastery-'+suffix),augment=$('#compare-augment-'+suffix),tier=$('#compare-tier-'+suffix);
   if(!preserveManual)for(const input of [level,mastery,augment,tier])delete input.dataset.manual;
-  if(!level.dataset.manual)level.value=item?.level??0;
-  if(!mastery.dataset.manual)mastery.checked=!!item?.mastery;
+  // A restored field is deliberately held even when its original source was automatic.
+  const held=input=>!!(input.dataset.manual||(preserveManual&&input.dataset.edited));
+  if(!held(level))level.value=item?.level??0;
+  if(!held(mastery))mastery.checked=!!item?.mastery;
   $('#compare-tier-label-'+suffix).hidden=!/^items\.armor\.(warrior|mage|rogue|huntress|duelist|cleric)armor$/.test(item?.key||'');
-  if(!tier.dataset.manual)tier.value=item?.tier||3;
+  if(!held(tier))tier.value=item?.tier||3;
   const kind=$('#compare-kind').value,physical=comparisonPhysical(kind);level.min=physical?'-100':'0';
   const owned=!!(item?.owned||item?.reference),effect=item?.equipment_state?.effect_id;
   for(const key of ['resin','infusion','hardened']){
-    const input=$('#compare-'+key+'-'+suffix);if(!preserveManual)delete input.dataset.manual;if(input.dataset.manual)continue;
+    const input=$('#compare-'+key+'-'+suffix);if(!preserveManual)delete input.dataset.manual;if(held(input))continue;
     if(key==='resin')input.value=kind==='wand'&&owned?String(item.alchemy_state?.resin_bonus??''):'0';
     if(key==='hardened')input.value=physical&&owned?(item.equipment_state?.hardened===true?'1':item.equipment_state?.hardened===false?'0':'unknown'):'0';
     if(key==='infusion')input.value=!owned?'0':kind==='wand'?(item.cursed===false?'0':'unknown'):physical?(effect&&!effect.includes('.curses.')||!effect&&item.cursed===false?'0':'unknown'):'0';
@@ -124,10 +126,16 @@ function fillCompareChoice(suffix,preserveManual=false){
   $('#compare-conditional-'+suffix).hidden=physical;$('#compare-ring-pair-'+suffix).hidden=kind!=='ring';
   if(!physical){mastery.checked=false;augment.value='NONE';if(!preserveManual){$('#compare-pair-'+suffix).checked=false;$('#compare-pair-level-'+suffix).value='0';$('#compare-pair-curse-'+suffix).value='0';$('#compare-level-known-'+suffix).checked=owned&&item.level!==null;$('#compare-curse-'+suffix).value=owned?(item.cursed===true?'1':item.cursed===false?'0':'unknown'):'0';}loadComparisonContext(suffix,item);}
   const allowed=kind==='armor'?['NONE','EVASION','DEFENSE']:['weapon','missile'].includes(kind)?['NONE','SPEED','DAMAGE']:['NONE'];
-  if(!augment.dataset.manual)augment.value=allowed.includes(item?.augmentation)?item.augmentation:'NONE';
-  $('#compare-origin-'+suffix).textContent=[level,mastery,augment,tier].some(i=>i.dataset.manual)?'手填条件保留，请按游戏画面核对':item?.reference?(item.revealed?'来自先前主动揭示的存档装备条件，请核对':'来自先前存档的已知装备条件，请核对'):item?.owned?(item.revealed?'已主动揭示存档装备条件；游戏鉴定状态未改变':item.level===null?'等级未知，先按+0试算':'已带入已知等级、精通/强化及原护甲阶数'):'手册示例，请填写要比较的等级与条件';
+  if(!held(augment))augment.value=allowed.includes(item?.augmentation)?item.augmentation:'NONE';
+  refreshCompareChoiceOrigin(suffix);
+}
+function refreshCompareChoiceOrigin(suffix){
+  const item=compareItems[Number($('#compare-'+suffix).value)];
+  const level=$('#compare-level-'+suffix),mastery=$('#compare-mastery-'+suffix),augment=$('#compare-augment-'+suffix),tier=$('#compare-tier-'+suffix);
+  const manual=[level,mastery,augment,tier].some(i=>i.dataset.manual);
+  $('#compare-origin-'+suffix).textContent=manual?'手填条件保留，请按游戏画面核对':item?.reference?(item.revealed?'来自先前主动揭示的存档装备条件，请核对':'保存的装备参考，请核对所填条件'):item?.owned?(item.revealed?'已主动揭示存档装备条件；游戏鉴定状态未改变':item.level===null?'等级未知，先按+0试算':'已带入已知等级、精通/强化及原护甲阶数'):'图鉴示例，请填写要比较的等级与条件';
   if(item?.reference)$('#compare-origin-'+suffix).textContent+='。固定装备参考；新快照不会替换这件装备或条件，需更新时请明确重新选择。';
-  if(compareFixed&&Number(level.value)===compareSavedPlan?.params?.['level_'+suffix])$('#compare-origin-'+suffix).textContent=compareSavedPlan.origin?.fields?.['level_'+suffix]||'保存等级 · 固定参考';
+  if(compareFixed&&!manual&&Number(level.value)===compareSavedPlan?.params?.['level_'+suffix])$('#compare-origin-'+suffix).textContent=compareSavedPlan.origin?.fields?.['level_'+suffix]||'保存等级 · 固定参考';
 }
 function refreshComparisonApplicability(){
   const kind=$('#compare-kind').value,physical=comparisonPhysical(kind),conditional=['wand','ring'].includes(kind);
@@ -160,7 +168,7 @@ function refreshComparisonOrigin(){
   const old=compareStamp&&(changed||state?.stale);
   target.className=compareError||loadingError||old||compareDirty?'rule-warning':'muted';
   target.textContent=compareError||loadingError|| (compareDirty?($('#compare-result').childElementCount?'条件已变化，请点击比较；已有表格仍使用上次条件。':'请选择装备和条件，再点击比较。'):old?'角色快照已变化或过期，请核对力量与装备，再比较。':'按所填条件比较；请核对游戏面板。');
-  target.textContent+=(typeof compareCharacterReference!=='undefined'&&compareCharacterReference)?' 力量按所带入的共享角色条件逐侧计算。':$('#compare-strength').dataset.edited?' 力量为手填值，保留你的输入。':state?.data?' 力量使用当前公开角色条件；未确认的总力量需补全条件或明确手填。':' 没有角色快照，力量10为示例，请填写游戏中的数值。';
+  target.textContent+=(typeof compareCharacterReference!=='undefined'&&compareCharacterReference)?' 力量按所带入的共享角色条件逐侧计算。':$('#compare-strength').dataset.edited?' 力量保持所填值，需更新时请带入最新角色。':state?.data?' 力量使用当前公开角色条件；未确认的总力量需补全条件或明确手填。':' 没有角色快照，力量10为示例，请填写游戏中的数值。';
   if(typeof renderComparisonCharacterReference==='function')renderComparisonCharacterReference();
   refreshComparisonApplicability();
   if(compareFixed)target.textContent+=` 固定参考。${typeof originLabel==='function'?originLabel(compareCharacterReference?.source||compareSavedPlan?.origin):'使用保存参数，不跟随当前角色。'}`;
@@ -216,11 +224,12 @@ function renderComparisonResult(result,references=compareResultReferences){
   const signed=n=>n===null?'待确认':n>=0?'+'+n:String(n),upgraded=choice=>choice.upgraded_level===undefined?choice.level+1:choice.upgraded_level,[a,b]=result.choices;
   const columns=['数值与单位',`${a.name} ${signed(a.level)}`,`${a.name} 升级后 ${signed(upgraded(a))}`,`${b.name} ${signed(b.level)}`,`${b.name} 升级后 ${signed(upgraded(b))}`,'B 相对 A（当前）'];
   const explanation=result.explanation;
-  const current=(references?`<pre class="user-note">${escapeHTML(comparisonReferencesText(references))}</pre>`:'')+result.choices.map((choice,index)=>choice.character_scene?`<article class="resource-card"><h3>${index?'B':'A'} · 角色力量条件</h3><p>${escapeHTML(characterSummary(choice.character_scene))}</p><p>升级后：${escapeHTML(choice.upgrade_pending?'注魔条件未确认，升级后力量参考待核对':characterSummary(choice.upgraded_character_scene))}</p><p class="muted">${escapeHTML(choice.character_scene.replacement)}；${escapeHTML(choice.character_scene.assumption)}</p></article>`:'').join('')+(explanation?`<section class="comparison-explanation"><h3>按条件看当前与升级变化</h3><p>${escapeHTML(explanation.tradeoff)}</p><div class="restore-comparison">${explanation.choices.map(choice=>`<article class="resource-card"><h3>${escapeHTML(choice.choice)} · ${escapeHTML(choice.name)}</h3><p>${escapeHTML(choice.summary)}</p><p class="muted">${escapeHTML(choice.timing_and_accuracy)}</p><ul>${choice.upgrade_changes.map(change=>`<li>${escapeHTML(change.label)}：${escapeHTML(displayNumber(change.before))} → ${escapeHTML(displayNumber(change.after))} ${escapeHTML(change.unit||'')}</li>`).join('')}</ul>${comparisonConditionsHTML(choice.upgrade_changes)}</article>`).join('')}</div><p class="muted">${escapeHTML(explanation.boundary)}</p></section>`:'')+
-    exampleHTML({title:'当前与升级一次后的条件数值',columns,rows:result.rows.map(r=>[`${r.label}${r.unit?'（'+r.unit+'）':''}`,...r.values,r.difference]),note:result.notice})+
-    `<details><summary>逐项生效条件与单位</summary>${result.rows.map(row=>`<p>${escapeHTML(row.label)}${row.unit?'（'+escapeHTML(row.unit)+'）':''}：${escapeHTML(row.condition||'见所填条件')}</p>`).join('')}</details>`+
+  const boundary=[...new Set([result.notice,explanation?.boundary].filter(Boolean))].join(' ');
+  const current=(references?`<pre class="user-note">${escapeHTML(comparisonReferencesText(references))}</pre>`:'')+result.choices.map((choice,index)=>choice.character_scene?`<article class="resource-card"><h3>${index?'B':'A'} · 角色力量条件</h3><p>${escapeHTML(characterSummary(choice.character_scene))}</p><p>升级后：${escapeHTML(choice.upgrade_pending?'注魔条件未确认，升级后力量参考待核对':characterSummary(choice.upgraded_character_scene))}</p><p class="muted">${escapeHTML(choice.character_scene.replacement)}；${escapeHTML(choice.character_scene.assumption)}</p></article>`:'').join('')+(explanation?`<section class="comparison-explanation"><h3>按条件看当前与升级变化</h3><p>${escapeHTML(explanation.tradeoff)}</p><div class="restore-comparison">${explanation.choices.map(choice=>`<article class="resource-card"><h3>${escapeHTML(choice.choice)} · ${escapeHTML(choice.name)}</h3><p>${escapeHTML(choice.summary)}</p><p class="muted">${escapeHTML(choice.timing_and_accuracy)}</p><ul>${choice.upgrade_changes.map(change=>`<li>${escapeHTML(change.label)}：${escapeHTML(displayNumber(change.before))} → ${escapeHTML(displayNumber(change.after))} ${escapeHTML(change.unit||'')}</li>`).join('')}</ul>${comparisonConditionsHTML(choice.upgrade_changes)}</article>`).join('')}</div></section>`:'')+
     (['weapon','armor'].includes(result.family)?`<p class="muted">伤害和防御是随机范围；命中倍率不是最终命中概率。普通未硬化附魔的损失风险参考：A ${escapeHTML(a.upgrade_risk??'—')}%，B ${escapeHTML(b.upgrade_risk??'—')}%。实际注魔与硬化条件见下方分支；其他附魔、护甲蜕变天赋请查升级卷轴。</p>`:'')+
-    result.choices.map((choice,index)=>choice.after_curse_removed&&!choice.upgrade_branches?.length?exampleHTML({title:`${index?'B':'A'} · 升级后已解咒的条件分支（不保证成功）`,values:choice.after_curse_removed,note:'法杖/戒指每次升级有1/3概率解咒；上表使用保持诅咒分支，本表只在实际解除时适用。'}):'').join('')+result.choices.map((choice,index)=>comparisonBranchesHTML(choice.upgrade_branches,`${index?'B':'A'} · 升级一次的条件分支`)).join('');
+    `<details class="comparison-current"><summary>完整数值与适用条件</summary>`+exampleHTML({title:'当前与升级一次后的条件数值',columns,rows:result.rows.map(r=>[`${r.label}${r.unit?'（'+r.unit+'）':''}`,...r.values,r.difference]),note:boundary})+
+    `<details><summary>逐项生效条件与单位</summary>${result.rows.map(row=>`<p>${escapeHTML(row.label)}${row.unit?'（'+escapeHTML(row.unit)+'）':''}：${escapeHTML(row.condition||'见所填条件')}</p>`).join('')}</details>`+
+    result.choices.map((choice,index)=>choice.after_curse_removed&&!choice.upgrade_branches?.length?exampleHTML({title:`${index?'B':'A'} · 升级后已解咒的条件分支（不保证成功）`,values:choice.after_curse_removed,note:'法杖/戒指每次升级有1/3概率解咒；上表使用保持诅咒分支，本表只在实际解除时适用。'}):'').join('')+result.choices.map((choice,index)=>comparisonBranchesHTML(choice.upgrade_branches,`${index?'B':'A'} · 升级一次的条件分支`)).join('')+'</details>';
   $('#compare-result').innerHTML=renderPlanningResult(result.planning)+(result.planning?`<details class="comparison-current"><summary>查看当前与升级一次的完整比较</summary>${current}</details>`:current);
   const text=[`游戏资料 ${result.version}`,result.notice,...result.choices.flatMap((choice,index)=>[`${index?'B':'A'} ${choice.name} ${signed(choice.level)} 当前`,cellsText(choice.current_metrics),`升级一次 ${signed(upgraded(choice))}`,cellsText(choice.upgraded_metrics),...(choice.after_curse_removed&&!choice.upgrade_branches?.length?['已解咒条件分支（不保证）',cellsText(choice.after_curse_removed)]:[]),...comparisonBranchesText(choice.upgrade_branches)]),...result.rows.map(row=>`${row.label}：B-A ${row.difference} ${row.unit||''}；${row.condition||''}`)];
   for(const [index,choice] of result.choices.entries())if(choice.character_scene)text.push(`${index?'B':'A'} 角色条件：${characterSummary(choice.character_scene)}；${choice.character_scene.replacement}；升级后：${choice.upgrade_pending?'待确认注魔条件':characterSummary(choice.upgraded_character_scene)}`);
@@ -293,10 +302,10 @@ async function openEquipmentPlan(plan,result,rulesChanged,calculationError=null)
     compareDirty=!result;compareSessionUnsaved=false;compareError=!result?'原方案暂不能计算：'+(calculationError||'请替换不可用装备并核对条件')+'。修正后另存副本，原件保留。':rulesChanged?'规则版本已有变化；按保存参数和当前资料重新计算，请核对。':'';refreshComparisonOrigin();$('#compare-strength').focus();$('.comparison-panel').scrollIntoView({block:'start'});return true;}catch(error){if(isCurrent()){compareError=error.message;refreshComparisonOrigin();}return false;}
 }
 function comparisonFields(args=readComparisonArgs()){
-  const fields={strength:$('#compare-strength').dataset.edited?'手填有效力量':state?.data?(typeof currentCharacterStrengthLabel==='function'?currentCharacterStrengthLabel():'基础力量参考'):'力量10为示例'};
+  const fields={strength:$('#compare-strength').dataset.edited?'固定有效力量 · 请核对':state?.data?(typeof currentCharacterStrengthLabel==='function'?currentCharacterStrengthLabel():'基础力量参考'):'力量10为示例'};
   if(compareCharacterReference)fields.strength='共享角色条件按A/B各自重新计算；见各列角色力量';
   if(compareFixed&&compareResultArgs?.strength===compareSavedPlan?.params?.strength&&compareSavedPlan.origin?.fields?.strength)fields.strength=compareSavedPlan.origin.fields.strength;
-  for(const suffix of ['a','b']){const item=compareItems[Number($('#compare-'+suffix).value)];for(const key of ['id','level','tier','mastery','augment','resin','infusion','hardened']){const input=key==='id'?$('#compare-'+suffix):$('#compare-'+key+'-'+suffix),field=key+'_'+suffix;fields[field]=(compareFixed&&compareResultArgs?.[field]===compareSavedPlan?.params?.[field]&&compareSavedPlan?.origin?.fields?.[field])|| (input.dataset.manual?'手填条件':key==='infusion'?'手填注魔假设 · 请按游戏画面核对':item?.reference?'固定装备参考 · 先前存档条件，请核对':item?.owned?(item.revealed?'已主动揭示的可用装备记录':key==='level'&&item.level===null?'等级未知 · +0示例':'已知可用装备记录'):'手册示例 · 请核对');}}
+  for(const suffix of ['a','b']){const item=compareItems[Number($('#compare-'+suffix).value)];for(const key of ['id','level','tier','mastery','augment','resin','infusion','hardened']){const input=key==='id'?$('#compare-'+suffix):$('#compare-'+key+'-'+suffix),field=key+'_'+suffix;fields[field]=(compareFixed&&compareResultArgs?.[field]===compareSavedPlan?.params?.[field]&&compareSavedPlan?.origin?.fields?.[field])|| (input.dataset.manual?'手填条件':key==='infusion'?'手填注魔假设 · 请按游戏画面核对':item?.reference?'固定装备参考 · 保存条件，请核对':item?.owned?(item.revealed?'已主动揭示的可用装备记录':key==='level'&&item.level===null?'等级未知 · +0示例':'已知可用装备记录'):'图鉴示例 · 请核对');}}
   if($('#compare-planning-enabled').checked){fields.planning='明确启用预算规划';for(const key of ['upgrade_budget','strength_budget'])fields[key]=(compareFixed&&compareResultArgs?.[key]===compareSavedPlan?.params?.[key]&&compareSavedPlan?.origin?.fields?.[key])||(compareBudgetOrigin+(compareBudgetStamp?' · '+fmtTime(compareBudgetStamp.modified)+(JSON.stringify(compareBudgetStamp)!==JSON.stringify(calculationStamp())||state?.stale?' · 旧快照，请核对':''):''));}
   if(compareCharacterReference)fields.character_scene=compareCharacterReference.label+'；固定角色条件';
   for(const key of Object.keys(args))if(!(key in fields))fields[key]=(compareFixed&&compareSavedPlan?.origin?.fields?.[key])||'手填场景假设 · 请按游戏核对';

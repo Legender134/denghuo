@@ -14,8 +14,7 @@ from .native_host import NativeHost, binding_token
 
 def resource_insight(option, index):
     """Summarize already-validated decision values, never calculate from examples."""
-    if option['entry'] not in ('items.potions.potionofhealing', 'items.waterskin'):
-        return None
+    identity = option['entry']
     restriction = option.get('restriction', '')
     missing = option.get('calculation_missing', '')
     values = {row['label']: row for row in option.get('values', [])}
@@ -26,21 +25,67 @@ def resource_insight(option, index):
         summary = ['条件待补全']
     elif option.get('comparison'):
         label = '再次喝药的额外实际恢复'
+        wait = values.get('等待当前治疗 · 首次实际恢复')
+        drink = values.get('再次喝已知治疗药剂 · 首次实际恢复')
+        if wait and drink:
+            summary.append('再喝一瓶 · 首次恢复 ' + str(wait['value']) + ' → ' + str(drink['value']) + ' HP')
         if label in values:
-            summary = ['再喝多恢复 ' + values[label]['value'] + ' HP']
-            assumption = '假设期间不再受伤'
+            summary.append(('最终额外恢复 ' if summary else '再喝一瓶额外恢复 ') + str(values[label]['value']) + ' HP')
+            assumption = '逐回合生效；假设期间不再受伤'
     elif option['entry'] in ('items.potions.potionofhealing', 'items.waterskin'):
-        for label, brief in (('首次恢复', '首次'), ('最终实际恢复', '合计'), ('实际新增屏障', '新增屏障')):
+        for label, brief in (('首次恢复', '首次'), ('最终实际恢复', '最终最多'), ('实际新增屏障', '新增屏障')):
+            if option.get('healing_timing') == 'instant':
+                if label == '最终实际恢复':
+                    continue
+                if label == '首次恢复':
+                    brief = '即时恢复'
             if label in values:
-                summary.append(brief + ' +' + values[label]['value'] + ' ' + values[label].get('unit', 'HP'))
+                if label == '实际新增屏障' and float(values[label]['value']) == 0:
+                    continue
+                summary.append(brief + ' +' + str(values[label]['value']) + ' ' + values[label].get('unit', 'HP'))
         if summary:
-            assumption = '不再受伤；不含已有治疗' if option['entry'] == 'items.waterskin' else '假设期间不再受伤'
+            summary[0] = ('本次饮用 · ' if identity == 'items.waterskin' else '单瓶 · ') + summary[0]
+            assumption = ('不含已有治疗' if option.get('healing_timing') == 'instant' else
+                          '逐回合生效；不再受伤且不含已有治疗') if identity == 'items.waterskin' else '逐回合生效；假设期间不再受伤'
+    elif identity.startswith('items.food.'):
+        nutrition = next((values[key] for key in ('已知诅咒丰饶之角下的参考恢复', '饥饿游戏基础饱食恢复', '恢复饱食') if key in values), None)
+        cost = values.get('进食耗时')
+        if nutrition:
+            summary.append('每份参考饱食 +' + str(nutrition['value']))
+        if cost:
+            summary.append('基础耗时 ' + str(cost['value']) + ' 回合')
+        assumption = '非即时回血；进食时敌人仍会行动'
+        if nutrition and nutrition['label'] != '恢复饱食':
+            assumption = nutrition['label'].replace('恢复', '') + '；' + assumption
+        if identity.endswith('mysterymeat'):
+            assumption = '生肉可能附带负面状态；非即时回血'
+        elif identity.endswith(('pasty', 'blandfruit', 'frozencarpaccio', 'phantommeat')):
+            assumption = '特殊效果需核对；非即时回血，敌人仍会行动'
+        assumption = option.get('food_reference', {}).get('summary_note') or assumption
+    else:
+        uses = {
+            'items.potions.exotic.potionofshielding': ('获得逐渐衰减的护盾', '不恢复生命；受伤会消耗护盾'),
+            'items.potions.potionofinvisibility': ('暂时隐形，便于脱离接触', '多数攻击和施法会解除隐形'),
+            'items.scrolls.scrollofteleportation': ('转移到本层另一处', '落点不能指定；特殊楼层另有限制'),
+            'items.stones.stoneofblink': ('向所选位置定向转移', '需核对距离与障碍，不能保证安全'),
+        }
+        if identity in uses:
+            summary = [uses[identity][0]]
+            assumption = uses[identity][1]
+    if identity == 'items.waterskin' and not (restriction or missing):
+        consumed, remaining = values.get('本次消耗露珠'), values.get('饮用后剩余露珠')
+        if consumed and remaining:
+            if float(consumed['value']) == 0 and float(remaining['value']) == 0:
+                summary, assumption = ['水袋已空'], ''
+            else:
+                summary.append('消耗 ' + str(consumed['value']) + ' 滴，剩 ' + str(remaining['value']) + ' 滴')
     if not summary:
         return None
-    details = '\n'.join(filter(None, (restriction, missing, option.get('note', '') if values else '',
-        *[row['label'] + ' ' + row['value'] + ' ' + row.get('unit', '')
+    details = '\n'.join(filter(None, (restriction, missing, option.get('note', ''),
+        *[row['label'] + ' ' + str(row['value']) + ' ' + row.get('unit', '')
           + (' · ' + row['condition'] if row.get('condition') else '') for row in values.values()])))
-    return {'id': 'resource-' + option['entry'], 'title': option['name'] + ' ×' + str(option['quantity']),
+    return {'id': 'resource-' + identity, 'title': option['name'] + ' · 库存 ' + str(option['quantity']),
+            'group': '随身资源', 'resource_entry': identity,
             'summary': ' · '.join(summary), 'assumption': assumption, 'body': details,
             'severity': 'warning' if restriction else 'info',
             'actions': [{'index': index, 'text': '查看计算' if not (restriction or missing) else '核对条件'}]}
@@ -59,12 +104,112 @@ def overview_insights(data, advice, resources):
     if buffs & {'Paralysis', 'TimeStasis', 'Frost', 'MagicalSleep', 'Roots'}:
         titles['burning'] = '无法走动，不能立即入水灭火'
         titles['ooze'] = '无法走动，不能立即入水清洗'
-    routine = {'critical_hp', 'low_hp', 'hungry', 'class', 'unknown', 'strength_potion', 'upgrade_scroll'}
+    locks = {'Paralysis': '麻痹', 'Frost': '冰冻', 'MagicalSleep': '魔法睡眠', 'TimeStasis': '时间静止'}
+    lock_label = '、'.join(label for kind, label in locks.items() if kind in buffs)
+    locked_critical = next((tip for tip in advice if tip['id'] == 'critical_hp'), None) if lock_label else None
+    action_limit = next((tip for tip in advice if tip['id'] == 'paralysis'), None)
+    routine = {'hungry', 'class', 'unknown', 'strength_potion', 'upgrade_scroll'}
+    groups = {'critical_hp': '恢复准备', 'low_hp': '恢复准备', 'hungry': '恢复准备',
+              'class': '职业准备', 'unknown': '鉴定与未知', 'strength_potion': '装备准备',
+              'upgrade_scroll': '装备准备', 'boss_next': '首领准备', 'pharmacophobia': '恢复限制',
+              'starving': '恢复限制', 'paralysis': '行动限制', 'roots': '行动限制'}
+    titles.update(critical_hp='低血量 · 先停止自动探索', low_hp='先核对休息回血的条件')
+    hero = data.get('hero', {})
+    hunger = hero.get('hunger')
+    strength = data.get('character_scene', {}).get('strength', {})
+    known_healing = any(row.get('resource_entry') == 'items.potions.potionofhealing' for row in resources)
+    urgent = any(tip.get('severity') == 'critical' for tip in advice)
     important, secondary = [], []
     for tip in advice:
-        row = {**tip, 'summary': '', 'assumption': '', 'title': titles.get(tip['id'], tip['title'])}
-        (secondary if tip['id'] in routine or tip['id'].startswith('strength_') else important).append(row)
-    return important + resources, secondary
+        if locked_critical and tip['id'] == 'paralysis':
+            continue  # Both original details and references are retained by the critical row below.
+        row = {**tip, 'summary': '', 'assumption': '', 'title': titles.get(tip['id'], tip['title']),
+               'group': '装备准备' if tip['id'].startswith('strength_') else groups.get(tip['id'], '状态处理')}
+        row['priority'] = 0 if tip.get('severity') == 'critical' else 1 if tip.get('severity') == 'warning' else 8
+        if tip['id'] == 'critical_hp':
+            row['summary'] = ('治疗逐回合生效，先确认能否安全用药' if known_healing and '药水恐惧' not in data.get('challenges', [])
+                              else '避免试饮未知药剂')
+            row['show_artwork'] = False  # A general warning must not look like owned medicine.
+        elif tip['id'] == 'low_hp':
+            row['summary'] = ('饱食未知，不能判断休息能否回血' if hunger is None else
+                              '饥饿时不能靠普通休息回血' if hunger >= 450 else
+                              '周围安全、无持续伤害且未饥饿时再休息')
+        elif tip['id'] in ('strength_主武器', 'strength_副武器', 'strength_护甲'):
+            place = tip['id'].split('_', 1)[1]
+            equipment = next((item for item in data.get('items', []) if item.get('location') == place and item.get('available') is True), {})
+            requirement = equipment.get('strength_requirement')
+            effective = strength.get('effective')
+            confirmed = equipment.get('level_known') is True and strength.get('usable') is True
+            if confirmed and isinstance(requirement, (int, float)) and isinstance(effective, (int, float)) and requirement > effective:
+                row['title'] = equipment['name'] + f' · 力量差 {requirement - effective:g}'
+                row['summary'] = '移速与闪避受影响' if place == '护甲' else '命中与攻速受影响'
+                row['priority'] = 1
+            else:
+                row['title'] = (equipment.get('name') or place) + ' · 需求待核对'
+                row['summary'] = '等级或总力量未确认，不能断定超重'
+                row['priority'] = 2
+        elif tip['id'] in ('roots', 'cripple', 'lost_inventory'):
+            row['summary'] = tip.get('body', '').split('。')[0]
+        if tip['id'] == 'critical_hp' and locked_critical:
+            row.update(title=lock_label + '期间不能移动或使用保命物品', group='行动限制')
+            if action_limit:
+                for field in ('body', 'basis'):
+                    row[field] = '\n'.join(dict.fromkeys(filter(None, (tip.get(field, ''), action_limit.get(field, '')))))
+                row['actions'] = list({action['index']: action for action in tip.get('actions', []) + action_limit.get('actions', [])}.values())
+            row['summary'] = '控制解除后再核对资源；避免预先连点行动'
+            important.append(row)
+            continue
+        (secondary if tip['id'] in routine and tip.get('severity') == 'info' else important).append(row)
+    for row in resources:
+        repeated_limit = bool(lock_label) or (hero.get('hp') == 0 and 'Berserk' not in buffs) or (row['id'] == 'resource-items.potions.potionofhealing'
+            and '药水恐惧' in data.get('challenges', []) and any(tip['id'] == 'pharmacophobia' for tip in advice))
+        identity = row.get('resource_entry', row['id'].removeprefix('resource-'))
+        food = identity.startswith('items.food.')
+        recovery = identity in ('items.potions.potionofhealing', 'items.waterskin')
+        relevant = (hunger is not None and hunger >= 300) if food else (hero.get('hp', 0) < hero.get('ht', 1) or urgent) if recovery else urgent
+        row = {**row, 'priority': 2 if relevant else 9}
+        (secondary if repeated_limit or not relevant else important).append(row)
+    return sorted(important, key=lambda row: row.get('priority', 8)), secondary
+
+
+def pinned_reference_state(owner, snap, catalog):
+    """Expose a fixed reference without reevaluating it or replacing captured provenance."""
+    pinned = getattr(owner, 'pinned', None)
+    if not pinned:
+        return None
+    identity, params = pinned
+    entry = catalog.entry_index.get(identity)
+    context = getattr(owner, 'pinned_context', None) or {}
+    origins = list(context.get('fixed_origins', {}).values())
+    flags = ['固定参数，不跟随角色']
+    uses_snapshot = any(value.startswith(('快照', '手动局势', '参考来源未确认')) for value in origins)
+    stamp = context.get('stamp')
+    current_stamp = (snap.get('started'), snap['settings'].get('save_root'), snap['settings']['mode'],
+                     snap.get('active_slot'), snap.get('revision'), snap.get('modified'))
+    if uses_snapshot:
+        if not stamp:
+            flags.append('参数来源未确认')
+        elif (snap.get('error') or not snap.get('data') or snap.get('stale') or tuple(stamp) != current_stamp
+              or ('character_scene' in context and context['character_scene'] != (snap.get('data') or {}).get('character_scene')
+                  and context.get('fixed_origins', {}).get('strength', '').startswith(('快照', '手动局势')))):
+            flags.append('旧手填局势' if context.get('mode') == 'manual' else '旧快照参数')
+        else:
+            flags.append('手填局势来源' if context.get('mode') == 'manual' else '保存快照来源')
+    if any(value.startswith('手填') for value in origins):
+        flags.append('含手填参数')
+    if any(value.startswith('示例') for value in origins):
+        flags.append('含示例参数')
+    if context.get('level_unknown') or any('未知' in value or '未确认' in value for value in origins):
+        flags.append('含未知条件')
+    if params and not origins:
+        flags.append('参数来源未确认')
+    if not entry:
+        flags.append('当前资料不可用')
+    name = entry['name'] + (' · ' + entry['display_hint'] if entry.get('display_hint') else '') if entry else identity
+    return {'title': '固定 · ' + name,
+            'summary': ' · '.join(dict.fromkeys(flags)),
+            'action': {'action': 'view_pin', 'surface': 'lookup', 'text': '查看固定参考'},
+            'artwork_entry': identity}
 
 
 class NativeManager:
@@ -603,6 +748,10 @@ class NativeManager:
                 return
             elif action == 'exit':
                 self.request_exit()
+            elif action == 'update':
+                if item.get('update_action') == 'install':
+                    self.report_drafts()
+                self.session.update_action({'action': item.get('update_action'), 'surface_id': 'native'})
             elif action in ('game_page', 'game_action', 'game_edit', 'game_select'):
                 self.workspace.handle(item)
             elif item.get('surface') == 'lookup':
@@ -697,7 +846,8 @@ class NativeManager:
                 include_archived = item.get('include_archived', False)
                 self.host.command('drafts', rows=self.draft_rows(include_archived), include_archived=include_archived)
             elif action == 'load_draft':
-                self.restore_draft(self.session.load_exit_draft(item['id']), item.get('component'))
+                saved = self.session.exit_action({'action': 'draft-load', 'id': item['id'], 'expected_revision': item.get('expected_revision')})['draft']
+                self.restore_draft(saved, item.get('component'))
             elif action == 'preserve_raw_draft':
                 self.session.exit_recovery.preserve_raw(item['id'], item.get('expected_revision'), item.get('confirmed'))
                 self.host.command('drafts', rows=self.draft_rows(item.get('include_archived', False)),
@@ -725,7 +875,7 @@ class NativeManager:
         for row in rows:
             if row.get('draft_kind') == 'offline-native' and not row.get('error'):
                 try:
-                    draft = self.session.load_exit_draft(row['id'])['draft']
+                    draft = self.session.load_exit_draft(row['id'], row.get('state_revision'))['draft']
                     row['components'] = [key for key in ('numeric', 'play-settings', 'game-workspace')
                                          if isinstance(draft.get(key), dict)]
                     if not row['components']:
@@ -789,10 +939,14 @@ class NativeManager:
                     remaining += f'；按该局势下一次可回 {actual} 生命'
                 texts.append(f"{buff['name']} · {source}：{remaining}")
         texts += [tip['title']+'\n'+tip['body'] for tip in data.get('tips', [])]
-        references, reference_texts, reference_groups, resources = [], [], [], []
+        references, reference_texts, reference_groups, resources, risk_titles = [], [], [], [], {}
         try:
             decisions = self.session.decisions(snap)
             for risk in decisions['risks']:
+                if risk['id'] == 'boss_next':
+                    boss = risk['references'][0] if len(risk['references']) == 1 else None
+                    risk_titles['boss_next'] = ('下一层：' + boss['name'] if boss and boss['entry'].startswith('actors.mobs.')
+                                               else '下一层首领：资料未确认')
                 for row in risk['references']:
                     references.append((row, row.get('source'), ''))
                     reference_texts.append(risk['title']+' · '+row['name']+'资料')
@@ -838,7 +992,8 @@ class NativeManager:
             source_text += ' · '+plan_updated_text(snap['modified'])+' 保存'
         from .reference import native_artwork
         advice = sorted(data.get('tips', []), key=lambda tip: {'critical': 0, 'warning': 1}.get(tip.get('severity'), 2))
-        advice = [{**tip, 'actions': [{'index': index, 'text': references[index][0]['name']+'数值'}
+        advice = [{**tip, 'title': risk_titles.get(tip['id'], tip['title']),
+                   'actions': [{'index': index, 'text': references[index][0]['name']+'数值'}
                    for index, group in enumerate(reference_groups) if group == tip['id']]} for tip in advice]
         insights, secondary = overview_insights(data, advice, resources)
         # Retained data after a failed read remains accessible as a reference, never as current advice.
@@ -854,6 +1009,7 @@ class NativeManager:
         state = {'text': '\n\n'.join(filter(None, texts)), 'source': source_text,
             'source_brief': brief_source, 'source_warning': bool(snap.get('stale') or snap.get('error') or source_notice),
             'snapshot_notes': snapshot_notes,
+            'pinned_reference': pinned_reference_state(self.manager.play, snap, self.session.catalog),
             'insights': insights, 'secondary_advice': secondary,
             'protection': protection, 'read_error': snap.get('error') or '',
             'waiting_for_save': bool(snap.get('waiting_for_save')),
@@ -865,6 +1021,7 @@ class NativeManager:
             'slot': 0 if snap['settings']['slot'] == 'auto' else snap['settings']['slot'],
             'floor_guide': self.floor_state(snap),
             'io_busy': self.io_busy,
+            'update': snap.get('update', {}),
             'save_root': snap['settings']['save_root'], 'startup_surface': snap['settings']['startup_surface'],
             'topmost': snap['settings']['always_on_top'], 'references': reference_texts,
             'reference_artworks': [native_artwork(row[0].get('entry')) for row in references],

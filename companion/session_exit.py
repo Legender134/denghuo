@@ -125,7 +125,7 @@ class ExitDraftStore:
         return {'id': identity, 'kind': kind, 'label': label, 'saved': value['saved'],
                 'path': str(path), 'notice': '未完成草稿副本已保存；重新载入后仍需手动确认。'}
 
-    def load(self, identity):
+    def _read(self, identity):
         if not isinstance(identity, str) or not DRAFT_ID.fullmatch(identity):
             raise ValueError('草稿身份不正确')
         with self.lock:
@@ -136,9 +136,22 @@ class ExitDraftStore:
                 if len(raw) > MAX_DRAFT_FILE:
                     raise ValueError('草稿文件过大，原件仍保留')
                 value = json.loads(raw)
-                return checked_saved_draft(value, identity)
+                return checked_saved_draft(value, identity), raw
             except (OSError, UnicodeError, RecursionError) as exc:
                 raise ValueError('草稿暂时无法读取，原件仍保留') from exc
+
+    def load(self, identity, expected_revision=None):
+        # Internal inspection may omit a revision; interactive loads use the listed bytes.
+        with self.lock:
+            record, raw = self._read(identity)
+            if expected_revision is not None:
+                current = self._lifecycle(identity, record, raw)
+                if expected_revision != current['state_revision']:
+                    raise ValueError('草稿或归档状态已变化；请重新读取列表，原副本仍保留')
+                _, latest = self._read(identity)
+                if latest != raw or self._lifecycle(identity, record, raw) != current:
+                    raise ValueError('读取期间草稿或归档状态已变化；请重新读取列表，原副本仍保留')
+            return record
 
     def stamp(self):
         """CAS includes invalid originals, so import cannot overwrite unseen edits."""
@@ -156,28 +169,30 @@ class ExitDraftStore:
     def lifecycle(self, identity):
         """Keep completion state beside the immutable original, bound to its bytes."""
         with self.lock:
-            record = self.load(identity)
-            original = unlinked(self.directory / (identity + '.json')).read_bytes()
-            digest = hashlib.sha256(original).hexdigest()
-            path = unlinked(self.directory / (identity + '.state.json'))
-            raw = b''
-            state = record.get('lifecycle', 'active')
-            if path.exists():
-                with path.open('rb') as stream:
-                    raw = stream.read(4097)
-                try:
-                    value = json.loads(raw)
-                    if (len(raw) > 4096 or not isinstance(value, dict)
-                            or set(value) != {'format', 'id', 'original_sha256', 'state', 'generation'}
-                            or type(value['format']) is not int or value['format'] != 1
-                            or value['id'] != identity or value['original_sha256'] != digest
-                            or value['state'] not in ('active', 'archived')
-                            or not isinstance(value['generation'], str) or not DRAFT_ID.fullmatch(value['generation'])):
-                        raise ValueError('invalid state')
-                    state = value['state']
-                except (ValueError, UnicodeError, RecursionError) as exc:
-                    raise ValueError('草稿归档状态无法核对；原件仍保留，请先核对副本') from exc
-            return {'state': state, 'state_revision': hashlib.sha256(digest.encode() + b'\0' + raw).hexdigest()}
+            record, original = self._read(identity)
+            return self._lifecycle(identity, record, original)
+
+    def _lifecycle(self, identity, record, original):
+        digest = hashlib.sha256(original).hexdigest()
+        path = unlinked(self.directory / (identity + '.state.json'))
+        raw = b''
+        state = record.get('lifecycle', 'active')
+        if path.exists():
+            with path.open('rb') as stream:
+                raw = stream.read(4097)
+            try:
+                value = json.loads(raw)
+                if (len(raw) > 4096 or not isinstance(value, dict)
+                        or set(value) != {'format', 'id', 'original_sha256', 'state', 'generation'}
+                        or type(value['format']) is not int or value['format'] != 1
+                        or value['id'] != identity or value['original_sha256'] != digest
+                        or value['state'] not in ('active', 'archived')
+                        or not isinstance(value['generation'], str) or not DRAFT_ID.fullmatch(value['generation'])):
+                    raise ValueError('invalid state')
+                state = value['state']
+            except (ValueError, UnicodeError, RecursionError) as exc:
+                raise ValueError('草稿归档状态无法核对；原件仍保留，请先核对副本') from exc
+        return {'state': state, 'state_revision': hashlib.sha256(digest.encode() + b'\0' + raw).hexdigest()}
 
     def set_lifecycle(self, identity, state, expected_revision):
         if state not in ('active', 'archived'):
@@ -285,8 +300,8 @@ class ExitDraftStore:
                 if not DRAFT_ID.fullmatch(path.stem):
                     continue
                 try:
-                    value = self.load(path.stem)
-                    lifecycle = self.lifecycle(path.stem)
+                    value, original = self._read(path.stem)
+                    lifecycle = self._lifecycle(path.stem, value, original)
                     if include_archived or lifecycle['state'] == 'active':
                         rows.append({**{key: value[key] for key in ('id', 'draft_kind', 'label', 'saved', 'surface_id')}, **lifecycle})
                 except (ValueError, OSError) as exc:
@@ -296,10 +311,11 @@ class ExitDraftStore:
 
 class ExitRecoveryJournal:
     """Bounded recent raw reports, separate from explicitly saved user drafts."""
-    def __init__(self, directory, saved_drafts):
+    def __init__(self, directory, saved_drafts, surface_active=None):
         self.directory, self.saved_drafts = Path(directory), saved_drafts
         self.preserved_directory = self.directory.with_name('exit-recovery-preserved')
         self.session_id = uuid.uuid4().hex
+        self.surface_active = surface_active
         self.lock = threading.RLock()
         self.fingerprints = {}
 
@@ -476,14 +492,28 @@ class ExitRecoveryJournal:
                 raise ValueError('自动草稿落盘副本已变化，原件保留；请明确保存当前窗口的草稿副本')
             return True
 
-    def load(self, identity):
+    def load(self, identity, expected_revision=None):
+        # Internal inspection may omit a revision; interactive recovery always supplies one.
         with self.lock, self._storage_lock():
-            value, _ = self._read(identity)
+            value, raw = self._read(identity)
+            if expected_revision is not None and not identity.endswith('.pending') and self._active_checkpoint(value):
+                raise ValueError('原窗口已重新连接，请重新读取列表；当前输入和自动副本仍保留')
+            if expected_revision is not None and hashlib.sha256(raw).hexdigest() != expected_revision:
+                raise ValueError('自动草稿已更新，请重新读取列表；双方内容仍保留')
+            # Return a captured copy of exactly the selected bytes, never a live reference.
+            if self._raw(identity) != raw:
+                raise ValueError('读取期间自动草稿已更新，请重新读取列表；双方内容仍保留')
+            if expected_revision is not None and not identity.endswith('.pending') and self._active_checkpoint(value):
+                raise ValueError('原窗口已重新连接，请重新读取列表；当前输入和自动副本仍保留')
             return copy.deepcopy(value['record'])
 
     def contains(self, identity):
         path, _ = self._path(identity)
         return path.exists()
+
+    def _active_checkpoint(self, value):
+        return (value['session_id'] == self.session_id
+                and (self.surface_active is None or self.surface_active(value['record']['surface_id'])))
 
     def list(self):
         with self.lock:
@@ -499,7 +529,7 @@ class ExitRecoveryJournal:
                     identity = original + ('.pending' if pending else '')
                     try:
                         value, raw = self._read(identity)
-                        if not pending and value['session_id'] == self.session_id:
+                        if not pending and self._active_checkpoint(value):
                             continue
                         record = value['record']
                         rows.append({**{key: record[key] for key in ('draft_kind', 'label', 'saved', 'surface_id')},
@@ -627,7 +657,7 @@ class ExitRecoveryJournal:
     def archive(self, identity, expected_revision):
         with self.lock, self._storage_lock():
             value, raw = self._read(identity)
-            if not identity.endswith('.pending') and value['session_id'] == self.session_id:
+            if not identity.endswith('.pending') and self._active_checkpoint(value):
                 raise ValueError('这是当前窗口的自动副本，请先保存或明确处理当前草稿')
             if hashlib.sha256(raw).hexdigest() != expected_revision:
                 raise ValueError('自动草稿已更新，请重新读取列表；双方内容仍保留')
@@ -636,6 +666,8 @@ class ExitRecoveryJournal:
             saved = self.saved_drafts.import_record(record)
             if not self.saved_drafts.same_content(self.saved_drafts.load(saved['id']), record):
                 raise ValueError('归档副本尚未核对，自动草稿原件保留')
+            if not identity.endswith('.pending') and self._active_checkpoint(value):
+                raise ValueError('原窗口已重新连接；归档副本与当前自动草稿都已保留，请重新读取列表')
             path, _ = self._path(identity)
             if hashlib.sha256(path.read_bytes()).hexdigest() != expected_revision:
                 raise ValueError('归档期间自动草稿已更新；旧内容已另行归档，新原件保留，请重新读取')
@@ -986,6 +1018,12 @@ class ExitCoordinator:
                 pass
         if self.on_finished is not None:
             self.on_finished(result)
+
+    def is_online(self, surface_id):
+        with self.lock:
+            surface = self.surfaces.get(surface_id)
+            return (surface is not None and not surface['closed']
+                    and self.clock() - surface['last_seen'] <= ONLINE_SECONDS)
 
     def status(self):
         with self.lock:

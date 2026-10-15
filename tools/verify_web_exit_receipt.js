@@ -20,6 +20,7 @@ function setup(exit=null,latest=success,options={}){
     polling:false,settingsWriteGeneration:0,view:'overview',lastRender:'',slotsSignature:'',initialPanelPlanHandled:true,initialPanelPlan:null,restoreTarget:null,backupState:null,backupViewKeys:new Map()});
   vm.runInContext('let webExitState='+JSON.stringify(exit)+',webExitCompletionWatch=null,webExitHandling=false,webExitBusy=false,webExitRequesting=false,webEditingFrozen=false,webExitGeneration=0,webExitDecision=null;',context);
   for(const name of ['updateWebRecoveryStatus','renderWebExitReceipt','watchWebExitCompletion','reportWebExitSurface','requestWebSessionExit','handleWebExitState','renderWebExitConfirmation','decideWebExit']){if(!workspace.includes('function '+name+'('))continue;vm.runInContext(extract(workspace,name),context);}
+  vm.runInContext(extract(app,'overviewSourceWarning'),context);
   vm.runInContext(extract(app,'poll'),context);const run=code=>vm.runInContext(code,context);
   async function advance(){assert(timers.length,'termination observer must be scheduled');const timer=timers.shift();clock+=timer.delay;timer.callback();await new Promise(setImmediate);}
   async function settle(){for(let n=0;timers.length&&n<60;n++)await advance();await run('webExitCompletionWatch');}

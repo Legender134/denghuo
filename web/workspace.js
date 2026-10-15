@@ -30,13 +30,21 @@ function lookupCalculationOptions(context){
 }
 function referenceList(target,rows,empty){
   const signature=JSON.stringify([rows,empty]);if(target.dataset.references===signature)return;target.dataset.references=signature;
+  const focused=target.contains(document.activeElement)?document.activeElement.dataset.referenceKey:null;
+  const compact=target.id.startsWith('library-');
   target.replaceChildren();if(!rows?.length){target.innerHTML=`<p class="muted">${escapeHTML(empty)}</p>`;return;}
   for(const row of rows){
     if(row.available===false){
       const retained=document.createElement('div');retained.className='workspace-reference';retained.innerHTML=`<span><strong>${escapeHTML(row.id)}</strong><small>当前资料不可用 · 原收藏保留，占用 1 项收藏名额</small></span><button type="button" class="secondary">取消这项收藏</button>`;
       const remove=retained.querySelector('button');remove.addEventListener('click',async()=>{remove.disabled=true;try{await post('/api/workspace',{action:'favorite',entry:row.id,enabled:false});await loadWorkspace();}catch(error){inlineError($('#workspace-error'),error.message);inlineError($('#library-home-error'),error.message);}finally{if(remove.isConnected)remove.disabled=false;}});target.append(retained);continue;
     }
-    const button=document.createElement('button');button.className='workspace-reference';button.innerHTML=`<span><strong>${typeof referenceNameHTML==='function'?referenceNameHTML(row.id||row.entry,row.name||row.id||row.entry):escapeHTML(row.name||row.id||row.entry)}</strong><small>${escapeHTML(row.lookup_context?.source_label||row.type_label||row.category||'资料参考')}${row.opened?' · '+escapeHTML(fmtTime(row.opened)):''}</small>${row.lookup_context?.conditions?`<small>${escapeHTML(Array.isArray(row.lookup_context.conditions)?row.lookup_context.conditions.join('；'):row.lookup_context.conditions)}</small>`:''}</span><span aria-hidden="true">→</span>`;button.addEventListener('click',()=>showReference({...row,id:row.id||row.entry},state?.catalog_version));if(typeof bindReferencePreview==='function')bindReferencePreview(button,{...row,id:row.id||row.entry},{params:row.lookup_context?.params||{}});target.append(button);
+    const identity=row.id||row.entry,name=row.name||identity,context=row.lookup_context||{};
+    const button=document.createElement('button');button.type='button';button.className='workspace-reference'+(compact?' library-entry':'');button.dataset.referenceId=identity;button.dataset.referenceKey=JSON.stringify([identity,context.params,context.conditions]);
+    const contextual=target.id==='library-current';
+    const note=[row.numeric_status==='legacy'?'已从当前版本移除':null,...(contextual?[context.level_unknown?'等级未知':context.level_origin==='revealed'?'已主动揭示':null,context.mode==='manual'?'手填条件':null]:[])].filter(Boolean).join(' · ');
+    button.innerHTML=compact?`${typeof referenceImageHTML==='function'?referenceImageHTML(identity,name):''}<span class="library-entry-text"><strong class="reference-name">${escapeHTML(name)}</strong>${row.display_hint?`<span class="library-entry-hint">${escapeHTML(row.display_hint)}</span>`:''}${note?`<span class="library-entry-note">${escapeHTML(note)}</span>`:''}</span>`:`<span><strong>${typeof referenceNameHTML==='function'?referenceNameHTML(identity,name):escapeHTML(name)}</strong><small>${escapeHTML(context.source_label||row.type_label||row.category||'资料参考')}${row.opened?' · '+escapeHTML(fmtTime(row.opened)):''}</small>${context.conditions?`<small>${escapeHTML(Array.isArray(context.conditions)?context.conditions.join('；'):context.conditions)}</small>`:''}</span><span aria-hidden="true">→</span>`;
+    button.addEventListener('click',()=>showReference({...row,id:identity},state?.catalog_version));if(typeof bindReferencePreview==='function')bindReferencePreview(button,{...row,id:identity},{params:context.params||{}});target.append(button);
+    if(focused&&button.dataset.referenceKey===focused)button.focus({preventScroll:true});
   }
 }
 function filterWorkspacePlans(plans,query='',kind='all',sort='updated'){
@@ -52,14 +60,21 @@ function renderWorkspace(){
   $('#workspace-repair').hidden=ws.available!==false;
   $('#workspace-repair').textContent=ws.primary_missing?'预览现有副本与恢复':'预览损坏记录与恢复';
   $('#workspace-status').textContent=ws.available===false?(ws.primary_missing?'资料库主文件缺失；现有副本保留，收藏和方案写入暂停，资料查询仍可使用。':'资料查询仍可使用；收藏和方案写入暂停，原文件保留。'):`${ws.plans?.length||0} 个方案 · ${ws.favorite_ids?.length||0} 项收藏。和桌面速查使用同一资料库。`;
-  const emptyQuery=!$('#library-search').value.trim()&&$('#library-category').value==='全部';
-  $('#library-home').hidden=!emptyQuery;$('#library-results').hidden=emptyQuery;if(emptyQuery){$('#library-more').hidden=true;$('#library-results-label').textContent='从当前已知资料、常用决策或收藏开始';}
-  for(const prefix of ['library','workspace']){
-    referenceList($('#'+prefix+'-favorites'),ws.favorites,'尚无收藏；在资料详情中点击收藏。');
-    referenceList($('#'+prefix+'-recent'),ws.recent,'打开资料后会显示最近查看。');
-  }
-  referenceList($('#library-current'),ws.current,'当前没有已确认的资料上下文。可以先查常用决策或搜索。');
-  referenceList($('#library-common'),ws.common,'请使用上方搜索查找资料。');
+  const emptyQuery=typeof libraryIsHome==='function'?libraryIsHome():!$('#library-search').value.trim()&&$('#library-category').value==='全部';
+  $('#library-home').hidden=!emptyQuery;$('#library-results').hidden=emptyQuery;if(emptyQuery){$('#library-more').hidden=true;$('#library-results-label').textContent='';$('#library-results-label').setAttribute('role','status');$('#library-home-button').setAttribute('aria-pressed','true');$('#library-browse-all').setAttribute('aria-pressed','false');}
+  referenceList($('#workspace-favorites'),ws.favorites,'尚无收藏；在资料详情中点击收藏。');
+  referenceList($('#workspace-recent'),ws.recent,'打开资料后会显示最近查看。');
+  const seen=new Set(),unique=rows=>(rows||[]).filter(row=>{const id=row.id||row.entry;if(seen.has(id))return false;seen.add(id);return true;});
+  const favorites=unique(ws.favorites),common=unique(ws.common),recent=unique(ws.recent);
+  referenceList($('#library-favorites'),favorites,'尚无收藏。');$('#library-favorites-section').hidden=!favorites.length;
+  referenceList($('#library-common'),common,'可用上方分类浏览资料。');
+  referenceList($('#library-recent'),recent,'尚无最近查看。');$('#library-recent-section').hidden=!recent.length;
+  const derived=new Set((ws.current||[]).flatMap(row=>row.related||[]).map(row=>JSON.stringify(row)));
+  const current=(ws.current||[]).filter(row=>!derived.has(JSON.stringify(row)));
+  referenceList($('#library-current'),current,'暂无已确认的随身资料。');
+  $('#library-current-count').textContent=current.length?`· ${current.length} 项`:'';
+  const sources=[...new Set(current.map(row=>row.lookup_context?.source_label).filter(Boolean))];
+  $('#library-current-source').textContent=sources.length?sources.join('；')+'。未知身份与遗落物品未计入；逐项条件见详情。':'读取已知物品、状态与已学技能的条件，供当前局势参考。';
   const plans=$('#workspace-plans');plans.replaceChildren();
   const query=$('#workspace-search').value.trim().toLocaleLowerCase(),kind=$('#workspace-kind').value,sort=$('#workspace-sort').value;
   const filtered=filterWorkspacePlans(ws.plans||[],query,kind,sort);
@@ -78,7 +93,10 @@ function setDetailEntry(entry){detailEntry=entry;renderDetailTools();post('/api/
 function renderDetailTools(){
   const target=$('#detail-tools');if(!target||!detailEntry)return;const entry=detailEntry,favorite=workspaceState?.favorite_ids?.includes(entry)||false;
   const alchemy=numericalDetail?.identity===entry?numericalDetail.result?.alchemy_recipes||[]:[];
-  const signature=JSON.stringify([entry,favorite,alchemy.map(r=>r.id)]);if(target.dataset.tools===signature&&target.childElementCount)return;target.dataset.tools=signature;
+  let recipes=$('#detail-alchemy');const newRecipeSurface=!recipes;
+  if(!recipes){recipes=document.createElement('div');recipes.id='detail-alchemy';recipes.className='recipe-handoff';recipes.setAttribute('aria-label','配方炼金目标');$('#detail-rules').append(recipes);}
+  const recipeAnchor=$('#detail-rules').querySelector('.numeric-editor')||$('#detail-rules').querySelector('.numeric-full');if(recipeAnchor)recipeAnchor.before(recipes);
+  const signature=JSON.stringify([entry,favorite,alchemy.map(r=>r.id)]);if(target.dataset.tools===signature&&target.childElementCount&&!newRecipeSurface)return;target.dataset.tools=signature;
   target.innerHTML=`<button class="secondary" id="detail-favorite" aria-pressed="${favorite}">${favorite?'★ 已收藏 · 点击取消':'☆ 收藏资料'}</button><button class="secondary" id="detail-save-numeric" type="button">命名保存计算</button><p id="detail-workspace-error" class="rule-warning" role="alert" hidden></p>`;
   $('#detail-favorite').addEventListener('click',async()=>{const button=$('#detail-favorite');button.disabled=true;try{await post('/api/workspace',{action:'favorite',entry,enabled:!favorite});await loadWorkspace();}catch(error){if(detailEntry===entry)inlineError($('#detail-workspace-error'),error.message);}finally{if(button.isConnected)button.disabled=false;}});
   $('#detail-save-numeric').addEventListener('click',()=>{
@@ -86,7 +104,10 @@ function renderDetailTools(){
     if(d.pending||d.dirty){inlineError($('#detail-workspace-error'),'请先完成重新计算，再保存此次结果的实际参数。');return;}
     openPlanSave({kind:'numeric',entry:d.identity,params:actualNumericalParams(d),source:{...(d.fixed?cleanStoredOrigin(d.savedPlan?.origin):planSource(d.source)),fields:Object.fromEntries(d.inputs.map(input=>[input.key,d.origins[input.key]||'示例 · 请核对']))}},d.savedPlan,$('#detail-title').textContent);
   });
-  for(const recipe of alchemy){const button=document.createElement('button');button.className='secondary';button.type='button';button.textContent='规划炼金：'+recipe.name;button.addEventListener('click',async()=>{await loadAlchemy();addAlchemyTarget(recipe.id);$('#detail-dialog').close();navigate('alchemy');$('#alchemy-targets')?.focus();});target.append(button);}
+  if(recipes){recipes.replaceChildren();recipes.hidden=!alchemy.length;
+    if(alchemy.length){const label=document.createElement('p');label.className='muted';label.textContent=alchemy.length>1?'选择配方，追加到当前炼金计划':'追加到当前炼金计划';recipes.append(label);}
+    for(const recipe of alchemy){const button=document.createElement('button');button.className='secondary';button.type='button';button.textContent='添加目标：'+recipe.name;button.addEventListener('click',async()=>{button.disabled=true;try{await loadAlchemy();if(detailEntry!==entry)return;addAlchemyTarget(recipe.id);$('#detail-dialog').close();navigate('alchemy');$('#alchemy-targets')?.focus();}catch(error){if(detailEntry===entry){const message=document.createElement('p');message.className='rule-warning';message.setAttribute('role','alert');message.textContent=error.message;recipes.append(message);}}finally{if(button.isConnected)button.disabled=false;}});recipes.append(button);}
+  }
 }
 function actualNumericalParams(detail){return Object.fromEntries(detail.inputs.map(input=>[input.key,input.value]));}
 function manualSaveSignature(params=manualPayload()){
@@ -152,7 +173,7 @@ async function openPlan(id,preloaded=null,allowReplace=false){
     if(plan.kind==='numeric'){
       if(!opened.result){openUnavailableNumericPlan(plan,opened.calculation_error);return true;}
       showDetail(plan.name,'这是按保存参数重新计算的固定参考。确认适用条件后，再决定是否带入最新角色状态。','保存的数值方案',originLabel(plan.origin));setDetailEntry(plan.entry);
-      showDetailContext(plan.note?'用户用途 / 假设（自行记录，非已确认游戏事实）：'+plan.note:'');
+      showPlanNote(plan.note);
       await loadNumericalDetail(plan.entry,plan.params,'saved',{fixed:true,savedPlan:plan,result:opened.result,rulesChanged:opened.rules_changed});
     }else if(plan.kind==='equipment'){
       navigate('inventory');if(await openEquipmentPlan(plan,opened.result,opened.rules_changed,opened.calculation_error)===false)return false;
@@ -235,10 +256,20 @@ async function loadDecisions(force=false){
 }
 function renderDecisions(){
   const result=decisionState;if(!result)return;$('#decision-message').textContent=result.message;
-  const target=$('#decision-options');target.replaceChildren();if(!result.options?.length)target.innerHTML='<p class="muted">当前没有已确认可用的相关资源；阅读资料与示例计算仍可使用。</p>';
-  for(const option of result.options||[]){const card=document.createElement('article');card.className='resource-card';card.innerHTML=`<h3>${escapeHTML(option.name)} <small>×${escapeHTML(option.quantity)}</small></h3><p class="muted">${escapeHTML(option.source?.label||'资料参考')} · ${option.source?.snapshot_at?escapeHTML(fmtTime(option.source.snapshot_at)):''}</p>${option.restriction?`<p class="rule-warning">主动行动限制：${escapeHTML(option.restriction)}</p>`:''}${option.calculation_missing?`<p>计算前需核对：${escapeHTML(option.calculation_missing)}</p>`:''}${option.values?.length?exampleHTML({title:'已核对条件下的数值',values:option.values}):''}<p>${escapeHTML(option.note)}</p><button class="secondary">${escapeHTML(option.purpose)} · 阅读与计算</button>`;card.querySelector('button').addEventListener('click',()=>openDecisionReference({...option,source_label:option.source?.label},'resource'));target.append(card);}
+  const target=$('#decision-options'),owner=snapshotViewOwner(),previous=new Map();let focused=null;
+  if(target._lampResourceOwner===owner)for(const card of target.querySelectorAll('.resource-card')){const key=card.dataset.resourceKey;if(previous.has(key)){previous.set(key,null);continue;}previous.set(key,card.querySelector('details')?.open);if(card.querySelector('button')===document.activeElement)focused=[key,'button'];else if(card.querySelector('summary')===document.activeElement)focused=[key,'summary'];}
+  target.replaceChildren();if(!result.options?.length)target.innerHTML='<p class="overview-empty">当前没有已确认可用的相关资源。</p>';
+  const keys=(result.options||[]).map(option=>JSON.stringify([option.entry,option.name,option.fruit_state||null]));
+  for(const [index,option] of (result.options||[]).entries()){
+    const card=document.createElement('article');card.className='resource-card overview-resource';card.dataset.resourceKey=keys[index];
+    const summary=overviewResourceSummary(option),assumption=overviewResourceAssumption(option);
+    card.innerHTML=`<h3>${typeof referenceImageHTML==='function'?referenceImageHTML(option.entry,option.name):''}${escapeHTML(option.name)} <span>库存 ${escapeHTML(option.quantity)}</span></h3>${summary!==option.purpose?`<p class="overview-lead${option.restriction?' resource-restriction':''}">${escapeHTML(summary)}</p>`:''}${assumption?`<p class="resource-assumption">${escapeHTML(assumption)}</p>`:''}<details class="overview-resource-details"><summary>完整条件与数值</summary><p>${escapeHTML(option.source?.label||'资料参考')}${option.source?.snapshot_at?' · '+escapeHTML(fmtTime(option.source.snapshot_at)):''}</p>${option.values?.length?exampleHTML({title:'已核对条件下的数值',values:option.values}):''}<p>${escapeHTML(option.note)}</p></details><button class="text-button">${escapeHTML(option.purpose)} · 阅读与计算 →</button>`;
+    card.querySelector('button').addEventListener('click',()=>openDecisionReference({...option,source_label:option.source?.label},'resource'));target.append(card);
+    if(keys.filter(key=>key===keys[index]).length===1&&previous.get(keys[index])!=null){card.querySelector('details').open=previous.get(keys[index]);if(focused?.[0]===keys[index])card.querySelector(focused[1]).focus({preventScroll:true});}
+  }
+  target._lampResourceOwner=owner;
   const tips=state?.data?.tips||[];
-  $$('#advice-list .advice').forEach((card,index)=>{card.querySelector('.risk-links')?.remove();const risk=result.risks?.find(r=>r.id===tips[index]?.id);if(!risk?.references?.length)return;const links=document.createElement('div');links.className='backup-actions risk-links';for(const ref of risk.references){const equipmentRisk=risk.id.startsWith('strength_')&&/^(items\.weapon\.melee\.|items\.armor\.)/.test(ref.entry);const b=document.createElement('button');b.className='secondary';b.textContent=equipmentRisk?'带入此装备比较':`查 ${ref.name}`;b.addEventListener('click',()=>equipmentRisk?compareRiskReference({...ref,location:risk.id.slice('strength_'.length)}):openDecisionReference(ref,'reference'));links.append(b);}card.append(links);});
+  $$('#advice-list .advice').forEach((card,index)=>{card.querySelector('.risk-links')?.remove();const risk=result.risks?.find(r=>r.id===(card.dataset.tipId||tips[index]?.id));if(!risk?.references?.length)return;if(risk.id==='boss_next'&&risk.references.length===1&&risk.references[0].entry.startsWith('actors.mobs.'))card.querySelector('.advice-head strong').textContent='下一层：'+risk.references[0].name;const links=document.createElement('div');links.className='backup-actions risk-links';for(const ref of risk.references){const equipmentRisk=risk.id.startsWith('strength_')&&/^(items\.weapon\.melee\.|items\.armor\.)/.test(ref.entry);const b=document.createElement('button');b.className='secondary';b.textContent=equipmentRisk?'带入此装备比较':`查 ${ref.name}`;b.addEventListener('click',()=>equipmentRisk?compareRiskReference({...ref,location:risk.id.slice('strength_'.length)}):openDecisionReference(ref,'reference'));links.append(b);}card.append(links);});
   $$('#hero-tags .tag.warn').forEach((tag,index)=>{const buff=state?.data?.buffs?.[index];if(!buff)return;tag.tabIndex=0;tag.setAttribute('role','button');tag.setAttribute('aria-label',`查看${buff.name}资料`);const open=()=>openBuffReference(buff);tag.addEventListener('click',open);tag.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open();}});});
 }
 async function openBuffReference(buff){
@@ -246,10 +277,14 @@ async function openBuffReference(buff){
   try{const identity=buff.reference_id||'actors.buffs.'+buff.kind.toLowerCase();const result=await getJSON('/api/library?'+new URLSearchParams({q:identity,category:'全部'}));if(nav!==navigationSerial||detailSeq!==numericalRequest)return;const row=result.entries.find(r=>r.id===identity);if(!row){navigate('library');$('#library-search').value=buff.name;$('#library-category').value='全部';searchLibrary();return;}showReference(row,result.version);}catch(error){inlineError($('#decision-error'),error.message);}
 }
 function openDecisionReference(ref,kind='reference'){
-  showDetail(ref.name,kind==='resource'?(ref.note||'核对当前游戏画面中的资源与条件；阅读不会执行游戏行动。'):'参考相关游戏机制；资源是否可用需要另行核对。','当前局势的资料入口',ref.source_label||'资料参考');
-  showDetailContext([ref.restriction?'主动行动限制：'+ref.restriction:'',ref.calculation_missing?'未确认条件：'+ref.calculation_missing:'',kind==='resource'?'以下是资料与所填条件的参考计算，阅读入口不会确认此刻可用或执行游戏行动。':''].filter(Boolean).join('；'));
+  showDetail(ref.name,kind==='resource'?(ref.note||'核对当前游戏画面中的资源与条件；阅读不会执行游戏行动。'):'参考相关游戏机制；资源是否可用需要另行核对。','当前局势的资料入口',ref.food_reference?'':ref.source_label||'资料参考');
+  showDetailContext([ref.restriction?'主动行动限制：'+ref.restriction:'',ref.calculation_missing?'未确认条件：'+ref.calculation_missing:'',kind==='resource'&&!ref.food_reference?'以下是资料与所填条件的参考计算，阅读入口不会确认此刻可用或执行游戏行动。':''].filter(Boolean).join('；'));
   if(typeof showRelatedReferences==='function')showRelatedReferences(ref.related,{params:ref.params,source:ref.source,stamp:ref.stamp,level_origin:ref.level_origin||'not_applicable'});
-  setDetailEntry(ref.entry);loadNumericalDetail(ref.entry,ref.params||{},ref.level_origin||'example',{ignoreDrafts:true,capturedContext:true,...lookupCalculationOptions(ref)});
+  if(typeof setReferencePortrait==='function'){
+    setReferencePortrait(ref.entry,ref.name);
+    void hydrateReference({id:ref.entry,name:ref.name,context_description:kind==='resource'?ref.note:''},detailReferenceSerial);
+  }
+  setDetailEntry(ref.entry);loadNumericalDetail(ref.entry,ref.params||{},ref.level_origin||'example',{ignoreDrafts:true,capturedContext:true,...lookupCalculationOptions(ref),foodReference:kind==='resource'?ref.food_reference:null});
 }
 function refreshWorkspaceViews(){
   if((view==='workspace'||view==='library')&&(state?.workspace_revision!==workspaceSeenRevision||view==='library'&&workspaceSeenContext!==workspaceContextKey()))loadWorkspace();
@@ -371,7 +406,7 @@ function webDirtySummary(){
 function collectWebDraft(){
   const labels=webDirtySummary(),numeric=new Map();
   for(const [key,detail] of fixedNumericalDrafts)if(detail.dirty||detail.sessionUnsaved||Object.keys(numericalFormDrafts.get('plan:'+key)||{}).length)numeric.set('plan:'+key,compactNumeric(detail,'plan:'+key));
-  for(const key of new Set([...numericalDrafts.keys(),...numericalFormDrafts.keys(),...Array.from(numericalCalculated).filter(([,item])=>item.sessionUnsaved).map(([key])=>key)]))if(!numeric.has(key)&&!key.startsWith('plan:')){const calculated=numericalCalculated.get(key);numeric.set(key,{identity:key,key,params:{...(calculated?.params||numericalDrafts.get(key)||{})},raw:{...(numericalFormDrafts.get(key)||{})},origins:calculated?.origins||{},source:calculated?.source||null,levelSource:calculated?.levelSource||null,fixed:false,levelOrigin:'manual',dirty:true,sessionUnsaved:true});}
+  for(const key of new Set([...numericalDrafts.keys(),...numericalFormDrafts.keys(),...Array.from(numericalCalculated).filter(([,item])=>item.sessionUnsaved).map(([key])=>key)]))if(!numeric.has(key)&&!key.startsWith('plan:')){const calculated=numericalCalculated.get(key);numeric.set(key,{identity:key,key,params:{...(calculated?.params||numericalDrafts.get(key)||{})},raw:{...(numericalFormDrafts.get(key)||{})},origins:calculated?.origins||{},source:calculated?.source||null,levelSource:calculated?.levelSource||null,character_reference:calculated?.characterReference||null,fixed:false,levelOrigin:'manual',dirty:true,sessionUnsaved:true});}
   if(numericalDetail&&(numericalDetail.dirty||numericalDetail.sessionUnsaved||labels.includes('数值试算'))){const key=numericalDetail.savedPlan?'plan:'+numericalDetail.savedPlan.id:numericalDetail.identity;numeric.set(key,compactNumeric(numericalDetail,key));}
   const draft={format:2,schema:'denghuo-web-session',numeric:Array.from(numeric.values()),
     manual:manualUnsaved?captureNamedForm('#manual-form'):null,
@@ -547,7 +582,7 @@ async function loadExitDrafts(){
         const preserve=document.createElement('button');preserve.className='quiet';preserve.textContent='保留原始文件并归档';
         preserve.addEventListener('click',async()=>{if(!window.confirm(`此文件无法载入为表单。确认先保留独立原始副本、核验后移出未完成列表？\n${record.path}\n${record.bytes} 字节\nSHA-256：${record.sha256}\n保留后可勾选「显示已归档」核对和获取原始文件。`))return;preserve.disabled=true;try{await post('/api/session-exit',{action:'draft-preserve-raw',id:record.id,expected_revision:record.state_revision,confirmed:true});await loadExitDrafts();toast('原始文件已独立保留并核验；勾选「显示已归档」可核对和获取。');}catch(error){inlineError($('#draft-error'),error.message);}finally{preserve.disabled=false;}});actions.append(preserve);
       }else if(!record.error){
-        const load=document.createElement('button');load.className='secondary';load.textContent='载入为未提交草稿';load.addEventListener('click',()=>loadUnfinishedDraft(record.id));actions.append(load);
+        const load=document.createElement('button');load.className='secondary';load.textContent='载入为未提交草稿';load.addEventListener('click',()=>loadUnfinishedDraft(record.id,record.state_revision));actions.append(load);
         const archive=document.createElement('button');archive.className='quiet';archive.textContent=record.state==='archived'?'恢复到未完成列表':'已处理，归档副本';
         archive.addEventListener('click',async()=>{archive.disabled=true;try{await post('/api/session-exit',{action:'draft-state',id:record.id,state:record.state==='archived'?'active':'archived',expected_revision:record.state_revision});await loadExitDrafts();toast(record.state==='archived'?'已恢复到未完成列表；原始内容保留。':'已归档；可勾选「显示已归档」找回。');}catch(error){inlineError($('#draft-error'),error.message);}finally{archive.disabled=false;}});actions.append(archive);
       }if(actions.children.length)row.append(actions);target.append(row);
@@ -573,23 +608,26 @@ async function restoreNumericSession(item,checkRecovery=()=>{}){
   if(saved){if(item.saved_revision&&!/^[a-f0-9]{64}$/.test(item.saved_revision))throw new Error('关联方案版本格式不正确；原副本保留。');saved={...saved,record_revision:item.saved_revision||'',name:item.saved_name||saved.name,note:item.note||'',origin:item.saved_origin||saved.origin};}
   const params=Object.fromEntries(Object.entries(item.params||{}).filter(([key,value])=>keys.has(key)&&typeof value==='number'&&Number.isFinite(value)));
   let calculated=reference;try{calculated=await getJSON('/api/values?'+new URLSearchParams({id:item.identity,...params}));}catch(error){showDetailContext('上次有效参数无法在当前版本计算；下面是当前规则示例，原始输入仍保留且尚未计算。');}
-  checkRecovery();showDetail('找回的数值草稿','原始输入已保留；下方先显示当前规则的示例结果，修改后的输入尚未计算。','未完成会话草稿','载入不会更新保存方案或当前游戏。');setDetailEntry(item.identity);
-  await loadNumericalDetail(item.identity,params,'manual',{ignoreDrafts:true,result:calculated});checkRecovery();
+  checkRecovery();showDetail(reference.name||'数值草稿','原始输入已找回，请重新计算。','未完成会话草稿','载入不会更新保存方案或当前游戏。');setDetailEntry(item.identity);
+  if(typeof setReferencePortrait==='function')setReferencePortrait(item.identity,reference.name||'数值草稿');
+  await loadNumericalDetail(item.identity,params,'manual',{ignoreDrafts:true,exactContext:true,sourceStamp:item.source||null,result:calculated});checkRecovery();
   for(const input of $$('[data-value-key]'))if(input.dataset.valueKey in item.raw)input.value=item.raw[input.dataset.valueKey];
   numericalDetail.characterReference=item.character_reference||null;
   numericalDetail.savedPlan=saved;numericalDetail.fixed=!!saved&&!!item.fixed;numericalDetail.source=item.source||null;numericalDetail.levelSource=item.levelSource||null;
   numericalDetail.origins=Object.fromEntries(reference.inputs.map(input=>[input.key,item.origins?.[input.key]||'找回的原始输入 · 尚未计算']));
-  numericalDetail.dirty=true;numericalDetail.sessionUnsaved=true;numericalDetail.userNote=item.note||'';if(item.note)showDetailContext('用户用途 / 假设（非游戏事实）：'+item.note);
+  for(const field of numericalDetail.inputs){const label=$(`[data-origin-key="${field.key}"]`);if(label)label.textContent=numericalDetail.origins[field.key]||'找回的原始输入 · 尚未计算';}
+  numericalDetail.dirty=true;numericalDetail.sessionUnsaved=true;numericalDetail.userNote=item.note||'';showPlanNote(item.note);
   {const metaKey=saved?.id||'numeric:'+item.identity;planNoteDrafts.set(metaKey,item.note||'');}
-  if(saved){numericalFormDrafts.set('plan:'+saved.id,{...item.raw});rememberFixedNumericalDraft();}else {numericalFormDrafts.set(item.identity,{...item.raw});numericalCalculated.set(item.identity,{...numericalDetail.calculated,origins:{...numericalDetail.origins},source:numericalDetail.source,levelSource:numericalDetail.levelSource,sessionUnsaved:true});}refreshNumericalOrigin();return numericalDetail;
+  const raw=Object.fromEntries($$('[data-value-key]').map(input=>[input.dataset.valueKey,input.value]));
+  if(saved){numericalFormDrafts.set('plan:'+saved.id,raw);rememberFixedNumericalDraft();}else {numericalFormDrafts.set(item.identity,raw);numericalCalculated.set(item.identity,{...(numericalDetail.calculated||{params:{...params},result:calculated}),origins:{...numericalDetail.origins},source:numericalDetail.source,levelSource:numericalDetail.levelSource,characterReference:numericalDetail.characterReference,sessionUnsaved:true});}refreshNumericalOrigin();return numericalDetail;
 }
 let unfinishedDraftRequest=0,draftRecoveryEditGeneration=0;
 for(const name of ['input','change'])document.addEventListener(name,event=>{const form=event.target.closest?.('form');if(form&&form.id!=='settings-recovery-form')draftRecoveryEditGeneration++;},true);
-async function loadUnfinishedDraft(id){
+async function loadUnfinishedDraft(id,expectedRevision){
   const request=++unfinishedDraftRequest,generation=draftRecoveryEditGeneration;let navForRecovery=navigationSerial;
   const checkRecovery=()=>{if(request!==unfinishedDraftRequest||generation!==draftRecoveryEditGeneration||navForRecovery!==navigationSerial||webEditingFrozen)throw new Error('载入期间有新编辑、页面切换或新的操作；当前输入和原副本都保留，请核对后重新载入。');};
   try{if(webDirtySummary().length)throw new Error('当前有未保存草稿；请先命名保存，或保存会话草稿副本后再载入，避免覆盖本地编辑。');
-    const result=await post('/api/session-exit',{action:'draft-load',id});checkRecovery();
+    const result=await post('/api/session-exit',{action:'draft-load',id,expected_revision:expectedRevision});checkRecovery();
     if(webDirtySummary().length)throw new Error('读取期间有新编辑；当前输入和原副本都保留，请核对后重新载入。');
     const record=result.draft,draft=record.draft;
     if(draft?.schema!=='denghuo-web-session'||![1,2].includes(draft.format)){
@@ -612,12 +650,12 @@ async function loadUnfinishedDraft(id){
     checkRecovery();
     if(draft.comparison){compareOpenRequest++;const c=draft.comparison,kind=c.form['compare-kind']?.value;if(!comparisonPrefixes[kind])throw new Error('比较草稿类型不正确');await initializeEquipmentComparison(true);checkRecovery();$('#compare-kind').value=kind;compareSignature='';renderEquipmentComparison();
       for(const side of ['a','b']){let index=compareItems.findIndex(item=>item.key===c.choices?.[side]&&!item.owned);if(c.references?.[side]){const item=comparisonReferenceItem(c.references[side],c.choices[side],side);compareItems.push(item);index=compareItems.length-1;$('#compare-'+side).innerHTML+=`<option value="${index}">${escapeHTML(item.name)}</option>`;}if(index<0)throw new Error('草稿装备在当前资料中不存在且没有保留原始引用');$('#compare-'+side).value=String(index);fillCompareChoice(side);await loadComparisonContext(side,compareItems[index],checkRecovery);checkRecovery();}
-      for(const input of $$('#equipment-comparison input,#equipment-comparison select')){if(['compare-a','compare-b'].includes(input.id))continue;const cell=c.form[input.id||input.dataset.compareKey];if(!cell)continue;if(typeof cell.value!=='string'||cell.value.length>200)throw new Error('比较草稿字段格式不正确');input.value=cell.value;input.checked=!!cell.checked;input.dataset.manual='true';input.dataset.edited='true';}
+      for(const input of $$('#equipment-comparison input,#equipment-comparison select')){if(['compare-a','compare-b'].includes(input.id))continue;const cell=c.form[input.id||input.dataset.compareKey];if(!cell)continue;if(typeof cell.value!=='string'||cell.value.length>200)throw new Error('比较草稿字段格式不正确');input.value=cell.value;input.checked=!!cell.checked;input.dataset.manual=cell.manual===undefined?'true':cell.manual==='true'?'true':'';input.dataset.edited='true';}
       if(c.note!==undefined&&(typeof c.note!=='string'||c.note.length>1200))throw new Error('比较草稿用户备注格式不正确');
       let saved=null;if(c.saved_id){try{saved=(await getJSON('/api/workspace/plan?'+new URLSearchParams({id:c.saved_id}))).plan;if(saved.kind!=='equipment')saved=null;}catch(error){toast('关联装备方案已变化，原始草稿按独立参考恢复',true);}if(saved){if(c.saved_revision&&!/^[a-f0-9]{64}$/.test(c.saved_revision))throw new Error('关联装备方案版本格式不正确');saved={...saved,record_revision:c.saved_revision||'',name:c.saved_name||saved.name,note:c.note||'',origin:c.saved_origin||saved.origin};}}
       checkRecovery();if(typeof compareCharacterReference!=='undefined')compareCharacterReference=c.character_reference||null;
       if(typeof compareRepairOriginal!=='undefined'){compareRepairOriginal=c.repair_original||((compareItems[Number($('#compare-a').value)]?.unavailable||compareItems[Number($('#compare-b').value)]?.unavailable)?saved:null);showComparisonOriginal(compareRepairOriginal);compareError=compareRepairOriginal?'原方案与输入草稿已找回；请替换不可用装备并重新比较，修正后仅另存副本。':'';}
-      compareSessionUnsaved=true;compareDirty=true;compareFixed=!!saved&&!!c.fixed;compareStamp=c.stamp||null;compareBudgetOrigin=c.budget_origin||'找回的手填预算';compareBudgetStamp=c.budget_stamp||null;compareResultArgs=null;compareSavedPlan=saved;updateComparisonSavedNote();$('#compare-result').replaceChildren();$('#compare-copy-text').textContent='';$('.comparison-panel').open=true;refreshComparisonOrigin();}
+      compareSessionUnsaved=true;compareDirty=true;compareFixed=!!saved&&!!c.fixed;compareStamp=c.stamp||null;compareBudgetOrigin=c.budget_origin||'找回的手填预算';compareBudgetStamp=c.budget_stamp||null;compareResultArgs=null;compareSavedPlan=saved;updateComparisonSavedNote();$('#compare-result').replaceChildren();$('#compare-copy-text').textContent='';$('.comparison-panel').open=true;for(const side of ['a','b']){$('#compare-'+side).dataset.edited='true';refreshCompareChoiceOrigin(side);}refreshComparisonOrigin();}
     for(const meta of draft.plan_meta||[]){if(typeof meta.key!=='string'||typeof meta.name!=='string'||meta.name.length>80||typeof meta.note!=='string'||meta.note.length>1200)throw new Error('方案备注草稿格式不正确');planNameDrafts.set(meta.key,meta.name);planNoteDrafts.set(meta.key,meta.note);if(meta.original)planMetaOriginals.set(meta.key,meta.original);}
     if(draft.numeric?.length){for(const item of draft.numeric){await restoreNumericSession(item,checkRecovery);checkRecovery();}}
     else if(draft.character)navigate('workspace');else if(draft.alchemy||draft.alchemy_plan_meta?.length)navigate('alchemy');else if(draft.migration)navigate('migration');else if(draft.manual)navigate('manual');else if(draft.comparison)navigate('inventory');else if(draft.settings)navigate('settings');else if(draft.backup_destination||draft.play)navigate('play-settings');else if(draft.backup_metadata?.length)navigate('backups');

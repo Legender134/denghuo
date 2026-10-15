@@ -409,6 +409,27 @@ class GameWorkspace:
     def recipe_choices(self):
         return [(row['id'], row.get('name') or self.names.get(row.get('output'), row['id'])+' · '+row.get('group', '')) for row in self.recipes]
 
+    def add_recipe_target(self, identity):
+        recipe = self.recipe(identity)
+        if not recipe:
+            raise ValueError('配方已不可用；当前炼金草稿仍保留')
+        previous = self.raw['alchemy']
+        if previous.get('legacy'):
+            raise ValueError('请先在炼金中转换旧方案，再加入目标；旧草稿仍保留')
+        count = row_count(previous, 'targets')
+        if count >= 64:
+            raise ValueError('炼金目标已达到上限；当前草稿仍保留')
+        self.undo['alchemy'] = (copy.deepcopy(previous), copy.deepcopy(self.sources.get('alchemy', {})))
+        updated = {**previous, 'targets': str(count + 1),
+                   f't{count}.recipe': identity, f't{count}.quantity': '1'}
+        self.edit('alchemy', updated)
+        self.structured_results.pop('alchemy', None)
+        self.notice_briefs['alchemy'] = '已加入目标 ' + str(count + 1) + ' · ' + dict(self.recipe_choices())[identity]
+        self.page = 'alchemy'
+        self.hide_inventory_reveals()
+        self.emit('alchemy')
+        self.host.command('show', surface='alchemy')
+
     def choice_fields(self, raw, prefix, recipe, group):
         result = []
         for spec in (self.recipe(recipe) or {}).get('choices', []):

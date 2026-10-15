@@ -131,7 +131,114 @@ class NativeWorkspaceTests(unittest.TestCase):
         self.assertTrue(host.outgoing.empty())
 
 
+class NativeCatalogBrowseTests(ControllerFixture):
+    def test_categories_favorites_and_browse_all_keep_unsaved_input(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.favorite()
+        self.lookup.variables['max_hp'].set('1e')
+        for category in ('药剂', '敌人与角色', '收藏', '最近'):
+            self.assertIn(category, self.lookup.categories())
+            self.lookup.handle({'action': 'browse', 'category': category})
+            self.assertTrue(self.lookup.rows)
+            self.assertEqual(self.lookup.raw_params()['max_hp'], '1e')
+            self.assertTrue(self.lookup.has_draft())
+            if category == '药剂':
+                self.assertTrue(all(row['id'].startswith('items.potions.') for row in self.lookup.rows))
+            elif category not in ('收藏', '最近'):
+                self.assertTrue(all(row['category'] == category for row in self.lookup.rows))
+        self.lookup.handle({'action': 'browse', 'category': '全部'})
+        first = [row['id'] for row in self.lookup.rows]
+        self.assertEqual(len(first), 30)
+        self.assertFalse(self.lookup.suggested)
+        self.assertEqual(len(first), len(set(first)))
+        self.lookup.more_results()
+        self.assertFalse(self.lookup.suggested)
+        self.assertEqual(len(self.lookup.rows), 60)
+        self.lookup.handle({'action': 'browse', 'category': '常用'})
+        self.assertTrue(self.lookup.suggested)
+        self.lookup.more_results()
+        self.assertEqual(self.lookup.category, '全部')
+        self.assertEqual(len(self.lookup.rows), 30)
+        self.assertEqual(self.lookup.raw_params()['max_hp'], '1e')
+
+    def test_current_object_has_one_row_and_related_calculation_preserves_capture(self):
+        from companion.native_host import binding_token
+        item = self.session.catalog.item({'__className': 'com.shatteredpixel.shatteredpixeldungeon.items.weapon.melee.Longsword',
+            'levelKnown': True, 'cursedKnown': True, 'level': 2, 'quantity': 1}, {})
+        item['available'] = True
+        self.session.data['items'] = [item]
+        self.lookup.handle({'action': 'browse', 'category': '随身'})
+        self.assertEqual(len(self.lookup.rows), 1)
+        row = self.lookup.rows[0]
+        self.assertTrue(row['related'])
+        self.lookup.select_row(row); self.finish()
+        related = self.lookup.related_rows()[0]
+        self.lookup.handle({'action': 'related', 'index': 0, 'token': binding_token(related)})
+        self.finish()
+        self.assertEqual(self.lookup.identity, related['id'])
+        self.assertEqual(self.lookup.context, related['lookup_context'])
+        self.assertEqual(self.lookup.variables['level'].get(), '2')
+        self.assertIn('升级前等级', self.lookup.text.text)
+        self.assertEqual(self.lookup.related_rows(), [])
+
+    def test_npc_description_and_dangerous_npc_are_distinguished(self):
+        self.open('actors.mobs.npcs.imp')
+        payload = self.host.commands[-1][1]
+        self.assertTrue(payload['introduction'])
+        self.assertIn(payload['introduction'], payload['description'])
+        self.assertEqual(payload['primary_values'], [])
+        self.open('actors.mobs.npcs.vaultsentry')
+        payload = self.host.commands[-1][1]
+        self.assertFalse(payload['primary_values'])
+        self.assertIn('扫描', ' '.join(payload['reading_notes']))
+
+
 class NativeStrengthWorkflowTests(ControllerFixture):
+    def test_water_primary_distinguishes_timing_shield_and_unavailable_water(self):
+        self.open('items.waterskin')
+        for params, expected, note in (
+            ({'vial': -1}, [('即时恢复', '80')], '不含已有治疗'),
+            ({'vial': 0}, [('首次恢复', '19'), ('逐回合合计', '80')], '不再受伤'),
+            ({'vial': 3}, [('首次恢复', '6'), ('逐回合合计', '80')], '不能直接相加'),
+            ({'vial': 0, 'shielding_dew': 1}, [('首次恢复', '19'), ('逐回合合计', '80')], '另增屏障 20 点'),
+            ({'vial': -1, 'shielding_dew': 1}, [('即时恢复', '80'), ('新增屏障', '20')], '不含已有治疗'),
+            ({'dew_volume': 0}, [('可用露珠', '0')], '无法饮用'),
+            ({'hp': 100}, [('即时恢复', '0')], '消耗 1 滴，剩 19 滴'),
+        ):
+            with self.subTest(params=params):
+                result = self.session.values.detail('items.waterskin',
+                    {'hp': 20, 'max_hp': 100, 'dew_volume': 20, 'vial': -1, **params})
+                primary, summary = self.lookup.primary_presentation(result['blocks'])
+                self.assertEqual([(row['label'], row['value']) for row in primary], expected)
+                self.assertIn(note, summary)
+                self.assertTrue(any(row['label'] == '实际新增屏障' for row in result['blocks'][0]['values']))
+
+    def test_invisibility_answer_keeps_break_condition_and_one_base_duration(self):
+        self.open('actors.buffs.invisibility')
+        payload = self.host.commands[-1][1]
+        answer = payload['primary_values'][0]
+        self.assertEqual(answer['value'], '20')
+        self.assertIn('攻击和施法会解除', answer['condition'])
+        self.assertIn('当前剩余', answer['condition'])
+        duration = [value for section in payload['numeric_sections'] for value in section.get('values', [])
+                    if value['label'] in ('基础持续时间', '默认持续')]
+        self.assertEqual(len(duration), 1)
+
+    def test_special_monster_mechanisms_and_boundaries_precede_full_stats(self):
+        for identity, expected in [('goo', '双方弹道'), ('eye', '重新瞄准'), ('necromancer', '落点阻塞'),
+                                   ('dm300', '当前供能塔'), ('yogfist$rottingfist', '60%'),
+                                   ('yogfist$rustedfist', '延迟池'), ('yogfist$soiledfist', '清掉草')]:
+            self.open('actors.mobs.'+identity)
+            payload = self.host.commands[-1][1]
+            self.assertEqual(payload['primary_values'], [])
+            self.assertIn(expected, ' '.join(payload['reading_notes']))
+            self.assertIn('普通基础参考', payload['primary_note'])
+            self.assertTrue(any(row['title']=='常规战斗数值' for row in payload['numeric_sections']))
+            self.assertFalse(any(row['title']=='粘咕攻击阶段' for row in payload['numeric_sections']))
+            self.lookup.variables['hero_level'].set('1e')
+            self.assertEqual(self.host.commands[-1][1]['reading_notes'], [])
+            self.lookup.dirty = self.lookup.draft_modified = False
+
     def test_primary_plant_and_water_effects_keep_activation_conditions(self):
         for identity, condition in (
             ('plants.mageroyal', '守望者'),
@@ -147,26 +254,30 @@ class NativeStrengthWorkflowTests(ControllerFixture):
                     self.assertIn('种植触发后', payload['origin_brief'])
                 if 'aquaticrejuvenation' in identity:
                     self.assertIn('药水恐惧下不治疗', payload['primary_values'][0]['condition'])
+                    self.assertEqual(payload['primary_values'][1]['label'], '水中每回合实际恢复')
+                    self.assertIn('逐回合', payload['primary_note'])
 
-    def test_monster_primary_answer_deduplicates_health_without_changing_full_table(self):
+    def test_ordinary_monster_leads_with_hidden_combat_rules_and_keeps_full_table(self):
         self.open('actors.mobs.rat')
         payload=self.host.commands[-1][1]
         self.assertEqual([(r['label'],r['value']) for r in payload['primary_values']],
-                         [('初始生命／上限','8'),('基础伤害范围','1–4')])
+                         [('普攻','1–4'),('减伤','0–1'),('移速','1')])
         combat=next(section for section in payload['numeric_sections'] if section['title']=='常规战斗数值')
         self.assertEqual(len(combat['values']),10)
         self.assertEqual([r['value'] for r in combat['values'][:2]],['8','8'])
         self.open('actors.mobs.necromancer$necroskeleton')
-        self.assertEqual([(r['label'],r['value']) for r in self.host.commands[-1][1]['primary_values']],
-                         [('初始生命','20'),('初始最大生命','25')])
+        self.assertTrue(self.host.commands[-1][1]['reading_notes'])
+        combat=next(section for section in self.host.commands[-1][1]['numeric_sections'] if section['title']=='常规战斗数值')
+        self.assertEqual([r['value'] for r in combat['values'][:2]],['20','25'])
 
     def test_non_attacking_monster_primary_answer_keeps_mechanism_condition(self):
         self.open('actors.mobs.pylon')
         payload=self.host.commands[-1][1]
-        self.assertEqual(payload['primary_values'][1]['label'],'激活后邻格电击伤害')
-        self.assertEqual(payload['primary_values'][1]['value'],'10–20')
-        self.assertIn('未激活时不攻击且无敌',payload['primary_values'][1]['condition'])
-        self.assertNotIn(payload['primary_values'][1]['condition'],payload['primary_note'])
+        self.assertFalse(payload['primary_values'])
+        notes=' '.join(payload['reading_notes'])
+        self.assertIn('激活后邻格电击伤害',notes)
+        self.assertIn('10–20',notes)
+        self.assertIn('未激活时不攻击且无敌',notes)
 
     def test_ring_primary_answer_uses_selected_effect_and_both_curse_states(self):
         self.open('items.rings.ringofaccuracy')
@@ -243,6 +354,82 @@ class NativeStrengthWorkflowTests(ControllerFixture):
         self.lookup.calculate(); self.finish()
         self.assertTrue(self.host.commands[-1][1]['focus_result'])
         self.assertTrue(self.host.commands[-1][1]['can_save'])
+
+    def test_healing_potion_public_vial_initial_latest_and_undo(self):
+        from companion.engine import PREFIX, analyze
+        game = {'version': self.session.catalog.data['version_code'], 'challenges': 0, 'depth': 6,
+            'hero': {'class': 'WARRIOR', 'lvl': 8, 'HP': 32, 'HT': 90, 'STR': 12, 'buffs': [],
+                'inventory': [{'__className': PREFIX+'items.trinkets.VialOfBlood', 'level': 3, 'levelKnown': True}]}}
+        snap = self.session.snapshot()
+        snap.update(data=analyze(game, self.session.catalog), active_slot=1)
+        snap['settings']['mode'] = 'save'
+        self.session.snapshot = lambda: snap
+        self.open('items.potions.potionofhealing')
+        self.assertEqual(self.lookup.raw_params()['vial'], '3')
+        payload = self.host.commands[-1][1]
+        self.assertEqual(payload['primary_values'][1]['value'], '6')
+        self.assertIn('凝血试管 +3', payload['primary_note'])
+        self.assertIn('快照', payload['primary_note'])
+        self.lookup.variables['vial'].set('2'); self.lookup.calculate(); self.finish()
+        snap['data']['items'][0]['level'] = 0
+        self.lookup.refresh_origin(snap); self.lookup.emit()
+        self.assertEqual(self.lookup.raw_params()['vial'], '2', 'polling preserves deliberate manual reference')
+        self.lookup.use_latest(); self.finish()
+        self.assertEqual(self.lookup.raw_params()['vial'], '0')
+        self.assertEqual(self.host.commands[-1][1]['primary_values'][1]['value'], '18')
+        self.lookup.undo_import()
+        self.assertEqual(self.lookup.raw_params()['vial'], '2')
+        self.assertEqual(self.lookup.input_origins['vial'], '手填')
+
+    def test_healing_potion_captured_context_only_supplements_matching_snapshot(self):
+        from companion.engine import PREFIX, analyze
+        game = {'version': self.session.catalog.data['version_code'], 'challenges': 0, 'depth': 6,
+            'hero': {'class': 'WARRIOR', 'lvl': 8, 'HP': 32, 'HT': 90, 'STR': 12, 'buffs': [],
+                'inventory': [{'__className': PREFIX+'items.trinkets.VialOfBlood', 'level': 3, 'levelKnown': True}]}}
+        snap = self.session.snapshot(); snap['settings']['mode'] = 'save'
+        snap.update(data=analyze(game, self.session.catalog), active_slot=1)
+        self.session.snapshot = lambda: snap
+        row = copy.deepcopy(next(row for row in self.session.catalog.entries if row['id']=='items.potions.potionofhealing'))
+        row['lookup_context'] = {'params': NumericLookup.hero_context(snap), 'stamp': NumericLookup.source_stamp(snap), 'mode': 'save'}
+        self.lookup.select_row(row); self.finish()
+        self.assertEqual(self.lookup.raw_params()['vial'], '3')
+        row['lookup_context']['stamp'] = (None,)*6
+        self.lookup.select_row(row); self.finish()
+        self.assertNotIn('vial', self.lookup.context['params'])
+        self.assertIn('示例', self.host.commands[-1][1]['primary_note'])
+        self.assertNotIn('未佩戴', self.host.commands[-1][1]['primary_note'])
+
+    def test_unconfirmed_vial_and_manual_inventory_do_not_claim_absence(self):
+        from companion.engine import PREFIX, analyze
+        game = {'version': self.session.catalog.data['version_code'], 'challenges': 0, 'depth': 6,
+            'hero': {'class': 'WARRIOR', 'lvl': 8, 'HP': 32, 'HT': 90, 'STR': 12, 'buffs': [],
+                'inventory': [{'__className': PREFIX+'items.trinkets.VialOfBlood', 'level': 3, 'levelKnown': False}]}}
+        snap = self.session.snapshot(); snap['settings']['mode'] = 'save'
+        snap.update(data=analyze(game, self.session.catalog), active_slot=1)
+        self.session.snapshot = lambda: snap
+        for identity in ('items.potions.potionofhealing', 'items.potions.elixirs.elixirofhoneyedhealing'):
+            self.open(identity)
+            self.assertNotIn('vial', self.lookup.context['params'])
+            self.assertIn('示例', self.host.commands[-1][1]['primary_note'])
+            self.lookup.use_latest(); self.finish()
+            self.assertIn('示例', self.host.commands[-1][1]['primary_note'])
+            self.assertIn('未确认', self.lookup.input_origins['vial'])
+        snap['settings']['mode'] = 'manual'; snap['data']['items'] = []
+        self.assertNotIn('vial', NumericLookup.entry_context(snap, 'items.potions.potionofhealing')['params'])
+
+    def test_dot_primary_answers_state_their_example_or_manual_condition(self):
+        for identity, labels, note in (
+            ('actors.buffs.poison', ['首次毒伤', '完整毒伤总量'], '后续续毒'),
+            ('actors.buffs.bleeding', ['下一次流血', '预计总流血伤害'], '平均估计')):
+            self.open(identity)
+            payload = self.host.commands[-1][1]
+            self.assertEqual([row['label'] for row in payload['primary_values']], labels)
+            self.assertIn('示例', payload['primary_note'])
+            self.assertIn(note, payload['primary_note'])
+            self.lookup.variables['power'].set('4'); self.lookup.calculate(); self.finish()
+            self.assertIn('手填', self.host.commands[-1][1]['primary_note'])
+            self.lookup.variables['power'].set('1e')
+            self.assertEqual(self.host.commands[-1][1]['primary_values'], [])
 
     def test_provenance_and_missing_conditions_never_publish_old_primary_answer(self):
         self.open('items.potions.potionofhealing')
@@ -367,6 +554,7 @@ class NativeStrengthWorkflowTests(ControllerFixture):
         item['available'] = True
         self.session.data['items'] = [item]
         # Real workspace status supplies both item context and the matching scene stamp.
+        self.lookup.handle({'action': 'browse', 'category': '随身'})
         self.lookup.search(); row = next(row for row in self.lookup.rows if row['id'] == 'items.rings.ringofforce')
         self.lookup.select_row(row); self.finish()
         self.assertEqual(self.lookup.variables['strength'].get(), '14')

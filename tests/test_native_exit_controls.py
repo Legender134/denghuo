@@ -553,7 +553,9 @@ class NativeExitTests(ControllerFixture):
             stack.enter_context(self.assertLogs(level='ERROR'))
             self.ui.error('fixture EOF')
         self.ui.report_drafts()
-        saved = self.session.load_exit_draft(self.session.list_exit_drafts()[0]['id'])
+        copies = [row for row in self.session.list_exit_drafts() if row['draft_kind'] == 'numeric']
+        self.assertEqual(len(copies), 1)
+        saved = self.session.load_exit_draft(copies[0]['id'])
         self.assertEqual(saved['draft']['raw_params']['hp'], '  unfinished EOF raw  ')
         self.assertTrue(self.session.exit_coordinator.flush_checkpoints(5))
         state = self.session.request_exit('web-fixture')

@@ -23,6 +23,9 @@ class StartupTests(unittest.TestCase):
         self.config = self.root/'settings.json'
         self.config.write_text(json.dumps({'save_root':str(self.root)}))
         self.servers = []
+        update_check = patch('companion.updates.Updates.check', autospec=True)
+        self.update_check = update_check.start()
+        self.addCleanup(update_check.stop)
 
     def server(self, *args):
         server = Server(*args)

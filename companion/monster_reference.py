@@ -954,6 +954,88 @@ def add_monster_values(values, identity, p, result, requested):
         elif row['dynamic'] == 'sentry':
             primary[1] = stat_rows[5]
     combat['primary_values'] = primary
+    if abilities:
+        if name == 'goo':
+            water = next(value for value in abilities if '水中' in value['label'] and '恢复' in value['label'])
+            combat['reading_notes'] = [
+                ('蓄力准备1次自身攻击行动即完成；准备耗时随目标冷却变化，为自身攻击耗时的1至3倍，非固定1回合。'
+                 if stronger else '先准备2次自身攻击行动，再发射蓄力攻击；默认每次耗时1回合，速度修正另计。')
+                + '攻击可达2格，双方弹道须可达；追近、后退或离开追击会取消蓄力。',
+                '生命不高于一半时，伤害和选择蓄力的概率上升；后者仅在可攻击且尚未蓄力时判断。',
+                '水中恢复 ' + water['value'] + ' HP／次自身行动；' + water['condition'] + '。淤泥可用水洗掉，但首次仍可能结算伤害。',
+            ]
+        elif name == 'eye':
+            combat['reading_notes'] = [
+                '死亡凝视先蓄力2回合（行动速度修正另计）；实墙阻挡光路，可见目标可能重新瞄准。',
+                '凝视基础伤害30–50 HP，分别检定魔法命中，不扣普通护甲；抗性另计。',
+                '蓄力时承伤÷4并向下取整，抗性另计；目标离开视野后仍可能向原位置发射。',
+            ]
+        elif name in ('necromancer', 'spectralnecromancer'):
+            combat['reading_notes'] = [
+                '目标可见、4格内，且其邻格可通行、在视野内并可绕障到达时，才准备召唤。',
+                '首次准备1回合，之后2回合；后续自身行动才尝试召唤，落点阻塞会延后。',
+                ('可同时召唤多个固定等效4层的怨灵；死亡时清除所记录且仍同阵营的怨灵。'
+                 if name == 'spectralnecromancer' else '维持并支援自己的同阵营骷髅；未满血时治疗，满血时可施加肾上腺素。'),
+            ]
+        else:
+            # Shared scheduling fields do not explain the selected variant's effect.
+            reading = [value for value in abilities if value['label'] not in
+                       ('远程攻击后重设冷却参数', '远程施放行动耗时', '初始远程冷却', '远程施放耗时')]
+            combat['reading_notes'] = [value['label'] + '：' + value['value'] + value.get('unit', '')
+                + ('；' + value['condition'] if value.get('condition') else '') for value in reading[:2]]
+    # Boss phases and fist identities need an action-oriented reading order, not
+    # inherited HP or the first two rows of a shared ability table.
+    boss_notes = {
+        'dm300': [
+            '超充期间无敌，先破坏当前供能塔解除；此时移动速度为普通的2倍。',
+            ('绝命头目在300／200／100 HP触发超充，共需关闭3座电塔。' if stronger else
+             '普通模式在200／100 HP触发超充，共需关闭2座电塔。') + '跨过节点的攻击会被截到节点，不能一击跳过阶段。',
+        ],
+        'tengu': [
+            f'生命降到{125 if stronger else 100} HP进入第二阶段；一击不能穿过多个生命档或跳过阶段。',
+            '近身并不阻止普通攻击；相邻命中值10，非相邻20，实际命中仍需检定。',
+        ],
+        'dwarfking': [
+            '第二阶段普通伤害无效，击杀有效的召唤侍从削减国王护盾，每只25点。',
+            f'当前模式需击杀{18 if stronger else 12}只有效侍从破盾；第三阶段承伤转为延缓伤害，不立即全部扣血。',
+            '占据召唤格会受到20–40 HP基础伤害；防护与其他状态另计。',
+        ],
+        'yogdzewa': [
+            '开战前或有任意古神之拳存活时无敌，先处理拳头。',
+            f'生命700／400／100 HP触发召唤，每次{2 if stronger else 1}只拳；不能一击跳过阶段。',
+            f'当前模式死光基础伤害{"30–50" if stronger else "20–30"} HP，其他防护另计。',
+        ],
+    }
+    fist_notes = {
+        'yogfist$rottingfist': [
+            '无镰刀收割标记时，非流血伤害先计来源抗性，再以60%转为流血强度；原输入不立即扣血。',
+            '未满血且自身格有水时，每次自身行动恢复6 HP（普通最大生命300）；远程会在目标格播种毒气。',
+        ],
+        'yogfist$rustedfist': [
+            '非延迟伤害先计来源抗性，再加入延迟池，不立即扣血；每回合处理当前池的10%（向下取整，至少1），并非固定10回合结清。',
+            '远程残废基础4回合，不经普通命中检定；抗性与免疫另计。',
+        ],
+        'yogfist$soiledfist': [
+            '自身及周围8格的高草／茂草会减伤，达到6格时可挡住普通扣血；清掉草再攻击。',
+            '燃烧状态不扣它的血，但能烧毁减伤草丛；远程命中会扎根（基础3回合，飞行不受扎根），并在目标附近播草。',
+        ],
+        'yogfist$burningfist': [
+            '远程遇水先蒸干，否则尝试点燃；仍会向符合条件的目标邻格补火，不经普通命中检定。',
+            '每次自身行动会蒸干自身水格并尝试蒸干邻格，持续向非水、非实心邻格补火。',
+        ],
+        'yogfist$brightfist': [
+            '非相邻且魔法弹道首先碰到目标时使用光束：基础10–20 HP，魔法命中另检定；命中后失明基础5回合。',
+            '从半血以上降到150 HP或以下且存活时，生命设回150并传到玩家视野外，同时失明基础15回合；死亡时失明基础30回合。',
+        ],
+        'yogfist$darkfist': [
+            '非相邻且魔法弹道首先碰到目标时使用暗影弹：基础10–20 HP，魔法命中另检定；命中后将已有光亮缩短50回合。',
+            '从半血以上降到150 HP或以下且存活时，生命设回150并传到玩家视野外；半血传送或死亡均移除玩家已有光亮。直接致死不触发半血传送。',
+        ],
+    }
+    if name in boss_notes:
+        combat['reading_notes'] = boss_notes[name]
+    elif name in fist_notes:
+        combat['reading_notes'] = ['拳距古神基座4格以内时无敌；须在该范围外才能造成伤害。', *fist_notes[name]]
     summary = []  # Each primary metric already carries its mechanism condition.
     summary.append('绝命头目：只计入已核对的变化，其余按普通参考。' if stronger else '普通基础参考；未计精英、飞升或额外状态。')
     if row['dynamic']: summary.append(f'生成层数 {depth}。')

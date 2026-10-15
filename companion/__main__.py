@@ -121,6 +121,7 @@ def main(argv=None):
         http = threading.Thread(target=server.serve_forever, daemon=True, name="dashboard")
         monitor.start()
         http.start()
+        session.updates.check()
         panel_start = not (args.no_browser or args.start_hidden) and (
             args.web or args.no_overlay or session.settings.get('startup_surface', 'native') == 'panel')
         if panel_start:
@@ -162,6 +163,8 @@ def main(argv=None):
         for handler in owned_handlers:
             logging.getLogger().removeHandler(handler)
             handler.close()
+    if session is not None:
+        session.updates.launch_after_exit(session.exit_status())
 
 
 def entrypoint(argv=None):

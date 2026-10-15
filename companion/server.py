@@ -208,7 +208,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_data(result)
             except (OSError, ValueError) as exc:
                 self.send_data({'error': str(exc)}, 400)
-        elif url.path in ("/", "/index.html", "/app.js", "/references.js", "/backups.js", "/rules.js", "/compare.js", "/workspace.js", "/help.js", "/play.js", "/backup-workflows.js", "/backup-libraries.js", "/backup-destination.js", "/global-history.js", "/migration.js", "/alchemy.js", "/character.js", "/scouting.js", "/floor-guide.js", "/forecast.js", "/forecast-worker.js", "/style.css", "/icon.svg"):
+        elif url.path in ("/", "/index.html", "/app.js", "/references.js", "/backups.js", "/rules.js", "/compare.js", "/workspace.js", "/help.js", "/updates.js", "/play.js", "/backup-workflows.js", "/backup-libraries.js", "/backup-destination.js", "/global-history.js", "/migration.js", "/alchemy.js", "/character.js", "/scouting.js", "/floor-guide.js", "/forecast.js", "/forecast-worker.js", "/style.css", "/icon.svg"):
             path = WEB / ("index.html" if url.path == "/" else url.path[1:])
             try:
                 mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
@@ -340,6 +340,9 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             if path == '/api/select-directory':
                 self.send_data({'ok':True,**self.server.session.choose_directory(payload)})
+                return
+            if path == '/api/update':
+                self.send_data({'ok': True, 'update': self.server.session.update_action(payload)})
                 return
             if path == '/api/session-exit':
                 if payload.get('action') == 'draft-original-download':

@@ -13,14 +13,23 @@ from .backups import atomic_json
 
 
 DEFAULT = {'width': 380, 'height': 460, 'x': None, 'y': None,
-           'game_x': 16, 'game_y': 16, 'collapsed': False, 'page': 'overview'}
+           'game_x': 16, 'game_y': 16, 'collapsed': False, 'page': 'overview',
+           'brief_width': 310, 'brief_height': 240, 'brief_auto': True, 'text_scale': 100,
+           'follow_default': True}
+LEGACY_KEYS = set(DEFAULT) - {'brief_width', 'brief_height', 'brief_auto', 'text_scale', 'follow_default'}
 PAGES = {'overview', 'inventory', 'lookup', 'equipment', 'alchemy', 'character',
          'floor', 'map', 'backups', 'plans', 'settings'}
 
 
 def validate(raw):
-    if not isinstance(raw, dict) or set(raw) != set(DEFAULT):
+    if not isinstance(raw, dict) or set(raw) not in (set(DEFAULT), LEGACY_KEYS):
         raise ValueError('窗口布局格式不兼容；原件保留')
+    raw = copy.deepcopy(raw)
+    if set(raw) == LEGACY_KEYS:
+        custom = (raw.get('width'), raw.get('height')) != (380, 460)
+        raw.update(brief_width=raw['width'] if custom else 310,
+                   brief_height=raw['height'] if custom else 240,
+                   brief_auto=not custom, text_scale=100, follow_default=raw.get('x') is None)
     for key in ('width', 'height', 'x', 'y', 'game_x', 'game_y'):
         value = raw[key]
         if key in ('x', 'y') and value is None:
@@ -30,6 +39,11 @@ def validate(raw):
             raise ValueError('窗口布局超出可用范围；原件保留')
     if type(raw['collapsed']) is not bool or raw['page'] not in PAGES:
         raise ValueError('窗口布局状态不兼容；原件保留')
+    for key, low in (('brief_width', 280), ('brief_height', 140)):
+        if type(raw[key]) is not int or not low <= raw[key] <= 2400:
+            raise ValueError('随行简报尺寸超出可用范围；原件保留')
+    if type(raw['follow_default']) is not bool or type(raw['brief_auto']) is not bool or type(raw['text_scale']) is not int or raw['text_scale'] not in (100, 115, 130):
+        raise ValueError('随行显示设置不兼容；原件保留')
     if (raw['x'] is None) != (raw['y'] is None):
         raise ValueError('窗口位置不完整；原件保留')
     return copy.deepcopy(raw)

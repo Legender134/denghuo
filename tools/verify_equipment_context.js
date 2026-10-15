@@ -73,5 +73,54 @@ function harness(){
   assert.match(metadata[0],/已主动揭示/);assert.doesNotMatch(metadata[0],/保留未知身份/);
   detail.showItem({...item,revealed:false},{stamp:null});
   assert.equal(calls.length,1);assert.match(metadata[1],/保留未知身份/);
+  // Exercise the production unfinished-draft loader with mixed manual/reference cells.
+  const recovered=harness(),controls=[];
+  const cell=(id,value,manual='',edited='')=>{const input=recovered.get('#'+id);input.id=id;input.value=value;input.dataset={manual,edited};controls.push(input);return {value,checked:false,manual,edited};};
+  const form={'compare-kind':cell('compare-kind','weapon'),'compare-strength':cell('compare-strength','14')};
+  for(const side of ['a','b'])for(const [key,value] of Object.entries({level:side==='a'?'+':'2',mastery:'0',augment:side==='a'?'SPEED':'DAMAGE',tier:'3',resin:'0',infusion:'1',hardened:'1'})){
+    const manual=side==='a'&&['level','augment'].includes(key)?'true':'';
+    form['compare-'+key+'-'+side]=cell('compare-'+key+'-'+side,value,manual,manual);
+  }
+  recovered.context.$$=selector=>selector.startsWith('#equipment-comparison input')?controls:[];
+  const references=Object.fromEntries(['a','b'].map(side=>[side,{id:'items.weapon.melee.sword',name:'保存的单手剑 +2',effect_id:null,user_note:null}]));
+  recovered.context.draftResponse={draft:{draft_kind:'web-session',draft:{format:2,schema:'denghuo-web-session',comparison:{form,choices:{a:references.a.id,b:references.b.id},references}}}};
+  Object.assign(recovered.context,{unfinishedDraftRequest:0,draftRecoveryEditGeneration:0,webEditingFrozen:false,webDirtySummary:()=>[],post:async()=>recovered.context.draftResponse,
+    planNameDrafts:new Map(),planNoteDrafts:new Map(),planMetaOriginals:new Map(),verifySettingsRecovery:async()=>{},applySettingsRecovery:()=>{},toast:()=>{},navigate:()=>{recovered.context.navigationSerial++;}});
+  const workspace=fs.readFileSync(path.join(root,'web/workspace.js'),'utf8'),loadStart=workspace.indexOf('async function loadUnfinishedDraft('),loadEnd=workspace.indexOf('\n}',loadStart)+2;
+  assert(loadStart>=0&&loadEnd>loadStart);recovered.run(workspace.slice(loadStart,loadEnd));
+  await recovered.run("loadUnfinishedDraft('a'.repeat(32),'b'.repeat(64))");
+  assert.equal(recovered.get('#draft-error').textContent,'');
+  for(const [id,expected] of Object.entries(form)){
+    assert.equal(recovered.get('#'+id).value,expected.value,id+' raw value');
+    assert.equal(recovered.get('#'+id).dataset.manual,expected.manual,id+' manual origin');
+    assert.equal(recovered.get('#'+id).dataset.edited,'true',id+' restored input is deliberately held');
+  }
+  assert.match(recovered.get('#compare-origin-a').textContent,/手填/);
+  assert.match(recovered.get('#compare-origin-b').textContent,/保存的装备参考/);
+  assert.doesNotMatch(recovered.get('#compare-origin-b').textContent,/存档的已知/);
+  assert.equal(recovered.run('compareDirty'),true);assert.equal(recovered.run('compareResultArgs'),null);
+  // A newer inventory rebuilds select options; it must not take ownership of restored inputs.
+  for(const side of ['a','b']){
+    const augment=recovered.get('#compare-augment-'+side);
+    Object.defineProperty(augment,'innerHTML',{set(){this.value='NONE';},get(){return '';},configurable:true});
+  }
+  const newer={started:2,active_slot:2,data:{hero:{strength:19},items:[{key:'items.weapon.melee.sword',name:'新长剑 +7',location:'主武器',level:7,known:true,available:true,cursed:false}]}};
+  for(const snapshot of [newer,{...newer,data:null},newer]){
+    recovered.context.state=snapshot;recovered.run('renderEquipmentComparison()');
+    for(const [id,expected] of Object.entries(form)){
+      assert.equal(String(recovered.get('#'+id).value),expected.value,id+' survives snapshot refresh');
+      assert.equal(recovered.get('#'+id).dataset.manual,expected.manual,id+' retains provenance');
+    }
+    assert.equal(recovered.run("compareItems[Number($('#compare-b').value)].reference"),true);
+  }
+  // Explicitly choosing current equipment still replaces the held conditions.
+  recovered.get('#compare-b').value=String(recovered.run('compareItems.findIndex(item=>item.owned)'));
+  recovered.get('#compare-b').listeners.change();
+  assert.equal(String(recovered.get('#compare-level-b').value),'7');
+  assert.equal(recovered.get('#compare-augment-b').value,'NONE');
+  assert.equal(recovered.get('#compare-strength').value,'14');
+  assert.match(recovered.get('#compare-origin-b').textContent,/已带入已知/);
+  recovered.run("compareFixed=true;compareSavedPlan={params:{level_a:2},origin:{fields:{level_a:'旧方案等级'}}};$('#compare-level-a').value='2';refreshCompareChoiceOrigin('a');");
+  assert.match(recovered.get('#compare-origin-a').textContent,/手填/,'manual augmentation must not be hidden by an unchanged saved level');
   console.log('equipment context: original placeholder, field/source retention, replacement, copy-only save, named/null target, undo and late-open guard passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -12,6 +12,36 @@ from companion.character_scene import calculate_scene, empty_scene
 
 
 class GameWorkspaceTests(ControllerFixture):
+    def test_library_recipe_appends_without_replacing_drafts_or_inventory_and_can_undo(self):
+        raw = {**self.workspace.raw['alchemy'], 'targets':'2', 't1.recipe':'potion-healing', 't1.quantity':'1e',
+               'resources':'1', 'r0.id':'items.potions.potionofhealing', 'r0.quantity':'2', 'r0.reserve':'1',
+               'energy':'7', 'name':'我的多目标草稿', 'note':'保留原输入'}
+        self.workspace.edit('alchemy', raw)
+        raw = copy.deepcopy(self.workspace.raw['alchemy'])
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['hp'].set('1e')
+        recipe = self.lookup.recipe_rows()[0]
+        self.lookup.handle({'action':'alchemy_recipe', 'recipe':recipe['id'], 'token':recipe['token']})
+        current = self.workspace.raw['alchemy']
+        self.assertEqual(current['targets'], '3')
+        for key, value in raw.items():
+            if key != 'targets': self.assertEqual(current[key], value)
+        self.assertEqual(current['t2.recipe'], recipe['id'])
+        self.assertEqual(self.lookup.raw_params()['hp'], '1e')
+        self.assertEqual(self.host.commands[-2][0], 'show')
+        snapshot = copy.deepcopy(current)
+        self.lookup.handle({'action':'alchemy_recipe', 'recipe':recipe['id'], 'token':'stale'})
+        self.assertEqual(self.workspace.raw['alchemy'], snapshot)
+        self.workspace.handle({'page':'alchemy', 'command':'undo'})
+        self.assertEqual(self.workspace.raw['alchemy'], raw)
+
+    def test_recipe_append_rejects_capacity_and_legacy_before_modifying_existing_draft(self):
+        for patch in ({'targets':'64'}, {'legacy':'raw original'}, {'targets':'1e'}):
+            self.workspace.raw['alchemy'].update(patch)
+            previous = copy.deepcopy(self.workspace.raw['alchemy'])
+            with self.assertRaises(ValueError): self.workspace.add_recipe_target('potion-healing')
+            self.assertEqual(self.workspace.raw['alchemy'], previous)
+
     def test_field_help_keeps_unknowns_visible_and_moves_routine_origins_to_details(self):
         self.workspace.emit('equipment')
         payload=self.host.commands[-1][1]

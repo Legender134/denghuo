@@ -1,7 +1,7 @@
 'use strict';
 let playSaved=null,playRevision=null,playSeenRevision=null,playRequest=0,playDraftGeneration=0,playDirty=false,playConflict=false,playRuntime=null,playRawBaseline=null;
 const playFields=['enabled','alerts','anchor','offset_x','offset_y','font_scale','opacity','notice_seconds'];
-const bindingLabels={capture:'立即备份已保存进度',show:'显示随行助手',library:'手册',backups:'存档历史',play_toggle:'开关游戏跟随',quick:'收起或展开随行助手'};
+const bindingLabels={capture:'立即备份已保存进度',show:'显示随行助手',library:'图鉴',backups:'存档历史',play_toggle:'开关游戏跟随',quick:'收起或展开随行助手'};
 function playRawValues(){return {...Object.fromEntries(playFields.map(key=>['play-'+key,['enabled','alerts'].includes(key)?$('#play-'+key).checked:$('#play-'+key).value])),...Object.fromEntries($$('#play-bindings [data-binding]').map(input=>['binding.'+input.dataset.binding,input.value]))};}
 function playSavedRaw(settings){return {...Object.fromEntries(playFields.map(key=>['play-'+key,['enabled','alerts'].includes(key)?settings[key]:String(settings[key])])),...Object.fromEntries(Object.entries(settings.bindings).map(([key,value])=>['binding.'+key,value]))};}
 function capturePlayDraft(){const raw=playRawValues();return {format:2,raw,baseline:playRawBaseline?{...playRawBaseline}:null,changed:Object.keys(raw).filter(key=>!playRawBaseline||raw[key]!==playRawBaseline[key])};}

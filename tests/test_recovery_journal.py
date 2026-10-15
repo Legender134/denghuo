@@ -638,6 +638,154 @@ os._exit(23)
         self.assertEqual(restarted.load_exit_draft(archived[0]['id'])['draft'],raw)
         self.assertFalse((self.directory/'exit-recovery'/(row['id']+'.json')).exists())
 
+    def test_explicit_draft_load_requires_the_selected_content_and_lifecycle(self):
+        session = Session(self.config)
+        raw = {'entry': 'actors.buffs.healing', 'raw_params': {'power': ' 32 '}}
+        saved = session.save_exit_draft('web-aaaaaaaa', 'numeric', 'unfinished', raw)
+        path = Path(saved['path']); original = path.read_bytes()
+        row, = session.list_exit_drafts()
+        payload = {'action': 'draft-load', 'id': row['id']}
+        for revision in (None, '', 'invalid'):
+            with self.subTest(revision=revision), self.assertRaisesRegex(ValueError, '重新读取'):
+                session.exit_action({**payload, 'expected_revision': revision})
+        captured = session.exit_action({**payload, 'expected_revision': row['state_revision']})['draft']
+        self.assertEqual(captured['draft'], raw)
+        session.set_exit_draft_lifecycle(row['id'], 'archived', row['state_revision'])
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            session.exit_action({**payload, 'expected_revision': row['state_revision']})
+        archived, = session.list_exit_drafts(include_archived=True)
+        self.assertEqual(session.exit_action({**payload, 'expected_revision': archived['state_revision']})['draft']['draft'], raw)
+        self.assertEqual(path.read_bytes(), original)
+        changed = json.loads(original); changed['draft']['raw_params']['power'] = '99'
+        path.write_text(json.dumps(changed), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, '归档状态无法核对'):
+            session.exit_action({**payload, 'expected_revision': archived['state_revision']})
+        self.assertEqual(captured['draft'], raw)
+
+    def test_explicit_draft_replacement_and_mid_load_changes_do_not_substitute_content(self):
+        for operation in ('replace-before', 'replace-during', 'archive-during'):
+            with self.subTest(operation=operation):
+                store = ExitDraftStore(self.directory / operation)
+                saved = store.save('web-aaaaaaaa', 'numeric', 'unfinished', {'raw': ' 32 '})
+                identity = saved['id']; path = Path(saved['path']); original = path.read_bytes()
+                revision = store.lifecycle(identity)['state_revision']
+                changed = json.loads(original); changed['draft']['raw'] = '99'
+                def mutate():
+                    if operation == 'archive-during':
+                        ExitDraftStore(store.directory).set_lifecycle(identity, 'archived', revision)
+                    else:
+                        path.write_text(json.dumps(changed), encoding='utf-8')
+                if operation == 'replace-before':
+                    mutate()
+                    with self.assertRaisesRegex(ValueError, '已变化'):
+                        store.load(identity, revision)
+                    current = store.lifecycle(identity)['state_revision']
+                    self.assertEqual(store.load(identity, current)['draft']['raw'], '99')
+                else:
+                    read = store._read; calls = 0
+                    def changed_read(key):
+                        nonlocal calls
+                        result = read(key); calls += 1
+                        if calls == 1: mutate()
+                        return result
+                    with patch.object(store, '_read', changed_read), self.assertRaisesRegex(ValueError, '已变化'):
+                        store.load(identity, revision)
+                    self.assertEqual(json.loads(path.read_bytes())['draft']['raw'], ' 32 ' if operation == 'archive-during' else '99')
+
+    def test_closed_web_drafts_can_be_loaded_and_archived_without_restarting(self):
+        session = Session(self.config)
+        raw = {'format': 2, 'schema': 'denghuo-web-session',
+               'numeric': [{'identity': 'actors.buffs.healing', 'raw': {'power': ' 1e '}}],
+               'compare': {'level_a': [{'value': '-', 'checked': False}]},
+               'alchemy': {'targets': [{'recipe': 'potion-healing', 'quantity': '2'}], 'energy': '7'}}
+        session.report_exit_surface('web-aaaaaaaa', 1, True, draft=raw, kind='web')
+        self.assertTrue(session.exit_coordinator.flush_checkpoints(5))
+        self.assertEqual(session.list_exit_drafts(), [], 'online windows keep their own editing state')
+        session.unregister_exit_surface('web-aaaaaaaa', 1, True, draft=raw)
+        self.report(session, 'b', dirty=False, raw='new renderer')
+        row, = session.exit_action({'action': 'draft-list'})['drafts']
+        self.assertEqual(row['surface_id'], 'web-aaaaaaaa')
+        self.assertEqual(session.exit_action({'action': 'draft-load', 'id': row['id'], 'expected_revision': row['state_revision']})['draft']['draft'], raw)
+        result = session.set_exit_draft_lifecycle(row['id'], 'archived', row['state_revision'])
+        self.assertEqual(session.list_exit_drafts(), [])
+        self.assertEqual(session.load_exit_draft(result['id'])['draft'], raw)
+        self.assertEqual(session.exit_status()['phase'], 'idle')
+
+    def test_expired_window_recovery_hides_again_when_it_reconnects(self):
+        from companion.session_exit import ONLINE_SECONDS
+        session = Session(self.config)
+        clock = [100]
+        session.exit_coordinator.clock = lambda: clock[0]
+        self.report(session, raw='unfinished input')
+        clock[0] += ONLINE_SECONDS + 1
+        row, = session.list_exit_drafts()
+        path = session.exit_recovery.directory / (row['id'] + '.json')
+        original = path.read_bytes()
+        self.report(session, raw='unfinished input')
+        self.assertEqual(session.list_exit_drafts(), [])
+        with self.assertRaisesRegex(ValueError, '当前窗口'):
+            session.set_exit_draft_lifecycle(row['id'], 'archived', row['state_revision'])
+        with self.assertRaisesRegex(ValueError, '重新连接'):
+            session.exit_action({'action': 'draft-load', 'id': row['id'], 'expected_revision': row['state_revision']})
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_stale_load_does_not_substitute_a_newer_offline_checkpoint(self):
+        session = Session(self.config)
+        self.report(session, raw=' 1e ')
+        session.unregister_exit_surface('web-aaaaaaaa', 1, True)
+        self.assertTrue(session.exit_coordinator.flush_checkpoints(5))
+        row, = session.list_exit_drafts()
+        with self.assertRaisesRegex(ValueError, '重新读取'):
+            session.exit_action({'action': 'draft-load', 'id': row['id']})
+        self.report(session, revision=2, raw='777')
+        session.unregister_exit_surface('web-aaaaaaaa', 2, True)
+        self.assertTrue(session.exit_coordinator.flush_checkpoints(5))
+        with self.assertRaisesRegex(ValueError, '已更新'):
+            session.exit_action({'action': 'draft-load', 'id': row['id'], 'expected_revision': row['state_revision']})
+        current, = session.list_exit_drafts()
+        captured = session.load_exit_draft(current['id'], current['state_revision'])
+        self.assertEqual(captured['draft']['numeric'][0]['raw']['power'], '777')
+        self.report(session, revision=3, raw='888')
+        self.assertEqual(captured['draft']['numeric'][0]['raw']['power'], '777', 'a returned copy stays at the selected revision')
+
+    def test_reconnection_during_load_keeps_both_windows_unchanged(self):
+        session = Session(self.config)
+        self.report(session, raw='unfinished input')
+        session.unregister_exit_surface('web-aaaaaaaa', 1, True)
+        self.assertTrue(session.exit_coordinator.flush_checkpoints(5))
+        row, = session.list_exit_drafts()
+        read = session.exit_recovery._read
+        def reconnect(identity):
+            result = read(identity)
+            session.register_exit_surface('web-aaaaaaaa', kind='web')
+            return result
+        with patch.object(session.exit_recovery, '_read', side_effect=reconnect):
+            with self.assertRaisesRegex(ValueError, '重新连接'):
+                session.load_exit_draft(row['id'], row['state_revision'])
+        self.assertEqual(session.list_exit_drafts(), [])
+        self.assertEqual(read(row['id'])[0]['record']['draft']['numeric'][0]['raw']['power'], 'unfinished input')
+
+    def test_reconnection_during_archive_preserves_the_current_checkpoint(self):
+        session = Session(self.config)
+        self.report(session, raw='unfinished input')
+        session.unregister_exit_surface('web-aaaaaaaa', 1, True)
+        self.assertTrue(session.exit_coordinator.flush_checkpoints(5))
+        row, = session.list_exit_drafts()
+        path = session.exit_recovery.directory / (row['id'] + '.json')
+        original = path.read_bytes()
+        save = session.exit_drafts.import_record
+        def reconnect(record):
+            result = save(record)
+            session.register_exit_surface('web-aaaaaaaa', kind='web')
+            return result
+        with patch.object(session.exit_drafts, 'import_record', side_effect=reconnect):
+            with self.assertRaisesRegex(ValueError, '重新连接'):
+                session.set_exit_draft_lifecycle(row['id'], 'archived', row['state_revision'])
+        self.assertEqual(path.read_bytes(), original)
+        self.assertEqual(session.list_exit_drafts(), [])
+        archived, = session.list_exit_drafts(include_archived=True)
+        self.assertEqual(session.load_exit_draft(archived['id'])['draft']['numeric'][0]['raw']['power'], 'unfinished input')
+
     def test_stale_archive_preserves_a_later_checkpoint(self):
         original=Session(self.config)
         self.report(original,raw='first')

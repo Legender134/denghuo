@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from companion.window_layout import DEFAULT, WindowLayout, validate
+from companion.window_layout import DEFAULT, LEGACY_KEYS, WindowLayout, validate
 
 
 class WindowLayoutTests(unittest.TestCase):
@@ -38,5 +38,25 @@ class WindowLayoutTests(unittest.TestCase):
         layout = WindowLayout(self.config); layout.close(); self.assertFalse(self.path.exists())
 
     def test_bad_dimensions_and_pages_cannot_publish_partial_layout(self):
-        for patch in ({'width': True}, {'height': 0}, {'page': 'unknown'}, {'collapsed': 1}, {'x': '20'}, {'x': 20}):
+        for patch in ({'width': True}, {'height': 0}, {'page': 'unknown'}, {'collapsed': 1}, {'x': '20'}, {'x': 20},
+                      {'brief_width': 0}, {'brief_height': True}, {'brief_auto': 1}, {'text_scale': 120}):
             with self.subTest(patch=patch), self.assertRaises(ValueError): validate({**DEFAULT, **patch})
+
+    def test_legacy_custom_size_position_and_page_are_preserved(self):
+        legacy = {key: DEFAULT[key] for key in LEGACY_KEYS}
+        legacy.update(width=620, height=700, x=-310, y=100, page='lookup', collapsed=True)
+        original = json.dumps(legacy).encode('utf-8')
+        self.path.write_bytes(original)
+        layout = WindowLayout(self.config); self.addCleanup(layout.close)
+        self.assertEqual({key: layout.values[key] for key in LEGACY_KEYS}, legacy)
+        self.assertEqual((layout.values['brief_width'], layout.values['brief_height']), (620, 700))
+        self.assertFalse(layout.values['brief_auto'])
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_brief_and_reader_sizes_and_scale_survive_independently(self):
+        values = {**DEFAULT, 'width': 720, 'height': 800, 'brief_width': 330,
+                  'brief_height': 210, 'brief_auto': False, 'text_scale': 130, 'page': 'overview'}
+        layout = WindowLayout(self.config)
+        layout.update(values); self.assertTrue(layout.flush(5)); self.assertTrue(layout.close())
+        reopened = WindowLayout(self.config); self.addCleanup(reopened.close)
+        self.assertEqual(reopened.values, values)

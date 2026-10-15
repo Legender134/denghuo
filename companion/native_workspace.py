@@ -3,11 +3,16 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from datetime import datetime, timezone
 import webbrowser
 
 from .native_host import Value, TextState, NativeWindow, binding_token
 from .quick_reference import detail_text
+
+ITEM_CATEGORIES = {'药剂': 'items.potions.', '卷轴': 'items.scrolls.',
+                   '武器': 'items.weapon.', '护甲': 'items.armor.',
+                   '戒指': 'items.rings.', '法杖': 'items.wands.', '食物': 'items.food.'}
 
 
 def plan_updated_text(stamp):
@@ -48,12 +53,15 @@ class NumericLookup:
     def __init__(self, owner):
         self.owner, self.host = owner, owner.manager.native_ui.host
         self.window = NativeWindow(self.host, 'lookup')
+        self.category = '常用'
+        self.browse_all = False
         self.query = Value('', self.schedule_search)
         self.note = Value('', self.note_changed)
         self.list, self.origin, self.text = Rows(), TextState(), TextState()
         self.rows, self.inputs, self.variables, self.input_origins = [], [], {}, {}
         self.search_suggestions, self.search_error = [], ''
         self.identity = self.context = self.saved_plan = self.rendered = self.calculated = None
+        self.selected_row = {}
         self.workspace_error = self.plan_error = self.parameter_error = ''
         self.workspace_revision, self.favorite_ids = None, set()
         self.dirty = self.draft_modified = False
@@ -62,6 +70,7 @@ class NumericLookup:
         self.edit_revision, self.undo_state, self.confirmation = 0, None, None
         self.pending_save = None
         self.focus_result = False
+        self.focus_suggestions = False
         self.calculating = False
         self.operation_receipt = ''
         self.origin_brief = '参考示例 / 手填条件'
@@ -80,12 +89,20 @@ class NumericLookup:
                 if key in ('hero_level', 'max_hp', 'hp', 'strength', 'depth', 'current_shield')}
 
     @classmethod
-    def entry_context(cls, snap, identity):
-        from .decisions import source, healing_context, dot_context, dot_origins
+    def entry_context(cls, snap, identity, *, include_boss=False):
+        from .decisions import source, healing_context, dot_context, dot_origins, boss_context
         from .public_skills import skill_context
         specific = skill_context(snap, identity)
         params = cls.hero_context(snap)
         params.update(specific.get('params', {}))
+        if identity in ('items.potions.potionofhealing', 'items.potions.elixirs.elixirofhoneyedhealing'):
+            water = skill_context(snap, 'items.dewdrop')
+            if 'vial' in water.get('params', {}) and (snap['settings']['mode'] == 'save'
+                    or any(row.get('kind') == 'VialOfBlood' for row in (snap.get('data') or {}).get('items', []))):
+                params['vial'] = water['params']['vial']
+                specific['field_origins'] = {'vial': water['field_origins']['vial']}
+        if include_boss:
+            params.update(boss_context(snap, identity))
         if identity == 'actors.buffs.healing' and not snap.get('error'):
             buffs = [row for row in (snap.get('data') or {}).get('buffs', []) if row.get('kind') == 'Healing']
             if len(buffs) == 1:
@@ -130,10 +147,15 @@ class NumericLookup:
             (self.calculated is not None and self.calculated != saved_params) or self.note.get() != self.saved_plan.get('note', '')))
 
     def schedule_search(self):
+        self.browse_all = False
         root = self.owner.manager.root
         if self.pending:
             root.after_cancel(self.pending)
         self.pending = root.after(180, self.search)
+
+    def categories(self):
+        return ['常用', '全部', '收藏', '最近', '随身', *ITEM_CATEGORIES] + list(dict.fromkeys(
+            row['category'] for row in self.owner.manager.session.catalog.entries))
 
     def search(self, preserve_detail=False):
         if self.pending:
@@ -142,32 +164,27 @@ class NumericLookup:
         session = self.owner.manager.session
         query = self.query.get().strip()[:200]
         self.search_suggestions, self.search_error = [], ''
-        self.suggested = not query
+        status = session.workspace_status()
+        self.workspace_revision, self.favorite_ids = status['revision'], set(status['favorite_ids'])
+        self.workspace_error = status.get('error', '')
+        self.suggested = not query and self.category == '常用' and not self.browse_all
         if self.suggested:
-            status = session.workspace_status()
-            self.workspace_revision, self.favorite_ids = status['revision'], set(status['favorite_ids'])
-            self.workspace_error = status.get('error', '')
-            self.rows = copy.deepcopy(status['current'])
-            for row in self.rows:
-                captured = status.get('character_scene', {})
-                if row['lookup_context'].get('stamp') == captured.get('stamp'):
-                    self.bind_strength_context(row['lookup_context'], captured.get('current'))
-                level = row['lookup_context']['params'].get('level')
-                if level is None and row['lookup_context'].get('level_unknown'):
-                    row['lookup_label'] += '（等级未知）'
-            for group, label in (('favorites', '收藏'), ('recent', '最近打开'), ('common', '常用')):
+            self.rows = []
+            seen = set()
+            for group, label in (('common', '常用'), ('favorites', '收藏'), ('recent', '最近')):
                 for row in status[group]:
-                    if not any(item['id'] == row['id'] for item in self.rows):
-                        self.rows.append({**row, 'lookup_label': row['name']+' · '+label,
+                    if row['id'] not in seen:
+                        self.rows.append({**row, 'lookup_group': label,
                                           'lookup_example': group in ('favorites', 'recent')})
+                        seen.add(row['id'])
             self.total = len(session.catalog.entries)
         else:
-            result = session.catalog.search(query, limit=30)
+            result = self.browse_results(status=status)
             self.rows, self.total = result['entries'], result['total']
             self.search_suggestions = result['suggestions']
         self.list.delete()
         for row in self.rows:
-            self.list.insert('end', row.get('lookup_label', row['name']+' · '+row['type_label']))
+            self.list.insert('end', row.get('lookup_label', row['name']))
         if (preserve_detail or self.has_draft()) and self.identity:
             self.refresh_origin(session.snapshot())
         else:
@@ -176,21 +193,54 @@ class NumericLookup:
             self.ticket = self.submitted = None
             self.plan_error = ''
             self.origin.text = '百科参数为参考示例，请按游戏核对。'
-            self.show_text('选择资料，或搜索名称/别名/用途。Enter 打开首项，Ctrl+F 搜索。' if self.rows else '没有匹配条目。试试别名或用途，或清空搜索查看常用资料。')
+            self.show_text('选择条目查看。' if self.rows else '没有匹配条目。')
         self.emit()
+
+    def browse_results(self, *, offset=0, status=None):
+        session = self.owner.manager.session
+        query = self.query.get().strip()[:200]
+        if self.category in ITEM_CATEGORIES:
+            found = session.catalog.search(query, limit=len(session.catalog.entries))
+            prefix = ITEM_CATEGORIES[self.category]
+            rows = [row for row in found['entries'] if row['id'].startswith(prefix)]
+            return {'entries': rows[offset:offset+30], 'total': len(rows),
+                    'suggestions': [row for row in found['suggestions'] if row['id'].startswith(prefix)] if not rows else []}
+        if self.category not in ('收藏', '最近', '随身'):
+            return session.catalog.search(query, category='全部' if self.category == '常用' else self.category, limit=30, offset=offset)
+        status = status or session.workspace_status()
+        rows = copy.deepcopy(status[{'收藏':'favorites', '最近':'recent', '随身':'current'}[self.category]])
+        if self.category == '随身':
+            # Keep each captured object; its upgrade/effect calculations live in its detail.
+            derived = [related for row in rows for related in row.get('related', [])]
+            rows = [row for row in rows if row not in derived]
+        if query:
+            matches = {row['id'] for row in session.catalog.search(query, limit=len(session.catalog.entries))['entries']}
+            rows = [row for row in rows if row['id'] in matches]
+        for row in rows:
+            if self.category == '随身':
+                captured = status.get('character_scene', {})
+                if row['lookup_context'].get('stamp') == captured.get('stamp'):
+                    self.bind_strength_context(row['lookup_context'], captured.get('current'))
+                if row['lookup_context'].get('level_unknown'):
+                    row['lookup_label'] += '（等级未知）'
+            else:
+                row['lookup_example'] = True
+        return {'entries': rows[offset:offset+30], 'total':len(rows), 'suggestions':[]}
 
     def more_results(self):
         if self.pending:
             self.search()
         if self.suggested:
             self.suggested = False
+            self.browse_all = True
+            self.category = '全部'
             self.rows = []
             self.list.delete()
-        result = self.owner.manager.session.catalog.search(self.query.get().strip()[:200], limit=30, offset=len(self.rows))
+        result = self.browse_results(offset=len(self.rows))
         self.rows.extend(result['entries'])
         self.total = result['total']
         for row in result['entries']:
-            self.list.insert('end', row['name']+' · '+row['type_label'])
+            self.list.insert('end', row.get('lookup_label', row['name']))
         self.emit()
 
     def show_text(self, text):
@@ -225,9 +275,18 @@ class NumericLookup:
         self.operation_receipt = ''
         self.saved_plan, self.plan_error = None, ''
         self.identity = row['id']
+        self.selected_row = copy.deepcopy(row)
         self.rendered = self.calculated = None
         self.clear_params()
         self.context = copy.deepcopy(row.get('lookup_context'))
+        if (self.context and self.identity in ('items.potions.potionofhealing', 'items.potions.elixirs.elixirofhoneyedhealing')
+                and 'vial' not in self.context['params'] and not self.context.get('fixed_origins')):
+            snap = self.owner.manager.session.snapshot()
+            if tuple(self.context.get('stamp') or ()) == self.source_stamp(snap):
+                current = self.entry_context(snap, self.identity)
+                if 'vial' in current['params']:
+                    self.context['params']['vial'] = current['params']['vial']
+                    self.context.setdefault('field_origins', {})['vial'] = current['field_origins']['vial']
         if self.context is None and not row.get('lookup_example'):
             snap = self.owner.manager.session.snapshot()
             context = self.entry_context(snap, self.identity)
@@ -328,16 +387,47 @@ class NumericLookup:
             sections.append(section)
         # Values for the selected conditions precede complete reference tables.
         sections.sort(key=lambda section: (not bool(section.get('values') or section['selected_values']), section['index']))
+        food = (self.context or {}).get('food_reference') if self.identity.startswith('items.food.') else None
+        if food:
+            sections.insert(0, {**copy.deepcopy(food), 'index': -1, 'collapsed': False, 'selected_values': []})
         return sections, prose
 
     def primary_presentation(self, sections):
         """Use explicit result metadata; never infer the answer by parsing Chinese prose."""
         if self.dirty or self.calculated is None or self.calculating or self.parameter_error:
             return [], ''
+        food = (self.context or {}).get('food_reference') if self.identity.startswith('items.food.') else None
+        if food:
+            return copy.deepcopy(food['primary_values']), food['summary_note']
+        mechanism = next((section for section in sections if section.get('reading_notes')), None)
+        if mechanism:
+            return [], mechanism.get('summary_note', '')
+        if self.identity.startswith('actors.mobs.npcs.') and not any(section.get('title') == '常规战斗数值' for section in sections):
+            return [], ''  # Task characters lead with their description, not inherited 1 HP.
         explicit = next((section for section in sections if section.get('primary_values')), None)
         section = explicit or next((section for section in sections if section.get('values') or section.get('selected_values')), {})
         values = section.get('primary_values') or section.get('selected_values') or section.get('values') or []
-        return copy.deepcopy(values[:2]), section.get('summary_note') or section.get('note_summary') or section.get('note', '')
+        # Ordinary monsters lead with the combat rules the game does not expose.
+        # Special enemy mechanisms keep their explicit primary presentation.
+        if ({value.get('label') for value in values} == {'初始生命／上限', '基础伤害范围'}
+                and self.identity in ('actors.mobs.rat', 'actors.mobs.gnoll', 'actors.mobs.crab')
+                and not any(part.get('title') == '特殊攻击与机制' for part in sections)):
+            available = {value['label']: value for value in section.get('values', [])}
+            labels = [('基础伤害范围', '普攻'), ('基础减伤范围', '减伤'), ('基础速度倍率', '移速')]
+            if all(key in available for key, _ in labels):
+                compact = [{**copy.deepcopy(available[key]), 'label': label, 'condition': ''}
+                           for key, label in labels]
+                return compact, ((section.get('summary_note') or '') + '特殊攻击另计；移速不代表攻击频率。')
+        note = section.get('summary_note', section.get('note_summary', section.get('note', '')))
+        if self.identity in ('items.potions.potionofhealing', 'items.potions.elixirs.elixirofhoneyedhealing'):
+            value = self.calculated.get('vial', -1)
+            basis = '凝血试管 ' + ('无效果（−1）' if value < 0 else f'+{value:g}')
+            note = basis + '（' + self.input_origins.get('vial', '示例 · 请核对') + '）。' + note
+        elif self.identity in ('actors.buffs.poison', 'actors.buffs.bleeding'):
+            value = self.calculated['power']
+            basis = f'剩余中毒 {value:g} 回合' if self.identity == 'actors.buffs.poison' else f'当前流血强度 {value:g}'
+            note = basis + '（' + self.input_origins.get('power', '示例 · 请核对') + '）。' + note
+        return copy.deepcopy(values[:2]), note
 
     def refresh_origin(self, snap):
         self.origin_brief = '参考示例 / 手填条件'
@@ -354,7 +444,7 @@ class NumericLookup:
             self.origin.text = '保存的参考方案 · '+self.saved_plan['name']+' · 固定参数，未跟随当前角色'
             self.origin_brief = '保存方案 · 固定条件，未跟随角色'
         elif self.rendered:
-            uses = any(value.startswith(('快照', '手动局势', '参考来源未确认')) for value in self.input_origins.values())
+            uses = bool((self.context or {}).get('food_reference')) or any(value.startswith(('快照', '手动局势', '参考来源未确认')) for value in self.input_origins.values())
             stamp = (self.context or {}).get('stamp')
             old = uses and (not stamp or snap.get('error') or not snap.get('data') or snap.get('stale') or tuple(stamp) != self.source_stamp(snap))
             if uses and self.input_origins.get('strength', '').startswith(('快照', '手动局势')) and 'character_scene' in self.context:
@@ -434,13 +524,18 @@ class NumericLookup:
             self.emit()
             return
         self.undo_state = self.draft(include_result=True)
-        context = self.entry_context(snap, self.identity)
+        context = self.entry_context(snap, self.identity, include_boss=True)
         context['imported_latest'] = True
         current_keys = {'hero_level', 'max_hp', 'hp', 'strength', 'depth', 'current_shield'}
+        from .decisions import BOSS_REFERENCE_IDS
+        if self.identity in BOSS_REFERENCE_IDS:
+            current_keys.add('stronger_bosses')
         if self.identity.startswith('actors.hero.talent.') or self.identity.startswith('actors.hero.spells.') and '$' not in self.identity:
             current_keys.add('talent')
         if self.identity in ('items.waterskin', 'items.dewdrop'):
             current_keys.update(('shielding_dew', 'vial', 'dew_volume'))
+        if self.identity in ('items.potions.potionofhealing', 'items.potions.elixirs.elixirofhoneyedhealing'):
+            current_keys.add('vial')
         if self.identity == 'actors.buffs.healing':
             current_keys.update(('power', 'healing_percent', 'healing_flat', 'vial'))
         if self.identity == 'actors.buffs.corrosion':
@@ -453,8 +548,11 @@ class NumericLookup:
                 variable.value = str(context['params'][key])
                 self.input_origins[key] = context.get('field_origins', {}).get(key, prefix)
             elif key in current_keys:
-                self.input_origins[key] = '手填保留 · 最新记录未确认' + (
-                    ' · ' + context['conditions'].split('；')[0] if key in ('talent', 'shielding_dew') and context.get('conditions') else '')
+                if key == 'vial' and self.identity in ('items.potions.potionofhealing', 'items.potions.elixirs.elixirofhoneyedhealing'):
+                    self.input_origins[key] = self.input_origins.get(key, '示例 · 请核对').replace(' · 最新记录未确认', '') + ' · 最新记录未确认'
+                else:
+                    self.input_origins[key] = '手填保留 · 最新记录未确认' + (
+                        ' · ' + context['conditions'].split('；')[0] if key in ('talent', 'shielding_dew') and context.get('conditions') else '')
         self.context = context
         self.edit_revision += 1
         self.ticket = self.submitted = None
@@ -472,7 +570,7 @@ class NumericLookup:
             self.owner.pinned_context = copy.deepcopy(self.context) or {'mode': 'example', 'source_label': '固定参考'}
             self.owner.pinned_context['fixed_origins'] = dict(self.input_origins)
             self.owner.peek_key = None
-            self.origin.text = '已固定；在「条目操作 → 查看固定参考」打开。本次运行内保留。'
+            self.origin.text = '已固定到随行；本次运行内保留，条件不自动更新。'
         self.operation_receipt = self.origin.text
         self.emit()
 
@@ -520,6 +618,10 @@ class NumericLookup:
         self.emit()
 
     def save_plan(self, name=None, update=False):
+        if (self.context or {}).get('food_reference'):
+            self.operation_receipt = self.origin.text = '此项是捕获的进食参考，没有可保存的计算参数；可以收藏资料。'
+            self.emit()
+            return False
         if not self.identity or self.dirty or self.rendered is None or self.calculated is None:
             self.operation_receipt = self.origin.text = '先计算有效参数，再命名保存。'
             self.emit()
@@ -592,6 +694,7 @@ class NumericLookup:
             self.ticket = self.submitted = None
             self.clear_params()
             self.saved_plan, self.identity = opened['plan'], opened['plan']['entry']
+            self.selected_row = {}
             self.note.value = self.saved_plan.get('note', '')
             self.context, self.plan_error = None, ''
             if opened['result'] is None:
@@ -634,10 +737,13 @@ class NumericLookup:
             self.clear_params()
             self.saved_plan, self.plan_error = None, ''
             self.identity = reference['entry']
+            self.selected_row = {}
             self.context = {'params': dict(reference.get('params', {})), 'stamp': stamp,
                 'mode': source.get('mode') or (stamp[2] if stamp else 'example'), 'level_unknown': reference.get('level_origin') == 'unknown',
                 'source': source or {}, 'conditions': note or reference.get('conditions', ''), 'source_label': reference.get('source_label', '')}
             self.context['field_origins'] = dict(reference.get('field_origins', {}))
+            if self.identity.startswith('items.food.') and reference.get('food_reference'):
+                self.context['food_reference'] = copy.deepcopy(reference['food_reference'])
             if 'strength' in self.context['params']:
                 exact_source = (stamp == self.source_stamp(snap) and source and source.get('mode') == snap['settings']['mode']
                     and source.get('snapshot_at') == snap.get('modified') and source.get('slot') == snap.get('active_slot')
@@ -673,6 +779,7 @@ class NumericLookup:
         if set(draft.get('raw_params', {})) != {field['key'] for field in fields}:
             raise ValueError('草稿参数与此资料不匹配；原文件仍保留')
         self.identity, self.inputs = draft['entry'], copy.deepcopy(fields)
+        self.selected_row = {}
         self.context, self.saved_plan = copy.deepcopy(draft.get('context')), copy.deepcopy(draft.get('saved_plan'))
         self.input_origins = dict(draft.get('origins', {}))
         self.variables = {key: Value(str(value), lambda key=key: self.changed(key)) for key, value in draft.get('raw_params', {}).items()}
@@ -767,6 +874,12 @@ class NumericLookup:
                     self.variables[key].set(str(raw)[:80])
             self.note.set(item.get('note', '')[:1200])
             self.edit_revision = max(self.edit_revision, int(item.get('draft_revision', 0)))
+        elif action == 'browse':
+            category = item.get('category')
+            if category in self.categories():
+                self.category = category
+                self.browse_all = False
+                self.search(preserve_detail=True)
         elif action == 'select':
             index = item.get('index', -1)
             if (type(index) is not int or not 0 <= index < len(self.rows)
@@ -779,6 +892,27 @@ class NumericLookup:
             self.select()
         elif action == 'first':
             self.open_first_result()
+            return
+        elif action == 'related':
+            rows = self.related_rows()
+            index = item.get('index', -1)
+            if type(index) is not int or not 0 <= index < len(rows) or item.get('token') != binding_token(rows[index]):
+                self.operation_receipt = '关联资料已变化，请重新打开；当前草稿仍保留。'
+            else:
+                row = copy.deepcopy(rows[index])
+                self.guard('打开关联资料', lambda: self.select_row(row))
+        elif action == 'alchemy_recipe':
+            row = next((row for row in self.recipe_rows()
+                        if row['id'] == item.get('recipe') and row['token'] == item.get('token')), None)
+            if row is None:
+                self.operation_receipt = '配方资料已变化，请重新打开；当前草稿仍保留。'
+            else:
+                try:
+                    self.owner.manager.native_ui.workspace.add_recipe_target(row['id'])
+                except ValueError as error:
+                    self.operation_receipt = str(error)
+                else:
+                    self.operation_receipt = '已加入炼金目标；已有目标与库存仍保留。'
         elif action == 'suggestion':
             if self.pending:
                 self.search()
@@ -844,29 +978,69 @@ class NumericLookup:
     def source_token(self):
         return binding_token({'entry': self.identity, 'provenance': (self.rendered or {}).get('provenance', {})})
 
+    def related_rows(self):
+        return self.selected_row.get('related', []) if self.selected_row.get('id') == self.identity else []
+
+    def recipe_rows(self):
+        if not self.rendered or self.rendered.get('id') != self.identity:
+            return []
+        return [{'id': row['id'], 'name': row['name'], 'token': binding_token([self.identity, row])}
+                for row in self.rendered.get('alchemy_recipes', [])]
+
     def emit(self):
         from .reference import native_artwork
         self.host.revision += 1
         entry = self.owner.manager.session.catalog.entry_index.get(self.identity, {})
+        if self.selected_row.get('id') == self.identity:
+            entry = {**entry, **self.selected_row}
+        description = entry.get('description', '')
+        paragraph = description.strip().split('\n\n')[0]
+        lead = re.match(r'^[\s\S]*?[。！？](?:[”」』"])?', paragraph)
+        introduction = lead.group(0) if lead else paragraph
         sections, prose = self.numeric_presentation()
         primary_values, primary_note = self.primary_presentation(sections)
+        if self.calculated is not None and not self.dirty and not self.calculating and not self.parameter_error:
+            basis = ''
+            if self.identity == 'items.waterskin':
+                basis = '露珠 ' + str(self.calculated['dew_volume']) + ' 滴（' + self.input_origins.get('dew_volume', '示例 · 请核对') + '）。'
+            elif 'stronger_bosses' in self.calculated:
+                basis = ('绝命头目' if self.calculated['stronger_bosses'] else '普通首领') + '（' + self.input_origins.get('stronger_bosses', '示例 · 请核对') + '）。'
+            primary_note = basis + primary_note
+        reading_notes = (next((section['reading_notes'] for section in sections if section.get('reading_notes')), [])
+                         if not self.dirty and self.calculated is not None and not self.calculating and not self.parameter_error else [])
         fields = [{**field, 'raw': self.variables[field['key']].get(), 'origin': self.input_origins.get(field['key'], '')} for field in self.inputs if field['key'] in self.variables]
         self.host.command('lookup_state', draft_revision=self.edit_revision, query=self.query.get(),
-            focus_result=self.focus_result,
-            rows=[{'text': text, 'token': binding_token(row), 'artwork': native_artwork(row.get('id'))} for text, row in zip(self.list.values, self.rows)], fields=fields, note=self.note.get(),
+            focus_result=self.focus_result, focus_suggestions=self.focus_suggestions,
+            rows=[{'text': text, 'name': row['name'], 'kind': row.get('type_label', ''),
+                   'hint': ' · '.join(filter(None, (row.get('display_hint', ''),
+                       '资料不可用' if row.get('available') is False else
+                       '等级未知' if row.get('lookup_context', {}).get('level_unknown') else
+                       '主动揭示' if '已主动揭示' in row.get('lookup_label', '') else ''))),
+                   'group': row.get('lookup_group', ''),
+                   'context': row.get('lookup_label', '') if row.get('lookup_context') else '',
+                   'token': binding_token(row), 'artwork': native_artwork(row.get('id'))}
+                  for text, row in zip(self.list.values, self.rows)], fields=fields, note=self.note.get(),
+            category=self.category, categories=self.categories(), suggested=self.suggested,
+            shown_count=len(self.rows), total_count=self.total,
+            scope_source=next((row.get('lookup_context', {}).get('source_label', '') for row in self.rows), '') if self.category == '随身' else '',
             suggestions=[{'text': row['name']+' · '+row['type_label'], 'token': binding_token(row),
                           'artwork': native_artwork(row['id'])} for row in self.search_suggestions],
             search_error=self.search_error,
             artwork=native_artwork(self.identity), entry_id=self.identity or '',
             entry_name=entry.get('name') or (self.rendered or {}).get('name', ''),
+            entry_hint=entry.get('display_hint', ''),
+            entry_type=entry.get('type_label', ''), description=description, introduction=introduction,
+            reference_version=self.owner.manager.session.catalog.data['version'],
+            related=[{'text': row['name'], 'token': binding_token(row)} for row in self.related_rows()],
             numeric_sections=sections, result_prose=prose,
             primary_values=primary_values, primary_note=primary_note,
+            reading_notes=reading_notes, recipes=self.recipe_rows(),
             origin_brief=getattr(self, 'origin_brief', '参考示例 / 手填条件'),
             calculating=self.calculating, parameter_error=self.parameter_error,
             operation_receipt=self.operation_receipt,
             result=self.text.text, status=self.origin.text, dirty=self.has_draft(),
             needs_calculation=self.dirty or bool((self.rendered or {}).get('missing_inputs')),
-            can_save=bool(self.identity and self.calculated is not None and not self.dirty and self.rendered and not self.calculating and not self.parameter_error),
+            can_save=bool(self.identity and self.calculated is not None and not self.dirty and self.rendered and not self.calculating and not self.parameter_error and not (self.context or {}).get('food_reference')),
             favorite=bool(self.identity and self.identity in self.favorite_ids),
             has_saved_plan=bool(self.saved_plan), has_pin=bool(self.owner.pinned),
             can_more=self.suggested or len(self.rows) < self.total, undo=bool(self.undo_state),
@@ -874,6 +1048,7 @@ class NumericLookup:
             sources=self.rendered.get('provenance', {}).get('links', []) if self.rendered else [],
             sources_token=self.source_token())
         self.focus_result = False
+        self.focus_suggestions = False
         self.owner.manager.native_ui.report_drafts()
 
     def open_first_result(self, _=None):
@@ -882,6 +1057,13 @@ class NumericLookup:
         if self.rows:
             self.list.selection_set(0)
             self.select()
+        elif self.search_suggestions:
+            self.search_error = '没有完全匹配，请选择一个近似条目。'
+            self.focus_suggestions = True
+            self.emit()
+        else:
+            self.search_error = '没有匹配条目，可清空搜索或切换分类。'
+            self.emit()
         return 'break'
 
     def focus_search(self, _=None):

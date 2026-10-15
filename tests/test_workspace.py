@@ -586,7 +586,8 @@ class WorkspaceTests(unittest.TestCase):
                 'note': '未完成输入需保留'}}
             copied = request('/api/session-exit', {'action': 'save-draft', 'surface_id': 'web-12345678',
                 'kind': 'web-session', 'draft': draft})['saved']
-            loaded = request('/api/session-exit', {'action': 'draft-load', 'id': copied['id']})
+            row = next(row for row in request('/api/session-exit', {'action': 'draft-list'})['drafts'] if row['id'] == copied['id'])
+            loaded = request('/api/session-exit', {'action': 'draft-load', 'id': copied['id'], 'expected_revision': row['state_revision']})
             self.assertEqual(loaded['draft']['draft'], draft)
             before = self.session.knowledge.path.read_bytes()
             from companion.knowledge import MAX_BYTES

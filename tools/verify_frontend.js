@@ -6,6 +6,7 @@ function formControls(selector,controls){return selector==='[data-raw-number]'?c
 function element(id=''){
   const node={id,value:'',textContent:'',className:'',innerHTML:'',childElementCount:0,hidden:false,disabled:false,
     checked:false,dataset:{},open:true,isConnected:true,listeners:{},children:[],
+    selectionStart:0,selectionEnd:0,selectionDirection:'none',setSelectionRange(start,end,direction){this.selectionStart=start;this.selectionEnd=end;this.selectionDirection=direction;},
     classList:{toggle(){},contains(){return false;}},closest(){return this;},replaceChildren(...items){this.innerHTML='';this.children=[...items];this.childElementCount=items.length;},append(...items){this.children.push(...items);this.childElementCount=this.children.length;},
     close(){this.open=false;},showModal(){this.open=true;},setAttribute(name,value){this[name]=value;},getAttribute(name){return this[name]??null;},
     validity:{valid:true},setCustomValidity(text){this.validationMessage=text;},reportValidity(){return this.validity.valid;},focus(){this.focused=true;},
@@ -21,6 +22,7 @@ function harness(){
     $:get,$$:()=>[],document:{activeElement:null,addEventListener(){},createElement:()=>element(),createTextNode:text=>({textContent:text})},escapeHTML:String,fmtTime:String,state:null,fetch:async()=>({ok:true,json:async()=>({entries:[]})})});
   const app=fs.readFileSync(path.join(root,'web/app.js'),'utf8');
   vm.runInContext(app.slice(app.indexOf('function validRawNumericForm('),app.indexOf('\ndocument.addEventListener(',app.indexOf('function validRawNumericForm('))),context);
+  vm.runInContext(app.slice(app.indexOf('function showPlanNote('),app.indexOf('function showDetail(')),context);
   return {elements,get,context,run:code=>vm.runInContext(code,context),load:name=>vm.runInContext(fs.readFileSync(path.join(root,'web',name),'utf8'),context)};
 }
 function stamp(){return {modified:100,active_slot:1,settings:{mode:'save'},revision:1,started:90,stale:false,
@@ -119,7 +121,7 @@ function verifyRawNumericValidation(){
 async function verifyNumericalSaveTransitions(){
   const identity='items.potions.potionofhealing',tick=()=>new Promise(resolve=>setImmediate(resolve));
   const workspace=fs.readFileSync(path.join(root,'web/workspace.js'),'utf8');
-  function setup(){
+  function setup(entry=identity){
     const h=harness();h.context.state=stamp();let inputs=[],nextId=0;
     Object.assign(h.context,{calculationStamp:()=>({mode:'save',slot:1,modified:h.context.state.modified,revision:h.context.state.revision}),
       toast(){},inlineError(node,text){node.textContent=text;},loadWorkspace:async()=>{}});
@@ -134,8 +136,8 @@ async function verifyNumericalSaveTransitions(){
     const edit=raw=>{const field=h.get('[data-value-key="hp"]');field.value=raw;field.listeners.input();};
     const calculate=async()=>{h.get('#value-calculator').listeners.submit({preventDefault(){}});await tick();};
     const beginSave=()=>h.run("openPlanSave({kind:'numeric',entry:numericalDetail.identity,params:actualNumericalParams(numericalDetail),source:{mode:'example'}},numericalDetail.savedPlan,'命名计算')");
-    const reopen=async plan=>{h.run('cancelNumericalDetail()');h.context.reopenPlan=plan;h.context.reopenResult=response(plan.params);await h.run(`loadNumericalDetail('${identity}',reopenPlan.params,'saved',{fixed:true,savedPlan:reopenPlan,result:reopenResult})`);};
-    return {h,edit,calculate,beginSave,reopen,open:()=>h.run(`loadNumericalDetail('${identity}')`)};
+    const reopen=async plan=>{h.run('cancelNumericalDetail()');h.context.reopenPlan=plan;h.context.reopenResult=response(plan.params);await h.run(`loadNumericalDetail('${entry}',reopenPlan.params,'saved',{fixed:true,savedPlan:reopenPlan,result:reopenResult})`);};
+    return {h,edit,calculate,beginSave,reopen,open:()=>h.run(`loadNumericalDetail('${entry}')`)};
   }
   const checks=[];
   for(const raw of ['-','',' 7 ','1e']){
@@ -172,6 +174,24 @@ async function verifyNumericalSaveTransitions(){
     t.beginSave();await t.h.run('savePlan()');const plan=t.h.run('numericalDetail.savedPlan');t.h.get('#values-undo-import').listeners.click();await tick();
     assert.equal(t.h.run('numericalDetail.savedPlan.id'),plan.id);assert.equal(Number(t.h.get('[data-value-key="hp"]').value),10);assert(t.h.run('numericalDetail.sessionUnsaved'));
     t.edit('-');await t.reopen(plan);assert.equal(t.h.get('[data-value-key="hp"]').value,'-');checks.push('latest import undo follows newly saved identity and retains original result');
+  }
+  {
+    const t=setup('items.waterskin'),app=fs.readFileSync(path.join(root,'web/app.js'),'utf8');
+    Object.assign(t.h.context,{showItemNote(){},setDetailEntry(){},view:'workspace',navigationSerial:0,planRequest:0,rememberWorkspaceDetailFocus(){}});
+    t.h.run(app.slice(app.indexOf('function showDetailContext('),app.indexOf('function showRelatedReferences(')));
+    t.h.run(workspace.slice(workspace.indexOf('async function openPlan('),workspace.indexOf('function openUnavailableStoredPlan(')));
+    t.h.context.state.data.hero.build={state:'known',talents:{}};
+    await t.open();t.beginSave();t.h.get('#plan-note').value='保留露珠给下一层；非游戏事实';await t.h.run('savePlan()');
+    t.h.context.opened={plan:t.h.run('JSON.parse(JSON.stringify(numericalDetail.savedPlan))'),result:t.h.run('JSON.parse(JSON.stringify(numericalDetail.result))')};
+    assert.match(t.h.get('#detail-plan-note').textContent,/保留露珠给下一层/);
+    await t.h.run("openPlan(opened.plan.id,opened,true)");
+    assert.equal(t.h.get('#workspace-error').textContent,'');
+    assert.match(t.h.get('#detail-plan-note').textContent,/保留露珠给下一层/);assert(!t.h.get('#detail-plan-note').hidden);
+    assert.match(t.h.get('#detail-context').textContent,/保存时的技能参考：.*未投入 0 点/);
+    t.h.run('fixedNumericalDrafts.clear()');await t.h.run('openPlan(opened.plan.id,opened,true)');
+    assert.match(t.h.get('#detail-plan-note').textContent,/保留露珠给下一层/);
+    t.h.run("showDetail('另一个条目','','','')");assert(t.h.get('#detail-plan-note').hidden,'a saved note must not leak into another reference');
+    checks.push('saved notes survive same-session cache and fresh fixed-reference opens independently of skill context');
   }
   console.log('PASS: '+checks.length+' numeric save transition checks (production handlers, synthetic values/transport)');
 }
@@ -744,7 +764,7 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert(!dashboard.get('#connection-banner').className.includes('error'));
   assert(!dashboard.get('#connection-banner').textContent.includes('旧快照'));
   assert(!dashboard.get('#connection-banner').textContent.includes('1970'));
-  assert.equal(dashboard.get('#empty-title').textContent,'已就绪，直接开始游戏');
+  assert.equal(dashboard.get('#empty-title').textContent,'等待游戏保存');
   assert.equal(dashboard.get('#empty-options').open,false);
   dashboard.run("state.error='存档损坏，等待新的保存';state.waiting_for_save=false;render()");
   assert(dashboard.get('#connection-banner').className.includes('error'));
@@ -768,7 +788,7 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert(!dashboard.get('#backup-health').textContent.includes('最近保存已备份'));
   dashboard.context.fetch=async url=>({ok:true,json:async()=>['/api/status','/api/settings/reload'].includes(url)?structuredClone(waiting):{}});
   await dashboard.run('poll()');
-  assert.equal(dashboard.get('#empty-title').textContent,'已就绪，直接开始游戏');
+  assert.equal(dashboard.get('#empty-title').textContent,'等待游戏保存');
   dashboard.run("navigate('settings')");
   const saveRoot=dashboard.get('#save-root');saveRoot.value='/synthetic/draft';
   dashboard.get('#settings-form').listeners.input({target:saveRoot});
@@ -844,7 +864,7 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert(separateLoot.includes('不同条件'));
   commonLoot.title='其他资料';commonLoot.rows[1][3]='同一条件';
   assert(!numeric.run('exampleHTML(lootBlock)').includes('查看共同掉落条件'),'only the loot table changes');
-  numeric.run("numericalDetail={identity:'example',inputs:[{key:'hp'},{key:'vial'}],origins:{hp:'快照',vial:'手填'},source:calculationStamp()};refreshNumericalOrigin()");
+  numeric.run("numericalDetail={identity:'example',inputs:[{key:'hp'},{key:'vial'}],origins:{hp:'快照',vial:'手填'},source:calculationStamp(),calculated:{source:calculationStamp()}};refreshNumericalOrigin()");
   assert(!numeric.get('#values-freshness').textContent.includes('旧快照'));
   numeric.context.state.data.buffs=[{kind:'Barrier',current_shield:7}];assert.equal(numeric.run('visibleCalculationContext().current_shield'),7);numeric.context.state.data.buffs.push({kind:'Barrier',current_shield:8});assert(!('current_shield' in numeric.run('visibleCalculationContext()')));numeric.context.state.data.buffs=[];
   numeric.context.state.stale=true;numeric.run('refreshNumericalOrigin()');
@@ -869,7 +889,9 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   // Exercise the actual calculate/latest handlers with isolated form elements.
   const drafts=harness();drafts.context.state=stamp();let formInputs=[];
   drafts.context.$$=()=>formInputs;
+  let renderedDraftHTML='';
   Object.defineProperty(drafts.get('#detail-rules'),'innerHTML',{set(html){
+    renderedDraftHTML=html;
     formInputs=[...html.matchAll(/<input data-value-key="([^"]+)"[^>]*value="([^"]+)"/g)].map(m=>{
       const input=element();input.dataset.valueKey=m[1];input.value=m[2];
       drafts.elements.set(`[data-value-key="${m[1]}"]`,input);return input;
@@ -887,10 +909,10 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   drafts.get('#values-use-latest').listeners.click();await new Promise(resolve=>setImmediate(resolve));
   assert.equal(Number(drafts.get('[data-value-key="hp"]').value),5);
   assert.equal(Number(drafts.get('[data-value-key="vial"]').value),2);
-  assert.equal(drafts.run("numericalDetail.origins.vial"),'手填');
+  assert.match(drafts.run("numericalDetail.origins.vial"),/^手填.*最新快照未确认/);
   drafts.run('cancelNumericalDetail()');await drafts.run("loadNumericalDetail('items.potions.potionofhealing')");
   assert.equal(Number(drafts.get('[data-value-key="vial"]').value),2);
-  assert.equal(drafts.run("numericalDetail.origins.vial"),'手填','reopening an unsaved calculated session retains the committed source label');
+  assert.match(drafts.run("numericalDetail.origins.vial"),/^手填.*最新快照未确认/,'reopening an unsaved calculated session retains the committed source label');
   assert(drafts.run('numericalDetail.sessionUnsaved'),'unsaved calculated context must retain exit protection after reopen');
   let invalidRequests=0;
   const validFetch=drafts.context.fetch;
@@ -914,30 +936,143 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert.equal(Number(drafts.get('[data-value-key="hp"]').value),5);
 
   // Recalculation keeps keyboard continuation, but respects an explicit focus change.
-  drafts.get('#value-calculator').contains=target=>formInputs.includes(target);
+  const recalculate=drafts.get('#values-recalculate');recalculate.id='values-recalculate';
+  assert.match(renderedDraftHTML,/id="values-recalculate"/);
+  drafts.get('#value-calculator').contains=target=>formInputs.includes(target)||target===recalculate;
   drafts.context.document.body=element();drafts.get('#detail-dialog').scrollTop=87;
   const numericFetch=drafts.context.fetch;
   let finishNumeric;
   drafts.context.fetch=url=>new Promise(resolve=>finishNumeric=()=>numericFetch(url).then(resolve));
-  for(const movedElsewhere of [false,true]){
+  for(const submitWithButton of [false,true])for(const movedElsewhere of [false,true]){
     const currentHp=drafts.get('[data-value-key="hp"]');currentHp.value='3';currentHp.listeners.input();
-    drafts.context.document.activeElement=currentHp;
+    const focused=submitWithButton?recalculate:currentHp;focused.focused=false;
+    drafts.context.document.activeElement=focused;
     drafts.get('#value-calculator').listeners.submit({preventDefault(){}});
     drafts.context.document.activeElement=movedElsewhere?element():drafts.context.document.body;
     finishNumeric();await new Promise(resolve=>setImmediate(resolve));
-    assert.equal(!!drafts.get('[data-value-key="hp"]').focused,!movedElsewhere);
+    assert.equal(!!(submitWithButton?recalculate:drafts.get('[data-value-key="hp"]')).focused,!movedElsewhere);
+    assert.match(renderedDraftHTML,/<details class="numeric-editor" open>/,'keyboard recalculation keeps the conditions open');
     assert.equal(drafts.get('#detail-dialog').scrollTop,87);
   }
   drafts.context.fetch=async()=>{throw new Error('controlled calculation interruption');};
   const failedHp=drafts.get('[data-value-key="hp"]');failedHp.value='4';failedHp.listeners.input();
+  failedHp.setSelectionRange(1,1,'none');
   drafts.context.document.activeElement=failedHp;
   drafts.get('#value-calculator').listeners.submit({preventDefault(){}});
   drafts.context.document.activeElement=drafts.context.document.body;
   await new Promise(resolve=>setImmediate(resolve));
   assert(failedHp.focused,'failed calculation must leave its input ready to retry');
   assert.equal(failedHp.value,'4');assert(!failedHp.disabled);
+  assert.equal(failedHp.selectionStart,1,'a failed request preserves the retry caret');
   assert(drafts.run('numericalDetail.dirty'),'a failed request must never label previous results as recalculated');
   assert(drafts.get('#values-freshness').textContent.includes('尚未计算'));
+  // Direct Enter in a nested combat condition must keep that condition visible and focused.
+  const combatDrafts=harness();combatDrafts.context.state=stamp();
+  combatDrafts.context.document.body=element();let combatInputs=[],advancedControl=null,combatHTML='';
+  combatDrafts.context.$$=()=>combatInputs;
+  Object.defineProperty(combatDrafts.get('#detail-rules'),'innerHTML',{set(html){
+    combatHTML=html;
+    combatInputs=[...html.matchAll(/<input data-value-key="([^"]+)"[^>]*value="([^"]+)"/g)].map(match=>{
+      const input=element();input.dataset.valueKey=match[1];input.value=match[2];
+      combatDrafts.elements.set(`[data-value-key="${match[1]}"]`,input);return input;
+    });
+    advancedControl=element();advancedControl.open=/<details class="numeric-advanced" open>/.test(html);
+    const form=combatDrafts.get('#value-calculator');form.querySelectorAll=()=>combatInputs;
+    form.querySelector=selector=>selector==='.numeric-advanced'?advancedControl:null;
+    form.contains=input=>combatInputs.includes(input);
+  }});
+  combatDrafts.context.fetch=async url=>{
+    const params=new URLSearchParams(url.split('?')[1]);
+    return {ok:true,json:async()=>({status:'current',version:'4.0.2',notice:'',blocks:[{title:'常规战斗数值',values:[],reading_notes:['机制参考']}],
+      inputs:['depth','hero_level','stronger_bosses','wealth_bonus'].map(key=>({key,label:key,min:0,max:30,value:params.get(key)??0}))})};
+  };
+  combatDrafts.load('rules.js');await combatDrafts.run("loadNumericalDetail('actors.mobs.goo')");
+  for(const [raw,selection,value,continued] of [['1',[1,1,'none'],'1','10'],['0',[0,1,'backward'],'0','0'],['001',[3,3,'none'],'1','10']]){
+    advancedControl.open=true;const input=combatDrafts.get('[data-value-key="wealth_bonus"]');
+    input.value=raw;input.setSelectionRange(...selection);input.listeners.input();combatDrafts.context.document.activeElement=input;
+    combatDrafts.get('#value-calculator').listeners.submit({preventDefault(){}});
+    combatDrafts.context.document.activeElement=combatDrafts.context.document.body;
+    await new Promise(resolve=>setImmediate(resolve));
+    assert(advancedControl.open,'recalculation must not close the focused nested condition');
+    assert(combatDrafts.get('[data-value-key="wealth_bonus"]').focused);
+    assert.equal(combatDrafts.get('[data-value-key="wealth_bonus"]').value,value);
+    const restored=combatDrafts.get('[data-value-key="wealth_bonus"]');
+    assert.equal(restored.selectionStart,Math.min(selection[0],value.length));
+    assert.equal(restored.selectionEnd,Math.min(selection[1],value.length));
+    assert.equal(restored.selectionDirection,selection[2]);
+    const typed=restored.value.slice(0,restored.selectionStart)+'0'+restored.value.slice(restored.selectionEnd);
+    assert.equal(typed,continued,'the next character stays at the user\'s insertion or selection position');
+    assert.match(combatHTML,/<details class="numeric-editor" open>/);
+  }
+  await combatDrafts.run("loadNumericalDetail('actors.mobs.dm300')");
+  assert(!advancedControl.open,'a different entry starts with its own collapsed advanced group');
+  combatDrafts.context.state.data.challenges_known=true;combatDrafts.context.state.data.challenges_mask=256;
+  assert.equal(combatDrafts.run('numericalDetail.calculated.params.stronger_bosses'),0,'generic lookup is an independent ordinary example');
+  assert(combatHTML.indexOf('data-value-key="stronger_bosses"')<combatHTML.indexOf('class="numeric-advanced"'),'boss mode belongs in the basic combat conditions');
+  combatDrafts.get('#values-use-latest').listeners.click();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(combatDrafts.run('numericalDetail.calculated.params.stronger_bosses'),1);
+  assert(combatHTML.includes('绝命头目（快照）'));
+  combatDrafts.get('#values-undo-import').listeners.click();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(combatDrafts.run('numericalDetail.calculated.params.stronger_bosses'),0);
+  await combatDrafts.run("loadNumericalDetail('actors.mobs.dm300',{stronger_bosses:1},'example',{capturedContext:true,ignoreDrafts:true})");
+  assert.equal(combatDrafts.run('numericalDetail.calculated.params.stronger_bosses'),1);
+  combatDrafts.context.state.data.challenges_known=false;combatDrafts.context.state.data.challenges_mask=null;
+  combatDrafts.get('#values-use-latest').listeners.click();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(combatDrafts.run('numericalDetail.calculated.params.stronger_bosses'),1);
+  assert(combatHTML.includes('最新快照未确认'),'an unknown new challenge never becomes a confirmed ordinary mode');
+  combatDrafts.context.state.data.challenges_known=true;combatDrafts.context.state.data.challenges_mask=0;
+  combatDrafts.get('#values-use-latest').listeners.click();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(combatDrafts.run('numericalDetail.calculated.params.stronger_bosses'),0);
+  // The default water answer exposes the actual amount and whether it is an example.
+  const waterAnswer=harness();waterAnswer.context.state=stamp();let waterHTML='';
+  Object.defineProperty(waterAnswer.get('#detail-rules'),'innerHTML',{set(html){waterHTML=html;}});
+  waterAnswer.context.fetch=async url=>{
+    const params=new URLSearchParams(url.split('?')[1]),volume=Number(params.get('dew_volume')??20);
+    return {ok:true,json:async()=>({status:'current',version:'4.0.2',inputs:[{key:'dew_volume',value:volume,label:'露珠量',min:0,max:20}],
+      blocks:[{title:'按所填露珠条件计算',primary_values:[{label:'即时恢复',value:Math.min(80,volume*5),unit:'HP'}],values:[],summary_note:'不含已有治疗。'}]})};
+  };
+  waterAnswer.load('rules.js');
+  for(const volume of [null,2,20]){
+    waterAnswer.context.state.data.items=volume===null?[]:[{key:'items.waterskin',volume,known:true,available:true}];
+    await waterAnswer.run("loadNumericalDetail('items.waterskin',{},'example',{ignoreDrafts:true})");
+    const answer=waterHTML.match(/<section id="values-answer"[\s\S]*?<\/section>/)[0];
+    assert(answer.includes(`露珠 ${volume??20} 滴（${volume===null?'示例 · 请核对':'快照'}）`));
+    assert(!/<details class="numeric-editor" open>/.test(waterHTML));
+  }
+  // An entry that has never produced a result must ask for conditions without claiming an old result.
+  const missingAnswer=harness();missingAnswer.context.state=stamp();
+  missingAnswer.context.fetch=async()=>({ok:true,json:async()=>({status:'current',version:'4.0.2',missing_inputs:['power','remaining_turns'],
+    inputs:['power','remaining_turns'].map(key=>({key,label:key,value:'',min:0,max:1000})),blocks:[]})});
+  missingAnswer.load('rules.js');await missingAnswer.run("loadNumericalDetail('actors.buffs.corrosion')");
+  assert(missingAnswer.get('#values-freshness').textContent.includes('条件待补全'));
+  assert(!missingAnswer.get('#values-freshness').textContent.includes('修改前'));
+  const blank=element();blank.dataset.valueKey='power';missingAnswer.context.blank=blank;
+  assert.equal(missingAnswer.run('validNumericalInputs([blank],numericalDetail)'),false);
+  assert(!missingAnswer.get('#values-freshness').textContent.includes('修改前'));
+  // Resource details preserve captured food modifiers without changing generic encyclopedia data.
+  const foodDetail=harness();foodDetail.context.state=stamp();let foodHTML='';
+  foodDetail.context.$=selector=>selector==='#values-source'?null:foodDetail.get(selector);
+  Object.defineProperty(foodDetail.get('#detail-rules'),'innerHTML',{set(html){foodHTML=html;}});
+  foodDetail.context.fetch=async()=>({ok:true,json:async()=>({status:'current',version:'4.0.2',notice:'',inputs:[],
+    blocks:[{title:'进食数值',values:[{label:'恢复饱食',value:'300',unit:'点'},{label:'进食耗时',value:'3',unit:'回合'}]}]})});
+  foodDetail.load('rules.js');
+  for(const amount of ['100','67']){
+    foodDetail.context.foodProjection={title:'捕获条件下的进食参考',primary_values:[{label:'每份参考饱食',value:amount,unit:'点'}],
+      summary_note:'饥饿游戏'+(amount==='67'?'；已知诅咒丰饶之角':'')+'；非即时回血',values:[{label:'修正后参考',value:amount}]};
+    await foodDetail.run("loadNumericalDetail('items.food.food',{},'not_applicable',{ignoreDrafts:true,capturedContext:true,foodReference:foodProjection})");
+    const answer=foodHTML.match(/<section id="values-answer"[\s\S]*?<\/section>/)[0];
+    assert(foodHTML.includes('id="values-freshness"'),'captured food retains a live source status without a calculator form');
+    assert(answer.includes(amount)&&answer.includes('饥饿游戏'));
+    assert(!answer.includes('300'),'unmodified base nutrition is not presented as the captured answer');
+    assert(foodHTML.includes('300'),'the full base table remains available');
+    foodDetail.context.foodProjection.primary_values[0].value='999';
+    assert.equal(foodDetail.run('numericalDetail.foodReference.primary_values[0].value'),amount);
+  }
+  foodDetail.context.state.modified++;
+  foodDetail.run('refreshNumericalOrigin()');
+  assert.match(foodDetail.get('#values-freshness').textContent,/旧快照进食参考/);
+  await foodDetail.run("loadNumericalDetail('items.food.food',{},'example',{ignoreDrafts:true})");
+  assert(!foodHTML.includes('每份参考饱食'),'generic browsing does not inherit a previous resource capture');
   drafts.context.fetch=validFetch;
   const pendingIdentity='items.potions.potionofhealing';
   for(const raw of ['7','','-','1e','10001','3.5']){
@@ -1003,7 +1138,9 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   const manualStrength=compare.get('#compare-strength');manualStrength.value='18';
   compare.get('#equipment-comparison').listeners.input({target:manualStrength});
   compare.context.state.data.hero.strength=16;compare.run('renderEquipmentComparison()');
-  assert.equal(manualStrength.value,'18');assert(compare.get('#compare-status').textContent.includes('手填'));
+  assert.equal(manualStrength.value,'18');
+  assert.equal(manualStrength.dataset.manual,'true');assert.equal(manualStrength.dataset.edited,'true');
+  assert.match(compare.get('#compare-status').textContent,/力量保持所填值.*带入最新角色/);
   compare.get('#compare-follow-strength').listeners.click();
   assert.equal(Number(manualStrength.value),16);
   compare.context.state=null;compare.run('renderEquipmentComparison()');
@@ -1417,6 +1554,10 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   savedComparison.context.state.data.hero.strength=99;savedComparison.context.state.modified=600;savedComparison.run('renderEquipmentComparison()');
   assert.equal(Number(savedComparison.get('#compare-strength').value),11);assert.equal(Number(savedComparison.get('#compare-level-a').value),0);assert.equal(Number(savedComparison.get('#compare-level-b').value),5);assert(savedComparison.get('#compare-mastery-b').checked);
   assert(savedComparison.get('#compare-origin-a').textContent.includes('等级未知'));assert(savedComparison.get('#compare-result').innerHTML.includes('升级不跨门槛'));assert(savedComparison.get('#compare-result').innerHTML.includes('不是最终命中概率'));
+  const conciseComparison=savedComparison.get('#compare-result').innerHTML;
+  assert.equal((conciseComparison.match(/不是绝对推荐/g)||[]).length,1,'complete boundary appears once');
+  assert.match(conciseComparison,/<details class="comparison-current"><summary>完整数值与适用条件<\/summary>/,'ordinary matrix defaults closed');
+  assert(conciseComparison.indexOf('升级不跨门槛')<conciseComparison.indexOf('完整数值与适用条件'),'decision summary precedes full matrix');
   assert(!fs.readFileSync(path.join(root,'web','compare.js'),'utf8').includes('function comparisonUnit('),'metric units must come from the structured backend, not text inference');
 
   function workspaceHarness(){

@@ -339,8 +339,19 @@ class PlayerValues:
                 rows=[]
                 for name,label,unit in [('DURATION','默认持续','回合'),('DISTANCE','作用距离','格')]:
                     if name in constants:
+                        if name == 'DURATION' and any(v['label'] in ('持续时间', '基础持续时间', '默认持续')
+                                and v['value'] == display(constants[name]) for part in result for v in part.get('values', [])):
+                            continue
                         rows.append(metric(label,constants[name],unit,'不同来源可以改变时长'))
                 if rows: result.append(block('状态基础数值',rows))
+                if identity == 'actors.buffs.invisibility':
+                    for part in result:
+                        duration = next((v for v in part.get('values', []) if v['label'] == '基础持续时间'), None)
+                        if duration:
+                            part['summary_note'] = ''  # The primary condition already states the relevant duration limits.
+                            part['primary_values'] = [{**duration, 'label': '来源基础时长',
+                                'condition': '多数物理攻击和施法会解除隐形；不同来源会改变时长，当前剩余以游戏为准'}]
+                            break
             if identity.startswith('items.food.'):
                 rows=[]
                 for name,label,unit in [('energy','恢复饱食','点'),('TIME_TO_EAT','进食耗时','回合')]:
@@ -369,7 +380,7 @@ class PlayerValues:
 
         if healing_missing:
             requested.update(('max_hp', 'hp', *healing_fields))
-            result.append(block('当前治疗状态', [], '治疗池或恢复速度条件未确认，请补全空白参数后计算；只确认 Healing 存在不会推定治疗药剂速度。'))
+            result.append(block('当前治疗状态', [], '治疗量与恢复速度未确认，请补全空白参数后计算。'))
         else:
             self.dynamic(identity, entry, owner, p, result, requested)
         self.rings(identity, p, result, requested)
@@ -380,10 +391,18 @@ class PlayerValues:
         self.extra_effects(identity, entry, owner, p, result, requested)
         self.artifacts(identity, p, result, requested)
         add_advanced_values(self, identity, p, result, requested)
+        if identity == 'items.potions.elixirs.elixirofaquaticrejuvenation':
+            treatment = next(part for part in result if part['title'] == '水灵治疗')
+            rate = next(value for part in result for value in part.get('values', [])
+                        if value['label'] == '水中每回合实际恢复')
+            treatment['primary_values'] = [*treatment['values'], rate]
         add_operation_values(identity, p, result, requested)
         add_resource_values(identity, p, result, requested)
         if enemy_reference:
             add_monster_values(self,identity,p,result,requested)
+            if identity == 'actors.mobs.goo':
+                # The reviewed phase table includes these exact six statistics and conditions.
+                result[:] = [part for part in result if part['title'] != '粘咕攻击阶段']
         # State entries show the reviewed numeric effects of the associated skill.
         # This is a reference calculation, never a guess at an unseen active state.
         spell_states = {
@@ -859,7 +878,13 @@ class PlayerValues:
         if identity in ('items.artifacts.cloakofshadows','items.artifacts.cloakofshadows$cloakstealth'):
             result.append(table('暗影斗篷',['斗篷等级','最大充能','每次充能维持隐形'],[[f'+{n}',min(3+n,10),'4回合'] for n in range(11)]))
         if identity=='items.artifacts.hornofplenty':result.append(table('丰饶之角容量',['神器等级','最大充能'],[[f'+{n}',5+n//2] for n in range(11)]))
-        if rows:result.append(block('当前条件下的数值',rows,f'等效层数 {d}' if 'depth' in requested else ''))
+        if rows:
+            result.append(block('当前条件下的数值',rows,f'等效层数 {d}' if 'depth' in requested else ''))
+            if identity in ('actors.buffs.poison', 'actors.buffs.bleeding'):
+                result[-1]['primary_values'] = [{**row, 'condition': ''} for row in rows[:2]]
+                result[-1]['summary_note'] = ('每回合结算毒伤，剩余时间减少时伤害逐步降低；未计免疫、减伤和后续续毒。'
+                    if identity == 'actors.buffs.poison' else
+                    '每次先结算伤害，再随机衰减强度；总量是平均估计，不保证实际伤害，未计防护与后续新增流血。')
 
     def artifacts(self, identity, p, result, requested):
         """Evaluated capacity, recovery and active costs of the remaining artifacts."""
@@ -1089,9 +1114,9 @@ class PlayerValues:
             base=potion_healing_pool(maximum)
             total,schedule=heal_schedule(base,current,maximum,p['vial'])
             rows=[metric('治疗池总量',total,'HP'),metric('最终实际恢复',min(maximum-current,total),'HP'),metric('首次恢复',schedule[0][2],'HP'),metric('治疗池耗尽',len(schedule),'回合'),metric('药水恐惧挑战毒强度',4+hero//2,'点','药水恐惧时不治疗，改为中毒')]
-            result.append(block('按你的生命计算',rows,f'当前生命 {current}/{maximum}；凝血试管 '+('未佩戴' if p['vial']<0 else f'+{p["vial"]}')))
+            result.append(block('按你的生命计算',rows,f'所填生命 {current}/{maximum}；凝血试管 '+('无效果（−1）' if p['vial']<0 else f'+{p["vial"]}')))
             result[-1]['primary_values'] = [rows[1], rows[2]]
-            result[-1]['summary_note'] = result[-1]['note']+'。药水恐惧挑战下不治疗；未计后续受伤和其他生命变化。'
+            result[-1]['summary_note'] = f'所填生命 {current}/{maximum}。药水恐惧挑战下不治疗；未计后续受伤和其他生命变化。'
             result.append(table('每回合恢复明细',['恢复次数','本次治疗池消耗','实际恢复HP','治疗后生命','剩余治疗池'],schedule))
         if identity=='actors.buffs.healing':
             requested.update(('max_hp','hp','power','healing_percent','healing_flat','vial'))
@@ -1108,6 +1133,8 @@ class PlayerValues:
             result.append(block('按你的最大生命计算',[metric('获得护盾',math.floor(.6*maximum+10),'HP'),metric('药水恐惧挑战毒强度',4+hero//2,'点','挑战开启时替代护盾')]))
         if identity=='items.potions.elixirs.elixirofaquaticrejuvenation':
             requested.add('max_hp');result.append(block('水灵治疗',[metric('治疗池',rounded(maximum*1.5),'HP','站在水中且未漂浮时恢复；药水恐惧下不治疗')]))
+            result[-1]['primary_values'] = result[-1]['values']
+            result[-1]['summary_note'] = '有缺失生命时逐回合恢复；满血或离水时保留剩余额度。'
         if identity=='items.potions.elixirs.elixirofarcanearmor':
             requested.add('hero_level');result.append(block('魔法减伤',[metric('随机魔法减伤',f'0–{5+hero//2}','HP'),metric('持续',80,'回合')]))
         if identity=='items.potions.exotic.potionofearthenarmor':

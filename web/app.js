@@ -16,11 +16,12 @@ function validRawNumericForm(form){
   return form.reportValidity();
 }
 document.addEventListener('input',event=>{if(event.target.matches?.('[data-raw-number]'))event.target.setCustomValidity('');});
-const names = {overview:'局势',inventory:'背包',scouting:'楼层探查',library:'手册',alchemy:'炼金计划',workspace:'方案与收藏',backups:'存档历史',migration:'搬机迁移',manual:'角色推演',settings:'连接设置',help:'帮助与关于','play-settings':'游戏提示与快捷键'};
+const names = {overview:'局势',inventory:'背包',scouting:'楼层探查',library:'图鉴',alchemy:'炼金计划',workspace:'方案与收藏',backups:'存档历史',migration:'搬机迁移',manual:'角色推演',settings:'连接设置',help:'帮助与关于','play-settings':'游戏跟随与快捷键'};
 const icons = {WARRIOR:'⚔',MAGE:'✦',ROGUE:'◐',HUNTRESS:'➶',DUELIST:'⚔',CLERIC:'✧'};
 const initialPanelPlan=new URLSearchParams(location.search||'').get('plan');
 let initialPanelPlanHandled=false;
-let state, token, view='overview', lastRender='', slotsSignature='', libraryRequest=0, toastTimer;
+let state, token, view='overview', lastRender='', slotsSignature='', libraryRequest=0, libraryBrowseAll=false, toastTimer;
+function libraryIsHome(){return !libraryBrowseAll&&!$('#library-search').value.trim()&&$('#library-category').value==='全部';}
 const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const fmtTime = seconds => new Date(seconds*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});
 const shortTime = seconds => new Date(seconds*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});
@@ -49,7 +50,7 @@ function navigate(next,historyMode='push'){
   const hash=`#${next}`;
   if(changed&&historyMode==='push')history.pushState(null,'',hash);
   else if(location.hash!==hash||historyMode==='replace')history.replaceState(null,'',hash);
-  if(next==='library'&&!$('#library-search').value&&$('#library-category').value==='全部'&&typeof loadWorkspace==='function')loadWorkspace();
+  if(next==='library'&&libraryIsHome()&&typeof loadWorkspace==='function')loadWorkspace();
   else if(next==='library'&&!$('#library-results').childElementCount)searchLibrary();
   if(next==='inventory')renderInventory();if(next==='settings')loadSettings();if(next==='backups')loadBackups();
   if(next==='scouting'&&typeof loadScouting==='function')loadScouting();
@@ -110,6 +111,8 @@ function renderStatus(){
   if(state.configuration_notice)text+=' '+state.configuration_notice;
   if(state.settings.reveal)text+=' · 剧透模式已开启';
   banner.textContent=text;
+  const overviewSource=$('#overview-source');
+  overviewSource.textContent=overviewSourceWarning(state);overviewSource.hidden=!overviewSource.textContent;
   $('#advice-source').textContent=state.error?'快照不可用；请恢复连接后重新核对。':waiting?'等待游戏保存。':`${isManual?'你填写的局势':`最近保存的状态 · ${origin}`} · ${fmtTime(state.modified)} · ${ago}。${state.stale?'信息已过期，先核对游戏画面。':'行动前核对游戏画面。'}${isManual?'手填信息不会自动跟随游戏。':'不是逐回合实时状态。'}`;
   $('#sidebar-dot').className='dot '+(state.error?'error':state.stale?'stale':'live');
   $('#connection-short').textContent=state.error?'等待可读存档':waiting?'已就绪 · 等待游戏':isManual?'手动局势':state.stale?'旧快照 · 等待更新':'正在跟随存档';
@@ -126,6 +129,71 @@ function buffReferenceLabel(buff,hero){
   return `${buff.name} · ${source}：${remaining}${next}`;
 }
 function snapshotViewOwner(){return JSON.stringify([state?.started,state?.settings?.save_root,state?.settings?.mode,state?.active_slot,state?.run_id]);}
+function overviewAdviceLead(body){
+  const sentences=String(body||'').match(/[^。！？\n]+[。！？]?/g)||[];
+  return (sentences.find(text=>/不能|无法|不恢复|未确认|需要回合/.test(text))||sentences[0]||'').trim();
+}
+function overviewResourceUse(identity){
+  return {
+    'items.potions.exotic.potionofshielding':['获得逐渐衰减的护盾','不恢复生命；受伤会消耗护盾'],
+    'items.potions.potionofinvisibility':['暂时隐形，便于脱离接触','多数攻击和施法会解除隐形'],
+    'items.scrolls.scrollofteleportation':['转移到本层另一处','落点不能指定；特殊楼层另有限制'],
+    'items.stones.stoneofblink':['向所选位置定向转移','需核对距离与障碍，不能保证安全'],
+  }[identity];
+}
+function overviewResourceSummary(option){
+  if(option.restriction||option.calculation_missing)return [option.restriction,option.calculation_missing&&'计算前需核对：'+option.calculation_missing].filter(Boolean).join('；');
+  const values=option.values||[],extra=values.find(value=>value.label==='再次喝药的额外实际恢复');
+  if(option.comparison&&extra){
+    const wait=values.find(value=>value.label==='等待当前治疗 · 首次实际恢复'),drink=values.find(value=>value.label==='再次喝已知治疗药剂 · 首次实际恢复');
+    return [wait&&drink&&`再喝一瓶 · 首次恢复 ${wait.value} → ${drink.value} HP`,`${wait&&drink?'最终额外恢复':'再喝一瓶 · 额外恢复'} ${extra.value} HP`].filter(Boolean).join(' · ');
+  }
+  if(option.entry?.startsWith('items.food.')){
+    const nutrition=['已知诅咒丰饶之角下的参考恢复','饥饿游戏基础饱食恢复','恢复饱食'].map(label=>values.find(value=>value.label===label)).find(Boolean);
+    const cost=values.find(value=>value.label==='进食耗时');
+    return [nutrition&&`每份参考饱食 ${nutrition.value}${nutrition.unit?' '+nutrition.unit:''}`,cost&&`基础进食耗时 ${cost.value} ${cost.unit||'回合'}`].filter(Boolean).join(' · ')||option.purpose||'查看资料与条件';
+  }
+  const instant=option.healing_timing==='instant',gradual=option.healing_timing==='gradual';
+  const chosen=extra?[extra]:values.filter(value=>['首次恢复','最终实际恢复','实际新增屏障'].includes(value.label)
+    &&!(instant&&value.label==='最终实际恢复')&&!(value.label==='实际新增屏障'&&Number(value.value)===0));
+  const healing=option.entry==='items.potions.potionofhealing';
+  const selected=chosen.length?chosen:values.slice(0,2),labels={'首次恢复':`${healing?'单瓶':'本次使用'} · ${instant?'即时恢复':'首次恢复'}`,'最终实际恢复':healing||gradual?'逐回合合计':'最终恢复','再次喝药的额外实际恢复':'再喝一瓶 · 额外恢复'};
+  let summary=selected.map(value=>`${labels[value.label]||value.label} ${value.value}${value.unit?' '+value.unit:''}`).join(' · ');
+  if(option.entry==='items.waterskin'){
+    const consumed=values.find(value=>value.label==='本次消耗露珠'),remaining=values.find(value=>value.label==='饮用后剩余露珠');
+    if(consumed&&remaining){
+      if(Number(consumed.value)===0&&Number(remaining.value)===0)return '水袋已空';
+      summary+=`${summary?' · ':''}消耗 ${consumed.value} 滴，剩 ${remaining.value} 滴`;
+    }
+  }
+  return summary||overviewResourceUse(option.entry)?.[0]||option.purpose||'查看资料与条件';
+}
+function overviewResourceAssumption(option){
+  if(option.restriction||option.calculation_missing)return '';
+  const use=overviewResourceUse(option.entry);if(use)return use[1];
+  if(!option.values?.length)return '';
+  if(option.entry==='items.waterskin'&&option.values.some(value=>value.label==='本次消耗露珠'&&Number(value.value)===0)&&option.values.some(value=>value.label==='饮用后剩余露珠'&&Number(value.value)===0))return '';
+  if(option.entry==='items.waterskin')return option.healing_timing==='gradual'?'假设期间不再受伤；不含已有治疗，不能直接相加。':'不含已有治疗。';
+  if(option.entry==='items.potions.potionofhealing')return '逐回合生效；假设期间不再受伤。';
+  if(option.entry?.startsWith('items.food.')){
+    if(option.food_reference?.summary_note)return option.food_reference.summary_note;
+    const labels=new Set(option.values.map(value=>value.label)),conditions=[];
+    if(labels.has('饥饿游戏基础饱食恢复'))conditions.push('饥饿游戏');
+    if(labels.has('已知诅咒丰饶之角下的参考恢复'))conditions.push('已知诅咒丰饶之角');
+    if(option.entry.endsWith('mysterymeat'))conditions.push('生肉可能附带负面状态');
+    else if(/\.(pasty|blandfruit|frozencarpaccio|phantommeat)$/.test(option.entry))conditions.push('特殊效果另见说明');
+    conditions.push('非即时回血，进食时敌人仍会行动');
+    return conditions.join('；');
+  }
+  return '';
+}
+function overviewSourceWarning(snapshot){
+  if(!snapshot)return '助手连接已中断，上一局势已失效。';
+  if(snapshot.error)return '存档读取受阻 · '+snapshot.error;
+  if(snapshot.waiting_for_save)return '';
+  if(snapshot.settings.mode==='manual')return '手填局势 · 不会自动跟随游戏。';
+  return [snapshot.stale?`旧快照 · ${shortTime(snapshot.modified)} 保存，行动前请核对游戏。`:'',snapshot.warning].filter(Boolean).join(' ');
+}
 function renderAdvice(tips){
   const target=$('#advice-list'),owner=snapshotViewOwner(),signature=JSON.stringify([owner,tips]);
   if(target._lampAdviceSignature===signature)return;
@@ -135,7 +203,13 @@ function renderAdvice(tips){
     if(previous.has(id)){previous.set(id,null);continue;}
     previous.set(id,details.open);if(details.querySelector('summary')===document.activeElement)focused=id;
   }
-  target.innerHTML=tips.length?tips.map(t=>`<article class="advice ${t.severity}" data-tip-id="${escapeHTML(t.id)}"><div class="advice-head"><span class="severity">${{critical:'优先处理',warning:'留意',info:'提示'}[t.severity]}</span><h3>${escapeHTML(t.title)}</h3></div><p>${escapeHTML(t.body)}</p><details><summary>为什么这样建议</summary>${escapeHTML(t.basis)}</details></article>`).join(''):'<p class="muted">当前没有触发特殊风险规则。继续留意周围敌人和退路。</p>';
+  const priorSecondary=target.querySelector('.overview-secondary'),secondaryOpen=sameOwner&&priorSecondary?.open,secondaryFocus=sameOwner&&priorSecondary?.querySelector('summary')===document.activeElement;
+  const routine=new Set(['class','unknown','strength_potion','upgrade_scroll']),primary=[],secondary=[];
+  const row=t=>`<article class="advice ${escapeHTML(t.severity)}" data-tip-id="${escapeHTML(t.id)}"${t.severity==='critical'?' role="alert"':''}><details><summary><span class="advice-head">${t.severity==='critical'?'<span class="severity">优先处理</span>':''}<strong>${escapeHTML(t.title)}</strong></span><span class="overview-lead">${escapeHTML(overviewAdviceLead(t.body))}</span></summary><div class="overview-advice-detail"><p>${escapeHTML(t.body)}</p><p class="overview-tip-basis">${escapeHTML(t.basis)}</p></div></details></article>`;
+  for(const tip of tips)(routine.has(tip.id)&&tip.severity==='info'?secondary:primary).push(row(tip));
+  const preparation=[...new Set(tips.filter(t=>routine.has(t.id)&&t.severity==='info').map(t=>t.id==='class'?'职业准备':t.id==='unknown'?'鉴定与未知':'装备准备'))].join(' · ');
+  target.innerHTML=(primary.length?primary.join(''):'<p class="overview-empty">当前没有额外行动提示。</p>')+(secondary.length?`<details class="overview-secondary"><summary>${escapeHTML(preparation)}</summary>${secondary.join('')}</details>`:'');
+  const nextSecondary=target.querySelector('.overview-secondary');if(nextSecondary){nextSecondary.open=!!secondaryOpen;if(secondaryFocus)nextSecondary.querySelector('summary').focus({preventScroll:true});}
   const counts=new Map();for(const tip of tips)counts.set(String(tip.id),(counts.get(String(tip.id))||0)+1);
   for(const article of target.querySelectorAll('article')){
     const id=article.dataset.tipId,details=article.querySelector('details');
@@ -160,18 +234,20 @@ function renderItemButtons(target,items,markup,reference){
   target._lampItemOwner=owner;target._lampItems=items;
 }
 function render(){
+  if(typeof renderUpdate==='function')renderUpdate();
   renderStatus();const key=JSON.stringify([state.revision,state.error,state.active_slot,state.settings.mode,state.waiting_for_save]);if(key===lastRender)return;lastRender=key;
   const data=state.data;$('#empty-state').hidden=!!data;$('#adventure').hidden=!data;
-  $('#empty-title').textContent=state.error?'暂时读不到冒险状态':'已就绪，直接开始游戏';
-  $('#empty-description').textContent=state.error || '打开游戏，开始或继续一局。游戏保存后，角色状态和建议会自动出现。也可以先查数值手册，其他功能之后再探索。';
+  $('#empty-title').textContent=state.error?'暂时读不到冒险状态':'等待游戏保存';
+  $('#empty-description').textContent=state.error || '保存一局后显示相关提示，也可先查图鉴。';
   $('#empty-options').open=!!state.error;
   if(!data){renderInventory();return;}
-  const hero=data.hero;$('#hero-icon').textContent=icons[hero.class_id] || '✦';$('#hero-title').textContent=`${hero.class} · 等级 ${hero.level}`;$('#hero-subtitle').textContent=`${data.region} / ${state.settings.mode==='manual'?'手动局势':`存档槽位 ${state.active_slot}`} / ${data.version?`存档版本码 ${data.version}`:'手动数据'}`;
+  const hero=data.hero;$('#overview-character-brief').textContent=`${hero.class} · 等级 ${hero.level}`;$('#hero-icon').textContent=icons[hero.class_id] || '✦';$('#hero-title').textContent=`${hero.class} · 等级 ${hero.level}`;$('#hero-subtitle').textContent=`${data.region} / ${state.settings.mode==='manual'?'手动局势':`存档槽位 ${state.active_slot}`} / ${data.version?`存档版本码 ${data.version}`:'手动数据'}`;
   $('#hero-tags').innerHTML=[...data.buffs.map(b=>`<span class="tag warn">${escapeHTML(buffReferenceLabel(b,hero))}</span>`),...data.challenges.map(c=>`<span class="tag">${escapeHTML(c)}</span>`)].join('');
   const ratio=Math.max(0,Math.min(1,hero.hp/hero.ht));$('#health').textContent=`${hero.hp} / ${hero.ht}`;$('#health-percent').textContent=`${Math.round(ratio*100)}%`;$('#health-bar').style.width=`${ratio*100}%`;$('#health-bar').classList.toggle('low',ratio<.5);$('#depth').textContent=`第 ${data.depth} 层`;$('#region').textContent=data.region;$('#strength').textContent=hero.strength;$('#hunger').textContent=hero.hunger_label;$('#resources').textContent=state.settings.mode==='manual'?'金币与炼金能量未填写':`金币 ${data.gold} · 炼金能量 ${data.energy}`;
   const urgentTips=data.tips.filter(tip=>tip.severity==='critical');$('#overview-urgent').hidden=!urgentTips.length;$('#overview-urgent-summary').textContent=urgentTips.map(tip=>tip.title).join('；');
   renderAdvice(data.tips);
   const equippedReference=itemSnapshotReference(),equipped=data.items.filter(item=>!['背包','收纳袋'].includes(item.location));
+  $('#overview-equipment-count').textContent=state.settings.mode==='manual'&&!equipped.length?'未填写':`${equipped.length} 件`;$('#overview-map-brief').textContent=data.map?`第 ${data.depth} 层`:'暂无地图';
   renderItemButtons($('#equipped'),equipped,equipped.length?equipped.map(item=>`<button class="equipment-row">${typeof referenceImageHTML==='function'?referenceImageHTML(publicReferenceId(item),item.name):''}<span><strong class="reference-name">${escapeHTML(item.name)}</strong>${itemNoteLabel(item)}<small>${escapeHTML(item.details.join(' · ')) || '查看物品说明'}</small></span><span class="item-place">${escapeHTML(item.location)}</span></button>`).join(''):`<p class="muted">${state.settings.mode==='manual'?'手动模式未填写装备；请在游戏中核对。':'快照中暂无装备记录；新的游戏保存到达后会自动更新。'}</p>`,equippedReference);
   $('#history').innerHTML=state.history.length?state.history.slice(0,5).map(row=>`<div class="history-row">${escapeHTML(row.text)}<time>${escapeHTML(fmtTime(row.time))}</time></div>`).join(''):state.settings.mode==='manual'?'<p class="muted">手动局势不会自动跟随游戏；恢复自动读取后，会在这里记录保存时的血量和楼层变化。</p>':'<p class="muted">新的存档快照到达后，会在这里记录血量和楼层变化。</p>';
   renderMap(data.map);renderInventory();
@@ -220,7 +296,8 @@ function renderInventory(){
 }
 let detailEntry=null;
 function showDetailContext(text){showItemNote(null);const target=$('#detail-context');if(target){target.textContent=text||'';target.hidden=!text;}}
-function showDetail(title,text,category,meta){if(typeof itemDisclosure!=='undefined')itemDisclosure=null;if(typeof detailReferenceSerial!=='undefined'){detailReferenceSerial++;setReferencePortrait('',title);const encounters=$('#detail-encounters');if(encounters){encounters.hidden=true;encounters.replaceChildren();}const status=$('#detail-reference-status');if(status)status.hidden=true;}showDetailContext('');cancelNumericalDetail();detailEntry=null;$('#detail-rules').replaceChildren();$('#detail-tools')?.replaceChildren();$('#detail-related')?.replaceChildren();$('#detail-title').textContent=title;$('#detail-text').textContent=text || '此条目没有独立说明，请参考游戏中的检查界面。';$('#detail-dialog .game-description').open=true;$('#detail-dialog').classList.toggle('monster-detail',false);$('#detail-category').textContent=category;$('#detail-meta').textContent=meta;if(!$('#detail-dialog').open)$('#detail-dialog').showModal();$('#detail-dialog').scrollTop=0;}
+function showPlanNote(note){const target=$('#detail-plan-note');if(target){target.textContent=note?'用户用途 / 假设（自行记录）：'+note:'';target.hidden=!note;}}
+function showDetail(title,text,category,meta){if(typeof itemDisclosure!=='undefined')itemDisclosure=null;if(typeof detailReferenceSerial!=='undefined'){detailReferenceSerial++;setReferencePortrait('',title);const encounters=$('#detail-encounters');if(encounters){encounters.hidden=true;encounters.replaceChildren();}const status=$('#detail-reference-status');if(status)status.hidden=true;}showDetailContext('');showPlanNote('');cancelNumericalDetail();detailEntry=null;$('#detail-rules').replaceChildren();$('#detail-tools')?.replaceChildren();$('#detail-alchemy')?.replaceChildren();if($('#detail-alchemy'))$('#detail-alchemy').hidden=true;$('#detail-related')?.replaceChildren();$('#detail-title').textContent=title;if(typeof setReferenceIntro==='function'){setReferenceIntro(text);$('#detail-intro').hidden=true;}$('#detail-text').textContent=text || '此条目没有独立说明，请参考游戏中的检查界面。';$('#detail-dialog .game-description').open=true;$('#detail-actions').open=false;$('#detail-dialog').classList.toggle('monster-detail',false);$('#detail-dialog').classList.toggle('npc-detail',false);$('#detail-category').textContent=category;$('#detail-meta').textContent=meta;if(!$('#detail-dialog').open)$('#detail-dialog').showModal();$('#detail-dialog').scrollTop=0;}
 function showRelatedReferences(rows,context={}){const target=$('#detail-related');if(!target)return;target.replaceChildren();for(const row of rows||[]){const button=document.createElement('button');button.className='secondary';button.textContent='查看 '+row.name;button.addEventListener('click',()=>showReference({...row,lookup_context:row.lookup_context||{...context,ignore_drafts:true,capture_context:true,conditions:row.conditions}}));target.append(button);}}
 function showItem(item,reference=itemSnapshotReference()){
   showDetail(item.name,item.description,item.location,item.details.join(' · ')+(item.revealed?' · 已主动揭示存档资料；游戏鉴定状态未改变':item.known?'':' · 未鉴定物品保留未知身份')+(item.available===false?' · 当前记录中不可用；仅供阅读参考':''));showItemNote(item.user_note);if(typeof setReferencePortrait==='function'){setReferencePortrait(publicReferenceId(item),item.name);if(item.known||item.revealed)void hydrateReference({id:item.key,name:item.name,appearance_id:publicReferenceId(item),preserve_description:true},detailReferenceSerial);}
@@ -246,7 +323,8 @@ function showItem(item,reference=itemSnapshotReference()){
     });
   }
 }
-function showReference(row,version){showDetail(row.name,(row.description||'')+(row.hint?'\n\n'+row.hint:''),row.category,`游戏版本 ${version||state?.catalog_version||'以条目为准'}`);if(typeof setReferencePortrait==='function'){setReferencePortrait(row.id,row.name);void hydrateReference(row,detailReferenceSerial);}if(typeof setDetailEntry==='function')setDetailEntry(row.id);const context=row.lookup_context||{};showDetailContext(Array.isArray(context.conditions)?context.conditions.join('；'):context.conditions);showRelatedReferences(row.related,context);showItemNote(row.user_note||context.user_note);loadNumericalDetail(row.id,context.params||{},context.level_origin||'manual',{...(typeof lookupCalculationOptions==='function'?lookupCalculationOptions(context):{}),ignoreDrafts:context.ignore_drafts===true,capturedContext:context.capture_context===true||Array.isArray(context.stamp)||!!context.source});}
+let detailLibraryReturn=null;
+function showReference(row,version){if(!$('#detail-dialog').open&&document.activeElement?.matches('button.workspace-reference,button.library-card'))detailLibraryReturn={id:document.activeElement.dataset.referenceId,key:document.activeElement.dataset.referenceKey,view,container:document.activeElement.closest('.workspace-list,.library-grid')?.id};showDetail(row.name,(row.description||'')+(row.hint?'\n\n'+row.hint:''),row.display_hint||row.category,`游戏版本 ${version||state?.catalog_version||'以条目为准'}`);if(typeof setReferencePortrait==='function'){setReferencePortrait(row.id,row.name);void hydrateReference(row,detailReferenceSerial);}if(typeof setDetailEntry==='function')setDetailEntry(row.id);const context=row.lookup_context||{};showDetailContext([context.source_label,Array.isArray(context.conditions)?context.conditions.join('；'):context.conditions].filter(Boolean).join('；'));showRelatedReferences(row.related,context);showItemNote(row.user_note||context.user_note);loadNumericalDetail(row.id,context.params||{},context.level_origin||'manual',{...(typeof lookupCalculationOptions==='function'?lookupCalculationOptions(context):{}),ignoreDrafts:context.ignore_drafts===true,capturedContext:context.capture_context===true||Array.isArray(context.stamp)||!!context.source});}
 // Async backup previews may replace their original trigger during a status poll.
 const backupDialogTriggers=new Map();
 document.addEventListener('click',event=>{
@@ -265,19 +343,61 @@ for(const kind of ['repair','restore','manage','backup-recovery'])$('#'+kind+'-d
   window.requestAnimationFrame(restore);
 });
 $('#close-detail').addEventListener('click',()=>$('#detail-dialog').close());
+$('#detail-dialog').addEventListener('close',()=>{
+  const saved=detailLibraryReturn;detailLibraryReturn=null;if(!saved)return;
+  requestAnimationFrame(()=>{if(view!==saved.view||document.querySelector('dialog[open]'))return;const candidates=Array.from(document.getElementById(saved.container)?.querySelectorAll('button[data-reference-id]')||[]),trigger=candidates.find(button=>button.dataset.referenceId===saved.id&&button.dataset.referenceKey===saved.key);(trigger||(view==='library'?$('#library-search'):null))?.focus({preventScroll:true});});
+});
 $('#detail-dialog').addEventListener('click',event=>{if(event.target===$('#detail-dialog')){const rect=event.target.getBoundingClientRect();if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)event.target.close();}});
 $('#inventory-search').addEventListener('input',renderInventory);
 let manualFormGeneration=0;
 $('#manual-form').addEventListener('input',()=>manualFormGeneration++);
 let searchTimer,libraryOffset=0;
 $('#library-search').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>searchLibrary(),180);});
-$('#library-category').addEventListener('change',()=>searchLibrary());
-
+$('#library-category').addEventListener('change',()=>{libraryBrowseAll=false;searchLibrary();});
 $('#library-more').addEventListener('click',()=>searchLibrary(false));
+function libraryHome(){clearTimeout(searchTimer);libraryBrowseAll=false;$('#library-search').value='';$('#library-category').value='全部';return searchLibrary();}
+$('#library-clear').addEventListener('click',()=>{libraryHome();$('#library-search').focus();});
+$('#library-home-button').addEventListener('click',()=>libraryHome());
+$('#library-browse-all').addEventListener('click',()=>{clearTimeout(searchTimer);libraryBrowseAll=true;$('#library-search').value='';$('#library-category').value='全部';searchLibrary();});
+$('#library-current-open').addEventListener('click',()=>{void loadWorkspace();const section=$('#library-current-section');section.open=true;section.scrollIntoView({block:'nearest'});section.querySelector('summary').focus({preventScroll:true});});
 $$('[data-query]').forEach(button=>button.addEventListener('click',()=>{$('#library-search').value=button.dataset.query;$('#library-category').value='全部';searchLibrary();}));
-async function searchLibrary(reset=true){const seq=++libraryRequest;const query=$('#library-search').value,category=$('#library-category').value;const home=!query.trim()&&category==='全部'&&typeof loadWorkspace==='function';$('#library-home').hidden=!home;$('#library-results').hidden=home;$('#library-more').hidden=home;if(home){$('#library-results-label').textContent='从当前已知资料、常用决策或收藏开始';await loadWorkspace();return;}if(reset){libraryOffset=0;$('#library-results').replaceChildren();}const offset=libraryOffset;$('#library-more').disabled=true;try{const response=await fetch('/api/library?'+new URLSearchParams({q:query,category,offset}));if(!response.ok)throw new Error('手册暂时无法读取');const result=await response.json();if(seq!==libraryRequest)return;for(const row of result.entries){const button=document.createElement('button');button.className='library-card';button.innerHTML=`<span class="tiny-label">${escapeHTML(row.type_label||row.category)}</span><h3>${typeof referenceNameHTML==='function'?referenceNameHTML(row.id,row.name):escapeHTML(row.name)}</h3><p>${escapeHTML(row.description)}</p>${row.match_reason?`<small class="match-reason">${escapeHTML(row.match_reason)}</small>`:''}<span class="reference-badge">${row.numeric_status==='legacy'?'已从当前版本移除':'查看具体数值 →'}</span>`;button.addEventListener('click',()=>showReference(row,result.version));if(typeof bindReferencePreview==='function')bindReferencePreview(button,row);$('#library-results').append(button);}libraryOffset=offset+result.entries.length;$('#library-results-label').textContent=`找到 ${result.total} 条 · 已显示 ${libraryOffset} 条${(result.explanation||result.query_interpretation)?' · 查询解释：'+(result.explanation||result.query_interpretation):''}`;$('#library-more').hidden=libraryOffset>=result.total;if(!result.total){$('#library-results').innerHTML='<div class="no-results"><p>没有找到匹配资料。试试官方名称、别称或需求，例如「回血」「力量不足」「怎么逃跑」。</p><div id="library-suggestions" class="quick-searches"></div></div>';for(const q of result.suggestions?.length?result.suggestions:['治疗','力量','隐形']){const b=document.createElement('button');b.textContent=typeof q==='string'?q:q.query||q.name;b.addEventListener('click',()=>{$('#library-search').value=typeof q==='string'?q:q.query||q.name;searchLibrary();});$('#library-suggestions').append(b);}}}catch(error){if(seq===libraryRequest){$('#library-results-label').textContent=error.message;$('#library-results-label').setAttribute('role','alert');}}finally{if(seq===libraryRequest)$('#library-more').disabled=false;}}
-$('#library-search').addEventListener('keydown',event=>{if(event.key==='Enter'||event.key==='ArrowDown'){event.preventDefault();clearTimeout(searchTimer);const query=$('#library-search').value,category=$('#library-category').value,nav=navigationSerial;searchLibrary().then(()=>{if(query!==$('#library-search').value||category!==$('#library-category').value||nav!==navigationSerial)return;const container=$('#library-results').hidden?$('#library-home'):$('#library-results'),first=container.querySelector('button');if(event.key==='Enter')first?.click();else first?.focus();});}});
-$('#library-results').addEventListener('keydown',event=>{if(!['ArrowDown','ArrowUp'].includes(event.key))return;const buttons=$$('#library-results button'),index=buttons.indexOf(document.activeElement);if(index<0)return;event.preventDefault();if(index===0&&event.key==='ArrowUp')$('#library-search').focus();else buttons[Math.max(0,Math.min(buttons.length-1,index+(event.key==='ArrowDown'?1:-1)))].focus();});
+function libraryEntryButton(row,version){
+  const button=document.createElement('button');button.type='button';button.className='library-card library-entry';button.dataset.referenceId=row.id;
+  const status=row.numeric_status==='legacy'?'<span class="reference-badge">已从当前版本移除</span>':'';
+  button.innerHTML=`${typeof referenceImageHTML==='function'?referenceImageHTML(row.id,row.name):''}<span class="library-entry-text"><strong class="reference-name">${escapeHTML(row.name)}</strong>${row.display_hint?`<span class="library-entry-hint">${escapeHTML(row.display_hint)}</span>`:''}${row.match_reason?`<span class="match-reason">${escapeHTML(row.match_reason)}</span>`:''}${status}</span>`;
+  button.addEventListener('click',()=>showReference(row,version));if(typeof bindReferencePreview==='function')bindReferencePreview(button,row);return button;
+}
+async function searchLibrary(reset=true){
+  const seq=++libraryRequest,query=$('#library-search').value,category=$('#library-category').value,home=libraryIsHome()&&typeof loadWorkspace==='function';
+  $('#library-home').hidden=!home;$('#library-results').hidden=home;$('#library-more').hidden=true;
+  $('#library-results-label').setAttribute('role','status');$('#library-home-button').setAttribute('aria-pressed',String(home));$('#library-browse-all').setAttribute('aria-pressed',String(!home&&!query.trim()&&category==='全部'));
+  if(home){$('#library-results-label').textContent='';await loadWorkspace();return;}
+  if(reset){libraryOffset=0;$('#library-results').replaceChildren();}
+  const offset=libraryOffset;$('#library-more').disabled=true;$('#library-results').setAttribute('aria-busy','true');$('#library-results-label').textContent='正在查找…';
+  try{
+    const response=await fetch('/api/library?'+new URLSearchParams({q:query,category,offset}));if(!response.ok)throw new Error('图鉴暂时无法读取');
+    const result=await response.json();if(seq!==libraryRequest)return;
+    for(const row of result.entries)$('#library-results').append(libraryEntryButton(row,result.version));
+    libraryOffset=offset+result.entries.length;
+    $('#library-results-label').textContent=`${result.total} 条资料 · 已显示 ${libraryOffset} 条${(result.explanation||result.query_interpretation)?' · '+(result.explanation||result.query_interpretation):''}`;
+    $('#library-more').hidden=libraryOffset>=result.total;
+    if(!result.total){
+      $('#library-results').innerHTML='<div class="no-results"><p>没有匹配资料。试试名称、别称或效果。</p><div id="library-suggestions" class="quick-searches"></div></div>';
+      for(const q of result.suggestions?.length?result.suggestions:['治疗','力量','隐形']){const button=document.createElement('button');button.type='button';button.textContent=typeof q==='string'?q:q.query||q.name;button.addEventListener('click',()=>{$('#library-search').value=button.textContent;searchLibrary();});$('#library-suggestions').append(button);}
+    }
+  }catch(error){if(seq===libraryRequest){$('#library-results-label').textContent=error.message;$('#library-results-label').setAttribute('role','alert');$('#library-more').hidden=offset===0;}}
+  finally{if(seq===libraryRequest){$('#library-more').disabled=false;$('#library-results').setAttribute('aria-busy','false');}}
+}
+function visibleLibraryButtons(){const container=$('#library-results').hidden?$('#library-home'):$('#library-results');return Array.from(container.querySelectorAll('button.workspace-reference,button.library-card')).filter(button=>button.getClientRects().length);}
+$('#library-search').addEventListener('keydown',event=>{
+  if(!['Enter','ArrowDown'].includes(event.key))return;event.preventDefault();clearTimeout(searchTimer);
+  const query=$('#library-search').value,category=$('#library-category').value,nav=navigationSerial;
+  searchLibrary().then(()=>{if(query!==$('#library-search').value||category!==$('#library-category').value||nav!==navigationSerial||$('#library-results-label').getAttribute('role')==='alert')return;const first=visibleLibraryButtons()[0];if(event.key==='Enter')first?.click();else first?.focus();});
+});
+for(const selector of ['#library-results','#library-home'])$(selector).addEventListener('keydown',event=>{
+  if(!['ArrowDown','ArrowUp'].includes(event.key))return;const buttons=visibleLibraryButtons(),index=buttons.indexOf(document.activeElement);if(index<0)return;
+  event.preventDefault();if(index===0&&event.key==='ArrowUp')$('#library-search').focus();else buttons[Math.max(0,Math.min(buttons.length-1,index+(event.key==='ArrowDown'?1:-1)))].focus();
+});
 $('#refresh').addEventListener('click',()=>action(async()=>{await post('/api/refresh');toast(state?.settings.mode==='manual'?'手动局势需要重新填写；刷新不会更新输入内容或时间。':'已重新读取磁盘上的存档。若未更新，请先在游戏内保存。');}));
 let settingsWriteGeneration=0;
 async function postSettings(patch,expected=state?.settings_revision){const result=await post('/api/settings',{...patch,expected_revision:expected});settingsWriteGeneration++;return result;}
@@ -343,5 +463,5 @@ $('#stop-service').addEventListener('click',()=>requestWebSessionExit());
 let polling=false;
 const panelClient=crypto.randomUUID();let panelAcknowledged=null,panelHandling=null;
 async function followPanelRequest(){try{const result=await post('/api/panel',{action:'heartbeat',client:panelClient,ack:panelAcknowledged});if(result.command&&panelHandling!==result.command.serial){panelHandling=result.command.serial;try{navigate(result.command.page);if(result.command.plan_id&&typeof openPlan==='function')await openPlan(result.command.plan_id);panelAcknowledged=result.command.serial;window.focus();}finally{panelHandling=null;}}}catch(error){/* Main connection state is handled by poll. */}}
-async function poll(){if(polling)return;polling=true;const writeGeneration=settingsWriteGeneration;try{const response=await fetch('/api/status');if(!response.ok)throw new Error('连接失败');const next=await response.json();if(writeGeneration!==settingsWriteGeneration)return;state=next;token=state.token;syncBackupContext(state.backup_context);render();renderBackupHealth();if(view==='settings')loadSettings();if(typeof refreshItemDisclosure==='function')refreshItemDisclosure();if(typeof refreshNumericalOrigin==='function')refreshNumericalOrigin();if(typeof renderEquipmentComparison==='function')renderEquipmentComparison();if(view==='backups')loadBackups();if(typeof refreshWorkspaceViews==='function')refreshWorkspaceViews();if(typeof refreshScoutingContext==='function')refreshScoutingContext();await followPanelRequest();if(typeof handleWebExitState==='function'&&state.exit)void handleWebExitState(state.exit);if(typeof reportWebExitSurface==='function'&&!['backing-up','finished'].includes(state.exit?.phase))void reportWebExitSurface();if(!initialPanelPlanHandled&&initialPanelPlan&&typeof openPlan==='function'){initialPanelPlanHandled=true;navigate('workspace');await openPlan(initialPanelPlan);} }catch(error){state=null;token=null;syncBackupContext(null);if(typeof refreshScoutingContext==='function')refreshScoutingContext();renderBackupHealth();lastRender='';slotsSignature='';$('#connection-banner').className='connection-banner error';$('#connection-banner').textContent='助手服务已停止或连接中断。重新打开「灯火」；也可从随行窗口的更多菜单打开完整面板。';$('#connection-short').textContent='服务未连接';$('#sidebar-dot').className='dot error';$('#stop-countdown').textContent='';$('#adventure').hidden=true;$('#empty-state').hidden=false;$('#empty-title').textContent='助手连接已中断';$('#empty-description').textContent='连接中断，上一局势已失效。恢复连接后重新读取。';renderInventory();if(typeof refreshItemDisclosure==='function')refreshItemDisclosure();if(typeof refreshNumericalOrigin==='function')refreshNumericalOrigin();if(typeof decisionRequest!=='undefined'){decisionRequest++;decisionSignature='';decisionState=null;$('#decision-options').replaceChildren();} $('#restore-dialog').close();restoreTarget=null;backupState=null;backupViewKeys.clear();$('#backup-history').replaceChildren();$('#backup-retained').replaceChildren();$('#backup-undo').replaceChildren();$('#backup-nodes').textContent='连接中断，请重新启动助手后查看备份。';$('#backup-status').textContent='自动备份状态尚未确认。';if(typeof renderWebExitReceipt==='function')renderWebExitReceipt();}finally{polling=false;}}
+async function poll(){if(polling)return;polling=true;const writeGeneration=settingsWriteGeneration;try{const response=await fetch('/api/status');if(!response.ok)throw new Error('连接失败');const next=await response.json();if(writeGeneration!==settingsWriteGeneration)return;state=next;token=state.token;syncBackupContext(state.backup_context);render();renderBackupHealth();if(view==='settings')loadSettings();if(typeof refreshItemDisclosure==='function')refreshItemDisclosure();if(typeof refreshNumericalOrigin==='function')refreshNumericalOrigin();if(typeof renderEquipmentComparison==='function')renderEquipmentComparison();if(view==='backups')loadBackups();if(typeof refreshWorkspaceViews==='function')refreshWorkspaceViews();if(typeof refreshScoutingContext==='function')refreshScoutingContext();await followPanelRequest();if(typeof handleWebExitState==='function'&&state.exit)void handleWebExitState(state.exit);if(typeof reportWebExitSurface==='function'&&!['backing-up','finished'].includes(state.exit?.phase))void reportWebExitSurface();if(!initialPanelPlanHandled&&initialPanelPlan&&typeof openPlan==='function'){initialPanelPlanHandled=true;navigate('workspace');await openPlan(initialPanelPlan);} }catch(error){state=null;token=null;if(typeof renderUpdate==='function')renderUpdate();syncBackupContext(null);if(typeof refreshScoutingContext==='function')refreshScoutingContext();renderBackupHealth();lastRender='';slotsSignature='';$('#connection-banner').className='connection-banner error';$('#connection-banner').textContent='助手服务已停止或连接中断。重新打开「灯火」；也可从随行窗口的更多菜单打开完整面板。';$('#connection-short').textContent='服务未连接';$('#overview-source').textContent=overviewSourceWarning(null);$('#overview-source').hidden=false;$('#sidebar-dot').className='dot error';$('#stop-countdown').textContent='';$('#adventure').hidden=true;$('#empty-state').hidden=false;$('#empty-title').textContent='助手连接已中断';$('#empty-description').textContent='连接中断，上一局势已失效。恢复连接后重新读取。';renderInventory();if(typeof refreshItemDisclosure==='function')refreshItemDisclosure();if(typeof refreshNumericalOrigin==='function')refreshNumericalOrigin();if(typeof decisionRequest!=='undefined'){decisionRequest++;decisionSignature='';decisionState=null;$('#decision-options').replaceChildren();} $('#restore-dialog').close();restoreTarget=null;backupState=null;backupViewKeys.clear();$('#backup-history').replaceChildren();$('#backup-retained').replaceChildren();$('#backup-undo').replaceChildren();$('#backup-nodes').textContent='连接中断，请重新启动助手后查看备份。';$('#backup-status').textContent='自动备份状态尚未确认。';if(typeof renderWebExitReceipt==='function')renderWebExitReceipt();}finally{polling=false;}}
 initializeBackups();calculate();navigate(location.hash.slice(1) || 'overview','replace');poll().then(()=>{if(view==='settings')loadSettings();});setInterval(poll,2000);

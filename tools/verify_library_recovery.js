@@ -5,12 +5,13 @@ const source=fs.readFileSync(path.join(__dirname,'../web/workspace.js'),'utf8');
 function harness(){
   const nodes=new Map(),pending=[],messages=[],downloads=[],blobs=[];
   function element(tag='div'){
-    const node={tagName:tag.toUpperCase(),value:'',textContent:'',innerHTML:'',hidden:false,checked:false,disabled:false,isConnected:true,
+    const node={tagName:tag.toUpperCase(),id:'',value:'',textContent:'',innerHTML:'',hidden:false,checked:false,disabled:false,isConnected:true,
       dataset:{},children:[],listeners:{},queries:new Map(),open:false,
       addEventListener(event,callback){this.listeners[event]=callback;},setAttribute(key,value){this[key]=value;},
       append(...children){for(const child of children){child.parentNode=this;this.children.push(child);}},
       before(child){const parent=this.parentNode;assert(parent,'synthetic parent');child.parentNode=parent;parent.children.splice(parent.children.indexOf(this),0,child);},
       replaceChildren(...children){this.children=[];this.append(...children);},
+      contains(child){return child===this||this.children.some(row=>row.contains(child));},
       remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(row=>row!==this);this.isConnected=false;},
       querySelector(selector){
         if(selector.startsWith('.'))return this.children.find(row=>(row.className||'').split(' ').includes(selector.slice(1)))||null;
@@ -22,7 +23,7 @@ function harness(){
       click(){if(this.tagName==='A')downloads.push({href:this.href,download:this.download});return this.listeners.click?.();}};
     return node;
   }
-  const get=selector=>{if(!nodes.has(selector))nodes.set(selector,element());return nodes.get(selector);};
+  const get=selector=>{if(!nodes.has(selector)){const node=element();if(selector.startsWith('#'))node.id=selector.slice(1);nodes.set(selector,node);}return nodes.get(selector);};
   get('#workspace-confirm').append(get('#workspace-confirm-form'));
   const context=vm.createContext({URLSearchParams,Blob,URL:{createObjectURL(blob){blobs.push(blob);return 'blob:synthetic';},revokeObjectURL(){}},
     $:get,$$:()=>[],document:{activeElement:null,createElement:element,addEventListener(){},querySelector(){return null;}},

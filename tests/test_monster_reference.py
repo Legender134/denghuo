@@ -29,6 +29,26 @@ class MonsterReferenceTests(unittest.TestCase):
         block=next(row for row in self.detail(name,**params)['blocks'] if row['title']=='特殊攻击与机制')
         return {row['label']:row for row in block['values']}
 
+    def test_default_mechanisms_include_phase_position_and_variant_conditions(self):
+        normal=' '.join(self.detail('goo')['blocks'][0]['reading_notes'])
+        challenge=' '.join(self.detail('goo',stronger_bosses=1)['blocks'][0]['reading_notes'])
+        self.assertIn('2次自身攻击行动',normal)
+        self.assertIn('1次自身攻击行动',challenge)
+        self.assertIn('目标冷却',challenge)
+        self.assertIn('1至3倍',challenge)
+        for strong, thresholds in ((0,'200／100'),(1,'300／200／100')):
+            notes=' '.join(self.detail('dm300',stronger_bosses=strong)['blocks'][0]['reading_notes'])
+            self.assertIn('超充期间无敌',notes)
+            self.assertIn('当前供能塔',notes)
+            self.assertIn(thresholds,notes)
+        for variant, condition in (('rotting','60%'),('rusted','当前池的10%'),('soiled','达到6格'),
+                                   ('burning','遇水先蒸干'),('bright','失明'),('dark','已有光亮')):
+            notes=' '.join(self.detail('yogfist$'+variant+'fist')['blocks'][0]['reading_notes'])
+            self.assertIn('基座4格以内时无敌',notes)
+            self.assertIn(condition,notes)
+            self.assertNotIn('初始远程冷却',notes)
+            self.assertNotIn('远程施放耗时',notes)
+
     def test_primary_combat_values_merge_equal_health_and_use_calculated_attack(self):
         for name,params,health,damage in (('rat',{},'8','1–4'),
                                         ('piranha',{'depth':4},'30','4–12'),
@@ -899,6 +919,10 @@ class MonsterReferenceTests(unittest.TestCase):
         self.assertEqual(dark['远程命中后削减光亮持续']['value'],'50')
         self.assertIn('仅目标已有光亮',dark['远程命中后削减光亮持续']['condition'])
         self.assertEqual(dark['半血传送或死亡时的光亮']['value'],'移除玩家光亮状态')
+        notes=' '.join(self.detail('yogfist$darkfist')['blocks'][0]['reading_notes'])
+        self.assertIn('缩短50回合', notes)
+        self.assertIn('半血传送或死亡均移除玩家已有光亮', notes)
+        self.assertIn('直接致死不触发半血传送', notes)
         self.assertIn('直接致死',str(self.defenses('yogfist$brightfist')['rows']))
 
     def test_burning_and_soiled_fists_expose_environment_and_status_parameters(self):

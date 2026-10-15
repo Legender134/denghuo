@@ -70,8 +70,27 @@ def add_resource_values(identity,p,result,requested):
         metric('治疗池总量',outcome['pool'],'HP','满血后的剩余额度会继续消耗' if outcome['gradual'] else '即时恢复，无新增治疗池'),
         metric('饮用耗时',1 if p['dew_volume'] else 0,'回合','按所填水量饮用' if p['dew_volume'] else '空水袋未执行饮用'),
     ],'按所填生命、露珠、天赋、现有屏障和凝血试管计算；这些条件不是已确认的实时游戏状态。'))
-    result[0]['primary_values'] = [result[0]['values'][3], result[0]['values'][4]]
-    result[0]['summary_note'] = result[0]['note']
+    result[0]['healing_timing'] = 'gradual' if outcome['gradual'] else 'instant'
+    if not outcome['consumed']:
+        primary = [metric('可用露珠', 0, '滴')]
+        summary = '水袋没有露珠，无法饮用。'
+    elif outcome['gradual']:
+        primary = [metric('首次恢复', outcome['first_heal'], 'HP'),
+                   metric('逐回合合计', outcome['actual_heal'], 'HP')]
+        summary = '假设期间不再受伤；不含已有治疗，不能直接相加。'
+        if outcome['shield']:
+            summary = '另增屏障 ' + str(outcome['shield']) + ' 点；' + summary
+    else:
+        primary = [metric('即时恢复', outcome['actual_heal'], 'HP')]
+        if outcome['shield']:
+            primary.append(metric('新增屏障', outcome['shield'], '点'))
+        summary = '不含已有治疗。'
+        if not outcome['actual_heal'] and not outcome['shield']:
+            summary = '按所填条件没有生命或屏障收益。'
+    if outcome['consumed']:
+        summary = '消耗 ' + str(outcome['consumed']) + ' 滴，剩 ' + str(outcome['remaining']) + ' 滴。' + summary
+    result[0]['primary_values'] = primary
+    result[0]['summary_note'] = summary
     result.append(block('露珠生效条件',[
         metric('每滴基础恢复量',rounded(f(p['max_hp']*f(.05))),'HP','单滴，按最大生命的5%取整'),
         metric('露珠容量',20,'滴'),

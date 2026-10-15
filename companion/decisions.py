@@ -37,6 +37,20 @@ RISK_REFERENCES = {
 }
 
 
+BOSS_REFERENCE_IDS = frozenset('actors.mobs.' + name for name in
+    ('goo', 'tengu', 'dm300', 'dwarfking', 'yogdzewa', 'pylon'))
+
+
+def boss_context(snapshot, identity):
+    """Only import a confirmed public challenge for an explicit current reference."""
+    data = {} if snapshot.get('error') else snapshot.get('data') or {}
+    mask = data.get('challenges_mask')
+    if (identity in BOSS_REFERENCE_IDS and data.get('challenges_known') is True
+            and type(mask) is int and 0 <= mask <= 511):
+        return {'stronger_bosses': int(bool(mask & 256))}
+    return {}
+
+
 def public_context(snapshot):
     data = {} if snapshot.get('error') else snapshot.get('data') or {}
     hero = data.get('hero',{})
@@ -163,6 +177,7 @@ def context_actions(session,snapshot):
                        'level_origin':'example',
                        'source_label':'资料参考 · 实际资源与行动条件请另行核对'} for entry in identities if entry in entries]
         for reference in references:
+            reference['params'].update(boss_context(snapshot, reference['entry']))
             if reference['entry'] == 'actors.buffs.healing':
                 active = [buff for buff in data.get('buffs', []) if buff.get('kind') == 'Healing']
                 if len(active) == 1:
@@ -203,6 +218,10 @@ def context_actions(session,snapshot):
                   'restriction':'生命值为0；普通行动建议暂停，先核对复活或狂暴状态' if hero['hp']<=0 else
                                 '当前状态限制主动行动；解除后再核对是否能使用' if blocked else '',
                   'calculation_missing':'', 'note':'所记资源需按当前游戏画面核对；资料入口不会替你操作游戏'}
+        if entry.startswith('items.scrolls.'):
+            unreadable = '、'.join(label for buff, label in (('Blindness', '失明'), ('MagicImmune', '魔法免疫')) if buff in buffs)
+            if unreadable:
+                option['restriction'] += ('；' if option['restriction'] else '') + unreadable + '期间无法阅读卷轴'
         if kind == 'Blandfruit':
             option['fruit_state'] = dict(fruit)
             option['related'] = item.get('related', [])
@@ -248,6 +267,7 @@ def context_actions(session,snapshot):
                 option['calculation_missing']=('、'.join(missing)+'未确认；补全后计算，未确认参数仍是示例') if missing else ''
                 if not option['restriction'] and not missing:
                     details=session.values.detail(entry,option['params'])
+                    option['healing_timing']=details['blocks'][0]['healing_timing']
                     option['values']=[row for block in details['blocks'] for row in block.get('values',[]) if row['label'] in ('本次消耗露珠','饮用后剩余露珠','首次恢复','最终实际恢复','实际新增屏障')]
                 option['note']='凝血试管可能让多滴露珠逐次恢复；回血与护盾按实际分支分配'
         if kind in FOODS:
@@ -357,17 +377,31 @@ def add_food_context(session, data, kind, entry, option, known_available):
         option['calculation_missing'] = '此食物没有已核对的固定饱食量；请查独立说明。'
         return
     amount = float(nutrition)
+    modifiers = []
     if '饥饿游戏' in data.get('challenges',[]):
         amount /= 3
+        modifiers.append('饥饿游戏')
         option['values'].append(metric('饥饿游戏基础饱食恢复',amount,'点','食物基础值除以3；仍需核对丰饶之角与节庆等修正'))
     horns = [item for item in known_available if item.get('kind') == 'HornOfPlenty' and item.get('location') in ('神器', '饰品')]
     if len(horns)==1 and horns[0].get('cursed') is True:
         amount *= .67
+        modifiers.append('已知诅咒丰饶之角')
         option['values'].append(metric('已知诅咒丰饶之角下的参考恢复',amount,'点','按已知装备记录再乘0.67；请核对该局实际生效状态'))
     elif horns and any(item.get('cursed') is None for item in horns):
         option['calculation_missing'] = '丰饶之角诅咒状态未确认；不能把基础恢复当作此局确定结果。'
+    if not option.get('calculation_missing'):
+        limits = {'Pasty': '节庆外观可能改变饱食量与效果', 'MeatPie': '还会赋予饱腹；不超过普通饱食上限',
+                  'MysteryMeat': '生肉可能附带负面状态', 'Blandfruit': '还会对英雄施加烹煮药剂效果',
+                  'FrozenCarpaccio': '冷冻附加效果另计', 'PhantomMeat': '灵肉特殊效果另计'}
+        note = '；'.join([*modifiers, *([limits[kind]] if kind in limits else []), '非即时回血；进食时敌人仍会行动'])
+        primary = [metric('每份参考饱食', amount, '点')]
+        if '进食耗时' in cells:
+            primary.append({**cells['进食耗时'], 'label': '基础进食耗时', 'condition': '进食天赋可能缩短至1回合'})
+        option['food_reference'] = {'title': '捕获条件下的进食参考', 'primary_values': primary, 'summary_note': note}
     hunger = data['hero'].get('hunger')
     if isinstance(hunger,(int,float)) and not isinstance(hunger,bool) and kind not in ('Pasty','Blandfruit'):
         option['values'].append(metric('进食后饥饿值参考',max(0,hunger-amount),'点',
             '仅扣本次基础食物恢复；未计进食期间饥饿增长、天赋、特殊状态与未确认修正，不保证即时解除危险'))
     option['note'] += ('果实药剂效果及挑战另行判断；' if kind == 'Blandfruit' else '药水恐惧不把普通食物变成治疗药剂；') + '食物饱食恢复不等于即时回血。诅咒丰饶之角会降低恢复，未确认的状态需在游戏中核对。'
+    if 'food_reference' in option:
+        option['food_reference']['values'] = [dict(row) for row in option['values']]
