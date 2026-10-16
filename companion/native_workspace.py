@@ -627,6 +627,9 @@ class NumericLookup:
                 else:
                     self.input_origins[key] = self.input_origins.get(key, '示例 · 请核对').split(' · 最新记录未确认')[0]+' · 最新记录未确认' + (
                         ' · ' + context['conditions'].split('；')[0] if key in ('talent', 'shielding_dew') and context.get('conditions') else '')
+        if not imported and prior and context.get('skill_state'):
+            prior['skill_state'] = context['skill_state']
+            prior['conditions'] = context.get('conditions', '')
         self.context = context if imported else prior or context
         self.edit_revision += 1
         self.ticket = self.submitted = None

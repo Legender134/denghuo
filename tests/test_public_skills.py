@@ -214,6 +214,8 @@ class PublicSkillWorkflowTests(unittest.TestCase):
         self.assertEqual(lookup.raw_params()['talent'], '1')
         self.assertIn('尚未学会', lookup.input_origins['talent'])
         self.assertIn('独立示例', lookup.context['conditions'])
+        self.assertNotIn('已投入 2 点', lookup.context['conditions'])
+        self.assertEqual(lookup.context['source'], prior['context']['source'])
         lookup.undo_import()
         self.assertEqual(lookup.raw_params(), prior['raw_params'])
         self.assertEqual(lookup.input_origins, prior['origins'])
@@ -267,13 +269,15 @@ class PublicSkillWorkflowTests(unittest.TestCase):
         self.session.data['buffs'] = [{'kind':'Barrier', 'current_shield': 7}]
         lookup.use_latest(); self.finish()
         self.assertEqual(lookup.raw_params()['current_shield'], '7')
-        self.assertIn(lookup.input_origins['current_shield'], ('最近保存的记录','旧快照记录'))
+        shield_origin = lookup.input_origins['current_shield']
+        self.assertTrue(shield_origin.startswith(('最近保存的记录 · 槽位 1 · ', '旧快照记录 · 槽位 1 · ')))
+        self.assertTrue(shield_origin.endswith(' 保存'))
         for buffs in ([{'kind':'Barrier'}], [{'kind':'Barrier','current_shield':3}, {'kind':'Barrier','current_shield':4}]):
             self.session.data['buffs'] = buffs
             lookup.variables['current_shield'].set('9')
             lookup.use_latest(); self.finish()
             self.assertEqual(lookup.raw_params()['current_shield'], '9')
-            self.assertIn('手填保留', lookup.input_origins['current_shield'])
+            self.assertEqual(lookup.input_origins['current_shield'], '手填 · 最新记录未确认')
         self.session.data['buffs']=[]
         self.session.data['buffs_known']=False
         lookup.use_latest();self.finish()
@@ -286,10 +290,11 @@ class PublicSkillWorkflowTests(unittest.TestCase):
         lookup.use_latest(); self.finish()
         self.assertEqual(lookup.raw_params()['power'], '80')
         self.assertEqual(lookup.raw_params()['healing_percent'], '10.0')
+        power_origin = lookup.input_origins['power']
         self.session.data['buffs'] = [{'kind':'Healing'}]
         lookup.use_latest(); self.finish()
         self.assertEqual(lookup.raw_params()['power'], '80')
-        self.assertIn('手填保留', lookup.input_origins['power'])
+        self.assertEqual(lookup.input_origins['power'], power_origin+' · 最新记录未确认')
 
     def test_old_free_spell_plans_reopen_without_rewriting_or_loosening_new_save(self):
         store = self.session.knowledge

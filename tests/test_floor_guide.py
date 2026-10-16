@@ -393,7 +393,8 @@ class NativeFloorGuideTests(unittest.TestCase):
         self.assertTrue(controller.lookup.open_plan(record_id, False))
         origin = controller.lookup.saved_plan['origin']
         self.assertEqual({key: origin[key] for key in expected}, expected)
-        self.assertEqual(origin['fields']['hero_level'], '快照')
+        self.assertTrue(origin['fields']['hero_level'].startswith('快照 · 槽位 1 · '))
+        self.assertTrue(origin['fields']['hero_level'].endswith(' 保存'))
         self.assertEqual(controller.lookup.calculated['hero_level'], 5)
 
     def test_native_public_mechanism_preview_discloses_its_example_inputs(self):
