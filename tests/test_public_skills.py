@@ -240,6 +240,29 @@ class PublicSkillWorkflowTests(unittest.TestCase):
         self.assertTrue(lookup.input_origins['talent'].startswith('示例'))
         self.assertIn('不适用', lookup.text.text)
 
+    def test_native_spell_prerequisite_stays_visible_for_fixed_and_undone_trials(self):
+        lookup = self.lookup()
+        lookup.select_row(next(row for row in self.session.catalog.entries if row['id']==SPELL+'sunray'))
+        self.finish()
+        self.assertEqual(lookup.spell_availability_notice(), '')
+        self.assertTrue(lookup.save_plan('原两点试算'))
+        record_id = lookup.saved_plan['id']
+        original = copy.deepcopy(lookup.calculated)
+        self.change_save(talents_tier_2={})
+        self.assertIn('槽位 1 · 尚未学会', lookup.spell_availability_notice())
+        lookup.use_latest(); self.finish(); lookup.undo_import()
+        self.assertEqual(lookup.calculated, original)
+        self.assertIn('以下仅为试算', lookup.spell_availability_notice())
+        lookup.open_plan(record_id, False)
+        self.assertEqual(lookup.calculated, original)
+        lookup.emit()
+        self.assertIn('尚未学会', self.host.commands[-1][1]['primary_notice'])
+        self.change_save(talents_tier_2={'SUNRAY':1})
+        self.assertEqual(lookup.spell_availability_notice(), '')
+        self.assertEqual(lookup.calculated, original)
+        self.change_save(**{'class':'MAGE','subClass':'WARLOCK'})
+        self.assertIn('角色不适用', lookup.spell_availability_notice())
+
     def test_http_current_reference_and_entry_specific_values_use_actual_save(self):
         from companion.server import Server
         with Server(self.session) as server:

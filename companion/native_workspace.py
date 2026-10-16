@@ -433,6 +433,20 @@ class NumericLookup:
             sections.insert(0, {**copy.deepcopy(food), 'index': -1, 'collapsed': False, 'selected_values': []})
         return sections, prose
 
+    def spell_availability_notice(self):
+        """Separate the connected character's prerequisite from fixed trial values."""
+        if not self.identity or not self.identity.startswith('actors.hero.spells.') or '$' in self.identity:
+            return ''
+        from .public_skills import skill_context
+        snap = self.owner.manager.session.snapshot()
+        state = skill_context(snap, self.identity).get('skill_state', 'unknown')
+        reason = {'not_learned': '尚未学会', 'not_applicable': '角色不适用',
+                  'unknown': '是否学会未确认'}.get(state, '')
+        if not reason:
+            return ''
+        scope = '槽位 '+str(snap['active_slot'])+' · ' if snap['settings']['mode'] == 'save' and snap.get('active_slot') else ''
+        return scope+reason+'；以下仅为试算'
+
     def primary_presentation(self, sections):
         """Use explicit result metadata; never infer the answer by parsing Chinese prose."""
         if self.dirty or self.calculated is None or self.calculating or self.parameter_error:
@@ -1106,6 +1120,7 @@ class NumericLookup:
                    'token': binding_token(row), 'artwork': native_artwork(row.get('id'))}
                   for text, row in zip(self.list.values, self.rows)], fields=fields, note=self.note.get(),
             category=self.category, categories=self.categories(), suggested=self.suggested,
+            primary_notice=self.spell_availability_notice(),
             shown_count=len(self.rows), total_count=self.total, page_offset=self.browse_offset,
             scope_source=next((row.get('lookup_context', {}).get('source_label', '') for row in self.rows), '') if self.category == '随身' else '',
             suggestions=[{'text': row['name']+' · '+row['type_label'], 'token': binding_token(row),

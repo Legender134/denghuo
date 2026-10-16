@@ -478,7 +478,7 @@ namespace Denghuo.Native {
             return targets;
         }
         void RenderArticle(Dictionary<string,object> data) {
-            string signature=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(Data.Map("entry",Data.Text(data,"entry_id",""),"sections",Data.Array(data,"numeric_sections"),"summary",Data.Array(data,"primary_values"),"note",Data.Text(data,"primary_note",""),"reading_notes",Data.Array(data,"reading_notes"),"recipes",Data.Array(data,"recipes"),"text",Data.Text(data,"result",""),"origin",Data.Text(data,"origin_brief",""),"status",Data.Text(data,"status",""),"favorite",Data.Flag(data,"favorite"),"can_save",Data.Flag(data,"can_save"),"description",Data.Text(data,"description",""),"related",Data.Array(data,"related")));
+            string signature=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(Data.Map("entry",Data.Text(data,"entry_id",""),"notice",Data.Text(data,"primary_notice",""),"sections",Data.Array(data,"numeric_sections"),"summary",Data.Array(data,"primary_values"),"note",Data.Text(data,"primary_note",""),"reading_notes",Data.Array(data,"reading_notes"),"recipes",Data.Array(data,"recipes"),"text",Data.Text(data,"result",""),"origin",Data.Text(data,"origin_brief",""),"status",Data.Text(data,"status",""),"favorite",Data.Flag(data,"favorite"),"can_save",Data.Flag(data,"can_save"),"description",Data.Text(data,"description",""),"related",Data.Array(data,"related")));
             if(signature==articleSignature) return;
             var priorFocus=Keyboard.FocusedElement; var previous=ArticleTargets(true); articleSections.Clear(); articleLinks.Clear(); articleSignature=signature; article.Children.Clear();
             string identity=Data.Text(data,"entry_id",""), name=Data.Text(data,"entry_name","");
@@ -498,6 +498,8 @@ namespace Denghuo.Native {
             string variant=Data.Text(data,"entry_hint",""); if(variant.Length>0) headingText.Children.Add(UI.Text(variant,13,UI.Muted));
             string imageCaption=Data.Text(Data.Object(data,"artwork"),"caption","");
             title.Children.Add(headingText); article.Children.Add(title);
+            string prerequisite=Data.Text(data,"primary_notice","");
+            if(prerequisite.Length>0) { var notice=UI.Text(prerequisite,13,UI.Gold); notice.Margin=new Thickness(0,0,0,8); article.Children.Add(notice); }
             string introduction=Data.Text(data,"introduction","");
             string origin=Data.Text(data,"origin_brief","");
             bool conditioned=Data.Array(data,"fields").Length>0;
