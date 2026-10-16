@@ -65,6 +65,7 @@ class NumericLookup:
         self.identity = self.context = self.saved_plan = self.rendered = self.calculated = None
         self.selected_row = {}
         self.workspace_error = self.plan_error = self.parameter_error = ''
+        self.workspace_recovery_warning = ''
         self.workspace_revision, self.favorite_ids = None, set()
         self.dirty = self.draft_modified = False
         self.submitted = self.ticket = self.pending = self.return_target = None
@@ -186,6 +187,8 @@ class NumericLookup:
         status = session.workspace_status()
         self.workspace_revision, self.favorite_ids = status['revision'], set(status['favorite_ids'])
         self.workspace_error = status.get('error', '')
+        self.workspace_recovery_warning = status.get('recovery_warning', '')
+        self.workspace_error = self.workspace_error or self.workspace_recovery_warning
         self.suggested = not query and self.category == '常用' and not self.browse_all
         if self.suggested:
             self.rows = []
@@ -338,9 +341,10 @@ class NumericLookup:
         self.show_text('正在读取数值…')
         try:
             receipt = self.owner.manager.session.workspace_action({'action': 'remember', 'entry': self.identity})
-            self.workspace_error = receipt.get('recovery_warning', '')
+            self.workspace_error = self.workspace_recovery_warning = receipt.get('recovery_warning', '')
         except (ValueError, OSError) as exc:
             self.workspace_error = str(exc)
+            self.workspace_recovery_warning = ''
         self.emit()
 
     def render(self, detail, error=None, *, show_result=False):
@@ -442,11 +446,13 @@ class NumericLookup:
         from .public_skills import skill_context
         snap = self.owner.manager.session.snapshot()
         state = skill_context(snap, self.identity).get('skill_state', 'unknown')
+        scope = '槽位 '+str(snap['active_slot'])+' · ' if snap['settings']['mode'] == 'save' and snap.get('active_slot') else ''
+        if state == 'learned':
+            return scope+'已学会 · 条件试算'
         reason = {'not_learned': '尚未学会', 'not_applicable': '角色不适用',
                   'unknown': '是否学会未确认'}.get(state, '')
         if not reason:
             return ''
-        scope = '槽位 '+str(snap['active_slot'])+' · ' if snap['settings']['mode'] == 'save' and snap.get('active_slot') else ''
         return scope+reason+'；以下仅为试算'
 
     def primary_presentation(self, sections):
@@ -495,6 +501,8 @@ class NumericLookup:
         if self.parameter_error or self.plan_error or self.workspace_error:
             self.origin.text = self.parameter_error or self.plan_error or self.workspace_error
             self.origin_brief = '需要核对 · '+self.origin.text
+            if not (self.parameter_error or self.plan_error) and self.workspace_recovery_warning and self.workspace_error == self.workspace_recovery_warning:
+                self.origin_brief = '需要核对 · 健康副本未完成'
         elif self.dirty:
             self.origin.text = '参数已修改，旧结果不可继续参考；点击计算。'
             self.origin_brief = '条件已修改 · 待重新计算'
@@ -666,6 +674,9 @@ class NumericLookup:
             self.owner.peek_key = None
             self.origin.text = '已固定到随行；本次运行内保留，条件不自动更新。'
             brief = '已固定 · 本次运行'
+            if self.workspace_recovery_warning and self.workspace_error == self.workspace_recovery_warning:
+                self.origin.text += self.workspace_error
+                brief = '已固定 · 健康副本未完成'
         self.operation_receipt = self.origin.text
         self.receipt_summary = (self.operation_receipt, brief)
         self.emit()
@@ -743,6 +754,7 @@ class NumericLookup:
             self.note.value = self.saved_plan.get('note', '')
             self.pending_save = None
             self.plan_error, self.draft_modified = '', False
+            self.workspace_error = self.workspace_recovery_warning = receipt.get('recovery_warning', '')
             self.refresh_text()
             self.operation_receipt = self.origin.text = ('已更新原方案「' if update else '已保存「')+name+'」；重启后保留。'+receipt.get('recovery_warning', '')
             self.receipt_summary = (self.operation_receipt, ('已更新' if update else '已保存')+
@@ -1104,6 +1116,18 @@ class NumericLookup:
         introduction = lead.group(0) if lead else paragraph
         sections, prose = self.numeric_presentation()
         primary_values, primary_note = self.primary_presentation(sections)
+        origin_brief = self.origin_brief
+        status = self.origin.text
+        operation_receipt = self.operation_receipt
+        operation_brief = self.receipt_summary[1] if self.receipt_summary[0] == operation_receipt else ''
+        if self.workspace_recovery_warning and self.workspace_error == self.workspace_recovery_warning:
+            if self.workspace_error not in status:
+                status += '\n\n'+self.workspace_error
+            if not operation_receipt and primary_values and not (self.parameter_error or self.plan_error):
+                operation_receipt, operation_brief = self.workspace_error, '健康副本未完成'
+            # The exact operation receipt already carries this warning in the header.
+            if not (self.parameter_error or self.plan_error) and operation_brief and self.workspace_error in operation_receipt:
+                origin_brief = ''
         primary_brief = ''
         if (primary_values and self.identity in ('items.potions.potionofhealing', 'items.potions.elixirs.elixirofhoneyedhealing')
                 and all(key in self.calculated for key in ('hp', 'max_hp', 'vial'))):
@@ -1152,11 +1176,11 @@ class NumericLookup:
             primary_values=primary_values, primary_note=primary_note,
             primary_brief=primary_brief,
             reading_notes=reading_notes, recipes=self.recipe_rows(),
-            origin_brief=getattr(self, 'origin_brief', '参考示例 / 手填条件'),
+            origin_brief=origin_brief,
             calculating=self.calculating, parameter_error=self.parameter_error,
-            operation_receipt=self.operation_receipt,
-            operation_brief=self.receipt_summary[1] if self.receipt_summary[0] == self.operation_receipt else '',
-            result=self.text.text, status=self.origin.text, dirty=self.has_draft(),
+            operation_receipt=operation_receipt,
+            operation_brief=operation_brief,
+            result=self.text.text, status=status, dirty=self.has_draft(),
             needs_calculation=self.dirty or bool((self.rendered or {}).get('missing_inputs')),
             can_save=bool(self.identity and self.calculated is not None and not self.dirty and self.rendered and not self.calculating and not self.parameter_error and not (self.context or {}).get('food_reference')),
             favorite=bool(self.identity and self.identity in self.favorite_ids),

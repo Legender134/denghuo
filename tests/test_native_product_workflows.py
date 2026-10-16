@@ -340,6 +340,7 @@ class NativeProductWorkflows(fixtures.ControllerFixture):
         self.open('items.potions.potionofhealing')
         self.lookup.pin()
         self.assertIn('本次运行', self.host.commands[-1][1]['operation_brief'])
+
         self.assertTrue(self.lookup.save_plan('初始试算'))
         self.assertEqual(self.host.commands[-1][1]['operation_brief'], '已保存')
         self.assertTrue(self.lookup.save_plan('更新试算', update=True))
@@ -355,3 +356,31 @@ class NativeProductWorkflows(fixtures.ControllerFixture):
         self.lookup.pin()
         self.assertEqual(self.host.commands[-1][1]['operation_brief'], '')
         self.assertIn('有效参数', self.host.commands[-1][1]['operation_receipt'])
+
+    def test_real_healthy_copy_failure_stays_concise_and_retains_full_cause(self):
+        blocker = self.session.knowledge._healthy_directory()
+        blocker.write_text('block directory creation', encoding='utf-8')
+        self.open('actors.hero.spells.sunray')
+        for update in (False, True):
+            self.assertTrue(self.lookup.save_plan('长名称试算方案', update=update))
+            state = self.host.commands[-1][1]
+            self.assertIn('健康副本未完成', state['operation_brief'])
+            self.assertEqual(state['origin_brief'], '')
+            self.assertIn(repr(str(blocker)), state['operation_receipt'])
+            self.assertIn(repr(str(blocker)), state['status'])
+            self.assertEqual(len(self.session.knowledge.status()['plans']), 1)
+        self.lookup.pin()
+        self.lookup.emit()
+        state = self.host.commands[-1][1]
+        self.assertEqual(state['origin_brief'], '')
+        self.assertEqual(state['operation_brief'], '已固定 · 健康副本未完成')
+        self.assertIn(repr(str(blocker)), state['status'])
+        self.lookup.note.set('备注改变后仍需处理健康副本')
+        state = self.host.commands[-1][1]
+        self.assertEqual(state['operation_brief'], '健康副本未完成')
+        self.assertEqual(state['operation_receipt'], self.lookup.workspace_recovery_warning)
+        self.lookup.variables['talent'].set(' 1e ')
+        self.lookup.pin()
+        state = self.host.commands[-1][1]
+        self.assertEqual(state['operation_brief'], '')
+        self.assertEqual(self.lookup.raw_params()['talent'], ' 1e ')
