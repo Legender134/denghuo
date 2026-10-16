@@ -1,6 +1,7 @@
 """Player journeys across captured items, generated floors and save history."""
 import copy
 import json
+from unittest.mock import patch
 
 from tests import test_game_workspace as fixtures
 from companion.engine import PREFIX
@@ -318,3 +319,39 @@ class NativeProductWorkflows(fixtures.ControllerFixture):
         for warning in ('手填', '示例 · 请核对', source+' · 最新记录未确认'):
             self.lookup.input_origins['vial'] = warning; self.lookup.emit()
             self.assertIn(warning.split(' · ')[-1], self.host.commands[-1][1]['primary_note'])
+
+    def test_healing_primary_brief_keeps_basis_and_rejects_incomplete_trial(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['hp'].set('3')
+        self.lookup.variables['max_hp'].set('50')
+        self.lookup.calculate(); self.finish()
+        state = self.host.commands[-1][1]
+        for text in ('生命基准 3/50', '未计后续受伤', '药水恐惧不治疗', '试管'):
+            self.assertIn(text, state['primary_brief'])
+        self.assertIn('其他生命变化', state['primary_note'])
+        self.lookup.input_origins['vial'] = '手填 · 最新记录未确认'
+        self.lookup.emit()
+        self.assertIn('未确认', self.host.commands[-1][1]['primary_brief'])
+        self.lookup.variables['hp'].set('  1e ')
+        self.assertEqual(self.host.commands[-1][1]['primary_brief'], '')
+        self.assertEqual(self.lookup.raw_params()['hp'], '  1e ')
+
+    def test_receipt_brief_keeps_backup_failure_and_cannot_follow_new_inputs(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.pin()
+        self.assertIn('本次运行', self.host.commands[-1][1]['operation_brief'])
+        self.assertTrue(self.lookup.save_plan('初始试算'))
+        self.assertEqual(self.host.commands[-1][1]['operation_brief'], '已保存')
+        self.assertTrue(self.lookup.save_plan('更新试算', update=True))
+        self.assertEqual(self.host.commands[-1][1]['operation_brief'], '已更新')
+        with patch.object(self.session.knowledge, '_retain_healthy', side_effect=OSError('controlled healthy copy failure')):
+            self.assertTrue(self.lookup.save_plan('仍保存成功的试算'))
+        state = self.host.commands[-1][1]
+        self.assertIn('健康副本未完成', state['operation_brief'])
+        self.assertIn('controlled healthy copy failure', state['operation_receipt'])
+        self.assertEqual(self.session.knowledge.reopen(self.lookup.saved_plan['id'])['plan']['name'], '仍保存成功的试算')
+        self.lookup.variables['hp'].set('  1e ')
+        self.assertEqual(self.host.commands[-1][1]['operation_brief'], '')
+        self.lookup.pin()
+        self.assertEqual(self.host.commands[-1][1]['operation_brief'], '')
+        self.assertIn('有效参数', self.host.commands[-1][1]['operation_receipt'])

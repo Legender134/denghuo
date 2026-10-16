@@ -435,7 +435,9 @@ namespace Denghuo.Native {
             if(mode!="search" && feedback.Text.Length==0 && busy) feedback.Text="正在计算…";
             if(mode!="search" && feedback.Text.Length==0) feedback.Text=Data.Text(state,"operation_receipt","");
             feedback.ToolTip=feedback.Text; System.Windows.Automation.AutomationProperties.SetHelpText(feedback,feedback.Text);
-            if(feedback.Text.StartsWith("已保存")) feedback.Text="已保存";
+            if(mode!="search" && feedback.Text==Data.Text(state,"operation_receipt","")) {
+                string brief=Data.Text(state,"operation_brief",""); if(brief.Length>0) feedback.Text=brief;
+            }
             feedback.Visibility=feedback.Text.Length>0 ? Visibility.Visible : Visibility.Collapsed;
             bool hasEntry=Data.Text(state,"entry_id","").Length>0;
             bool custom=Data.Flag(state,"can_save") && Dirty;
@@ -493,44 +495,52 @@ namespace Denghuo.Native {
             return targets;
         }
         void RenderArticle(Dictionary<string,object> data) {
-            string signature=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(Data.Map("entry",Data.Text(data,"entry_id",""),"notice",Data.Text(data,"primary_notice",""),"sections",Data.Array(data,"numeric_sections"),"summary",Data.Array(data,"primary_values"),"note",Data.Text(data,"primary_note",""),"reading_notes",Data.Array(data,"reading_notes"),"recipes",Data.Array(data,"recipes"),"text",Data.Text(data,"result",""),"origin",Data.Text(data,"origin_brief",""),"status",Data.Text(data,"status",""),"favorite",Data.Flag(data,"favorite"),"can_save",Data.Flag(data,"can_save"),"description",Data.Text(data,"description",""),"related",Data.Array(data,"related")));
+            string signature=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(Data.Map("entry",Data.Text(data,"entry_id",""),"notice",Data.Text(data,"primary_notice",""),"brief",Data.Text(data,"primary_brief",""),"sections",Data.Array(data,"numeric_sections"),"summary",Data.Array(data,"primary_values"),"note",Data.Text(data,"primary_note",""),"reading_notes",Data.Array(data,"reading_notes"),"recipes",Data.Array(data,"recipes"),"text",Data.Text(data,"result",""),"origin",Data.Text(data,"origin_brief",""),"status",Data.Text(data,"status",""),"favorite",Data.Flag(data,"favorite"),"can_save",Data.Flag(data,"can_save"),"description",Data.Text(data,"description",""),"related",Data.Array(data,"related")));
             if(signature==articleSignature) return;
             var priorFocus=Keyboard.FocusedElement; var previous=ArticleTargets(true); articleSections.Clear(); articleLinks.Clear(); articleSignature=signature; article.Children.Clear();
             string identity=Data.Text(data,"entry_id",""), name=Data.Text(data,"entry_name","");
             if(identity.Length==0) return;
             object[] sections=Data.Array(data,"numeric_sections"), main=Data.Array(data,"primary_values"), readingNotes=Data.Array(data,"reading_notes");
             var secondary=new StackPanel(); var primaryBody=readingNotes.Length>0 ? secondary : article;
-            bool compactSpell=identity.StartsWith("actors.hero.spells.") && main.Length==2;
-            var title=new DockPanel { Margin=compactSpell ? new Thickness(0,0,0,2) : new Thickness(0,4,0,12) };
+            string primaryBrief=Data.Text(data,"primary_brief","");
+            bool compactResult=main.Length==2 && (identity.StartsWith("actors.hero.spells.") || primaryBrief.Length>0);
+            bool compactHealing=main.Length==2 && primaryBrief.Length>0;
+            var title=new DockPanel { Margin=compactResult ? new Thickness(0,0,0,2) : new Thickness(0,4,0,12) };
             var pin=UI.Button("固定",delegate { if(!Host.Frozen) { FlushEdit(); Host.Send("pin","surface","lookup"); } });
             pin.IsEnabled=Data.Flag(data,"can_save"); pin.ToolTip=pin.IsEnabled ? "固定到随行 · 保留本次条件" : Data.Flag(data,"needs_calculation") ? "先重新计算有效条件" : "当前没有可固定的有效数值条件";
             System.Windows.Controls.ToolTipService.SetShowOnDisabled(pin,true); System.Windows.Automation.AutomationProperties.SetHelpText(pin,Convert.ToString(pin.ToolTip)); UI.Name(pin,"固定到随行"); pin.Padding=new Thickness(6,2,6,2); pin.Margin=new Thickness(0); pin.Background=Brushes.Transparent; DockPanel.SetDock(pin,Dock.Right); title.Children.Add(pin); articleLinks[identity+"/pin"]=pin;
             var favorite=UI.Button(Data.Flag(data,"favorite") ? "★" : "☆",delegate { if(!Host.Frozen) { FlushEdit(); Host.Send("favorite","surface","lookup"); } });
             favorite.FontSize=22; favorite.Padding=new Thickness(6,0,6,0); favorite.Background=Brushes.Transparent; favorite.Foreground=UI.Gold; favorite.ToolTip=Data.Flag(data,"favorite") ? "取消收藏" : "收藏"; UI.Name(favorite,Convert.ToString(favorite.ToolTip));
-            if(compactSpell) favorite.Margin=new Thickness(0);
+            if(compactResult) favorite.Margin=new Thickness(0);
             DockPanel.SetDock(favorite,Dock.Right); title.Children.Add(favorite); articleLinks[identity+"/favorite"]=favorite;
-            var picture=UI.Artwork(Data.Object(data,"artwork"),compactSpell ? 28 : 38); DockPanel.SetDock(picture,Dock.Left); title.Children.Add(picture);
-            var nameText=UI.Text(name,compactSpell ? 18 : 19); nameText.FontWeight=FontWeights.SemiBold;
+            var picture=UI.Artwork(Data.Object(data,"artwork"),compactResult ? 28 : 38); DockPanel.SetDock(picture,Dock.Left); title.Children.Add(picture);
+            var nameText=UI.Text(name,compactResult ? 18 : 19); nameText.FontWeight=FontWeights.SemiBold;
             var headingText=UI.Stack(nameText); headingText.VerticalAlignment=VerticalAlignment.Center;
-            string variant=Data.Text(data,"entry_hint",""); if(variant.Length>0 && !(compactSpell && variant=="法术")) headingText.Children.Add(UI.Text(variant,13,UI.Muted));
+            string variant=Data.Text(data,"entry_hint",""); if(variant.Length>0 && !(compactResult && variant=="法术")) headingText.Children.Add(UI.Text(variant,13,UI.Muted));
             string imageCaption=Data.Text(Data.Object(data,"artwork"),"caption","");
             title.Children.Add(headingText); article.Children.Add(title);
             string prerequisite=Data.Text(data,"primary_notice","");
-            if(prerequisite.Length>0) { var notice=UI.Text(prerequisite,13,UI.Gold); notice.Margin=new Thickness(0,0,0,compactSpell ? 4 : 8); article.Children.Add(notice); }
+            if(prerequisite.Length>0) { var notice=UI.Text(prerequisite,13,UI.Gold); notice.Margin=new Thickness(0,0,0,compactResult ? 4 : 8); article.Children.Add(notice); }
+            if(primaryBrief.Length>0) { var basis=UI.Text(primaryBrief,13,UI.Gold); article.Children.Add(basis); }
             string introduction=Data.Text(data,"introduction","");
             string origin=Data.Text(data,"origin_brief","");
             bool conditioned=Data.Array(data,"fields").Length>0;
             bool caution=origin.StartsWith("旧") || origin.StartsWith("条件") || origin.StartsWith("需要") || origin.StartsWith("参考来源") || origin.StartsWith("种植");
             foreach(object raw in readingNotes) { string text=Convert.ToString(raw); if(text.Length==0) continue; var mechanism=UI.Text(text,15); mechanism.Margin=new Thickness(0,0,0,8); article.Children.Add(mechanism); }
             var primaryKeys=new HashSet<string>(); var notes=new HashSet<string>();
-            var metrics=new UniformGrid { Columns=main.Length, Margin=new Thickness(0,2,0,compactSpell ? 4 : 10) };
+            var metrics=new UniformGrid { Columns=main.Length, Margin=new Thickness(0,2,0,compactResult ? 4 : 10) };
             foreach(object raw in main) {
                 var value=(Dictionary<string,object>)raw; string label=Data.Text(value,"label",""), number=Data.Text(value,"value","?"), unit=Data.Text(value,"unit","");
                 primaryKeys.Add(label+"|"+number+"|"+unit);
-                if(main.Length==3 || compactSpell) {
-                    var labelText=UI.Text(label,compactSpell ? 12 : 13,UI.Muted);
-                    var numberText=UI.Text(number+(unit.Length>0 ? " "+unit : ""),compactSpell ? 16 : 17); numberText.FontWeight=FontWeights.SemiBold;
-                    metrics.Children.Add(UI.Stack(labelText,numberText));
+                if(main.Length==3 || compactResult) {
+                    var labelText=UI.Text(label,compactResult ? 12 : 13,UI.Muted);
+                    var numberText=UI.Text(number+(unit.Length>0 ? " "+unit : ""),compactResult ? 16 : 17); numberText.FontWeight=FontWeights.SemiBold;
+                    if(compactHealing) {
+                        var cell=UI.Text("",12,UI.Muted); cell.Inlines.Add(new System.Windows.Documents.Run(label+" "));
+                        cell.Inlines.Add(new System.Windows.Documents.Run(number+(unit.Length>0 ? " "+unit : "")) { FontSize=16,FontWeight=FontWeights.SemiBold,Foreground=UI.Ink });
+                        UI.Name(cell,label+" "+number+(unit.Length>0 ? " "+unit : ""));
+                        metrics.Children.Add(cell);
+                    } else metrics.Children.Add(UI.Stack(labelText,numberText));
                 } else {
                 var line=new DockPanel { Margin=new Thickness(0,0,0,5) };
                 var metric=UI.Text(number+(unit.Length>0 ? " "+unit : ""),18); metric.FontWeight=FontWeights.SemiBold; DockPanel.SetDock(metric,Dock.Right); line.Children.Add(metric);
@@ -538,8 +548,8 @@ namespace Denghuo.Native {
                 }
                 string noteText=Data.Text(value,"condition",""); if(noteText.Length>0) notes.Add(noteText);
             }
-            if(main.Length==3 || compactSpell) primaryBody.Children.Add(metrics);
-            string primaryNote=Data.Text(data,"primary_note",""); if(primaryNote.Length>0) notes.Add(primaryNote);
+            if(main.Length==3 || compactResult) primaryBody.Children.Add(metrics);
+            string primaryNote=Data.Text(data,"primary_note",""); if(primaryNote.Length>0) { if(primaryBrief.Length>0) secondary.Children.Add(UI.Text(primaryNote,14,UI.Gold)); else notes.Add(primaryNote); }
             foreach(string noteText in notes) { var noteLine=UI.Text(noteText,14,UI.Gold); noteLine.Margin=new Thickness(0,2,0,8); article.Children.Add(noteLine); }
             if(caution || conditioned) { var context=UI.Text(origin,13,caution ? UI.Gold : UI.Muted); context.Margin=new Thickness(0,0,0,8); article.Children.Add(context); }
             if(introduction.Length>0 && !Array.Exists(readingNotes,delegate(object value) { return Convert.ToString(value)==introduction; })) { var purpose=UI.Text(introduction,14,UI.Muted); purpose.Margin=new Thickness(0,0,0,8); (readingNotes.Length>0 || main.Length>0 ? secondary : article).Children.Add(purpose); }

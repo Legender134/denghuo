@@ -76,6 +76,7 @@ class NumericLookup:
         self.focus_listing = False
         self.calculating = False
         self.operation_receipt = ''
+        self.receipt_summary = ('', '')
         self.published_notice = ''
         self.origin_brief = '参考示例 / 手填条件'
         self.plan_filters = ('', '全部类型', '最近更新')
@@ -654,6 +655,7 @@ class NumericLookup:
         self.emit()
 
     def pin(self):
+        brief = ''
         if not self.identity or self.dirty or self.rendered is None or self.calculated is None:
             self.origin.text = '先选择条目并计算有效参数，再固定参考。'
         else:
@@ -663,7 +665,9 @@ class NumericLookup:
             self.owner.pinned_context['fixed_origins'] = dict(self.input_origins)
             self.owner.peek_key = None
             self.origin.text = '已固定到随行；本次运行内保留，条件不自动更新。'
+            brief = '已固定 · 本次运行'
         self.operation_receipt = self.origin.text
+        self.receipt_summary = (self.operation_receipt, brief)
         self.emit()
 
     def view_pin(self):
@@ -741,6 +745,8 @@ class NumericLookup:
             self.plan_error, self.draft_modified = '', False
             self.refresh_text()
             self.operation_receipt = self.origin.text = ('已更新原方案「' if update else '已保存「')+name+'」；重启后保留。'+receipt.get('recovery_warning', '')
+            self.receipt_summary = (self.operation_receipt, ('已更新' if update else '已保存')+
+                (' · 健康副本未完成' if receipt.get('recovery_warning') else ''))
             self.emit()
             return True
         except (ValueError, OSError) as exc:
@@ -1098,6 +1104,14 @@ class NumericLookup:
         introduction = lead.group(0) if lead else paragraph
         sections, prose = self.numeric_presentation()
         primary_values, primary_note = self.primary_presentation(sections)
+        primary_brief = ''
+        if (primary_values and self.identity in ('items.potions.potionofhealing', 'items.potions.elixirs.elixirofhoneyedhealing')
+                and all(key in self.calculated for key in ('hp', 'max_hp', 'vial'))):
+            value = self.calculated['vial']
+            vial = '试管无效果' if value < 0 else f'试管 +{value:g}'
+            origin = self.input_origins.get('vial', '示例')
+            caution = '未确认' if '最新记录未确认' in origin or '未确认' in origin else '手填' if origin.startswith('手填') else '示例' if origin.startswith('示例') else ''
+            primary_brief = f"生命基准 {self.calculated['hp']:g}/{self.calculated['max_hp']:g} · 未计后续受伤等变化\n"+vial+('（'+caution+'）' if caution else '')+' · 药水恐惧不治疗'
         if self.calculated is not None and not self.dirty and not self.calculating and not self.parameter_error:
             basis = ''
             if self.identity == 'items.waterskin':
@@ -1136,10 +1150,12 @@ class NumericLookup:
             related=[{'text': row['name'], 'token': binding_token(row)} for row in self.related_rows()],
             numeric_sections=sections, result_prose=prose,
             primary_values=primary_values, primary_note=primary_note,
+            primary_brief=primary_brief,
             reading_notes=reading_notes, recipes=self.recipe_rows(),
             origin_brief=getattr(self, 'origin_brief', '参考示例 / 手填条件'),
             calculating=self.calculating, parameter_error=self.parameter_error,
             operation_receipt=self.operation_receipt,
+            operation_brief=self.receipt_summary[1] if self.receipt_summary[0] == self.operation_receipt else '',
             result=self.text.text, status=self.origin.text, dirty=self.has_draft(),
             needs_calculation=self.dirty or bool((self.rendered or {}).get('missing_inputs')),
             can_save=bool(self.identity and self.calculated is not None and not self.dirty and self.rendered and not self.calculating and not self.parameter_error and not (self.context or {}).get('food_reference')),
