@@ -361,7 +361,7 @@ namespace Denghuo.Native {
         readonly DockPanel readingHeader=new DockPanel();
         readonly WrapPanel bottom=new WrapPanel();
         readonly ScrollViewer scroll;
-        readonly TextBlock feedback=UI.Text("",13,UI.Gold);
+        readonly TextBlock feedback=UI.Text("",13,UI.Gold), headerReceipt=UI.Text("",13,UI.Gold);
         readonly Button back, primary, saveCalculation, more, moreResults, previousResults, pinned;
         readonly WrapPanel resultPages;
         readonly TextBlock scopeSource=UI.Text("",12,UI.Muted);
@@ -403,7 +403,7 @@ namespace Denghuo.Native {
             more=UI.Button("···",ShowActions); UI.Name(more,"条目操作"); more.ToolTip="收藏、保存与参考来源"; more.MinWidth=34; more.FontSize=18;
             foreach(var button in new[]{back,more}) { button.MinHeight=28; button.Padding=new Thickness(8,3,8,3); button.Margin=new Thickness(0,0,6,4); }
             back.Background=more.Background=Brushes.Transparent; back.HorizontalAlignment=HorizontalAlignment.Left;
-            DockPanel.SetDock(more,Dock.Right); readingHeader.Children.Add(more); readingHeader.Children.Add(back); readingHeader.Visibility=Visibility.Collapsed; Children.Add(readingHeader);
+            DockPanel.SetDock(more,Dock.Right); DockPanel.SetDock(back,Dock.Left); readingHeader.Children.Add(more); readingHeader.Children.Add(back); headerReceipt.VerticalAlignment=VerticalAlignment.Center; headerReceipt.Margin=new Thickness(4,0,8,4); headerReceipt.TextWrapping=TextWrapping.NoWrap; headerReceipt.TextTrimming=TextTrimming.CharacterEllipsis; headerReceipt.Visibility=Visibility.Collapsed; readingHeader.Children.Add(headerReceipt); readingHeader.Visibility=Visibility.Collapsed; Children.Add(readingHeader);
             moreResults=UI.Button("浏览全部资料",delegate { if(!Host.Frozen) { FlushEdit(); Host.Send("more","surface","lookup"); } });
             previousResults=UI.Button("上一页",delegate { if(!Host.Frozen) { FlushEdit(); Host.Send("previous_results","surface","lookup"); } });
             resultPages=UI.Buttons(previousResults,moreResults);
@@ -435,10 +435,14 @@ namespace Denghuo.Native {
             if(mode!="search" && feedback.Text.Length==0 && busy) feedback.Text="正在计算…";
             if(mode!="search" && feedback.Text.Length==0) feedback.Text=Data.Text(state,"operation_receipt","");
             feedback.ToolTip=feedback.Text; System.Windows.Automation.AutomationProperties.SetHelpText(feedback,feedback.Text);
+            bool shortReceipt=false;
             if(mode!="search" && feedback.Text==Data.Text(state,"operation_receipt","")) {
-                string brief=Data.Text(state,"operation_brief",""); if(brief.Length>0) feedback.Text=brief;
+                string brief=Data.Text(state,"operation_brief",""); if(brief.Length>0) { feedback.Text=brief; shortReceipt=true; }
             }
-            feedback.Visibility=feedback.Text.Length>0 ? Visibility.Visible : Visibility.Collapsed;
+            bool receiptInHeader=mode=="result" && shortReceipt;
+            headerReceipt.Text=receiptInHeader ? feedback.Text : ""; headerReceipt.ToolTip=feedback.ToolTip; System.Windows.Automation.AutomationProperties.SetHelpText(headerReceipt,Convert.ToString(feedback.ToolTip));
+            headerReceipt.Visibility=receiptInHeader ? Visibility.Visible : Visibility.Collapsed;
+            feedback.Visibility=feedback.Text.Length>0 && !receiptInHeader ? Visibility.Visible : Visibility.Collapsed;
             bool hasEntry=Data.Text(state,"entry_id","").Length>0;
             bool custom=Data.Flag(state,"can_save") && Dirty;
             bottom.Visibility=hasEntry && mode!="search" && (Data.Array(state,"fields").Length>0 || custom) ? Visibility.Visible : Visibility.Collapsed;
@@ -512,6 +516,7 @@ namespace Denghuo.Native {
             var favorite=UI.Button(Data.Flag(data,"favorite") ? "★" : "☆",delegate { if(!Host.Frozen) { FlushEdit(); Host.Send("favorite","surface","lookup"); } });
             favorite.FontSize=22; favorite.Padding=new Thickness(6,0,6,0); favorite.Background=Brushes.Transparent; favorite.Foreground=UI.Gold; favorite.ToolTip=Data.Flag(data,"favorite") ? "取消收藏" : "收藏"; UI.Name(favorite,Convert.ToString(favorite.ToolTip));
             if(compactResult) favorite.Margin=new Thickness(0);
+            if(compactHealing) favorite.FontSize=18;
             DockPanel.SetDock(favorite,Dock.Right); title.Children.Add(favorite); articleLinks[identity+"/favorite"]=favorite;
             var picture=UI.Artwork(Data.Object(data,"artwork"),compactResult ? 28 : 38); DockPanel.SetDock(picture,Dock.Left); title.Children.Add(picture);
             var nameText=UI.Text(name,compactResult ? 18 : 19); nameText.FontWeight=FontWeights.SemiBold;
@@ -521,14 +526,14 @@ namespace Denghuo.Native {
             title.Children.Add(headingText); article.Children.Add(title);
             string prerequisite=Data.Text(data,"primary_notice","");
             if(prerequisite.Length>0) { var notice=UI.Text(prerequisite,13,UI.Gold); notice.Margin=new Thickness(0,0,0,compactResult ? 4 : 8); article.Children.Add(notice); }
-            if(primaryBrief.Length>0) { var basis=UI.Text(primaryBrief,13,UI.Gold); article.Children.Add(basis); }
+            if(primaryBrief.Length>0) { var basis=UI.Text(primaryBrief,13,UI.Gold); basis.LineHeight=17; article.Children.Add(basis); }
             string introduction=Data.Text(data,"introduction","");
             string origin=Data.Text(data,"origin_brief","");
             bool conditioned=Data.Array(data,"fields").Length>0;
             bool caution=origin.StartsWith("旧") || origin.StartsWith("条件") || origin.StartsWith("需要") || origin.StartsWith("参考来源") || origin.StartsWith("种植");
             foreach(object raw in readingNotes) { string text=Convert.ToString(raw); if(text.Length==0) continue; var mechanism=UI.Text(text,15); mechanism.Margin=new Thickness(0,0,0,8); article.Children.Add(mechanism); }
             var primaryKeys=new HashSet<string>(); var notes=new HashSet<string>();
-            var metrics=new UniformGrid { Columns=main.Length, Margin=new Thickness(0,2,0,compactResult ? 4 : 10) };
+            var metrics=new UniformGrid { Columns=main.Length, Margin=new Thickness(0,compactHealing ? 0 : 2,0,compactHealing ? 0 : compactResult ? 4 : 10) };
             foreach(object raw in main) {
                 var value=(Dictionary<string,object>)raw; string label=Data.Text(value,"label",""), number=Data.Text(value,"value","?"), unit=Data.Text(value,"unit","");
                 primaryKeys.Add(label+"|"+number+"|"+unit);
@@ -540,6 +545,11 @@ namespace Denghuo.Native {
                         cell.Inlines.Add(new System.Windows.Documents.Run(number+(unit.Length>0 ? " "+unit : "")) { FontSize=16,FontWeight=FontWeights.SemiBold,Foreground=UI.Ink });
                         UI.Name(cell,label+" "+number+(unit.Length>0 ? " "+unit : ""));
                         metrics.Children.Add(cell);
+                    } else if(compactResult) {
+                        var cell=UI.Text((label=="普通施法消耗" ? "普通消耗" : label)+" ",12,UI.Muted);
+                        cell.Inlines.Add(new System.Windows.Documents.Run(number) { FontSize=16,FontWeight=FontWeights.SemiBold,Foreground=UI.Ink });
+                        if(unit.Length>0) cell.Inlines.Add(new System.Windows.Documents.Run(" "+unit));
+                        UI.Name(cell,label+" "+number+(unit.Length>0 ? " "+unit : "")); cell.ToolTip=label+" "+number+(unit.Length>0 ? " "+unit : ""); metrics.Children.Add(cell);
                     } else metrics.Children.Add(UI.Stack(labelText,numberText));
                 } else {
                 var line=new DockPanel { Margin=new Thickness(0,0,0,5) };
@@ -549,17 +559,18 @@ namespace Denghuo.Native {
                 string noteText=Data.Text(value,"condition",""); if(noteText.Length>0) notes.Add(noteText);
             }
             if(main.Length==3 || compactResult) primaryBody.Children.Add(metrics);
-            string primaryNote=Data.Text(data,"primary_note",""); if(primaryNote.Length>0) { if(primaryBrief.Length>0) secondary.Children.Add(UI.Text(primaryNote,14,UI.Gold)); else notes.Add(primaryNote); }
-            foreach(string noteText in notes) { var noteLine=UI.Text(noteText,14,UI.Gold); noteLine.Margin=new Thickness(0,2,0,8); article.Children.Add(noteLine); }
-            if(caution || conditioned) { var context=UI.Text(origin,13,caution ? UI.Gold : UI.Muted); context.Margin=new Thickness(0,0,0,8); article.Children.Add(context); }
+            string primaryNote=Data.Text(data,"primary_note",""); if(primaryNote.Length>0) { if(compactResult) secondary.Children.Add(UI.Text(primaryNote,14,UI.Gold)); else notes.Add(primaryNote); }
+            foreach(string noteText in notes) { var noteLine=UI.Text(noteText,14,UI.Gold); noteLine.Margin=new Thickness(0,2,0,8); (compactResult ? secondary : article).Children.Add(noteLine); }
+            if(caution || conditioned) { var context=UI.Text(origin,13,caution ? UI.Gold : UI.Muted); context.Margin=new Thickness(0,0,0,8); (compactResult && !caution ? secondary : article).Children.Add(context); }
             if(introduction.Length>0 && !Array.Exists(readingNotes,delegate(object value) { return Convert.ToString(value)==introduction; })) { var purpose=UI.Text(introduction,14,UI.Muted); purpose.Margin=new Thickness(0,0,0,8); (readingNotes.Length>0 || main.Length>0 ? secondary : article).Children.Add(purpose); }
-            if(imageCaption.Length>0 && imageCaption!="游戏原始图像") { var caption=UI.Text(imageCaption,13,UI.Muted); caption.Margin=new Thickness(0,0,0,8); article.Children.Add(caption); }
+            if(imageCaption.Length>0 && imageCaption!="游戏原始图像") { var caption=UI.Text(imageCaption,13,UI.Muted); caption.Margin=new Thickness(0,0,0,8); (compactResult ? secondary : article).Children.Add(caption); }
+            var recipeBody=compactResult ? secondary : article;
             foreach(object raw in Data.Array(data,"recipes")) {
                 var recipe=raw as Dictionary<string,object>; if(recipe==null) continue;
                 string recipeId=Data.Text(recipe,"id",""), recipeToken=Data.Text(recipe,"token",""), recipeName=Data.Text(recipe,"name",name);
                 var add=UI.Button("加入炼金目标",delegate { if(!Host.Frozen) { FlushEdit(); Host.Send("alchemy_recipe","surface","lookup","recipe",recipeId,"token",recipeToken); } },true);
-                if(Data.Array(data,"recipes").Length>1 || recipeName!=name) { var recipeHeading=UI.Text(recipeName,14); recipeHeading.Margin=new Thickness(0,6,0,2); article.Children.Add(recipeHeading); }
-                add.HorizontalAlignment=HorizontalAlignment.Left; add.ToolTip="将"+recipeName+"加入现有炼金计划"; UI.Name(add,"加入炼金目标 · "+recipeName); article.Children.Add(add); articleLinks[identity+"/recipe/"+recipeId]=add;
+                if(Data.Array(data,"recipes").Length>1 || recipeName!=name) { var recipeHeading=UI.Text(recipeName,14); recipeHeading.Margin=new Thickness(0,6,0,2); recipeBody.Children.Add(recipeHeading); }
+                add.HorizontalAlignment=HorizontalAlignment.Left; add.ToolTip="将"+recipeName+"加入现有炼金计划"; UI.Name(add,"加入炼金目标 · "+recipeName); recipeBody.Children.Add(add); articleLinks[identity+"/recipe/"+recipeId]=add;
             }
             string description=Data.Text(data,"description","");
             if(description.Length>0 && description!=introduction) {
