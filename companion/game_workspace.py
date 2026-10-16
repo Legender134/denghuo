@@ -752,7 +752,7 @@ class GameWorkspace:
         if page == 'backups':
             row = next((r for r in self.rows.get(page, []) if r['id'] == self.selected.get(page)), None)
             if row and self.backup_preview:
-                return [{'id': 'record_details', 'title': '进度详情与保存时间', 'expanded': False,
+                return [{'id': 'record_details', 'title': '当前与目标详情', 'expanded': False,
                          'text': self.backup_preview['text']+'\n\n核验 ID '+str(row['entry']['id'])[:12]}]
             return [{'id': 'record_details', 'title': '记录时间与校验信息', 'text': row['text'], 'expanded': False}] if row else []
         result = self.structured_results.get(page, {})
@@ -1016,6 +1016,7 @@ class GameWorkspace:
             map=(self.map_result or self.public_map() or {}).get('map', {}) if page == 'map' else {},
             map_revealed=bool(self.map_result) if page == 'map' else False,
             progress=copy.deepcopy((self.backup_preview or {}).get('progress', {})) if page == 'backups' else {},
+            backup_summary=copy.deepcopy((self.backup_preview or {}).get('summary', {})) if page == 'backups' else {},
             comparison=comparison,
             planning=copy.deepcopy(self.structured_results.get(page, {}).get('planning', {})) if page == 'equipment' and page in self.calculated else {})
         if page == 'map': self.map_publication_pending = False
@@ -1268,6 +1269,10 @@ class GameWorkspace:
                     'confirm': ('恢复' if action == 'restore' else '撤回')+f"槽位 {entry['slot']}"}
                 self.backup_preview = {'action': action, 'text': text, 'brief': brief, 'payload': request, 'token': binding_token([request, text]),
                     'save_root': result.get('save_root', ''),
+                    'summary': {'heading': f"槽位 {entry['slot']} · "+label,
+                        'target': '目标 · '+self.progress_brief(result['target']),
+                        'warning': '\n'.join(filter(None, [result['target'].get('warning'), result['current'].get('warning'),
+                            '' if result['same_run'] else '不同冒险或无法确认，请核对目标。']))},
                     'progress': {'current': result['current'], 'target': result['target'], 'same_run': result['same_run']}}
             self.emit('backups')
         self.native.queue_io('正在核对当前与目标进度', lambda: self.session.backup_transfer('preview' if action == 'restore' else 'undo-preview', payload), complete)

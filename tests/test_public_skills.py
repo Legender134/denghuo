@@ -3,6 +3,7 @@ import copy
 import gzip
 import json
 import os
+import sys
 from contextlib import closing
 from http.client import HTTPConnection
 from pathlib import Path
@@ -262,6 +263,43 @@ class PublicSkillWorkflowTests(unittest.TestCase):
         self.assertEqual(lookup.calculated, original)
         self.change_save(**{'class':'MAGE','subClass':'WARLOCK'})
         self.assertIn('角色不适用', lookup.spell_availability_notice())
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows display controller imports Tk')
+    def test_normal_snapshot_update_refreshes_fixed_spell_prerequisite_and_retries_delivery(self):
+        from companion.play_overlay import PlayDisplay
+        lookup = self.lookup()
+        lookup.select_row(next(row for row in self.session.catalog.entries if row['id']==SPELL+'sunray'))
+        self.finish()
+        self.assertTrue(lookup.save_plan('保持两点的固定参考'))
+        saved = copy.deepcopy(lookup.saved_plan)
+        lookup.open_plan(saved['id'], False)
+        lookup.query.value = '阳炎射线'
+        fixed = copy.deepcopy((lookup.raw_params(), lookup.calculated, lookup.context, lookup.origin.text))
+        play = SimpleNamespace(lookup=lookup, notices=Mock(), state={'notice_seconds': 5, 'alerts': True})
+        PlayDisplay.update(play, self.session.snapshot())
+        self.host.commands.clear()
+        for learned in (False, True, False):
+            self.change_save(talents_tier_2={'SUNRAY': 2} if learned else {})
+            PlayDisplay.update(play, self.session.snapshot())
+            payload = next(data for action, data in self.host.commands if action=='lookup_state')
+            self.assertEqual(bool(payload['primary_notice']), not learned)
+            if not learned: self.assertIn('槽位 1 · 尚未学会', payload['primary_notice'])
+            self.assertEqual((lookup.raw_params(), lookup.calculated, lookup.context, lookup.origin.text), fixed)
+            self.host.commands.clear()
+            PlayDisplay.update(play, self.session.snapshot())
+            self.assertFalse(self.host.commands)
+        folder = self.saves/'game2'; folder.mkdir()
+        (folder/'game.dat').write_bytes(gzip.compress(json.dumps(game(self.catalog, talents_tier_2={})).encode(), mtime=0))
+        self.session.update_settings({'slot': 2}); self.session.refresh()
+        command = self.host.command
+        self.host.command = lambda *args, **kwargs: False
+        PlayDisplay.update(play, self.session.snapshot())
+        self.assertIn('槽位 1', lookup.published_notice)
+        self.host.command = command
+        PlayDisplay.update(play, self.session.snapshot())
+        payload = next(data for action, data in self.host.commands if action=='lookup_state')
+        self.assertIn('槽位 2 · 尚未学会', payload['primary_notice'])
+        self.assertEqual((lookup.raw_params(), lookup.calculated, lookup.context, lookup.origin.text), fixed)
 
     def test_http_current_reference_and_entry_specific_values_use_actual_save(self):
         from companion.server import Server

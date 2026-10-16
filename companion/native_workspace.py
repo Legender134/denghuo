@@ -76,6 +76,7 @@ class NumericLookup:
         self.focus_listing = False
         self.calculating = False
         self.operation_receipt = ''
+        self.published_notice = ''
         self.origin_brief = '参考示例 / 手填条件'
         self.plan_filters = ('', '全部类型', '最近更新')
         self.search()
@@ -1107,7 +1108,8 @@ class NumericLookup:
         reading_notes = (next((section['reading_notes'] for section in sections if section.get('reading_notes')), [])
                          if not self.dirty and self.calculated is not None and not self.calculating and not self.parameter_error else [])
         fields = [{**field, 'raw': self.variables[field['key']].get(), 'origin': self.input_origins.get(field['key'], '')} for field in self.inputs if field['key'] in self.variables]
-        self.host.command('lookup_state', draft_revision=self.edit_revision, query=self.query.get(),
+        notice = self.spell_availability_notice()
+        sent = self.host.command('lookup_state', draft_revision=self.edit_revision, query=self.query.get(),
             focus_result=self.focus_result, focus_suggestions=self.focus_suggestions,
             focus_listing=self.focus_listing,
             rows=[{'text': text, 'name': row['name'], 'kind': row.get('type_label', ''),
@@ -1120,7 +1122,7 @@ class NumericLookup:
                    'token': binding_token(row), 'artwork': native_artwork(row.get('id'))}
                   for text, row in zip(self.list.values, self.rows)], fields=fields, note=self.note.get(),
             category=self.category, categories=self.categories(), suggested=self.suggested,
-            primary_notice=self.spell_availability_notice(),
+            primary_notice=notice,
             shown_count=len(self.rows), total_count=self.total, page_offset=self.browse_offset,
             scope_source=next((row.get('lookup_context', {}).get('source_label', '') for row in self.rows), '') if self.category == '随身' else '',
             suggestions=[{'text': row['name']+' · '+row['type_label'], 'token': binding_token(row),
@@ -1148,6 +1150,8 @@ class NumericLookup:
             can_latest=bool(self.identity and self.inputs and self.owner.manager.session.snapshot().get('data')),
             sources=self.rendered.get('provenance', {}).get('links', []) if self.rendered else [],
             sources_token=self.source_token())
+        if sent is not False:
+            self.published_notice = notice
         self.focus_result = False
         self.focus_suggestions = False
         self.focus_listing = False

@@ -172,9 +172,9 @@ class PlayDisplay:
         if self.lookup is not None:
             if not self.lookup.query.get().strip() and self.lookup.workspace_revision != snap.get('workspace_revision'):
                 self.lookup.search(preserve_detail=True)
-            previous = (self.lookup.origin.text, self.lookup.origin_brief)
+            previous = (self.lookup.origin.text, self.lookup.origin_brief, self.lookup.published_notice)
             self.lookup.refresh_origin(snap)
-            if previous != (self.lookup.origin.text, self.lookup.origin_brief):
+            if previous != (self.lookup.origin.text, self.lookup.origin_brief, self.lookup.spell_availability_notice()):
                 self.lookup.emit()
         self.current_notice = self.notices.update(snap, time.monotonic(), self.state['notice_seconds'], self.state['alerts'])
 

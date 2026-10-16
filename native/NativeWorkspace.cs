@@ -113,6 +113,7 @@ namespace Denghuo.Native {
         readonly FieldEditor fields=new FieldEditor();
         readonly StackPanel output=new StackPanel(), article=new StackPanel(), selector=new StackPanel();
         readonly StackPanel comparison=new StackPanel(), resultDetails=new StackPanel();
+        readonly StackPanel backupSummary=new StackPanel();
         readonly StackPanel taskContext=new StackPanel();
         readonly Dictionary<string,ComboBox> quickChoices=new Dictionary<string,ComboBox>();
         readonly Dictionary<string,Button> targetControls=new Dictionary<string,Button>();
@@ -151,6 +152,7 @@ namespace Denghuo.Native {
             selection=UI.Section(page=="inventory" ? "选择背包物品" : page=="map" ? "选择保存楼层" : "选择存档记录",selector,true); output.Children.Add(selection); if(page=="map") output.Children.Add(article); output.Children.Add(map); mapDetails=UI.Section("图例与坐标",UI.Stack(mapLegend,mapCoordinates),false); output.Children.Add(mapDetails); if(page=="equipment") { output.Children.Add(comparison); details=UI.Section("完整数值与条件",article,true); output.Children.Add(details); } else if(page!="map") output.Children.Add(article); output.Children.Add(resultDetails); scroll=UI.Scroll(output); Grid.SetRow(scroll,1); Children.Add(scroll); actions.Margin=new Thickness(0,10,0,0); if(page=="backups") { receipt=UI.Section("回执详情",notice,false); output.Children.Insert(0,receipt); output.Children.Insert(0,receiptBrief); Grid.SetRow(actions,2); Children.Add(actions); } else { var feedback=UI.Scroll(notice); feedback.MaxHeight=64; var bottom=UI.Stack(feedback,actions); Grid.SetRow(bottom,2); Children.Add(bottom); }
             if(page=="equipment" || page=="alchemy") output.Children.Insert(0,taskContext);
             if(page=="alchemy") { output.Children.Remove(article); output.Children.Insert(0,article); }
+            if(page=="backups") output.Children.Insert(0,backupSummary);
             fields.Changed=DraftChanged;
         }
         public void SetPlanMetadata(string name,string note) { fields.SetMetadata(name,note); values=fields.Raw(); Dirty=true; ++revision; Flush(); }
@@ -306,6 +308,17 @@ namespace Denghuo.Native {
                 RenderTaskContext(); taskContext.Visibility=specs.Length>0 ? Visibility.Visible : Visibility.Collapsed;
                 if(page=="equipment") { int desired=calculated ? 0 : 1; if(output.Children.IndexOf(comparison)!=desired) { output.Children.Remove(comparison); output.Children.Insert(desired,comparison); } }
                 string text=Data.Text(d,"text",""); if(page=="alchemy" && !calculated && text=="填写条件后计算。") text=""; if(page=="inventory" && text.Length==0) text="选择物品后，可查看资料或加入比较 A / B。"; if(text!=articleText) { articleText=text; UI.IllustratedArticle(article,text,Data.Object(d,"artwork")); if(page=="equipment") RenderComparison(Data.Object(d,"comparison")); }
+                if(page=="backups") {
+                    var summary=Data.Object(d,"backup_summary"); backupSummary.Children.Clear();
+                    string heading=Data.Text(summary,"heading",""), target=Data.Text(summary,"target",""), warning=Data.Text(summary,"warning","");
+                    backupSummary.Visibility=heading.Length>0 ? Visibility.Visible : Visibility.Collapsed;
+                    article.Visibility=heading.Length>0 ? Visibility.Collapsed : Visibility.Visible;
+                    if(heading.Length>0) {
+                        var label=UI.Text(heading,13,UI.Muted); label.TextWrapping=TextWrapping.NoWrap; label.TextTrimming=TextTrimming.CharacterEllipsis; label.ToolTip=heading; System.Windows.Automation.AutomationProperties.SetHelpText(label,heading); backupSummary.Children.Add(label);
+                        var progress=UI.Text(target,15); progress.Margin=new Thickness(0,2,0,4); backupSummary.Children.Add(progress);
+                        if(warning.Length>0) backupSummary.Children.Add(UI.Text(warning,12,UI.Gold));
+                    }
+                }
                 RenderResultDetails(Data.Array(d,"result_details"));
                 map.Render(Data.Object(d,"map")); mapLegend.Visibility=mapDetails.Visibility=map.Visibility; mapCoordinates.Text=map.Description(); var rows=Data.Array(d,"rows"); string next=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(rows)+Data.Text(d,"selected",""); if(next!=rowSignature) { var priorRowFocus=Keyboard.FocusedElement; var previousRows=new Dictionary<string,Control>(rowControls); rowControls.Clear(); selector.Children.Clear(); foreach(object item in rows) { var row=(Dictionary<string,object>)item; string id=Data.Text(row,"id",""), token=Data.Text(row,"token",""); var button=UI.Button("",delegate { if(!host.Frozen) { host.Send("game_select","page",page,"id",id,"token",token); selection.IsExpanded=false; } }); string caption=Data.Text(row,"summary",Data.Text(row,"text","")); button.Content=UI.ImageRow(caption,Data.Object(row,"artwork")); UI.Name(button,caption); button.HorizontalContentAlignment=HorizontalAlignment.Stretch; button.Margin=new Thickness(0); button.Padding=new Thickness(2,6,4,6); button.Background=id==Data.Text(d,"selected","") ? UI.Panel : Brushes.Transparent; button.BorderBrush=UI.Line; button.BorderThickness=new Thickness(0,0,0,1); selector.Children.Add(button); rowControls[id]=button; } host.Manager.RebindTaskFocus(page,previousRows,rowControls,this,priorRowFocus); rowSignature=next; } selection.Visibility=rows.Length>0 ? Visibility.Visible : Visibility.Collapsed;
                 notice.Text=Data.Text(d,"notice",""); if(notice.Text.Length==0 && Dirty && specs.Length>0) notice.Text=calculated ? "有未保存的修改" : "条件已修改，待重新计算"; notice.Visibility=notice.Text.Length>0 ? Visibility.Visible : Visibility.Collapsed; if(receipt!=null) { receipt.Visibility=receiptBrief.Visibility=notice.Visibility; receiptBrief.Text=Data.Text(d,"notice_brief","操作回执"); }
@@ -421,6 +434,8 @@ namespace Denghuo.Native {
             feedback.Text=mode=="search" ? Data.Text(state,"search_error","") : Data.Text(state,"parameter_error",busy ? "正在计算…" : "");
             if(mode!="search" && feedback.Text.Length==0 && busy) feedback.Text="正在计算…";
             if(mode!="search" && feedback.Text.Length==0) feedback.Text=Data.Text(state,"operation_receipt","");
+            feedback.ToolTip=feedback.Text; System.Windows.Automation.AutomationProperties.SetHelpText(feedback,feedback.Text);
+            if(feedback.Text.StartsWith("已保存")) feedback.Text="已保存";
             feedback.Visibility=feedback.Text.Length>0 ? Visibility.Visible : Visibility.Collapsed;
             bool hasEntry=Data.Text(state,"entry_id","").Length>0;
             bool custom=Data.Flag(state,"can_save") && Dirty;
@@ -485,34 +500,36 @@ namespace Denghuo.Native {
             if(identity.Length==0) return;
             object[] sections=Data.Array(data,"numeric_sections"), main=Data.Array(data,"primary_values"), readingNotes=Data.Array(data,"reading_notes");
             var secondary=new StackPanel(); var primaryBody=readingNotes.Length>0 ? secondary : article;
-            var title=new DockPanel { Margin=new Thickness(0,4,0,12) };
+            bool compactSpell=identity.StartsWith("actors.hero.spells.") && main.Length==2;
+            var title=new DockPanel { Margin=compactSpell ? new Thickness(0,0,0,2) : new Thickness(0,4,0,12) };
             var pin=UI.Button("固定",delegate { if(!Host.Frozen) { FlushEdit(); Host.Send("pin","surface","lookup"); } });
             pin.IsEnabled=Data.Flag(data,"can_save"); pin.ToolTip=pin.IsEnabled ? "固定到随行 · 保留本次条件" : Data.Flag(data,"needs_calculation") ? "先重新计算有效条件" : "当前没有可固定的有效数值条件";
             System.Windows.Controls.ToolTipService.SetShowOnDisabled(pin,true); System.Windows.Automation.AutomationProperties.SetHelpText(pin,Convert.ToString(pin.ToolTip)); UI.Name(pin,"固定到随行"); pin.Padding=new Thickness(6,2,6,2); pin.Margin=new Thickness(0); pin.Background=Brushes.Transparent; DockPanel.SetDock(pin,Dock.Right); title.Children.Add(pin); articleLinks[identity+"/pin"]=pin;
             var favorite=UI.Button(Data.Flag(data,"favorite") ? "★" : "☆",delegate { if(!Host.Frozen) { FlushEdit(); Host.Send("favorite","surface","lookup"); } });
             favorite.FontSize=22; favorite.Padding=new Thickness(6,0,6,0); favorite.Background=Brushes.Transparent; favorite.Foreground=UI.Gold; favorite.ToolTip=Data.Flag(data,"favorite") ? "取消收藏" : "收藏"; UI.Name(favorite,Convert.ToString(favorite.ToolTip));
+            if(compactSpell) favorite.Margin=new Thickness(0);
             DockPanel.SetDock(favorite,Dock.Right); title.Children.Add(favorite); articleLinks[identity+"/favorite"]=favorite;
-            var picture=UI.Artwork(Data.Object(data,"artwork"),38); DockPanel.SetDock(picture,Dock.Left); title.Children.Add(picture);
-            var nameText=UI.Text(name,19); nameText.FontWeight=FontWeights.SemiBold;
+            var picture=UI.Artwork(Data.Object(data,"artwork"),compactSpell ? 28 : 38); DockPanel.SetDock(picture,Dock.Left); title.Children.Add(picture);
+            var nameText=UI.Text(name,compactSpell ? 18 : 19); nameText.FontWeight=FontWeights.SemiBold;
             var headingText=UI.Stack(nameText); headingText.VerticalAlignment=VerticalAlignment.Center;
-            string variant=Data.Text(data,"entry_hint",""); if(variant.Length>0) headingText.Children.Add(UI.Text(variant,13,UI.Muted));
+            string variant=Data.Text(data,"entry_hint",""); if(variant.Length>0 && !(compactSpell && variant=="法术")) headingText.Children.Add(UI.Text(variant,13,UI.Muted));
             string imageCaption=Data.Text(Data.Object(data,"artwork"),"caption","");
             title.Children.Add(headingText); article.Children.Add(title);
             string prerequisite=Data.Text(data,"primary_notice","");
-            if(prerequisite.Length>0) { var notice=UI.Text(prerequisite,13,UI.Gold); notice.Margin=new Thickness(0,0,0,8); article.Children.Add(notice); }
+            if(prerequisite.Length>0) { var notice=UI.Text(prerequisite,13,UI.Gold); notice.Margin=new Thickness(0,0,0,compactSpell ? 4 : 8); article.Children.Add(notice); }
             string introduction=Data.Text(data,"introduction","");
             string origin=Data.Text(data,"origin_brief","");
             bool conditioned=Data.Array(data,"fields").Length>0;
             bool caution=origin.StartsWith("旧") || origin.StartsWith("条件") || origin.StartsWith("需要") || origin.StartsWith("参考来源") || origin.StartsWith("种植");
             foreach(object raw in readingNotes) { string text=Convert.ToString(raw); if(text.Length==0) continue; var mechanism=UI.Text(text,15); mechanism.Margin=new Thickness(0,0,0,8); article.Children.Add(mechanism); }
             var primaryKeys=new HashSet<string>(); var notes=new HashSet<string>();
-            var metrics=new UniformGrid { Columns=main.Length, Margin=new Thickness(0,2,0,10) };
+            var metrics=new UniformGrid { Columns=main.Length, Margin=new Thickness(0,2,0,compactSpell ? 4 : 10) };
             foreach(object raw in main) {
                 var value=(Dictionary<string,object>)raw; string label=Data.Text(value,"label",""), number=Data.Text(value,"value","?"), unit=Data.Text(value,"unit","");
                 primaryKeys.Add(label+"|"+number+"|"+unit);
-                if(main.Length==3) {
-                    var labelText=UI.Text(label,13,UI.Muted);
-                    var numberText=UI.Text(number+(unit.Length>0 ? " "+unit : ""),17); numberText.FontWeight=FontWeights.SemiBold;
+                if(main.Length==3 || compactSpell) {
+                    var labelText=UI.Text(label,compactSpell ? 12 : 13,UI.Muted);
+                    var numberText=UI.Text(number+(unit.Length>0 ? " "+unit : ""),compactSpell ? 16 : 17); numberText.FontWeight=FontWeights.SemiBold;
                     metrics.Children.Add(UI.Stack(labelText,numberText));
                 } else {
                 var line=new DockPanel { Margin=new Thickness(0,0,0,5) };
@@ -521,7 +538,7 @@ namespace Denghuo.Native {
                 }
                 string noteText=Data.Text(value,"condition",""); if(noteText.Length>0) notes.Add(noteText);
             }
-            if(main.Length==3) primaryBody.Children.Add(metrics);
+            if(main.Length==3 || compactSpell) primaryBody.Children.Add(metrics);
             string primaryNote=Data.Text(data,"primary_note",""); if(primaryNote.Length>0) notes.Add(primaryNote);
             foreach(string noteText in notes) { var noteLine=UI.Text(noteText,14,UI.Gold); noteLine.Margin=new Thickness(0,2,0,8); article.Children.Add(noteLine); }
             if(caution || conditioned) { var context=UI.Text(origin,13,caution ? UI.Gold : UI.Muted); context.Margin=new Thickness(0,0,0,8); article.Children.Add(context); }

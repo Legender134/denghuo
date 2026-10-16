@@ -200,6 +200,15 @@ class NativeProductWorkflows(fixtures.ControllerFixture):
         self.assertIn('槽位 2', brief)
         self.assertIn('第二槽位的固定记录', brief)
         self.assertIn('目标进度', brief)
+        state = self.host.commands[-1][1]
+        self.assertEqual(state['backup_summary']['heading'], '槽位 2 · 第二槽位的固定记录')
+        target = self.workspace.backup_preview['progress']['target']
+        self.assertEqual(state['backup_summary']['target'], '目标 · '+self.workspace.progress_brief(target))
+        details = next(row for row in state['result_details'] if row['id']=='record_details')
+        self.assertIn('当前进度', details['text'])
+        self.assertIn('目标进度', details['text'])
+        self.assertIn('保存时间', details['text'])
+        self.assertFalse(details['expanded'])
 
     def test_current_floor_reveal_keeps_saved_item_properties_and_container_risk(self):
         from companion.native_manager import NativeManager
