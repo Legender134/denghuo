@@ -449,7 +449,12 @@ namespace Denghuo.Native {
             foreach(string[] pair in new[]{new[]{"带入最新已知角色条件","use_latest"},new[]{"撤回本次条件带入","undo_import"},new[]{"","separator"},new[]{Data.Flag(state,"has_saved_plan") ? "更新或另存方案…" : "保存方案…","save_plan"},new[]{"重新读取当前方案","reload_plan"},new[]{"我的方案…","choose_plan"},new[]{"","separator"},new[]{"查看固定参考","view_pin"},new[]{"清除固定参考","clear_pin"}}) {
                 string action=pair[1]; bool enabled=action=="view_pin" || action=="clear_pin" ? Data.Flag(state,"has_pin") : action=="undo_import" ? Data.Flag(state,"undo") : action=="use_latest" ? Data.Flag(state,"can_latest") : action=="save_plan" || action=="pin" ? valid : action=="favorite" || action=="provenance" ? hasEntry : action=="reload_plan" ? Data.Flag(state,"has_saved_plan") : true;
                 if(action=="separator") { items.Add(new Separator()); continue; }
-                items.Add(UI.Item(pair[0],delegate { FlushEdit(); if(action=="choose_plan") Host.Manager.OpenPage("plans"); else Host.Send(action,"surface","lookup"); },enabled));
+                var item=UI.Item(pair[0],delegate { FlushEdit(); if(action=="choose_plan") Host.Manager.OpenPage("plans"); else Host.Send(action,"surface","lookup"); },enabled);
+                if(!enabled) {
+                    string reason=action=="undo_import" ? "尚无可撤回的条件带入" : action=="reload_plan" ? "先打开一个已保存方案" : action=="view_pin" || action=="clear_pin" ? "先在数值条目点击「固定」" : action=="use_latest" ? "当前没有可带入的已知角色条件" : Data.Flag(state,"needs_calculation") ? "先重新计算有效条件" : "当前没有可保存的有效数值条件";
+                    item.ToolTip=reason; System.Windows.Controls.ToolTipService.SetShowOnDisabled(item,true); System.Windows.Automation.AutomationProperties.SetHelpText(item,reason);
+                }
+                items.Add(item);
             }
             items.Add(UI.Item("方案与收藏（完整面板）",delegate { Host.Send("panel","page","workspace"); })); UI.Menu(more,items.ToArray());
         }
@@ -482,7 +487,8 @@ namespace Denghuo.Native {
             var secondary=new StackPanel(); var primaryBody=readingNotes.Length>0 ? secondary : article;
             var title=new DockPanel { Margin=new Thickness(0,4,0,12) };
             var pin=UI.Button("固定",delegate { if(!Host.Frozen) { FlushEdit(); Host.Send("pin","surface","lookup"); } });
-            pin.ToolTip="固定到随行 · 保留本次条件"; UI.Name(pin,"固定到随行"); pin.Padding=new Thickness(6,2,6,2); pin.Margin=new Thickness(0); pin.Background=Brushes.Transparent; pin.IsEnabled=Data.Flag(data,"can_save"); DockPanel.SetDock(pin,Dock.Right); title.Children.Add(pin); articleLinks[identity+"/pin"]=pin;
+            pin.IsEnabled=Data.Flag(data,"can_save"); pin.ToolTip=pin.IsEnabled ? "固定到随行 · 保留本次条件" : Data.Flag(data,"needs_calculation") ? "先重新计算有效条件" : "当前没有可固定的有效数值条件";
+            System.Windows.Controls.ToolTipService.SetShowOnDisabled(pin,true); System.Windows.Automation.AutomationProperties.SetHelpText(pin,Convert.ToString(pin.ToolTip)); UI.Name(pin,"固定到随行"); pin.Padding=new Thickness(6,2,6,2); pin.Margin=new Thickness(0); pin.Background=Brushes.Transparent; DockPanel.SetDock(pin,Dock.Right); title.Children.Add(pin); articleLinks[identity+"/pin"]=pin;
             var favorite=UI.Button(Data.Flag(data,"favorite") ? "★" : "☆",delegate { if(!Host.Frozen) { FlushEdit(); Host.Send("favorite","surface","lookup"); } });
             favorite.FontSize=22; favorite.Padding=new Thickness(6,0,6,0); favorite.Background=Brushes.Transparent; favorite.Foreground=UI.Gold; favorite.ToolTip=Data.Flag(data,"favorite") ? "取消收藏" : "收藏"; UI.Name(favorite,Convert.ToString(favorite.ToolTip));
             DockPanel.SetDock(favorite,Dock.Right); title.Children.Add(favorite); articleLinks[identity+"/favorite"]=favorite;
