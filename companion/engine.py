@@ -245,6 +245,12 @@ class Catalog:
                 details.append('已使用精通药剂')
         if "curCharges" in item and (item.get("curChargeKnown") or reveal):
             details.append(f"{item['curCharges']} 次充能")
+        artifact_charge = key.startswith('items.artifacts.') and kind in self.data.get('artifact_caps', {}) and kind != 'ChaliceOfBlood'
+        if artifact_charge and (reveal or level_known and cursed_known and not item.get('cursed')):
+            charge = item.get('charge')
+            if type(charge) is int and charge >= 0:
+                percent = kind in ('CapeOfThorns', 'DriedRose', 'SandalsOfNature', 'TalismanOfForesight')
+                details.append(f"储存充能 {charge}"+('%' if percent else ''))
         volume = item.get('volume') if kind == 'Waterskin' and type(item.get('volume')) is int and 0 <= item['volume'] <= 20 else None
         if kind == "Waterskin":
             details.append(f"露珠 {volume}/20" if volume is not None else '露珠量未知')
@@ -254,6 +260,7 @@ class Catalog:
         public = {"name": name, "kind": kind if visible else "Unknown" + base.title(),
                 "has_hidden_details": not reveal and (not known or level_applicable and (not bool(item.get('levelKnown')) or not bool(item.get('cursedKnown')))
                     or 'curCharges' in item and not bool(item.get('curChargeKnown'))
+                    or artifact_charge and 'charge' in item and (not level_known or not cursed_known or bool(item.get('cursed')))
                     or kind == 'MagesStaff' and isinstance(item.get('wand'), dict) and not bool(item['wand'].get('curChargeKnown'))),
                 "key": key if visible else f"items.{family}.{base}", "quantity": max(1, int(number(item.get("quantity"), 1))),
                 "location": location, "known": known, "level_known": level_known,

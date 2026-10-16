@@ -284,6 +284,7 @@ class NumericLookup:
 
     def clear_params(self):
         self.inputs, self.variables, self.input_origins = [], {}, {}
+        self.operation_receipt = ''
         self.parameter_error = ''
         self.dirty = self.draft_modified = False
         self.note.value = ''
@@ -462,7 +463,11 @@ class NumericLookup:
         if self.identity in ('items.potions.potionofhealing', 'items.potions.elixirs.elixirofhoneyedhealing'):
             value = self.calculated.get('vial', -1)
             basis = '凝血试管 ' + ('无效果（−1）' if value < 0 else f'+{value:g}')
-            note = basis + '（' + self.input_origins.get('vial', '示例 · 请核对') + '）。' + note
+            origin = self.input_origins.get('vial', '示例 · 请核对')
+            if origin.startswith('快照 · 最近保存的记录 · 槽位 '):
+                origin = '快照 · 槽位 '+origin.split(' · 槽位 ', 1)[1].split(' · ', 1)[0]+(
+                    ' · 最新记录未确认' if '最新记录未确认' in origin else '')
+            note = basis + '（' + origin + '）。' + note
         elif self.identity in ('actors.buffs.poison', 'actors.buffs.bleeding'):
             value = self.calculated['power']
             basis = f'剩余中毒 {value:g} 回合' if self.identity == 'actors.buffs.poison' else f'当前流血强度 {value:g}'
@@ -510,6 +515,7 @@ class NumericLookup:
             self.origin.text += ' · 当前参数、备注或命名有未保存修改；请核对后保存。'
 
     def changed(self, key=None):
+        self.operation_receipt = ''
         self.edit_revision += 1
         self.ticket = None  # An older worker cannot clear a new draft.
         self.calculating = False
@@ -523,6 +529,7 @@ class NumericLookup:
         self.emit()
 
     def note_changed(self):
+        self.operation_receipt = ''
         self.edit_revision += 1
         self.draft_modified = True
         self.refresh_text()
@@ -592,6 +599,7 @@ class NumericLookup:
             self.emit()
             return
         self.undo_state = self.draft(include_result=True)
+        self.operation_receipt = ''
         prior = copy.deepcopy(self.context or {})
         prior_source = prior.get('source') or (self.saved_plan or {}).get('origin') or {}
         imported = eligible & set(context['params'])
@@ -849,6 +857,7 @@ class NumericLookup:
         if set(draft.get('raw_params', {})) != {field['key'] for field in fields}:
             raise ValueError('草稿参数与此资料不匹配；原文件仍保留')
         self.identity, self.inputs = draft['entry'], copy.deepcopy(fields)
+        self.operation_receipt = ''
         self.selected_row = {}
         self.context, self.saved_plan = copy.deepcopy(draft.get('context')), copy.deepcopy(draft.get('saved_plan'))
         self.input_origins = dict(draft.get('origins', {}))

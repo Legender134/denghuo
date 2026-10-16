@@ -249,3 +249,63 @@ class NativeProductWorkflows(fixtures.ControllerFixture):
                 revealed = self.session.catalog.item(raw, {}, reveal=True)
                 self.assertIn(label, revealed['details'])
                 self.assertIn('已使用精通药剂', revealed['details'])
+
+    def test_saved_receipt_does_not_follow_changed_conditions_or_another_reference(self):
+        self.item_reference('weapon.melee.Katana')
+        self.assertTrue(self.lookup.save_plan('原始武器条件'))
+        self.assertIn('已保存', self.lookup.operation_receipt)
+        self.lookup.variables['level'].set('4')
+        self.assertEqual(self.lookup.operation_receipt, '')
+        self.lookup.calculate(); self.finish()
+        self.assertTrue(self.lookup.save_plan('新的武器条件'))
+        self.lookup.note.value = '新备注'; self.lookup.note_changed()
+        self.assertEqual(self.lookup.operation_receipt, '')
+        self.assertTrue(self.lookup.save_plan('含备注的武器条件'))
+        draft = self.lookup.draft(include_result=True)
+        self.lookup.restore_draft(draft)
+        self.assertEqual(self.lookup.operation_receipt, '')
+        self.lookup.dirty = self.lookup.draft_modified = False
+        self.lookup.open_plan(draft['saved_plan']['id'], False)
+        self.assertEqual(self.lookup.operation_receipt, '')
+        self.assertTrue(self.lookup.save_plan('切换前的已保存条件'))
+        self.lookup.open_reference({'entry': 'items.artifacts.masterthievesarmband',
+            'params': {'level': 4}, 'source_label': '楼层中的袖章'})
+        self.finish()
+        self.assertEqual(self.lookup.identity, 'items.artifacts.masterthievesarmband')
+        self.assertIsNone(self.lookup.saved_plan)
+        self.assertEqual(self.lookup.operation_receipt, '')
+        self.lookup.emit()
+        self.assertFalse(self.host.commands[-1][1]['operation_receipt'])
+
+    def test_artifact_charge_details_respect_identification_and_explicit_reveal(self):
+        for kind, charge, label in [('MasterThievesArmband', 0, '储存充能 0'),
+                ('MasterThievesArmband', 7, '储存充能 7'),
+                ('TalismanOfForesight', 75, '储存充能 75%'),
+                ('EtherealChains', 0, '储存充能 0')]:
+            with self.subTest(kind=kind, charge=charge):
+                raw = {'__className': PREFIX+'items.artifacts.'+kind, 'level': 4,
+                    'levelKnown': True, 'cursedKnown': True, 'cursed': False, 'charge': charge}
+                self.assertIn(label, self.session.catalog.item(raw, {})['details'])
+                for changes in ({'levelKnown': False}, {'cursedKnown': False}, {'cursed': True}):
+                    hidden = {**raw, **changes}
+                    public = self.session.catalog.item(hidden, {})
+                    self.assertNotIn(label, public['details'])
+                    self.assertTrue(public['has_hidden_details'])
+                    self.assertIn(label, self.session.catalog.item(hidden, {}, reveal=True)['details'])
+                for invalid in (None, True, '7', -1):
+                    item = self.session.catalog.item({**raw, 'charge': invalid}, {}, reveal=True)
+                    self.assertFalse(any(text.startswith('储存充能') for text in item['details']))
+
+    def test_healing_primary_keeps_key_assumptions_and_expands_full_source(self):
+        self.open('items.potions.potionofhealing')
+        source = '快照 · 最近保存的记录 · 槽位 1 · 2026-10-16 11:58 保存'
+        self.lookup.input_origins['vial'] = source
+        self.lookup.emit()
+        state = self.host.commands[-1][1]
+        self.assertIn('凝血试管', state['primary_note'])
+        self.assertIn('快照 · 槽位 1', state['primary_note'])
+        self.assertNotIn('2026-10-16', state['primary_note'])
+        self.assertIn(source, str(state))
+        for warning in ('手填', '示例 · 请核对', source+' · 最新记录未确认'):
+            self.lookup.input_origins['vial'] = warning; self.lookup.emit()
+            self.assertIn(warning.split(' · ')[-1], self.host.commands[-1][1]['primary_note'])

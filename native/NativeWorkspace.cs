@@ -581,6 +581,7 @@ namespace Denghuo.Native {
                 listing.Text=Data.Flag(d,"suggested") ? "" : total>shown ? (shown>0 ? (offset+1)+"–"+(offset+shown)+" / "+total : "0 / "+total) : total+" 项";
                 scopeSource.Text=Data.Text(d,"scope_source",""); scopeSource.Visibility=scopeSource.Text.Length>0 ? Visibility.Visible : Visibility.Collapsed;
                 moreResults.Content=Data.Flag(d,"suggested") ? "浏览全部资料" : "下一页";
+                UI.Name(moreResults,Convert.ToString(moreResults.Content));
                 moreResults.Visibility=Data.Flag(d,"can_more") ? Visibility.Visible : Visibility.Collapsed;
                 previousResults.Visibility=Data.Flag(d,"can_previous") ? Visibility.Visible : Visibility.Collapsed;
                 draftRevision=Data.Number(d,"draft_revision"); Dirty=Data.Flag(d,"dirty"); pinned.Visibility=Data.Flag(d,"has_pin") ? Visibility.Visible : Visibility.Collapsed;
