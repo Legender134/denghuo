@@ -370,6 +370,9 @@ class ServiceLivenessTests(unittest.TestCase):
         with patch('companion.backups.atomic_json', side_effect=OSError('controlled receipt failure')) as write:
             with patch('companion.service.logging.exception'):
                 result = self.session.prepare_shutdown(.5)
+                self.assertTrue(self.session._shutdown_receipt_done.wait(2), 'failed receipt writer did not finish')
+                self.session._shutdown_receipt_thread.join(2)
+                self.assertFalse(self.session._shutdown_receipt_thread.is_alive())
                 self.assertIn('receipt_error', result)
                 self.assertEqual(self.session.prepare_shutdown(.5), result)
                 self.assertEqual(write.call_count, 1)
