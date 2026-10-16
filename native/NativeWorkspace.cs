@@ -319,7 +319,7 @@ namespace Denghuo.Native {
                     var action=(Dictionary<string,object>)item; string command=Data.Text(action,"id","");
                     Action clicked=delegate { if(host.Frozen) return; if(page=="alchemy" && (command=="add_target" || command=="add_resource" || command=="add_path")) { string count=command=="add_target" ? "targets" : command=="add_resource" ? "resources" : "paths"; int index; Int32.TryParse(Data.Text(Raw(),count,"0"),out index); pendingEditorSection=(command=="add_target" ? "产出目标 " : command=="add_resource" ? "独立库存 " : "明确指定前置生产路径 ")+(index+1)+(command=="add_target" || command=="add_resource" ? " ·" : ""); } Flush(); host.Send("game_action","page",page,"command",command=="save" ? "name_plan" : command,"values",Raw(),"draft_revision",revision); };
                     string label=Data.Text(action,"text",""), reason=Data.Text(action,"reason",""); bool disabled=Data.Flag(action,"disabled");
-                    bool direct=command==primaryCommand || page=="inventory" && (command=="equip_a" || command=="equip_b") || (page=="equipment" || page=="alchemy") && (command=="import" || command=="undo" || command=="save" || command=="update" || command=="use_character" || command=="add_target");
+                    bool direct=command==primaryCommand || page=="inventory" && (command=="equip_a" || command=="equip_b") || page=="alchemy" && command=="add_target";
                     if(page=="alchemy" && command=="import") label="带入已知库存";
                     if(command=="calculate" && page=="equipment") label="比较装备";
                     if(command=="calculate" && page=="alchemy") label="计算";
