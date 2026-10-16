@@ -134,6 +134,9 @@ namespace Denghuo.Native {
         readonly Dictionary<string,double> positions=new Dictionary<string,double>();
         readonly Dictionary<string,bool> resultDetailExpanded=new Dictionary<string,bool>();
         readonly Dictionary<string,Control> resultDetailControls=new Dictionary<string,Control>();
+        readonly Dictionary<string,Control> resultItemControls=new Dictionary<string,Control>();
+        readonly Dictionary<string,bool> resultItemExpanded=new Dictionary<string,bool>();
+        string resultItemToken="";
         readonly Dictionary<string,Control> rowControls=new Dictionary<string,Control>();
         readonly Dictionary<string,Control> actionControls=new Dictionary<string,Control>();
         bool rendering,editing,calculated;
@@ -198,10 +201,38 @@ namespace Denghuo.Native {
                 targetControls.Clear(); var retained=new Dictionary<string,Control>(); foreach(var item in nextControls) { targetControls[item.Key]=item.Value; retained[item.Key]=item.Value; } host.Manager.RebindTaskFocus(page,previous,retained,this,priorFocus);
             }
         }
+        void RenderFloorItems(StackPanel body, Dictionary<string,object> detail) {
+            string token=Data.Text(detail,"token","");
+            if(token!=resultItemToken) { resultItemExpanded.Clear(); resultItemToken=token; }
+            body.Children.Clear(); resultItemControls.Clear();
+            foreach(object raw in Data.Array(detail,"items")) {
+                var item=(Dictionary<string,object>)raw; string id=Data.Text(item,"id",""), label=Data.Text(item,"summary","");
+                var content=new StackPanel(); UI.Article(content,Data.Text(item,"text",""));
+                var button=UI.Button("查看物品数值",delegate { if(!host.Frozen) host.Send("game_action","page","map","command","map_item_reference","id",id,"token",token); });
+                button.IsEnabled=Data.Flag(item,"can_reference");
+                if(!button.IsEnabled) { button.Content="暂无数值资料"; button.ToolTip="可展开阅读已保存的属性与说明"; }
+                content.Children.Add(button); resultItemControls[id+"/numeric"]=button;
+                bool expanded; resultItemExpanded.TryGetValue(id,out expanded);
+                var section=UI.Section(label,content,expanded); section.Header=UI.ImageRow(label+"\n"+Data.Text(item,"location",""),Data.Object(item,"artwork"));
+                section.Expanded+=delegate { resultItemExpanded[id]=true; };
+                section.Collapsed+=delegate { resultItemExpanded[id]=false; };
+                UI.Name(section,label+" · "+Data.Text(item,"location",""));
+                resultItemControls[id+"/details"]=section; body.Children.Add(section);
+            }
+            if(!Data.Flag(detail,"previous") && !Data.Flag(detail,"next")) return;
+            var navigation=new WrapPanel { Margin=new Thickness(0,8,0,0) };
+            foreach(string direction in new[]{"previous","next"}) {
+                string command="map_items_"+direction;
+                var button=UI.Button(direction=="previous" ? "上一页" : "下一页",delegate { if(!host.Frozen) host.Send("game_action","page","map","command",command,"token",token); });
+                button.IsEnabled=Data.Flag(detail,direction); navigation.Children.Add(button); resultItemControls[command]=button;
+            }
+            navigation.Children.Add(UI.Text(Data.Text(detail,"range",""),12,UI.Muted)); body.Children.Add(navigation);
+        }
         void RenderResultDetails(object[] rows) {
             var priorFocus=Keyboard.FocusedElement;
             var previous=new Dictionary<string,Control>(resultDetailControls);
-            resultDetailControls.Clear(); int index=0;
+            foreach(var item in resultItemControls) previous[item.Key]=item.Value;
+            resultDetailControls.Clear(); int index=0; bool hasItems=false;
             foreach(object raw in rows) {
                 var extra=raw as Dictionary<string,object>; if(extra==null) continue;
                 string identity=Data.Text(extra,"id","detail-"+index), title=Data.Text(extra,"title","详细记录"), text=Data.Text(extra,"text","");
@@ -214,13 +245,22 @@ namespace Denghuo.Native {
                     section.Collapsed+=delegate { resultDetailExpanded[identity]=false; };
                 }
                 if(System.Windows.Automation.AutomationProperties.GetName(section)!=title) { section.Header=UI.Text(title,13,UI.Gold); UI.Name(section,title); }
-                if(!Object.Equals(section.Tag,text)) { UI.Article((StackPanel)section.Content,text); section.Tag=text; }
+                bool items=identity=="map_items"; hasItems=hasItems || items;
+                string signature=items ? new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(extra) : text;
+                if(!Object.Equals(section.Tag,signature)) {
+                    if(items) RenderFloorItems((StackPanel)section.Content,extra);
+                    else UI.Article((StackPanel)section.Content,text);
+                    section.Tag=signature;
+                }
                 // Keep the actual header ToggleButton across ordinary source refreshes.
                 if(resultDetails.Children.IndexOf(section)!=index) { resultDetails.Children.Remove(section); resultDetails.Children.Insert(index,section); }
                 resultDetailControls[identity]=section; index++;
             }
             while(resultDetails.Children.Count>index) resultDetails.Children.RemoveAt(index);
-            host.Manager.RebindTaskFocus(page,previous,resultDetailControls,this,priorFocus);
+            if(!hasItems) { resultItemControls.Clear(); resultItemExpanded.Clear(); resultItemToken=""; }
+            var retainedControls=new Dictionary<string,Control>(resultDetailControls);
+            foreach(var item in resultItemControls) retainedControls[item.Key]=item.Value;
+            host.Manager.RebindTaskFocus(page,previous,retainedControls,this,priorFocus);
         }
         void RenderComparison(Dictionary<string,object> data) {
             comparison.Children.Clear(); var choices=Data.Array(data,"choices"); var planning=Data.Object(data,"planning");
@@ -309,7 +349,8 @@ namespace Denghuo.Native {
         readonly WrapPanel bottom=new WrapPanel();
         readonly ScrollViewer scroll;
         readonly TextBlock feedback=UI.Text("",13,UI.Gold);
-        readonly Button back, primary, saveCalculation, more, moreResults, pinned;
+        readonly Button back, primary, saveCalculation, more, moreResults, previousResults, pinned;
+        readonly WrapPanel resultPages;
         readonly TextBlock scopeSource=UI.Text("",12,UI.Muted);
         readonly List<Button> resultButtons=new List<Button>();
         readonly Dictionary<string,double> positions=new Dictionary<string,double>();
@@ -350,7 +391,9 @@ namespace Denghuo.Native {
             foreach(var button in new[]{back,more}) { button.MinHeight=28; button.Padding=new Thickness(8,3,8,3); button.Margin=new Thickness(0,0,6,4); }
             back.Background=more.Background=Brushes.Transparent; back.HorizontalAlignment=HorizontalAlignment.Left;
             DockPanel.SetDock(more,Dock.Right); readingHeader.Children.Add(more); readingHeader.Children.Add(back); readingHeader.Visibility=Visibility.Collapsed; Children.Add(readingHeader);
-            moreResults=UI.Button("浏览全部资料",delegate { Host.Send("more","surface","lookup"); });
+            moreResults=UI.Button("浏览全部资料",delegate { if(!Host.Frozen) { FlushEdit(); Host.Send("more","surface","lookup"); } });
+            previousResults=UI.Button("上一页",delegate { if(!Host.Frozen) { FlushEdit(); Host.Send("previous_results","surface","lookup"); } });
+            resultPages=UI.Buttons(previousResults,moreResults);
             scroll=UI.Scroll(candidates); Grid.SetRow(scroll,1); Children.Add(scroll);
             primary=UI.Button("调整条件",delegate { if(mode=="edit") Calculate(); else { SetMode("edit"); fields.MoveFocus(new TraversalRequest(FocusNavigationDirection.First)); } },true);
             saveCalculation=UI.Button("保存这次计算…",delegate { FlushEdit(); Host.Send("save_plan","surface","lookup"); });
@@ -534,12 +577,15 @@ namespace Denghuo.Native {
                 string choices=String.Join("|",Array.ConvertAll(Data.Array(d,"categories"),delegate(object value) { return Convert.ToString(value); }));
                 if(!Object.Equals(category.Tag,choices)) { category.Items.Clear(); foreach(object value in Data.Array(d,"categories")) category.Items.Add(Convert.ToString(value)); category.Tag=choices; }
                 category.SelectedItem=Data.Text(d,"category","常用");
-                listing.Text=Data.Flag(d,"suggested") ? "" : Data.Number(d,"total_count")+" 项";
+                long total=Data.Number(d,"total_count"), shown=Data.Number(d,"shown_count"), offset=Data.Number(d,"page_offset");
+                listing.Text=Data.Flag(d,"suggested") ? "" : total>shown ? (shown>0 ? (offset+1)+"–"+(offset+shown)+" / "+total : "0 / "+total) : total+" 项";
                 scopeSource.Text=Data.Text(d,"scope_source",""); scopeSource.Visibility=scopeSource.Text.Length>0 ? Visibility.Visible : Visibility.Collapsed;
-                moreResults.Content=Data.Flag(d,"suggested") ? "浏览全部资料" : "加载更多";
+                moreResults.Content=Data.Flag(d,"suggested") ? "浏览全部资料" : "下一页";
+                moreResults.Visibility=Data.Flag(d,"can_more") ? Visibility.Visible : Visibility.Collapsed;
+                previousResults.Visibility=Data.Flag(d,"can_previous") ? Visibility.Visible : Visibility.Collapsed;
                 draftRevision=Data.Number(d,"draft_revision"); Dirty=Data.Flag(d,"dirty"); pinned.Visibility=Data.Flag(d,"has_pin") ? Visibility.Visible : Visibility.Collapsed;
                 if(!search.IsKeyboardFocused) UI.Replace(search,Data.Text(d,"query",""));
-                var rows=Data.Array(d,"rows"); var suggestions=Data.Array(d,"suggestions"); var serializer=new JavaScriptSerializer { MaxJsonLength=524288 }; string signature=serializer.Serialize(rows)+serializer.Serialize(suggestions)+Data.Flag(d,"can_more");
+                var rows=Data.Array(d,"rows"); var suggestions=Data.Array(d,"suggestions"); var serializer=new JavaScriptSerializer { MaxJsonLength=524288 }; string signature=serializer.Serialize(rows)+serializer.Serialize(suggestions)+Data.Flag(d,"can_more")+Data.Flag(d,"can_previous")+offset;
                 if(signature!=rowsSignature) {
                     int focused=resultButtons.FindIndex(delegate(Button b) { return b.IsKeyboardFocusWithin; }); candidates.Children.Clear(); resultButtons.Clear(); string group="";
                     foreach(object item in rows) {
@@ -561,7 +607,7 @@ namespace Denghuo.Native {
                             AddResultButton(button,index);
                         }
                     } else if(rows.Length==0) candidates.Children.Add(UI.Text("没有匹配条目，可清空搜索或切换分类。",13,UI.Muted));
-                    if(Data.Flag(d,"can_more")) candidates.Children.Add(moreResults);
+                    if(Data.Flag(d,"can_more") || Data.Flag(d,"can_previous")) candidates.Children.Add(resultPages);
                     if(focused>=0 && focused<resultButtons.Count && mode=="search") resultButtons[focused].Focus(); rowsSignature=signature;
                 }
                 object[] specs=Data.Array(d,"fields"); var rawValues=new Dictionary<string,object>();
@@ -570,7 +616,7 @@ namespace Denghuo.Native {
                 string nextEntry=Data.Text(d,"entry_id","");
                 if(nextEntry!=entry) { positions.Remove("result"); positions.Remove("edit"); entry=nextEntry; }
                 if(Data.Flag(d,"focus_result")) { SetMode("result"); scroll.ScrollToTop(); Dispatcher.BeginInvoke(new Action(delegate { if(primary.IsVisible) primary.Focus(); else back.Focus(); })); }
-                else if(Data.Flag(d,"focus_suggestions") && mode=="search" && resultButtons.Count>0) resultButtons[0].Focus();
+                else if((Data.Flag(d,"focus_listing") || Data.Flag(d,"focus_suggestions")) && mode=="search" && resultButtons.Count>0) { if(Data.Flag(d,"focus_listing")) scroll.ScrollToTop(); resultButtons[0].Focus(); }
                 else if(nextEntry.Length==0 && mode!="search") SetMode("search");
                 UpdateActions();
             } finally { rendering=false; }

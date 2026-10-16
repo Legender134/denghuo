@@ -927,7 +927,8 @@ class GameWorkspaceTests(ControllerFixture):
                 self.select('backups', row); self.workspace.preview_backup(); self.finish_job()
                 submitted = copy.deepcopy(self.workspace.backup_preview)
                 state=self.host.commands[-1][1]
-                self.assertTrue(state['text'].startswith('目标进度'))
+                self.assertTrue(state['text'].startswith('槽位 1 · 恢复备份'))
+                self.assertIn('目标进度', state['text'])
                 self.assertNotIn('保存时间',state['text'])
                 self.assertFalse(state['result_details'][0]['expanded'])
                 self.assertIn(submitted['text'],state['result_details'][0]['text'])

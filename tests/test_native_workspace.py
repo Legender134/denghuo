@@ -4,7 +4,7 @@ import copy
 from queue import Queue
 import unittest
 from unittest.mock import Mock
-from companion.native_host import NativeHost, MAX_LINE
+from companion.native_host import NativeHost, MAX_LINE, binding_token
 from companion.native_workspace import NumericLookup
 from companion.character_scene import calculate_scene, empty_scene
 from tests.test_native_controllers import ControllerFixture
@@ -153,13 +153,66 @@ class NativeCatalogBrowseTests(ControllerFixture):
         self.assertEqual(len(first), len(set(first)))
         self.lookup.more_results()
         self.assertFalse(self.lookup.suggested)
-        self.assertEqual(len(self.lookup.rows), 60)
+        self.assertEqual(len(self.lookup.rows), 30)
+        self.assertTrue(set(first).isdisjoint(row['id'] for row in self.lookup.rows))
+        self.lookup.previous_results()
+        self.assertEqual([row['id'] for row in self.lookup.rows], first)
         self.lookup.handle({'action': 'browse', 'category': '常用'})
         self.assertTrue(self.lookup.suggested)
         self.lookup.more_results()
         self.assertEqual(self.lookup.category, '全部')
         self.assertEqual(len(self.lookup.rows), 30)
         self.assertEqual(self.lookup.raw_params()['max_hp'], '1e')
+
+    def test_entire_catalog_uses_accepted_native_pages_and_preserves_raw_draft(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['max_hp'].set(' 1e ')
+        before = self.lookup.draft(include_result=True)
+        self.lookup.handle({'action': 'browse', 'category': '全部'})
+        first = copy.deepcopy(self.lookup.rows[0])
+        bridge = NativeHost.__new__(NativeHost)
+        bridge.closed = bridge.failed = False
+        bridge.serial, bridge.revision, bridge.session = 0, 0, '0'*32
+        bridge.outgoing, bridge.error = Queue(), Mock()
+        reached = []
+        while True:
+            action, payload = next((a, d) for a, d in reversed(self.host.commands) if a == 'lookup_state')
+            self.assertTrue(bridge.command(action, **payload))
+            self.assertLessEqual(len(bridge.outgoing.get_nowait()), MAX_LINE)
+            self.assertLessEqual(len(self.lookup.rows), 30)
+            self.assertEqual(payload['page_offset'], len(reached))
+            reached.extend(row['id'] for row in self.lookup.rows)
+            if not payload['can_more']: break
+            self.lookup.more_results()
+        self.assertEqual(len(reached), len(set(reached)))
+        self.assertEqual(set(reached), {row['id'] for row in self.session.catalog.entries})
+        after = self.lookup.draft(include_result=True)
+        for key in ('raw_params', 'origins', 'context', 'calculated', 'rendered', 'dirty', 'draft_modified'):
+            self.assertEqual(after[key], before[key], key)
+        # A row click from a different page cannot open the new row at that index.
+        self.lookup.handle({'action': 'select', 'index': 0, 'token': binding_token(first)})
+        self.assertEqual(self.lookup.identity, 'items.potions.potionofhealing')
+        self.assertEqual(self.lookup.raw_params()['max_hp'], ' 1e ')
+        while self.lookup.browse_offset:
+            self.lookup.previous_results()
+        self.assertEqual(self.lookup.rows[0]['id'], reached[0])
+        self.assertFalse(bridge.error.called)
+
+    def test_last_page_selection_and_pending_query_keep_page_state_consistent(self):
+        self.lookup.handle({'action': 'browse', 'category': '全部'})
+        while self.lookup.browse_offset+len(self.lookup.rows) < self.lookup.total:
+            self.lookup.more_results()
+        last = self.lookup.rows[-1]
+        self.lookup.handle({'action': 'select', 'index': len(self.lookup.rows)-1, 'token': binding_token(last)})
+        self.finish()
+        self.assertEqual(self.lookup.identity, last['id'])
+        self.lookup.query.set('治疗')
+        self.lookup.previous_results()
+        self.assertIsNone(self.lookup.pending)
+        self.assertEqual(self.lookup.browse_offset, 0)
+        expected = self.session.catalog.search('治疗', limit=30)['entries']
+        self.assertEqual([row['id'] for row in self.lookup.rows], [row['id'] for row in expected])
+        self.assertEqual(self.lookup.identity, last['id'])
 
     def test_current_object_has_one_row_and_related_calculation_preserves_capture(self):
         from companion.native_host import binding_token

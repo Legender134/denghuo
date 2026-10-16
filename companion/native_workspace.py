@@ -13,6 +13,7 @@ from .quick_reference import detail_text
 ITEM_CATEGORIES = {'药剂': 'items.potions.', '卷轴': 'items.scrolls.',
                    '武器': 'items.weapon.', '护甲': 'items.armor.',
                    '戒指': 'items.rings.', '法杖': 'items.wands.', '食物': 'items.food.'}
+PAGE_SIZE = 30
 
 
 def plan_updated_text(stamp):
@@ -55,6 +56,7 @@ class NumericLookup:
         self.window = NativeWindow(self.host, 'lookup')
         self.category = '常用'
         self.browse_all = False
+        self.browse_offset = 0
         self.query = Value('', self.schedule_search)
         self.note = Value('', self.note_changed)
         self.list, self.origin, self.text = Rows(), TextState(), TextState()
@@ -71,6 +73,7 @@ class NumericLookup:
         self.pending_save = None
         self.focus_result = False
         self.focus_suggestions = False
+        self.focus_listing = False
         self.calculating = False
         self.operation_receipt = ''
         self.origin_brief = '参考示例 / 手填条件'
@@ -87,6 +90,19 @@ class NumericLookup:
         from .decisions import public_context
         return {key: value for key, value in public_context(snap).items()
                 if key in ('hero_level', 'max_hp', 'hp', 'strength', 'depth', 'current_shield')}
+
+    @staticmethod
+    def scoped_origin(label, context):
+        """Keep each captured field identifiable after importing another character."""
+        if label.startswith(('手填', '示例', '未确认')) or ' · 槽位 ' in label:
+            return label
+        source = (context or {}).get('source') or {}
+        if source.get('mode') != 'save':
+            return label
+        stamp = source.get('snapshot_at')
+        suffix = ' · 槽位 '+str(source.get('slot') or '?')+' · '+(
+            plan_updated_text(stamp)+' 保存' if type(stamp) in (int, float) else '保存时间未记录')
+        return label[:120-len(suffix)]+suffix
 
     @classmethod
     def entry_context(cls, snap, identity, *, include_boss=False):
@@ -161,6 +177,7 @@ class NumericLookup:
         if self.pending:
             self.owner.manager.root.after_cancel(self.pending)
         self.pending = None
+        self.browse_offset = 0
         session = self.owner.manager.session
         query = self.query.get().strip()[:200]
         self.search_suggestions, self.search_error = [], ''
@@ -203,10 +220,10 @@ class NumericLookup:
             found = session.catalog.search(query, limit=len(session.catalog.entries))
             prefix = ITEM_CATEGORIES[self.category]
             rows = [row for row in found['entries'] if row['id'].startswith(prefix)]
-            return {'entries': rows[offset:offset+30], 'total': len(rows),
+            return {'entries': rows[offset:offset+PAGE_SIZE], 'total': len(rows),
                     'suggestions': [row for row in found['suggestions'] if row['id'].startswith(prefix)] if not rows else []}
         if self.category not in ('收藏', '最近', '随身'):
-            return session.catalog.search(query, category='全部' if self.category == '常用' else self.category, limit=30, offset=offset)
+            return session.catalog.search(query, category='全部' if self.category == '常用' else self.category, limit=PAGE_SIZE, offset=offset)
         status = status or session.workspace_status()
         rows = copy.deepcopy(status[{'收藏':'favorites', '最近':'recent', '随身':'current'}[self.category]])
         if self.category == '随身':
@@ -225,22 +242,41 @@ class NumericLookup:
                     row['lookup_label'] += '（等级未知）'
             else:
                 row['lookup_example'] = True
-        return {'entries': rows[offset:offset+30], 'total':len(rows), 'suggestions':[]}
+        return {'entries': rows[offset:offset+PAGE_SIZE], 'total':len(rows), 'suggestions':[]}
 
     def more_results(self):
         if self.pending:
-            self.search()
+            self.search(preserve_detail=True)
+            return
         if self.suggested:
             self.suggested = False
             self.browse_all = True
             self.category = '全部'
-            self.rows = []
-            self.list.delete()
-        result = self.browse_results(offset=len(self.rows))
-        self.rows.extend(result['entries'])
+            offset = 0
+        else:
+            if self.browse_offset+len(self.rows) >= self.total: return
+            offset = self.browse_offset+len(self.rows)
+        self.browse_page(offset)
+
+    def previous_results(self):
+        if self.pending:
+            self.search(preserve_detail=True)
+            return
+        if self.browse_offset:
+            self.browse_page(max(0, self.browse_offset-PAGE_SIZE))
+
+    def browse_page(self, offset):
+        result = self.browse_results(offset=offset)
+        if offset and not result['entries']:
+            offset = max(0, (result['total']-1)//PAGE_SIZE*PAGE_SIZE)
+            result = self.browse_results(offset=offset)
+        self.browse_offset, self.rows = offset, result['entries']
         self.total = result['total']
-        for row in result['entries']:
+        self.search_suggestions = result.get('suggestions', [])
+        self.list.delete()
+        for row in self.rows:
             self.list.insert('end', row.get('lookup_label', row['name']))
+        self.focus_listing = True
         self.emit()
 
     def show_text(self, text):
@@ -336,6 +372,8 @@ class NumericLookup:
                     self.input_origins[key] = self.context['fixed_origins'][key]
                 elif not self.saved_plan and key in (self.context or {}).get('field_origins', {}):
                     self.input_origins[key] = ('' if key == 'talent' else prefix+' · ')+self.context['field_origins'][key]
+                if not self.saved_plan and key in (self.context or {}).get('params', {}):
+                    self.input_origins[key] = self.scoped_origin(self.input_origins[key], self.context)
                 self.variables[key] = Value(str(field['value']), lambda key=key: self.changed(key))
         self.calculated = None if detail.get('missing_inputs') else {field['key']: field['value'] for field in self.inputs}
         self.dirty, self.parameter_error = False, ''
@@ -457,9 +495,14 @@ class NumericLookup:
                       '旧参考：快照已变/过期，请核对。' if old else
                       ('手动局势' if snap['settings']['mode'] == 'manual' else f"槽位 {snap['active_slot']} 快照")+'；其余示例/手填。' if uses else
                       '示例/手填；未自动读取当前角色。')
+            mixed = bool(((self.context or {}).get('source') or {}).get('mixed_snapshots'))
+            if mixed:
+                source = '混合来源；保留的条目条件与带入的角色条件请逐项核对。'
             self.origin.text = '百科 '+self.rendered['version']+' · '+source
             self.origin_brief = ('旧参考 · 请核对条件' if old else '独立参考 · 未绑定当前角色' if independent and not uses else
                                  '参考来源未确认' if uses and not stamp else '手填局势与参考条件' if uses and snap['settings']['mode']=='manual' else '快照条件与手填假设' if uses else '示例 / 手填条件')
+            if mixed:
+                self.origin_brief = '混合来源 · 请逐项核对'+(' · 当前记录已变化' if old else '')
         if (self.rendered and not self.dirty and not self.parameter_error and
                 self.identity.startswith('plants.') and self.identity.endswith('$seed')):
             self.origin_brief = '种植触发后 · ' + self.origin_brief
@@ -525,7 +568,6 @@ class NumericLookup:
             self.operation_receipt = self.origin.text = '当前角色状态未确认；原参数仍保留。'
             self.emit()
             return
-        self.undo_state = self.draft(include_result=True)
         context = self.entry_context(snap, self.identity, include_boss=True)
         context['imported_latest'] = True
         current_keys = {'hero_level', 'max_hp', 'hp', 'strength', 'depth', 'current_shield'}
@@ -544,18 +586,40 @@ class NumericLookup:
             current_keys.update(('power', 'remaining_turns', 'corrosion_public'))
         if self.identity == 'items.armor.glyphs.viscosity$defereddamage':
             current_keys.add('damage')
+        eligible = set(self.variables) & current_keys
+        if not eligible:
+            self.operation_receipt = '此条目没有可带入的角色条件；原物品参数与来源保留。'
+            self.emit()
+            return
+        self.undo_state = self.draft(include_result=True)
+        prior = copy.deepcopy(self.context or {})
+        prior_source = prior.get('source') or (self.saved_plan or {}).get('origin') or {}
+        imported = eligible & set(context['params'])
+        retained = {key for key, label in self.input_origins.items() if key not in imported
+                    and not label.startswith(('手填', '示例', '未确认'))}
+        different = (tuple(prior.get('stamp') or ()) != tuple(context['stamp']) or
+                     any(prior_source.get(key) != context['source'].get(key) for key in ('mode', 'slot', 'snapshot_at')))
+        if imported and retained:
+            for key in retained:
+                self.input_origins[key] = self.scoped_origin(self.input_origins[key], {'source': prior_source})
+            if different or prior_source.get('mixed_snapshots'):
+                context['source']['mixed_snapshots'] = True
+            context['retained_source_label'] = prior.get('retained_source_label', prior.get('source_label', '保存的条目条件'))
+            context['retained_conditions'] = prior.get('retained_conditions', prior.get('conditions', ''))
+            context['source_label'] = context['retained_source_label']+' · 角色条件：'+context['source_label']
+            context['conditions'] = '\n'.join(part for part in (context.get('conditions', ''), context['retained_conditions']) if part)
         prefix = '手动局势' if context['mode'] == 'manual' else '快照'
         for key, variable in self.variables.items():
             if key in current_keys and key in context['params']:
                 variable.value = str(context['params'][key])
-                self.input_origins[key] = context.get('field_origins', {}).get(key, prefix)
+                self.input_origins[key] = self.scoped_origin(context.get('field_origins', {}).get(key, prefix), context)
             elif key in current_keys:
                 if key == 'vial' and self.identity in ('items.potions.potionofhealing', 'items.potions.elixirs.elixirofhoneyedhealing'):
                     self.input_origins[key] = self.input_origins.get(key, '示例 · 请核对').replace(' · 最新记录未确认', '') + ' · 最新记录未确认'
                 else:
-                    self.input_origins[key] = '手填保留 · 最新记录未确认' + (
+                    self.input_origins[key] = self.input_origins.get(key, '示例 · 请核对').split(' · 最新记录未确认')[0]+' · 最新记录未确认' + (
                         ' · ' + context['conditions'].split('；')[0] if key in ('talent', 'shielding_dew') and context.get('conditions') else '')
-        self.context = context
+        self.context = context if imported else prior or context
         self.edit_revision += 1
         self.ticket = self.submitted = None
         self.calculating = False
@@ -635,7 +699,7 @@ class NumericLookup:
         source = dict(self.saved_plan['origin'] if self.saved_plan and not (self.context or {}).get('imported_latest') else (self.context or {}).get('source') or {'mode': 'example', 'snapshot_at': None, 'slot': None})
         if self.context and self.context.get('stamp') and not self.saved_plan and source.get('mode') == 'example':
             source = {'mode': self.context['mode'], 'snapshot_at': self.context['stamp'][-1], 'slot': self.context['stamp'][3]}
-        source = {key: copy.deepcopy(source[key]) for key in ('mode', 'snapshot_at', 'slot', 'references') if key in source}
+        source = {key: copy.deepcopy(source[key]) for key in ('mode', 'snapshot_at', 'slot', 'references', 'mixed_snapshots') if key in source}
         source['fields'] = {key: self.input_origins[key] for key in self.calculated}
         payload = {'action': 'save', 'kind': 'numeric', 'name': name, 'entry': self.identity,
                    'params': dict(self.calculated), 'source': source, 'note': self.note.get()}
@@ -851,7 +915,7 @@ class NumericLookup:
                     (self.context or {}).get('source') or {'mode': 'example', 'snapshot_at': None, 'slot': None})
                 if self.context and self.context.get('stamp') and not self.saved_plan and source.get('mode') == 'example':
                     source = {'mode': self.context['mode'], 'snapshot_at': self.context['stamp'][-1], 'slot': self.context['stamp'][3]}
-                source = {key: source[key] for key in ('mode', 'snapshot_at', 'slot', 'references') if key in source}
+                source = {key: source[key] for key in ('mode', 'snapshot_at', 'slot', 'references', 'mixed_snapshots') if key in source}
                 source['fields'] = {key: self.input_origins[key] for key in self.calculated}
                 return {'kind': 'plan', 'payload': {'kind': 'numeric', 'entry': self.identity,
                     'name': name, 'params': copy.deepcopy(self.calculated),
@@ -933,6 +997,8 @@ class NumericLookup:
             self.guard('切换资料', lambda: self.select_row(row))
         elif action == 'more':
             self.more_results()
+        elif action == 'previous_results':
+            self.previous_results()
         elif action == 'calculate':
             self.calculate()
         elif action == 'save_named':
@@ -1017,6 +1083,7 @@ class NumericLookup:
         fields = [{**field, 'raw': self.variables[field['key']].get(), 'origin': self.input_origins.get(field['key'], '')} for field in self.inputs if field['key'] in self.variables]
         self.host.command('lookup_state', draft_revision=self.edit_revision, query=self.query.get(),
             focus_result=self.focus_result, focus_suggestions=self.focus_suggestions,
+            focus_listing=self.focus_listing,
             rows=[{'text': text, 'name': row['name'], 'kind': row.get('type_label', ''),
                    'hint': ' · '.join(filter(None, (row.get('display_hint', ''),
                        '资料不可用' if row.get('available') is False else
@@ -1027,7 +1094,7 @@ class NumericLookup:
                    'token': binding_token(row), 'artwork': native_artwork(row.get('id'))}
                   for text, row in zip(self.list.values, self.rows)], fields=fields, note=self.note.get(),
             category=self.category, categories=self.categories(), suggested=self.suggested,
-            shown_count=len(self.rows), total_count=self.total,
+            shown_count=len(self.rows), total_count=self.total, page_offset=self.browse_offset,
             scope_source=next((row.get('lookup_context', {}).get('source_label', '') for row in self.rows), '') if self.category == '随身' else '',
             suggestions=[{'text': row['name']+' · '+row['type_label'], 'token': binding_token(row),
                           'artwork': native_artwork(row['id'])} for row in self.search_suggestions],
@@ -1049,12 +1116,14 @@ class NumericLookup:
             can_save=bool(self.identity and self.calculated is not None and not self.dirty and self.rendered and not self.calculating and not self.parameter_error and not (self.context or {}).get('food_reference')),
             favorite=bool(self.identity and self.identity in self.favorite_ids),
             has_saved_plan=bool(self.saved_plan), has_pin=bool(self.owner.pinned),
-            can_more=self.suggested or len(self.rows) < self.total, undo=bool(self.undo_state),
+            can_more=self.suggested or self.browse_offset+len(self.rows) < self.total,
+            can_previous=not self.suggested and self.browse_offset > 0, undo=bool(self.undo_state),
             can_latest=bool(self.identity and self.inputs and self.owner.manager.session.snapshot().get('data')),
             sources=self.rendered.get('provenance', {}).get('links', []) if self.rendered else [],
             sources_token=self.source_token())
         self.focus_result = False
         self.focus_suggestions = False
+        self.focus_listing = False
         self.owner.manager.native_ui.report_drafts()
 
     def open_first_result(self, _=None):

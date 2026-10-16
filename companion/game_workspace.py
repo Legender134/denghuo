@@ -136,6 +136,7 @@ class GameWorkspace:
         self.focus_result = None
         self.map_catalog, self.map_result, self.backup_catalog, self.backup_preview = None, None, None, None
         self.map_binding, self.map_generation = None, 0
+        self.map_items_page, self.map_items_identity = 0, None
         self.map_publication_pending = False
         self.structured_results = {}
         self.legacy_alchemy = None
@@ -798,6 +799,66 @@ class GameWorkspace:
         self.selected.pop('map', None); self.selected_tokens.pop('map', None)
         return True
 
+    def map_item_rows(self):
+        """Publish a small page; every saved instance remains reachable."""
+        floor = self.map_result
+        if not floor:
+            return [], ''
+        identity = binding_token([self.map_binding, self.map_generation, floor['source']])
+        if identity != self.map_items_identity:
+            self.map_items_page, self.map_items_identity = 0, identity
+        rows = []
+        for group in ('heaps', 'mobs'):
+            for container in floor[group]:
+                location = container['name']+f" ({container['x']}, {container['y']})"
+                if container.get('haunted'): location += ' · 闹鬼'
+                for item in container.get('items', []):
+                    rows.append((item, location))
+        return rows, identity
+
+    def map_items_detail(self):
+        from .reference import native_item_artwork
+        rows, token = self.map_item_rows()
+        if not rows: return None
+        self.map_items_page = min(self.map_items_page, (len(rows)-1)//20)
+        start = self.map_items_page*20
+        items = []
+        for item, location in rows[start:start+20]:
+            curse = ' · 有诅咒' if item.get('cursed') is True else ' · 诅咒未确认' if item.get('cursed') is None else ''
+            items.append({'id': item['instance_key'], 'entry': item['key'], 'token': token,
+                'summary': item['name']+f" ×{item['quantity']}"+curse,
+                'location': location, 'artwork': native_item_artwork(item),
+                'text': '\n\n'.join(part for part in (location, ' · '.join(item.get('details', [])), item.get('description', '')) if part),
+                'can_reference': item['key'] in self.session.catalog.entry_index})
+        return {'id': 'map_items', 'title': '楼层物品 · '+str(len(rows))+' 项', 'text': '', 'expanded': False,
+            'items': items, 'token': token, 'previous': start > 0, 'next': start+20 < len(rows),
+            'range': f'{start+1}–{min(start+20, len(rows))} / {len(rows)}'}
+
+    def map_item_reference(self, item):
+        self.sync_map_source()
+        rows, token = self.map_item_rows()
+        selected = next((row for row, _ in rows if row['instance_key'] == item.get('id')), None)
+        if not selected or token != item.get('token'):
+            raise ValueError('楼层已变化或隐藏内容已收起，请重新主动揭示后选择物品。')
+        if selected['key'] not in self.session.catalog.entry_index:
+            raise ValueError('此物品暂无数值资料；属性与说明仍可展开查看。')
+        floor = copy.deepcopy(self.map_result)
+        from .scouting import inspect_saved
+        from .floor_reference import item_reference
+        def read():
+            current = inspect_saved(self.session, {'action': 'floor', 'depth': floor['depth'], 'branch': floor['branch'],
+                'expected': floor['source']['expected'], 'reveal': True})
+            if current['source']['floor_sha256'] != floor['source']['floor_sha256']:
+                raise ValueError('该楼层保存已变化，请重新主动揭示后选择物品。')
+            return item_reference(selected, floor)
+        def complete(reference, error):
+            self.sync_map_source()
+            _, current_token = self.map_item_rows()
+            if current_token != token or self.page != 'map': return
+            if error: self.native.error(error)
+            else: self.native.manager.open_reference(reference, None, '')
+        self.native.queue_io('正在核对楼层物品', read, complete)
+
     def public_map(self):
         snap = self.session.snapshot()
         if snap.get('error') or snap.get('settings', {}).get('mode') != 'save':
@@ -861,7 +922,15 @@ class GameWorkspace:
                 floor = self.map_result
                 text = f"第 {floor['depth']} 层 / 支线 {floor['branch']} · 已主动揭示\n\n"+floor['note']
                 for label, key in [('地形', 'features'), ('陷阱', 'traps'), ('生物', 'mobs'), ('容器', 'heaps')]:
-                    text += '\n\n'+label+'\n'+'\n'.join(row['name']+f" ({row['x']}, {row['y']})"+(' · '+ '、'.join(item['name']+f" ×{item['quantity']}" for item in row['items']) if row.get('items') else '') for row in floor[key])
+                    lines = []
+                    for row in floor[key]:
+                        line = row['name']+f" ({row['x']}, {row['y']})"
+                        if key == 'traps': line += ' · '+('有效' if row['active'] else '已失效')+(' · 隐藏' if not row['visible'] else '')
+                        if row.get('haunted'): line += ' · 闹鬼'
+                        if row.get('hp') is not None: line += f" · 已保存生命 {row['hp']}"
+                        if row.get('items'): line += f" · 保存物品 {len(row['items'])} 项"
+                        lines.append(line)
+                    text += '\n\n'+label+'\n'+'\n'.join(lines)
             elif public:
                 text = f"当前第 {public['depth']} 层 / 支线 {public['branch']} · 已探索地形\n\n"+public['note']+'\n\n'+text
             else:
@@ -872,6 +941,8 @@ class GameWorkspace:
                 text = f"第 {floor['depth']} 层"+(f" · 支线 {floor['branch']}" if floor['branch'] else '')
                 text += ' · 已主动揭示' if self.map_result else ' · 已探索地形'
                 text += '\n存档地图，非实时视野'
+                item_detail = self.map_items_detail() if self.map_result else None
+                if item_detail: result_details.append(item_detail)
         else:
             rows = self.rows.get('backups', [])
             actions = [('reload', '刷新历史'), ('backup_preview', '预览所选进度')]
@@ -978,6 +1049,12 @@ class GameWorkspace:
             if page == 'map': self.map_result = None; self.map_generation += 1
         elif action == 'reload': self.reload(page)
         elif action == 'map_reveal': self.reveal_map()
+        elif action == 'map_item_reference': self.map_item_reference(item)
+        elif action in ('map_items_previous', 'map_items_next'):
+            self.sync_map_source()
+            rows, token = self.map_item_rows()
+            if not rows or token != item.get('token'): raise ValueError('楼层已变化，请重新主动揭示后查看物品。')
+            self.map_items_page = max(0, min((len(rows)-1)//20, self.map_items_page+(-1 if action.endswith('previous') else 1)))
         elif action in ('map_hide', 'map_known'):
             self.map_result = None; self.map_generation += 1
         elif action == 'backup_preview': self.preview_backup()
@@ -1182,7 +1259,9 @@ class GameWorkspace:
             if error: self.backup_preview = None; self.native.error(error)
             elif current.get('token') == selected:
                 text = f"槽位 {entry['slot']} · "+('恢复备份' if action == 'restore' else '撤回上次回档')+'\n存档目录：'+result['save_root']+'\n\n当前进度\n'+self.progress_text(result['current'])+'\n\n目标进度\n'+self.progress_text(result['target'])+'\n\n'+('种子和职业一致，请核对是否同一局冒险。' if result['same_run'] else '不同冒险或无法确认是否同一局，请核对目标。')
-                brief = '\n\n'.join(title+(' · '+backup_version_text(result[key]) if not result[key].get('empty') else '')+
+                label = entry.get('label') or ('未命名备份' if action == 'restore' else '回档前进度')
+                brief = f"槽位 {entry['slot']} · "+('恢复备份' if action == 'restore' else '撤回回档')+' · '+label+'\n\n'
+                brief += '\n\n'.join(title+(' · '+backup_version_text(result[key]) if not result[key].get('empty') else '')+
                     '\n'+self.progress_brief(result[key])+('\n'+result[key]['warning'] if result[key].get('warning') else '')
                     for key,title in [('target','目标进度'),('current','当前进度')])
                 request = {**payload, 'action': action, 'expected_current': result['expected_current'],
@@ -1335,8 +1414,15 @@ class GameWorkspace:
             from .native_workspace import NumericLookup
             snap = self.session.snapshot(); reference = NumericLookup.entry_context(snap, item['key'])
             reference.update(entry=item['key'], source_label=item['name']+' · '+reference['source_label'],
-                             level_origin='not_applicable' if item.get('level_applicable') is False else 'unknown' if item.get('level') is None else 'revealed' if item.get('revealed') else 'known')
+                             level_origin='not_applicable' if item.get('level_applicable') is False else 'unknown' if item.get('level') is None else 'revealed' if item.get('revealed') and not item.get('game_level_known') else 'known')
             reference['params'].update({k: item[k] for k in ('level', 'tier') if item.get(k) is not None})
+            origins = reference.setdefault('field_origins', {})
+            if item.get('level') is not None:
+                origins['level'] = '已主动揭示的存档等级' if reference['level_origin'] == 'revealed' else '物品已知等级'
+            if item.get('tier') is not None:
+                origins['tier'] = '存档物品阶数'+(' · 主动揭示模式' if item.get('revealed') else '')
+            if item.get('revealed'):
+                reference['conditions'] = reference.get('conditions', '')+'；已主动揭示存档中的物品资料，未改变游戏鉴定状态'
             self.native.manager.open_reference(reference, None, '')
 
     def import_equipment(self, item, side):

@@ -234,6 +234,15 @@ class Catalog:
             details.append(f"{tier} 阶 · 力量需求待核对（等级未知或暂缺上下文）")
         elif tier:
             details.append(f"{tier} 阶 · 力量 {requirement}" + ("（+0参考）" if not level_known else ""))
+        weapon = key.startswith(('items.weapon.melee.', 'items.weapon.missiles.')) or kind == 'SpiritBow'
+        armor = key.startswith('items.armor.') and tier is not None
+        if visible and (weapon or armor):
+            augments = {'EVASION': '闪避强化', 'DEFENSE': '防御强化'} if armor else {'SPEED': '速度强化', 'DAMAGE': '伤害强化'}
+            augment = item.get('augment')
+            if isinstance(augment, str) and augment in augments:
+                details.append(augments[augment])
+            if item.get('mastery_potion_bonus') is True:
+                details.append('已使用精通药剂')
         if "curCharges" in item and (item.get("curChargeKnown") or reveal):
             details.append(f"{item['curCharges']} 次充能")
         volume = item.get('volume') if kind == 'Waterskin' and type(item.get('volume')) is int and 0 <= item['volume'] <= 20 else None

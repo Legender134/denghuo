@@ -669,8 +669,10 @@ class NativeManager:
                         identity='item-'+item['instance_key']
                         self._floor_item_references[identity]=(item,floor)
                         children.append({'id':identity,'text':f"{item['name']} ×{item['quantity']}"+(' · 诅咒' if item.get('cursed') is True else ''),
-                                         'detail':item['description']+'\n'+item.get('location','')+'\n已主动揭示；游戏鉴定状态未改变，未加入背包。可查看所选资料数值。'})
+                                         'detail':'\n'.join(part for part in (' · '.join(item.get('details', [])), item['description'], item.get('location',''),
+                                             '已主动揭示；游戏鉴定状态未改变，未加入背包。可查看所选资料数值。') if part)})
                     caption=f"{row['name']} ({row['x']}, {row['y']})"
+                    if row.get('haunted'): caption+=' · 闹鬼'
                     if kind=='mobs':
                         caption+=' · '+('保存生命未确认' if row.get('hp') is None else f"保存生命 {row['hp']}")
                         if row.get('ht') is not None:caption+=f" / {row['ht']}"
@@ -820,19 +822,8 @@ class NativeManager:
                 selected=self._floor_item_references.get(item.get('id'))
                 if not selected:raise ValueError('请先主动揭示本层，再选择其中的物品；尚未打开数值。')
                 selected,floor=selected
-                params={}
-                for source,target in (('level','level'),('tier','tier'),('volume','dew_volume')):
-                    if selected.get(source) is not None:params[target]=selected[source]
-                source=floor['source']
-                label=f"槽位 {source['slot']} · 第 {floor['depth']} 层"+(f" / 支线 {floor['branch']}" if floor['branch'] else '')+' · 已主动揭示的楼层物品'
-                from .native_workspace import plan_updated_text
-                label+=' · '+plan_updated_text(source['floor_modified'])
-                conditions='楼层保存参考；游戏鉴定状态未改变，未加入背包。未合并当前角色、装备或临时状态。'
-                if source['version']!=922:conditions+=' 数值手册按4.0.2参考，请核对版本差异。'
-                reference={'entry':selected['key'],'params':params,'source':{'mode':'example'},
-                    'source_label':selected['name']+' · '+label,'conditions':conditions,
-                    'level_origin':'not_applicable' if selected.get('level_applicable') is False else 'unknown' if selected.get('level') is None else 'revealed',
-                    'field_origins':{key:label for key in params}}
+                from .floor_reference import item_reference
+                reference=item_reference(selected,floor)
                 self.manager.open_reference(reference,None,'')
             elif action == 'capture':
                 self.manager.commands.put(('capture', None))

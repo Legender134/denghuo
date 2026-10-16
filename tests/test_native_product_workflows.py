@@ -1,0 +1,251 @@
+"""Player journeys across captured items, generated floors and save history."""
+import copy
+import json
+
+from tests import test_game_workspace as fixtures
+from companion.engine import PREFIX
+
+
+class NativeProductWorkflows(fixtures.ControllerFixture):
+    def setUp(self):
+        super().setUp()
+        self.jobs = []
+        self.native = fixtures.SimpleNamespace(session=self.session, host=self.host,
+            report_drafts=fixtures.Mock(), error=fixtures.Mock(), manager=self.manager,
+            queue_io=lambda label, work, finish: self.jobs.append((work, finish)))
+        self.workspace = fixtures.GameWorkspace(self.native)
+        self.manager.native_ui.workspace = self.workspace
+
+    saved_game = fixtures.GameWorkspaceTests.saved_game
+    select = fixtures.GameWorkspaceTests.select
+    finish_job = fixtures.GameWorkspaceTests.finish_job
+
+    def item_reference(self, kind, *, known=True):
+        root, slot = self.saved_game()
+        game = json.loads((slot/'game.dat').read_text())
+        game['hero']['inventory'] = [{'__className': PREFIX+'items.'+kind,
+            'level': 3, 'levelKnown': known, 'cursedKnown': known, 'cursed': False}]
+        if 'Ring' in kind:
+            game['RingOfMight_known'] = known
+        for number, strength in ((1, 12), (2, 16)):
+            folder = root/f'game{number}'
+            folder.mkdir(exist_ok=True)
+            data = copy.deepcopy(game)
+            data['hero']['STR'] = strength
+            (folder/'game.dat').write_text(json.dumps(data), encoding='utf-8')
+            if number == 2:
+                (folder/'depth2.dat').write_bytes((slot/'depth2.dat').read_bytes())
+        self.session.refresh()
+        self.manager.open_reference = self.lookup.open_reference
+        self.select('inventory', self.workspace.inventory()[0])
+        if not known:
+            self.workspace.inventory_action('reveal'); self.finish_job()
+        self.workspace.inventory_action('reference'); self.finish()
+        return root, slot
+
+    def switch_slot(self):
+        self.session.update_settings({'slot': 2})
+        self.session.refresh()
+
+    def test_revealed_item_without_character_inputs_keeps_original_source(self):
+        self.item_reference('rings.RingOfMight', known=False)
+        self.assertIn('主动揭示', self.lookup.input_origins['level'])
+        self.assertIn('未改变游戏鉴定状态', self.lookup.context['conditions'])
+        before = self.lookup.draft(include_result=True)
+        self.switch_slot()
+        ticket = self.worker.ticket
+        self.lookup.use_latest()
+        self.assertEqual(self.worker.ticket, ticket)
+        self.assertEqual(self.lookup.draft(include_result=True), before)
+        self.assertIn('没有可带入', self.lookup.operation_receipt)
+        self.assertTrue(self.lookup.save_plan('原槽位揭示戒指'))
+        self.assertEqual(self.lookup.saved_plan['origin']['slot'], 1)
+        self.assertIn('主动揭示', self.lookup.saved_plan['origin']['fields']['level'])
+
+    def test_partial_character_import_persists_distinct_item_and_character_sources(self):
+        self.item_reference('weapon.melee.Katana')
+        self.switch_slot()
+        self.lookup.use_latest(); self.finish()
+        self.assertEqual(self.lookup.calculated['level'], 3)
+        self.assertEqual(self.lookup.calculated['strength'], 16)
+        self.assertIn('槽位 1', self.lookup.input_origins['level'])
+        self.assertIn('槽位 2', self.lookup.input_origins['strength'])
+        self.assertIn('混合来源', self.lookup.origin_brief)
+        self.assertTrue(self.lookup.exit_copy_payload()['payload']['source']['mixed_snapshots'])
+        self.assertTrue(self.lookup.save_plan('跨槽位武器试算'))
+        record = copy.deepcopy(self.lookup.saved_plan)
+        self.assertTrue(record['origin']['mixed_snapshots'])
+        self.lookup.open_plan(record['id'], False)
+        self.assertEqual(self.lookup.input_origins, record['origin']['fields'])
+        self.assertEqual(self.lookup.calculated['strength'], 16)
+
+    def test_manual_item_level_and_raw_draft_survive_character_import_and_undo(self):
+        self.item_reference('weapon.melee.Katana')
+        self.lookup.variables['level'].set('  1e ')
+        before = self.lookup.draft(include_result=True)
+        self.switch_slot(); self.lookup.use_latest()
+        self.assertEqual(self.lookup.raw_params()['level'], '  1e ')
+        self.assertEqual(self.lookup.input_origins['level'], '手填')
+        self.lookup.undo_import()
+        restored = self.lookup.draft(include_result=True)
+        for key in ('raw_params', 'origins', 'context', 'calculated', 'rendered', 'dirty', 'draft_modified'):
+            self.assertEqual(restored[key], before[key], key)
+
+    def test_revealed_item_conditions_remain_after_same_snapshot_character_import(self):
+        self.item_reference('weapon.melee.Katana', known=False)
+        for _ in range(3):
+            self.lookup.use_latest(); self.finish()
+            self.assertIn('未改变游戏鉴定状态', self.lookup.context['conditions'])
+            self.assertIn('主动揭示', self.lookup.input_origins['level'])
+            self.assertFalse(self.lookup.context['source'].get('mixed_snapshots'))
+        self.assertEqual(self.lookup.context['conditions'].count('未改变游戏鉴定状态'), 1)
+
+    def historical_floor(self, branch=0, count=1):
+        root, slot = self.saved_game()
+        game = json.loads((slot/'game.dat').read_text())
+        game['generated_levels'] = [1 if branch == 0 else 1001, 2]
+        (slot/'game.dat').write_text(json.dumps(game), encoding='utf-8')
+        current = slot/'depth2.dat'
+        current.write_bytes(current.read_bytes())
+        level = {'__className': PREFIX+'levels.SewerLevel', 'version': 922,
+            'width': 4, 'height': 4, 'map': [1]*16, 'visited': [True]*16, 'mapped': [False]*16,
+            'heaps': [{'type': 'CRYSTAL_CHEST', 'pos': 5, 'haunted': True, 'items': [
+                {'__className': PREFIX+'items.weapon.melee.Sword', 'level': 3,
+                 'levelKnown': False, 'cursedKnown': False, 'cursed': True,
+                 'augment': 'SPEED', 'mastery_potion_bonus': True} for _ in range(count)]}],
+            'mobs': [{'__className': PREFIX+'actors.mobs.GoldenMimic', 'pos': 8, 'HP': 8,
+                'items': [{'__className': PREFIX+'items.rings.RingOfMight', 'level': 2,
+                    'levelKnown': False, 'cursedKnown': False, 'cursed': True}]}]}
+        path = slot/('depth1.dat' if not branch else 'depth1-branch1.dat')
+        path.write_text(json.dumps({'level': level}), encoding='utf-8')
+        self.session.refresh()
+        self.manager.open_reference = self.lookup.open_reference
+        self.workspace.reload('map'); self.finish_job()
+        row = next(r for r in self.workspace.rows['map'] if r['floor']['depth'] == 1)
+        self.select('map', row); self.workspace.reveal_map(); self.finish_job()
+        return root, slot, path
+
+    def map_items(self):
+        self.workspace.emit('map')
+        return next(r for r in self.host.commands[-1][1]['result_details'] if r['id'] == 'map_items')
+
+    def test_historical_and_branch_floor_items_keep_curse_details_and_numeric_route(self):
+        for branch in (0, 1):
+            with self.subTest(branch=branch):
+                _, slot, _ = self.historical_floor(branch)
+                before = {p.name: p.read_bytes() for p in slot.iterdir()}
+                items = self.map_items()['items']
+                self.assertEqual(len(items), 2)
+                for item in items:
+                    self.assertIn('诅咒', item['summary'])
+                    self.assertTrue(item['text'])
+                    if item['entry'] == 'items.weapon.melee.sword':
+                        self.assertIn('速度强化', item['text'])
+                        self.assertIn('已使用精通药剂', item['text'])
+                    self.workspace.handle({'page': 'map', 'command': 'map_item_reference',
+                        'id': item['id'], 'token': item['token']})
+                    self.finish_job(); self.finish()
+                    self.assertEqual(self.lookup.identity, item['entry'])
+                    self.assertIn('第 1 层', self.lookup.context['source_label'])
+                    self.assertIn('未加入背包', self.lookup.context['conditions'])
+                    self.assertIn('主动揭示', self.lookup.input_origins['level'])
+                self.assertEqual(before, {p.name: p.read_bytes() for p in slot.iterdir()})
+
+    def test_map_item_actions_reject_hidden_changed_and_late_floor_results(self):
+        _, _, path = self.historical_floor()
+        item = self.map_items()['items'][0]
+        action = {'page': 'map', 'command': 'map_item_reference', 'id': item['id'], 'token': item['token']}
+        self.workspace.handle(action)
+        self.workspace.handle({'page': 'map', 'command': 'map_hide'})
+        self.finish_job()
+        self.assertIsNone(self.lookup.identity)
+        with self.assertRaises(ValueError): self.workspace.handle(action)
+        self.workspace.reveal_map(); self.finish_job()
+        item = self.map_items()['items'][0]
+        level = json.loads(path.read_text()); level['level']['heaps'][0]['items'][0]['level'] = 4
+        path.write_text(json.dumps(level), encoding='utf-8')
+        self.workspace.handle({**action, 'id': item['id'], 'token': item['token']}); self.finish_job()
+        self.assertIsNone(self.lookup.identity)
+        self.assertTrue(self.workspace.native.error.called)
+
+    def test_floor_item_pages_reach_every_instance_without_large_protocol_messages(self):
+        self.historical_floor(count=75)
+        reached = set()
+        while True:
+            detail = self.map_items()
+            self.assertLessEqual(len(detail['items']), 20)
+            reached.update(item['id'] for item in detail['items'])
+            self.assertLess(len(json.dumps(self.host.commands[-1][1], ensure_ascii=False).encode()), 524288)
+            if not detail['next']: break
+            self.workspace.handle({'page': 'map', 'command': 'map_items_next', 'token': detail['token']})
+        self.assertEqual(len(reached), 76)
+
+    def test_restore_preview_identifies_target_slot_and_record_while_list_is_folded(self):
+        root, slot = self.saved_game()
+        other = root/'game2'; other.mkdir()
+        for name in ('game.dat', 'depth2.dat'):
+            (other/name).write_bytes((slot/name).read_bytes())
+        self.session.backups.closed_check = lambda: None
+        self.session.backups.capture(root, 2)
+        status = self.session.backup_status()
+        row = next(r for r in status['history'] if r['slot'] == 2)
+        self.session.backup_action({'action': 'manage', 'context': status['context'],
+            'slot': 2, 'id': row['id'], 'expected_metadata_revision': row['metadata_revision'],
+            'label': '第二槽位的固定记录'})
+        self.workspace.reload('backups'); self.finish_job()
+        row = next(r for r in self.workspace.rows['backups'] if r['entry']['slot'] == 2 and r['action'] == 'restore')
+        self.select('backups', row); self.workspace.preview_backup(); self.finish_job()
+        self.assertEqual(self.session.snapshot()['active_slot'], 1)
+        brief = self.host.commands[-1][1]['text']
+        self.assertIn('槽位 2', brief)
+        self.assertIn('第二槽位的固定记录', brief)
+        self.assertIn('目标进度', brief)
+
+    def test_current_floor_reveal_keeps_saved_item_properties_and_container_risk(self):
+        from companion.native_manager import NativeManager
+        _, slot = self.saved_game()
+        level = {'__className': PREFIX+'levels.SewerLevel', 'version': 922,
+            'width': 4, 'height': 4, 'map': [1]*16, 'visited': [True]*16, 'mapped': [False]*16,
+            'heaps': [{'type': 'TOMB', 'pos': 5, 'haunted': True, 'items': [
+                {'__className': PREFIX+'items.weapon.melee.Sword', 'level': 4,
+                 'levelKnown': False, 'cursedKnown': False, 'cursed': True,
+                 'mastery_potion_bonus': True, 'augment': 'SPEED'},
+                {'__className': PREFIX+'items.wands.WandOfFireblast', 'level': 2,
+                 'levelKnown': False, 'cursedKnown': False, 'curCharges': 7, 'curChargeKnown': False}]}]}
+        (slot/'depth2.dat').write_text(json.dumps({'level': level}), encoding='utf-8')
+        self.session.refresh()
+        before = {p.name: p.read_bytes() for p in slot.iterdir()}
+        ui = NativeManager.__new__(NativeManager)
+        ui.manager, ui.session, ui.queue_io = self.manager, self.session, self.native.queue_io
+        public = ui.floor_state(self.session.snapshot())
+        self.assertEqual(public['nodes'][0]['children'], [])
+        ui.reveal_floor({'token': public['token']}); self.finish_job()
+        shown = ui.floor_state(self.session.snapshot())
+        heap = next(n for n in shown['nodes'][0]['children'] if n['id'] == 'hidden-heaps')['children'][0]
+        self.assertIn('闹鬼', heap['text'])
+        self.assertEqual(len(heap['children']), 2)
+        for node in heap['children']:
+            item, _ = ui._floor_item_references[node['id']]
+            if item['kind'] == 'Sword':
+                self.assertEqual(item['strength_requirement'], 10)
+                self.assertIn('速度强化', node['detail'])
+                self.assertIn('已使用精通药剂', node['detail'])
+            for detail in item['details']: self.assertIn(detail, node['detail'])
+            self.assertIn('未加入背包', node['detail'])
+        self.assertTrue(any('7 次充能' in n['detail'] for n in heap['children']))
+        self.assertEqual(before, {p.name: p.read_bytes() for p in slot.iterdir()})
+
+    def test_shared_item_details_retain_each_saved_equipment_modifier(self):
+        for kind, augment, label in [('weapon.melee.Sword', 'SPEED', '速度强化'),
+                ('weapon.melee.Sword', 'DAMAGE', '伤害强化'),
+                ('armor.MailArmor', 'EVASION', '闪避强化'),
+                ('armor.MailArmor', 'DEFENSE', '防御强化')]:
+            with self.subTest(augment=augment):
+                raw = {'__className': PREFIX+'items.'+kind, 'level': 4, 'levelKnown': False,
+                    'cursedKnown': False, 'augment': augment, 'mastery_potion_bonus': True}
+                public = self.session.catalog.item(raw, {})
+                self.assertIsNone(public['level'])
+                self.assertIn(label, public['details'])
+                revealed = self.session.catalog.item(raw, {}, reveal=True)
+                self.assertIn(label, revealed['details'])
+                self.assertIn('已使用精通药剂', revealed['details'])
