@@ -701,6 +701,36 @@ class GameWorkspaceTests(ControllerFixture):
             self.assertIn('完整物品说明', state['result_details'][0]['text'])
             self.assertIn('完整属性', state['result_details'][0]['text'])
 
+    def test_inventory_known_curse_is_visible_without_exposing_unknowns(self):
+        from companion.engine import PREFIX
+        root, slot = self.saved_game()
+        game_path = slot/'game.dat'; game = json.loads(game_path.read_text())
+        game['hero']['inventory'] = [{'__className': PREFIX+'items.weapon.melee.Sword', 'level': 2,
+            'levelKnown': True, 'cursedKnown': known, 'cursed': cursed}
+            for known, cursed in ((True, True), (True, False), (False, True))]
+        game_path.write_text(json.dumps(game), encoding='utf-8'); self.session.refresh()
+        original = {p.name: p.read_bytes() for p in slot.iterdir()}
+        rows = self.workspace.inventory()
+        self.assertNotEqual(rows[0]['text'], rows[1]['text'])
+        for row, curse in zip(rows, (True, False, None)):
+            self.assertIs(row['item']['cursed'], curse)
+            self.assertEqual('有诅咒' in row['text'], curse is True)
+            self.select('inventory', row); self.workspace.emit('inventory')
+            state = self.host.commands[-1][1]
+            self.assertEqual('有诅咒' in state['text'], curse is True)
+            self.assertFalse(state['result_details'][0]['expanded'])
+        self.workspace.inventory_action('reveal'); self.finish_job()
+        self.workspace.emit('inventory'); state = self.host.commands[-1][1]
+        self.assertIn('有诅咒', state['text']); self.assertIn('游戏鉴定状态未改变', state['text'])
+        self.assertIn('有诅咒', self.workspace.inventory()[2]['text'])
+        self.workspace.inventory_action('hide_reveal'); self.workspace.emit('inventory')
+        self.assertNotIn('有诅咒', self.host.commands[-1][1]['text'])
+        self.assertNotIn('有诅咒', self.workspace.inventory()[2]['text'])
+        self.assertEqual({p.name: p.read_bytes() for p in slot.iterdir()}, original)
+        game['hero']['inventory'][0]['cursed'] = False
+        game_path.write_text(json.dumps(game), encoding='utf-8'); self.session.refresh()
+        self.assertFalse(any('有诅咒' in row['text'] for row in self.workspace.inventory()))
+
     def test_alchemy_shortages_show_local_names_counts_and_specific_candidate_targets(self):
         from tests.test_alchemy_flow import params, goal, stock
         for resources, energy, expected in (([], 12, '治疗药剂 · 需用 1 / 可用 0 / 还缺 1'),

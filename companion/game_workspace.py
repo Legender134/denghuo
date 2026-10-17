@@ -792,7 +792,8 @@ class GameWorkspace:
         rows = []
         for item in [] if snap.get('error') else (snap.get('data') or {}).get('items', []):
             item = self.revealed.get(item['instance_key'], item)
-            rows.append({'id': item['instance_key'], 'text': item['name']+f" ×{item['quantity']} · "+item['location'],
+            curse = ' · 有诅咒' if item.get('cursed') is True else ''
+            rows.append({'id': item['instance_key'], 'text': item['name']+f" ×{item['quantity']}"+curse+' · '+item['location'],
                          'token': binding_token([binding, item]), 'item': copy.deepcopy(item), 'expected': expected})
         self.rows['inventory'] = rows
         current = next((r for r in rows if r['id'] == self.selected.get('inventory')), None)
@@ -900,6 +901,7 @@ class GameWorkspace:
             row = next((r for r in rows if r['id'] == selected), None)
             if row:
                 item = row['item']; text = item['name']+f" ×{item['quantity']}"
+                if item.get('cursed') is True: text += ' · 有诅咒'
                 result_details.append({'id': 'item_description', 'title': '物品说明', 'expanded': False,
                     'text': item['location']+'\n\n'+item['description']+'\n\n'+' · '.join(item.get('details', []))})
                 if item.get('revealed'):
