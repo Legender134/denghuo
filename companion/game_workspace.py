@@ -651,7 +651,8 @@ class GameWorkspace:
         if page == 'character':
             strength = result['strength']
             text = ('总力量 '+str(strength['effective']) if strength.get('state') == 'known' else '总力量尚未确认：'+'；'.join(strength['missing']))
-            text += '\n\n'+' · '.join(label+' '+str(strength['components'][key]) for key, label in [('base', '基础'), ('might_rings', '戒指'), ('adrenaline', '激素涌动'), ('strongman', '力大无穷')])
+            components = strength['components']
+            text += '\n\n'+' · '.join(label+' '+('未知' if components[key] is None else str(components[key])) for key, label in [('base', '基础'), ('might_rings', '戒指'), ('adrenaline', '激素涌动'), ('strongman', '力大无穷')])
             return text+'\n\n'+result['boundary']
         if result.get('format') != 2:
             return ('旧版固定配方方案 · 原记录保留\n\n'+result['recipe']['name']+f" · 计划 {result['requested_batches']} 批 / 可完成 {result['batches']} 批\n产出 {result['output']['quantity']} 件\n能量消耗 {result['energy']['spent']}，余 {result['energy']['remaining']}\n\n"+
@@ -909,7 +910,7 @@ class GameWorkspace:
             specs = self.equipment_fields() if page == 'equipment' else self.alchemy_fields() if page == 'alchemy' else self.character_fields()
             actions = [('calculate', '比较装备' if page == 'equipment' else '计算炼金计划' if page == 'alchemy' else '计算总力量'),
                        ('import', '带入快照力量' if page == 'equipment' else '带入已知库存与能量' if page == 'alchemy' else '带入快照角色条件'),
-                       ('undo', '撤回本次带入'), ('save', '保存方案…')]
+                       ('undo', '撤回修改'), ('save', '保存方案…')]
             if page == 'equipment': actions.append(('use_character', '带入角色条件'))
             if self.saved.get(page): actions.append(('update', '更新原方案'))
             if page == 'alchemy': actions += [('add_target', '增加目标'), ('remove_target', '移除末项目标'), ('add_resource', '增加独立库存'), ('remove_resource', '移除末项库存'), ('add_path', '指定前置路径'), ('remove_path', '移除末项路径')]
@@ -965,7 +966,10 @@ class GameWorkspace:
                 elif task_snap['settings']['mode'] != 'save' or task_snap.get('error') or not task_snap.get('data'):
                     text = '暂无存档记录。请先在游戏中保存一局，再刷新历史。'
                 elif self.backup_catalog.get('enabled'):
-                    text = '暂无存档记录。已保存进度会自动备份，也可从窗口右上角「···」选择「立即备份已保存进度」。'
+                    if self.backup_catalog.get('health') == 'blocked' or self.backup_catalog.get('error'):
+                        text = '暂无存档记录，备份暂时受阻。'
+                    else:
+                        text = '暂无存档记录。已保存进度会自动备份，也可从窗口右上角「···」选择「立即备份已保存进度」。'
                 else:
                     text = '暂无存档记录，自动备份已暂停。可从窗口右上角「···」选择「立即备份已保存进度」。'
             selected_record = next((r for r in rows if r['id'] == self.selected.get('backups')), None)
@@ -995,7 +999,7 @@ class GameWorkspace:
             elif command in ('save', 'update') and page not in self.calculated:
                 reason = '先计算有效条件，再保存方案'
             elif command == 'undo' and page not in self.undo:
-                reason = '尚无可撤回的带入'
+                reason = '尚无可撤回的修改'
             elif command == 'backup_preview' and not self.selected.get('backups'):
                 reason = '先选择一条存档记录'
             elif command == 'map_reveal' and not self.selected.get('map'):

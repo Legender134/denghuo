@@ -586,8 +586,21 @@ class GameWorkspaceTests(ControllerFixture):
         self.workspace.load_alchemy(args); self.assertEqual(self.workspace.alchemy_args(), args)
         raw = copy.deepcopy(self.workspace.raw['alchemy'])
         self.workspace.handle({'page': 'alchemy', 'command': 'add_target'})
+        state = self.host.commands[-1][1]
+        undo = next(action for action in state['actions'] if action['id'] == 'undo')
+        self.assertEqual(undo['text'], '撤回修改'); self.assertFalse(undo['disabled'])
         self.workspace.handle({'page': 'alchemy', 'command': 'undo'})
         self.assertEqual(self.workspace.raw['alchemy'], raw)
+        undo = next(action for action in self.host.commands[-1][1]['actions'] if action['id'] == 'undo')
+        self.assertTrue(undo['disabled']); self.assertEqual(undo['reason'], '尚无可撤回的修改')
+        self.saved_game()
+        self.workspace.handle({'page': 'alchemy', 'command': 'import'})
+        self.workspace.edit('alchemy', {**self.workspace.raw['alchemy'], 'energy': '12'})
+        imported = copy.deepcopy(self.workspace.raw['alchemy'])
+        self.workspace.handle({'page': 'alchemy', 'command': 'add_target'})
+        self.assertEqual(int(self.workspace.raw['alchemy']['targets']), int(imported['targets']) + 1)
+        self.workspace.handle({'page': 'alchemy', 'command': 'undo'})
+        self.assertEqual(self.workspace.raw['alchemy'], imported)
 
     def test_alchemy_result_prioritizes_steps_and_separates_unused_stock_without_changing_result(self):
         from tests.test_alchemy_flow import params, goal, stock
@@ -681,9 +694,16 @@ class GameWorkspaceTests(ControllerFixture):
     def test_character_unknown_and_complete_inputs(self):
         self.workspace.raw['character']['base_strength'] = ''
         self.workspace.calculate('character'); self.assertIn('尚未确认', self.workspace.results['character'])
+        self.assertIn('基础 未知', self.workspace.results['character'])
+        self.assertIn('戒指 未知', self.workspace.results['character'])
+        self.assertIn('力大无穷 未知', self.workspace.results['character'])
+        self.assertIn('激素涌动 0', self.workspace.results['character'])
+        self.assertNotIn('None', self.workspace.results['character'])
+        self.assertIsNone(self.workspace.structured_results['character']['strength']['components']['base'])
         from companion.character_scene import empty_scene
         scene = empty_scene(12); self.workspace.load_character(scene)
         self.workspace.calculate('character'); self.assertIn('总力量 12', self.workspace.results['character'])
+        self.assertIn('基础 12 · 戒指 0 · 激素涌动 0 · 力大无穷 0', self.workspace.results['character'])
         self.assertEqual(self.workspace.character_args(), scene)
 
     def test_structure_counts_and_boolean_invalid_raw_not_coerced(self):
@@ -1346,6 +1366,21 @@ class GameWorkspaceTests(ControllerFixture):
         self.assertIn('备份库不可读', state['text'])
         self.assertNotIn('暂无存档记录', state['text'])
         self.assertNotIn('会自动备份', state['text'])
+
+    def test_blocked_empty_backup_history_does_not_promise_automatic_capture(self):
+        from unittest.mock import patch
+        root, slot = self.saved_game()
+        before = {p.name: p.read_bytes() for p in slot.iterdir() if p.is_file()}
+        with patch('companion.backups.MAX_STORAGE', 0):
+            with self.assertRaisesRegex(ValueError, '上限'):
+                self.session.backups.tick(root, force=True)
+        self.workspace.reload('backups'); self.finish_job()
+        state = self.host.commands[-1][1]; catalog = self.workspace.backup_catalog
+        self.assertTrue(catalog['records_available']); self.assertTrue(catalog['enabled'])
+        self.assertEqual(catalog['health'], 'blocked'); self.assertEqual(state['rows'], [])
+        self.assertIn('备份暂时受阻', state['text']); self.assertIn(catalog['error'], state['text'])
+        self.assertNotIn('会自动备份', state['text'])
+        self.assertEqual({p.name: p.read_bytes() for p in slot.iterdir() if p.is_file()}, before)
 
     def test_ready_restores_settings_values_without_creating_or_saving_a_draft(self):
         from companion.native_manager import NativeManager

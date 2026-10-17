@@ -339,7 +339,6 @@ namespace Denghuo.Native {
                     if(page=="alchemy" && command=="import") label="带入已知库存";
                     if(command=="calculate" && page=="equipment") label="比较装备";
                     if(command=="calculate" && page=="alchemy") label="计算";
-                    if(command=="undo" && (page=="equipment" || page=="alchemy")) label="撤回带入";
                     if(direct) { var button=UI.Button(label,clicked,command==primaryCommand); button.Padding=new Thickness(10,6,10,6); button.MinHeight=30; button.IsEnabled=!disabled; string help=reason.Length>0 ? reason : command=="import" && page=="alchemy" ? "主动替换当前库存与能量；保留目标。未知身份与未确认状态不猜测，可撤回。" : ""; if(help.Length>0) { button.ToolTip=help; System.Windows.Controls.ToolTipService.SetShowOnDisabled(button,true); System.Windows.Automation.AutomationProperties.SetHelpText(button,help); } actions.Children.Add(button); actionControls[command]=button; }
                     else if(!(page=="inventory" && Data.Text(d,"selected","").Length==0)) { var menuItem=UI.Item(label,clicked,!disabled); if(reason.Length>0) { menuItem.ToolTip=reason; System.Windows.Controls.ToolTipService.SetShowOnDisabled(menuItem,true); System.Windows.Automation.AutomationProperties.SetHelpText(menuItem,reason); } extras.Add(menuItem); actionControls[command]=menuItem; }
                 }
