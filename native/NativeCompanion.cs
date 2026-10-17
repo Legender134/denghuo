@@ -12,6 +12,7 @@ using System.Web.Script.Serialization;
 using System.Runtime.Versioning;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Threading;
@@ -211,9 +212,12 @@ namespace Denghuo.Native {
         public NameDialog(Window owner,Dictionary<string,object> d) : base(owner,"保存参考方案",440,400) {
             string initial=Data.Text(d,"name","参考方案"); bool existing=Data.Flag(d,"existing"); name.Text=existing ? initial+" 副本" : initial; note.Text=Data.Text(d,"note",""); note.AcceptsReturn=true; note.TextWrapping=TextWrapping.Wrap; note.MinHeight=100; update.IsEnabled=existing;
             string copyName=name.Text; Action toggled=delegate { if(UpdateOriginal) { copyName=name.Text; name.Text=initial; } else name.Text=copyName; name.IsReadOnly=UpdateOriginal; }; update.Checked+=delegate { toggled(); }; update.Unchecked+=delegate { toggled(); };
-            Body.Children.Add(UI.Field("方案名称",name)); Body.Children.Add(UI.Field("用户用途 / 假设备注（可选，未验证）",note)); Body.Children.Add(update); Actions.Children.Add(UI.Button("保存",delegate { if(name.Text.Trim().Length==0) { name.Focus(); return; } Choose("saved"); },true)); Actions.Children.Add(UI.Button("取消",delegate { Choose("cancel"); }));
+            Body.Children.Add(UI.Field("方案名称",name)); Body.Children.Add(update); Body.Children.Add(UI.Field("用户用途 / 假设备注（可选，未验证）",note)); Actions.Children.Add(UI.Button("保存",delegate { if(name.Text.Trim().Length==0) { name.Focus(); return; } Choose("saved"); },true)); Actions.Children.Add(UI.Button("取消",delegate { Choose("cancel"); }));
             baselineName=PlanName; baselineNote=Note; baselineUpdate=UpdateOriginal; var pending=Data.Object(d,"pending_save"); recovered=pending.Count>0; if(recovered) { update.IsChecked=existing && Data.Flag(pending,"update"); name.Text=Data.Text(pending,"name",name.Text); note.Text=Data.Text(pending,"note",note.Text); }
             name.TextChanged+=delegate { if(Changed!=null) Changed(); }; note.TextChanged+=delegate { if(Changed!=null) Changed(); }; update.Checked+=delegate { if(Changed!=null) Changed(); }; update.Unchecked+=delegate { if(Changed!=null) Changed(); };
+            var initialFocus=name.IsReadOnly ? note : name; FocusManager.SetFocusedElement(this,initialFocus);
+            if(recovered) initialFocus.CaretIndex=initialFocus.Text.Length; else name.SelectAll();
+            ContentRendered+=delegate { if(IsActive && Body.IsEnabled) initialFocus.Focus(); };
         }
     }
     static class Program {

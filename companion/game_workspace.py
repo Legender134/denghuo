@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+from decimal import Decimal, InvalidOperation
 
 from .native_host import binding_token
 from .values_investment import family
@@ -111,6 +112,17 @@ def comparison_summary(result):
         result['summary_context'] = '当前角色力量 '+strength+' · 覆盖独立力量'
     result['summary_rows'] = [{**by_label[label], 'values': [value for choice in choices
         for value in (choice['current'].get(label, '—'), outcomes(choice, label))]} for label in selected]
+    def display(value):
+        if not re.fullmatch(r'[+-]?\d+\.\d+(?:[eE][+-]?\d+)?', value): return value
+        try:
+            short = format(float(value), '.3g')
+            return ('≈' if Decimal(short) != Decimal(value) else '')+short
+        except (ValueError, InvalidOperation):
+            return value
+    for row in result['summary_rows']:
+        row['display_values'] = [' / '.join(display(part) for part in value.split(' / ')) for value in row['values']]
+    if any('≈' in value for row in result['summary_rows'] for value in row['display_values']):
+        notes.append('≈ 为摘要近似值，展开查看完整精度。')
     result['summary_branches'] = branch_labels
     result['summary_notes'] = notes
     return result
@@ -947,6 +959,15 @@ class GameWorkspace:
             rows = self.rows.get('backups', [])
             actions = [('reload', '刷新历史'), ('backup_preview', '预览所选进度')]
             text = '选择备份或可撤回记录，先预览当前与目标进度。回档前必须关闭游戏；原进度会完整保留。'
+            if not rows and self.backup_catalog is not None:
+                if self.backup_catalog.get('records_available') is False:
+                    text = '存档历史暂时无法读取。请核对下方原因后刷新。'
+                elif task_snap['settings']['mode'] != 'save' or task_snap.get('error') or not task_snap.get('data'):
+                    text = '暂无存档记录。请先在游戏中保存一局，再刷新历史。'
+                elif self.backup_catalog.get('enabled'):
+                    text = '暂无存档记录。已保存进度会自动备份，也可从窗口右上角「···」选择「立即备份已保存进度」。'
+                else:
+                    text = '暂无存档记录，自动备份已暂停。可从窗口右上角「···」选择「立即备份已保存进度」。'
             selected_record = next((r for r in rows if r['id'] == self.selected.get('backups')), None)
             if selected_record:
                 text = self.backup_row_summary(selected_record['action'], selected_record['entry'])+'\n\n'+text

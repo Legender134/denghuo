@@ -284,15 +284,18 @@ namespace Denghuo.Native {
             foreach(object item in Data.Array(data,"summary_rows")) primary.Add((Dictionary<string,object>)item);
             var grid=new Grid { Margin=new Thickness(0,4,0,8) }; grid.ColumnDefinitions.Add(new ColumnDefinition { Width=new GridLength(1.1,GridUnitType.Star) }); grid.ColumnDefinitions.Add(new ColumnDefinition()); grid.ColumnDefinitions.Add(new ColumnDefinition());
             int row=0; foreach(var metric in primary) {
-                var cells=Data.Array(metric,"values"); if(cells.Length!=4) continue;
+                var fullCells=Data.Array(metric,"values"); if(fullCells.Length!=4) continue; var cells=Data.Array(metric,"display_values"); if(cells.Length!=4) cells=fullCells;
                 grid.RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto }); string unit=Data.Text(metric,"unit","");
                 var label=UI.Text(Data.Text(metric,"label","")+(unit.Length>0 ? " · "+unit : ""),12,UI.Muted); label.Margin=new Thickness(0,5,6,5); Grid.SetRow(label,row); grid.Children.Add(label);
                 for(int i=0;i<2;i++) {
                     string current=Convert.ToString(cells[i*2]), upgraded=Convert.ToString(cells[i*2+1]);
-                    var value=UI.Text(current==upgraded ? current : current+"→"+upgraded.Replace(" / ","/"),13);
+                    string fullCurrent=Convert.ToString(fullCells[i*2]), fullUpgraded=Convert.ToString(fullCells[i*2+1]);
+                    var value=new WrapPanel(); var before=UI.Text(current,13); before.TextWrapping=TextWrapping.NoWrap; value.Children.Add(before);
+                    if(fullCurrent!=fullUpgraded) { string prefix="→"; foreach(string branch in upgraded.Split(new[]{" / "},StringSplitOptions.None)) { var after=UI.Text(prefix+branch,13); after.TextWrapping=TextWrapping.NoWrap; value.Children.Add(after); prefix="/"; } }
                     value.VerticalAlignment=VerticalAlignment.Top; value.Margin=new Thickness(0,5,5,5);
-                    Grid.SetRow(value,row); Grid.SetColumn(value,i+1); value.ToolTip=Data.Text(metric,"condition","");
-                    UI.Name(value,(i==0 ? "A " : "B ")+Data.Text(metric,"label","")+" "+value.Text+" "+unit); grid.Children.Add(value);
+                    string fullValue=fullCurrent==fullUpgraded ? fullCurrent : fullCurrent+"→"+fullUpgraded;
+                    Grid.SetRow(value,row); Grid.SetColumn(value,i+1); value.ToolTip=fullValue+" "+unit+"\n"+Data.Text(metric,"condition","");
+                    UI.Name(value,(i==0 ? "A " : "B ")+Data.Text(metric,"label","")+" "+fullValue+" "+unit); grid.Children.Add(value);
                 }
                 row++;
             }

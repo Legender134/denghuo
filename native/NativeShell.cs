@@ -136,12 +136,16 @@ namespace Denghuo.Native {
         public readonly WrapPanel Actions = new WrapPanel();
         public string Decision = "cancel";
         public bool Silent;
+        public double InterfaceScale { get; private set; }
         public Dialog(Window owner, string title, double width = 450, double height = 440) {
             UI.Chrome(this);
-            Title = "灯火 · " + title; UI.Name(this,Title); Width = width; Height = height; MinWidth = 320; MinHeight = 240; MaxWidth = SystemParameters.WorkArea.Width; MaxHeight = SystemParameters.WorkArea.Height;
+            var manager=owner as ManagerForm; var parent=owner as Dialog;
+            InterfaceScale=manager!=null ? manager.InterfaceScale : parent!=null ? parent.InterfaceScale : 1;
+            Title = "灯火 · " + title; UI.Name(this,Title); MaxWidth = SystemParameters.WorkArea.Width; MaxHeight = SystemParameters.WorkArea.Height;
+            MinWidth = Math.Min(320*InterfaceScale,MaxWidth); MinHeight = Math.Min(240*InterfaceScale,MaxHeight); Width = Math.Min(width*InterfaceScale,MaxWidth); Height = Math.Min(height*InterfaceScale,MaxHeight);
             WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.CanResizeWithGrip; Background = UI.Background; Foreground = UI.Ink; FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI, Microsoft YaHei"); FontSize = 13;
             WindowStartupLocation = owner != null && owner.IsVisible ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen; if (owner != null && owner.IsVisible) Owner = owner;
-            var grid = new Grid { Margin = new Thickness(20) }; grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); grid.RowDefinitions.Add(new RowDefinition()); grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var grid = new Grid { Margin = new Thickness(20), LayoutTransform = new ScaleTransform(InterfaceScale,InterfaceScale) }; grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); grid.RowDefinitions.Add(new RowDefinition()); grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             var header = new DockPanel { Margin = new Thickness(0,0,0,16) }; var close = UI.Button("×", delegate { Close(); }); close.ToolTip = "关闭并返回"; DockPanel.SetDock(close,Dock.Right); header.Children.Add(close); header.Children.Add(UI.Text(title,18)); header.MouseLeftButtonDown += delegate(object s,MouseButtonEventArgs e) { if (e.OriginalSource is TextBlock) DragMove(); };
             var scroll = UI.Scroll(Body); Grid.SetRow(scroll,1); Grid.SetRow(Actions,2); Actions.Margin = new Thickness(0,14,0,0); grid.Children.Add(header); grid.Children.Add(scroll); grid.Children.Add(Actions); Content = new Border { BorderBrush = UI.Line, BorderThickness = new Thickness(1), Child = grid };
             PreviewKeyDown += delegate(object s,KeyEventArgs e) { if (e.Key == Key.Escape) { Close(); e.Handled = true; } };
@@ -176,6 +180,7 @@ namespace Denghuo.Native {
         Dictionary<string,object> updateState = new Dictionary<string,object>();
         public readonly TextBlock Status = UI.Text("",12,UI.Gold);
         public UIElement Editable { get { return frame; } }
+        public double InterfaceScale { get { return textScale/100.0; } }
         public bool Collapsed, LayoutRestored;
         public string Page = "overview";
         public double SystemDpi = 96;
@@ -371,7 +376,7 @@ namespace Denghuo.Native {
         }
         void ChooseScale() {
             Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle,new Action(delegate {
-                var dialog=new Dialog(this,"界面大小",340,180); dialog.MinHeight=160;
+                var dialog=new Dialog(this,"界面大小",340,180); dialog.MinHeight=Math.Min(160*dialog.InterfaceScale,dialog.MaxHeight);
                 var choices=new UniformGrid { Columns=3 };
                 foreach(int size in new[]{100,115,130}) { int value=size; var choose=UI.Button(value+"%",delegate {
                     SetScale(value); dialog.Close();

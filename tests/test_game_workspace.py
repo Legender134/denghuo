@@ -456,6 +456,19 @@ class GameWorkspaceTests(ControllerFixture):
         self.assertIn('力量缺口', rows); self.assertIn('命中倍率', rows)
         self.assertEqual(rows['力量与武器允许偷袭'][0], '否')
 
+    def test_compact_comparison_discloses_rounding_and_retains_full_calculated_precision(self):
+        self.equipment(); self.workspace.calculate('equipment')
+        original = copy.deepcopy(self.workspace.structured_results['equipment'])
+        self.workspace.emit('equipment')
+        result = self.host.commands[-1][1]['comparison']
+        rows = {row['label']: row for row in result['summary_rows']}
+        self.assertEqual(rows['攻击耗时']['values'][2:], ['2.98598', '2.48832'])
+        self.assertEqual(rows['攻击耗时']['display_values'][2:], ['≈2.99', '≈2.49'])
+        self.assertEqual(rows['力量缺口']['display_values'], rows['力量缺口']['values'])
+        self.assertIn('完整精度', ' '.join(result['summary_notes']))
+        self.assertEqual(result['rows'], original['rows'])
+        self.assertEqual(self.workspace.structured_results['equipment'], original)
+
     def test_comparison_primary_includes_both_random_upgrade_outcomes_and_pending_conditions(self):
         self.equipment()
         self.workspace.raw['equipment'].update(strength='20', level_a='6', infusion_a='1', hardened_a='0', planning='0')
@@ -1304,6 +1317,35 @@ class GameWorkspaceTests(ControllerFixture):
         self.assertEqual(undo_row['token'], binding_token([status['context'], 'undo', undo]))
         self.assertEqual(status, before)
         self.assertIn('保存时间（存档文件） 未记录', GameWorkspace.backup_row_text('restore', {'id': 'c'*64, 'slot': 1, 'time': observed}))
+
+    def test_empty_backup_history_explains_first_save_and_existing_capture_entry(self):
+        self.workspace.reload('backups'); self.finish_job()
+        state = self.host.commands[-1][1]
+        self.assertEqual(state['rows'], [])
+        self.assertIn('暂无存档记录', state['text'])
+        self.assertIn('游戏中保存一局', state['text'])
+        self.saved_game()
+        self.workspace.reload('backups'); self.finish_job()
+        state = self.host.commands[-1][1]
+        self.assertEqual(state['rows'], [])
+        self.assertIn('会自动备份', state['text'])
+        self.assertIn('立即备份已保存进度', state['text'])
+        self.session.backups.set_enabled(False)
+        self.workspace.reload('backups'); self.finish_job()
+        state = self.host.commands[-1][1]
+        self.assertIn('自动备份已暂停', state['text'])
+        self.assertIn('立即备份已保存进度', state['text'])
+        self.assertTrue(next(row for row in state['actions'] if row['id'] == 'backup_preview')['disabled'])
+
+    def test_unreadable_backup_history_does_not_claim_successful_empty_library(self):
+        self.session.backup_status = Mock(return_value={'context': {}, 'history': [], 'undo': [],
+            'records_available': False, 'error': '备份库不可读', 'enabled': True})
+        self.workspace.reload('backups'); self.finish_job()
+        state = self.host.commands[-1][1]
+        self.assertIn('暂时无法读取', state['text'])
+        self.assertIn('备份库不可读', state['text'])
+        self.assertNotIn('暂无存档记录', state['text'])
+        self.assertNotIn('会自动备份', state['text'])
 
     def test_ready_restores_settings_values_without_creating_or_saving_a_draft(self):
         from companion.native_manager import NativeManager

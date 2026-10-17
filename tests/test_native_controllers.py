@@ -1016,6 +1016,20 @@ class NumericControllerTests(ControllerFixture):
                 self.finish()
                 self.assertEqual(self.lookup.identity, identity)
 
+    def test_assistant_invisibility_word_finds_official_mechanism_and_sources(self):
+        expected = {'actors.buffs.invisibility', 'items.potions.potionofinvisibility',
+                    'items.artifacts.cloakofshadows'}
+        self.lookup.category = '全部'
+        self.lookup.query.set('隐身'); self.lookup.search()
+        self.assertTrue(expected.issubset({row['id'] for row in self.lookup.rows}))
+        self.lookup.handle({'action': 'first'}); self.finish()
+        self.assertEqual(self.lookup.identity, 'actors.buffs.invisibility')
+        for query in ('隐身药水', '隐身药剂'):
+            with self.subTest(query=query):
+                rows = self.session.catalog.search(query)['entries']
+                self.assertEqual(rows[0]['id'], 'items.potions.potionofinvisibility')
+                self.assertEqual(rows[0]['name'], '隐形药剂')
+
     def test_suggestion_switch_can_cancel_or_preserve_a_half_input_copy(self):
         self.open('items.potions.potionofhealing')
         self.lookup.variables['hp'].set(' 1e '); self.lookup.note.set('未完成的治疗条件')
