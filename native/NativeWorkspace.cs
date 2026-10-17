@@ -193,7 +193,7 @@ namespace Denghuo.Native {
                 for(int i=0;i<targets && i<64;i++) { string key="t"+i+".recipe", identity="target-"+i, section="产出目标 "+(i+1)+" ·"; Button button;
                     if(!targetControls.TryGetValue(identity,out button)) button=UI.Button("",delegate { if(!host.Frozen) OpenEditor(section); });
                     string label=calculated ? "编辑目标"+(targets>1 ? " "+(i+1) : "")+" ›" : (targets>1 ? (i+1)+". " : "目标 · ")+ChoiceLabel(key,"尚未选择配方")+" ×"+Data.Text(values,"t"+i+".quantity","")+" ›";
-                    button.Content=UI.Text(label,14); UI.Name(button,"编辑"+label.TrimEnd(' ','›')); button.Background=Brushes.Transparent; button.HorizontalContentAlignment=HorizontalAlignment.Left; button.Padding=new Thickness(0,5,6,5); taskContext.Children.Add(button); nextControls[identity]=button;
+                    button.Content=UI.Text(label,14); UI.Name(button,(calculated ? "" : "编辑")+label.TrimEnd(' ','›')); button.Background=Brushes.Transparent; button.HorizontalContentAlignment=HorizontalAlignment.Left; button.Padding=new Thickness(0,5,6,5); taskContext.Children.Add(button); nextControls[identity]=button;
                 }
                 if(targets==0) taskContext.Children.Add(UI.Text("尚无目标 · 点击增加目标",14,UI.Gold));
                 int resources; if(!Int32.TryParse(Data.Text(values,"resources","0"),out resources)) resources=0; int known=0; for(int i=0;i<resources && i<256;i++) if(Data.Text(values,"r"+i+".origin","")=="known") known++;
@@ -444,7 +444,8 @@ namespace Denghuo.Native {
             bool receiptInHeader=mode=="result" && shortReceipt;
             headerReceipt.Text=receiptInHeader ? feedback.Text : ""; headerReceipt.ToolTip=feedback.ToolTip; System.Windows.Automation.AutomationProperties.SetHelpText(headerReceipt,Convert.ToString(feedback.ToolTip));
             headerReceipt.Visibility=receiptInHeader ? Visibility.Visible : Visibility.Collapsed;
-            feedback.Visibility=feedback.Text.Length>0 && !receiptInHeader ? Visibility.Visible : Visibility.Collapsed;
+            bool errorInArticle=mode=="result" && Data.Text(state,"entry_id","").Length>0 && Data.Text(state,"parameter_error","").Length>0 && Data.Text(state,"origin_brief","")=="需要核对 · "+Data.Text(state,"parameter_error","");
+            feedback.Visibility=feedback.Text.Length>0 && !receiptInHeader && !errorInArticle ? Visibility.Visible : Visibility.Collapsed;
             bool hasEntry=Data.Text(state,"entry_id","").Length>0;
             bool custom=Data.Flag(state,"can_save") && Dirty;
             bottom.Visibility=hasEntry && mode!="search" && (Data.Array(state,"fields").Length>0 || custom) ? Visibility.Visible : Visibility.Collapsed;

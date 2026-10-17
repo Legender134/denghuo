@@ -50,7 +50,7 @@ def backup_version_text(summary):
     return '版本码 '+str(version)+(' · 当前参考游戏无法继续此旧档，需对应旧版游戏。' if version < 850 else '')
 
 
-def comparison_summary(result):
+def comparison_summary(result, strength_origin='独立假设'):
     """Select decision metrics; reuse every calculated outcome without new arithmetic."""
     choices, params = result['choices'], result['params']
     kind = result['family']
@@ -110,6 +110,8 @@ def comparison_summary(result):
         strengths = [str(choice['character_scene']['strength']['effective']) for choice in choices]
         strength = strengths[0] if len(set(strengths)) == 1 else 'A '+strengths[0]+' / B '+strengths[1]
         result['summary_context'] = '当前角色力量 '+strength+' · 覆盖独立力量'
+    elif kind in ('weapon', 'missile', 'armor'):
+        result['summary_context'] = '有效力量 '+str(params['strength'])+' · '+strength_origin
     result['summary_rows'] = [{**by_label[label], 'values': [value for choice in choices
         for value in (choice['current'].get(label, '—'), outcomes(choice, label))]} for label in selected]
     def display(value):
@@ -1025,7 +1027,7 @@ class GameWorkspace:
             if key not in ('name', 'note') and spec['raw'] in ('', 'unknown'):
                 spec['help'] = '条件未确认；计算前请核对。' + (' '+spec['help'] if task_source.get('stale') else '')
         comparison = copy.deepcopy(self.structured_results.get(page, {})) if page == 'equipment' and page in self.calculated else {}
-        if comparison: comparison_summary(comparison)
+        if comparison: comparison_summary(comparison, origins.get('strength', '独立假设'))
         for choice in comparison.get('choices', []):
             choice['artwork'] = native_artwork(choice.get('id'))
         self.host.command('game_state', page=page, fields=specs, rows=rendered_rows,

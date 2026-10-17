@@ -181,6 +181,47 @@ class GameWorkspaceTests(ControllerFixture):
         self.assertTrue(self.host.commands[-1][1]['task_source']['stale'])
         self.assertIn('不同保存条件',self.host.commands[-1][1]['task_source']['brief'])
 
+    def test_equipment_summary_keeps_actual_independent_strength_and_fixed_provenance(self):
+        snap = copy.deepcopy(self.session.snapshot()); snap['settings']['mode'] = 'save'
+        snap.update(active_slot=1, modified=1000, stale=False, error='')
+        snap['data']['character_scene'] = calculate_scene(empty_scene(14)); snap['data']['hero']['strength'] = 14
+        self.session.snapshot = lambda: copy.deepcopy(snap)
+        self.equipment()
+        self.workspace.import_equipment({'key': 'items.weapon.melee.sword', 'name': '单手剑',
+            'location': '背包', 'level': 2, 'cursed': False, 'mastery': False,
+            'augmentation': 'NONE', 'equipment_state': {'hardened': False}}, 'a')
+        self.workspace.calculate('equipment'); self.workspace.emit('equipment')
+        data = self.host.commands[-1][1]
+        self.assertEqual(self.workspace.raw['equipment']['strength'], '10')
+        self.assertEqual(data['comparison']['summary_context'], '有效力量 10 · 独立假设')
+        self.assertEqual(data['comparison']['choices'][0]['current']['力量缺口'], '3')
+        self.assertIn('槽位 1', data['task_source']['brief'])
+        self.workspace.edit('equipment', {**self.workspace.raw['equipment'], 'strength': '14'})
+        self.workspace.calculate('equipment'); self.workspace.emit('equipment')
+        data = self.host.commands[-1][1]
+        self.assertEqual(data['comparison']['summary_context'], '有效力量 14 · 独立假设')
+        self.assertEqual(data['comparison']['choices'][0]['current']['力量缺口'], '0')
+        self.workspace.import_snapshot('equipment')
+        self.workspace.calculate('equipment'); self.workspace.emit('equipment')
+        context = self.host.commands[-1][1]['comparison']['summary_context']
+        self.assertTrue(context.startswith('有效力量 14 · 快照 · 槽位 1'))
+        self.workspace.raw['equipment']['name'] = '固定力量 14'
+        self.workspace.handle({'page': 'equipment', 'command': 'save'}); self.finish_job()
+        saved = copy.deepcopy(self.workspace.saved['equipment'])
+        snap.update(active_slot=2, modified=2000)
+        snap['data']['character_scene'] = calculate_scene(empty_scene(18)); snap['data']['hero']['strength'] = 18
+        self.workspace.open_plan(self.session.knowledge.reopen(saved['id']))
+        self.workspace.emit('equipment'); data = self.host.commands[-1][1]
+        self.assertEqual(data['comparison']['summary_context'], context)
+        self.assertEqual(self.workspace.raw['equipment']['strength'], '14')
+        self.assertTrue(data['task_source']['stale'])
+        self.workspace.edit('equipment', {**self.workspace.raw['equipment'], 'strength': '16'})
+        self.workspace.calculate('equipment'); self.workspace.emit('equipment')
+        self.assertEqual(self.host.commands[-1][1]['comparison']['summary_context'], '有效力量 16 · 手填 · 固定假设')
+        self.workspace.handle({'page': 'equipment', 'command': 'undo'})
+        self.workspace.calculate('equipment'); self.workspace.emit('equipment')
+        self.assertEqual(self.host.commands[-1][1]['comparison']['summary_context'], context)
+
     def test_saved_connection_binding_survives_reopen_and_old_unbound_records_remain_readable(self):
         snap = copy.deepcopy(self.session.snapshot()); snap['settings']['mode'] = 'save'
         snap.update(active_slot=1, modified=1000, stale=False, error='')
@@ -879,7 +920,7 @@ class GameWorkspaceTests(ControllerFixture):
         self.workspace.raw['equipment']['context.scene_enabled'] = '0'
         self.workspace.calculate('equipment'); self.workspace.emit('equipment')
         self.assertNotIn('character_scene', self.workspace.calculated['equipment'])
-        self.assertFalse(self.host.commands[-1][1]['comparison']['summary_context'])
+        self.assertTrue(self.host.commands[-1][1]['comparison']['summary_context'].startswith('有效力量 18 · 快照 · 槽位 2'))
         # The transfer can also be undone without changing either original source.
         self.workspace.raw['equipment'], self.workspace.sources['equipment'] = copy.deepcopy(original)
         self.workspace.handle({'page': 'equipment', 'command': 'use_character'})
@@ -1369,11 +1410,11 @@ class GameWorkspaceTests(ControllerFixture):
 
     def test_blocked_empty_backup_history_does_not_promise_automatic_capture(self):
         from unittest.mock import patch
-        root, slot = self.saved_game()
+        _, slot = self.saved_game()
         before = {p.name: p.read_bytes() for p in slot.iterdir() if p.is_file()}
         with patch('companion.backups.MAX_STORAGE', 0):
             with self.assertRaisesRegex(ValueError, '上限'):
-                self.session.backups.tick(root, force=True)
+                self.session.backup_action({'action': 'capture'})
         self.workspace.reload('backups'); self.finish_job()
         state = self.host.commands[-1][1]; catalog = self.workspace.backup_catalog
         self.assertTrue(catalog['records_available']); self.assertTrue(catalog['enabled'])
