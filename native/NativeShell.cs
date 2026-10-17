@@ -155,6 +155,7 @@ namespace Denghuo.Native {
     }
 
     sealed class ManagerForm : Window {
+        const int MinimumBriefHeight = 200;
         readonly Helper Host;
         readonly Grid root = new Grid(), frame = new Grid(), workspace = new Grid();
         readonly ContentControl content = new ContentControl();
@@ -212,7 +213,7 @@ namespace Denghuo.Native {
         public void RenderTask(Dictionary<string,object> data) { string page = Data.Text(data,"page",""); if (tasks.ContainsKey(page)) tasks[page].Render(data); }
         public ManagerForm(Helper host) {
             UI.Chrome(this);
-            Host = host; Title = "灯火 · 随行"; UI.Name(this,Title); Width = 310; Height = 240; MinWidth = 280; MinHeight = 140; MaxWidth = MaxHeight = 2400; Background = UI.Background; Foreground = UI.Ink; FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI, Microsoft YaHei"); FontSize = 14;
+            Host = host; Title = "灯火 · 随行"; UI.Name(this,Title); Width = 310; Height = 240; MinWidth = 280; MinHeight = MinimumBriefHeight; MaxWidth = MaxHeight = 2400; Background = UI.Background; Foreground = UI.Ink; FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI, Microsoft YaHei"); FontSize = 14;
             WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.CanResize; ShowActivated = false; UseLayoutRounding = true; SnapsToDevicePixels = true;
             Left = SystemParameters.WorkArea.Right-Width-16; Top = SystemParameters.WorkArea.Top+40;
             frame.RowDefinitions.Add(new RowDefinition { Height = new GridLength(34) }); frame.RowDefinitions.Add(new RowDefinition()); frame.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -346,7 +347,7 @@ namespace Denghuo.Native {
         }
         void QueueLayout() { if (!changingLayout && !Host.Frozen) { layoutTimer.Stop(); layoutTimer.Start(); } }
         void ClampBounds() { var scale = SystemDpi/96; var area = Forms.Screen.FromRectangle(new System.Drawing.Rectangle((int)(Left*scale),(int)(Top*scale),(int)(Width*scale),(int)(Height*scale))).WorkingArea; double x=area.Left/scale,y=area.Top/scale,w=area.Width/scale,h=area.Height/scale;
-            if(!Collapsed) { double zoom=textScale/100.0; MinWidth=Math.Min((Brief ? 280 : 340)*zoom,w); MinHeight=Math.Min((Brief ? 140 : 360)*zoom,h); }
+            if(!Collapsed) { double zoom=textScale/100.0; MinWidth=Math.Min((Brief ? 280 : 340)*zoom,w); MinHeight=Math.Min((Brief ? MinimumBriefHeight : 360)*zoom,h); }
             Width = Math.Min(Width,w); Height = Math.Min(Height,h); Left = Math.Max(x,Math.Min(Left,x+w-Width)); Top = Math.Max(y,Math.Min(Top,y+h-Height)); }
         public void Collapse() { if (Collapsed) return; RememberGeometry(); changingLayout = true; if (WindowState != WindowState.Normal) WindowState = WindowState.Normal; expandedBounds = new Rect(Left,Top,Width,Height); Collapsed = true; frame.Visibility = Visibility.Collapsed; MinWidth = MinHeight = 0; ResizeMode = ResizeMode.NoResize; Width = 36; Height = 68; handle.Visibility = Visibility.Visible; ClampBounds(); changingLayout = false; SaveLayout(); Host.VisibilityAll(); }
         static UIElement DisclosureTarget(UIElement target) {
@@ -370,7 +371,7 @@ namespace Denghuo.Native {
             else { readerWidth=Width; readerHeight=Height; }
         }
         void UsePageSize() {
-            double zoom=textScale/100.0; MinWidth=(Brief ? 280 : 340)*zoom; MinHeight=(Brief ? 140 : 360)*zoom;
+            double zoom=textScale/100.0; MinWidth=(Brief ? 280 : 340)*zoom; MinHeight=(Brief ? MinimumBriefHeight : 360)*zoom;
             Width=Math.Max(MinWidth,Brief ? briefWidth : readerWidth); Height=Math.Max(MinHeight,Brief ? briefHeight : readerHeight);
             frame.RowDefinitions[0].Height=new GridLength(Brief ? 34 : 40);
         }
@@ -426,7 +427,7 @@ namespace Denghuo.Native {
             if(attached) { gameX=(int)Math.Round(Left-gameBounds.Left); gameY=(int)Math.Round(Top-gameBounds.Top); }
             Host.Send(reset ? "layout_reset" : "window_layout","layout",Data.Map(
                 "width",Math.Max(340,(int)Math.Round(readerWidth)),"height",Math.Max(360,(int)Math.Round(readerHeight)),
-                "brief_width",Math.Max(280,(int)Math.Round(briefWidth)),"brief_height",Math.Max(140,(int)Math.Round(briefHeight)),
+                "brief_width",Math.Max(280,(int)Math.Round(briefWidth)),"brief_height",Math.Max(MinimumBriefHeight,(int)Math.Round(briefHeight)),
                 "brief_auto",briefAuto,"text_scale",textScale,"follow_default",defaultPlacement,"x",(int)Math.Round(normal.X),"y",(int)Math.Round(normal.Y),
                 "game_x",gameX,"game_y",gameY,"collapsed",Collapsed,"page",Page));
         }
@@ -434,7 +435,7 @@ namespace Denghuo.Native {
             changingLayout=true; bool collapsed=Data.Flag(d,"collapsed");
             gameX=(int)Data.Number(d,"game_x"); gameY=(int)Data.Number(d,"game_y");
             readerWidth=Math.Max(340,Data.Number(d,"width")); readerHeight=Math.Max(360,Data.Number(d,"height"));
-            briefWidth=Math.Max(280,Data.Number(d,"brief_width")); briefHeight=Math.Max(140,Data.Number(d,"brief_height"));
+            briefWidth=Math.Max(280,Data.Number(d,"brief_width")); briefHeight=Math.Max(MinimumBriefHeight,Data.Number(d,"brief_height"));
             briefAuto=Data.Flag(d,"brief_auto"); textScale=d.ContainsKey("text_scale") ? (int)Data.Number(d,"text_scale") : 100;
             frame.LayoutTransform=new ScaleTransform(textScale/100.0,textScale/100.0);
             ShowPage(Data.Text(d,"page","overview")); UsePageSize();

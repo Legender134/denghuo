@@ -158,6 +158,8 @@ namespace Denghuo.Native {
         internal Dialog BackupConfirmation(Dictionary<string,object> d) {
             bool undo=Data.Flag(d,"undo"); string slot=Data.Text(d,"slot",""), root=Data.Text(d,"save_root","");
             var dialog=new Dialog(Manager,undo ? "核对撤回回档" : "核对恢复进度",480,480);
+            var cloudRisk=UI.Text("如启用 Steam 云同步，回档结果可能被覆盖；进入游戏后请核对进度。",13,UI.Gold);
+            cloudRisk.Margin=new Thickness(0,0,0,12); dialog.Body.Children.Add(cloudRisk);
             dialog.Body.Children.Add(UI.Text(Data.Text(d,"text","")));
             var confirmed=UI.Name(new CheckBox { Content=UI.Text("已关闭游戏，并核对上述目录的槽位 "+slot), Margin=new Thickness(0,16,0,8) },"确认目标目录与槽位 "+slot);
             dialog.Body.Children.Add(confirmed);
