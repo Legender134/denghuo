@@ -1030,6 +1030,13 @@ class NumericControllerTests(ControllerFixture):
                 self.assertEqual(rows[0]['id'], 'items.potions.potionofinvisibility')
                 self.assertEqual(rows[0]['name'], '隐形药剂')
 
+    def test_resurrection_search_finds_ankh_before_related_restrictions(self):
+        self.lookup.category = '全部'
+        self.lookup.query.set('复活'); self.lookup.search()
+        self.assertEqual(self.lookup.rows[0]['id'], 'items.ankh')
+        self.lookup.handle({'action': 'first'}); self.finish()
+        self.assertEqual(self.lookup.identity, 'items.ankh')
+
     def test_suggestion_switch_can_cancel_or_preserve_a_half_input_copy(self):
         self.open('items.potions.potionofhealing')
         self.lookup.variables['hp'].set(' 1e '); self.lookup.note.set('未完成的治疗条件')

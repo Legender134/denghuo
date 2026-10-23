@@ -704,7 +704,15 @@ namespace Denghuo.Native {
         readonly Helper Host; readonly TextBox search=UI.Edit("按方案名称或备注搜索",200);
         readonly ComboBox kind=UI.Combo("方案类型","全部类型","数值方案","装备方案","炼金方案","手动草稿","角色条件"), order=UI.Combo("方案排序","最近更新","名称");
         readonly StackPanel rows=new StackPanel(); bool rendering;
-        public PlansForm(Helper host) { Host=host; RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto }); RowDefinitions.Add(new RowDefinition()); var filters=UI.Stack(UI.Field("搜索方案",search),UI.Field("类型",kind),UI.Field("排序",order)); var fold=UI.Section("筛选我的方案",filters,false); Children.Add(fold); var scroll=UI.Scroll(rows); Grid.SetRow(scroll,1); Children.Add(scroll); search.TextChanged+=delegate { Filter(); }; kind.SelectionChanged+=delegate { Filter(); }; order.SelectionChanged+=delegate { Filter(); }; }
+        public PlansForm(Helper host) {
+            Host=host; RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto }); RowDefinitions.Add(new RowDefinition());
+            var filters=UI.Stack(UI.Field("搜索方案",search),UI.Field("类型",kind),UI.Field("排序",order));
+            var filterScroll=UI.Scroll(filters); filterScroll.MaxHeight=120;
+            var fold=UI.Section("筛选我的方案",filterScroll,false); Children.Add(fold);
+            var scroll=UI.Scroll(rows); Grid.SetRow(scroll,1); Children.Add(scroll);
+            SizeChanged+=delegate { filterScroll.MaxHeight=Math.Max(32,ActualHeight*.5-28); };
+            search.TextChanged+=delegate { Filter(); }; kind.SelectionChanged+=delegate { Filter(); }; order.SelectionChanged+=delegate { Filter(); };
+        }
         void Filter() { if(!rendering && !Host.Frozen) Host.Send("filter_plans","surface","lookup","query",search.Text,"kind",Convert.ToString(kind.SelectedItem),"order",Convert.ToString(order.SelectedItem)); }
         public void Render(Dictionary<string,object> d) { rendering=true; try { rows.Children.Clear(); foreach(object item in Data.Array(d,"rows")) { var row=(Dictionary<string,object>)item; string id=Data.Text(row,"id",""); var button=UI.Button("",delegate { if(!Host.Frozen) Host.Send("open_plan","surface","lookup","id",id); }); string text=Data.Text(row,"text",""); button.Content=UI.ImageRow(text,Data.Object(row,"artwork")); UI.Name(button,text); button.HorizontalContentAlignment=HorizontalAlignment.Stretch; rows.Children.Add(button); } if(rows.Children.Count==0) rows.Children.Add(UI.Text("没有匹配的方案。可以修改筛选，或先保存一个方案。",13,UI.Muted)); } finally { rendering=false; } }
     }

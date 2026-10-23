@@ -252,7 +252,7 @@ class NativeFloorGuideTests(unittest.TestCase):
         public=self.ui.floor_state(snap)
         self.assertFalse(public['revealed'])
         self.assertEqual(public['nodes'][0]['children'],[])
-        self.assertTrue(public['nodes'][1]['expanded'])
+        self.assertFalse(public['nodes'][1]['expanded'])
         self.assertTrue(all(not row.get('expanded') for row in public['nodes'][1]['children']))
         self.assert_native_transport(public)
         self.ui.reveal_floor({'token':public['token']})

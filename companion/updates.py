@@ -95,6 +95,7 @@ class Updates:
                 return dict(self.state)
             if self.pending_exit:
                 raise ValueError('请先完成或取消退出确认')
+            ready_release = self.release if self.state['state'] == 'ready' else None
             self.state.update(state=state, message=message, progress=0)
             if state == 'downloading':
                 self.download_cancel.clear()
@@ -110,7 +111,11 @@ class Updates:
                         message = '无法保存更新文件，请检查磁盘空间与权限'
                     else:
                         message = str(exc) if isinstance(exc, ValueError) else '更新未完成，请稍后重试'
-                    self._set(state='error', message=message)
+                    if (state == 'checking' and ready_release is self.release and ready_release
+                            and self._verified(self.directory / 'Denghuo-Setup.exe', ready_release['installer'])):
+                        self._set(state='ready', progress=100, message=message+'；已校验安装包仍可安装')
+                    else:
+                        self._set(state='error', message=message)
             self.worker = threading.Thread(target=run, name='application-update', daemon=True)
             self.worker.start()
             return dict(self.state)
@@ -130,10 +135,11 @@ class Updates:
         if self.stop.is_set():
             return
         newer = version_tuple(release['version']) > version_tuple(self.current)
+        ready = newer and self._verified(self.directory / 'Denghuo-Setup.exe', release['installer'])
         with self.lock:
             self.release = release if newer else None
-            self.state.update(state='available' if newer else 'current', latest_version=release['version'],
-                notes=release['notes'] if newer else '', message=(f"新版 {release['version']} 可用" if newer else
+            self.state.update(state='ready' if ready else 'available' if newer else 'current', latest_version=release['version'],
+                progress=100 if ready else 0, notes=release['notes'] if newer else '', message=('安装包已校验，可以安装' if ready else f"新版 {release['version']} 可用" if newer else
                     '已是最新版本' if release['version'] == self.current else '当前无需更新'))
 
     def _path(self, name):

@@ -15,6 +15,7 @@ ALIASES = {
     'items.scrolls.scrollofidentify': ('鉴定卷',),
     'items.potions.exotic.potionofshielding': ('护盾药水',),
     'items.waterskin': ('露珠水袋',),
+    'items.ankh': ('复活', '复活道具'),
 }
 INTENTS = {
     '加血': ('items.potions.potionofhealing', 'items.waterskin'),

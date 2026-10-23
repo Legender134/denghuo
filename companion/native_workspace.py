@@ -856,6 +856,8 @@ class NumericLookup:
                 'mode': source.get('mode') or (stamp[2] if stamp else 'example'), 'level_unknown': reference.get('level_origin') == 'unknown',
                 'source': source or {}, 'conditions': note or reference.get('conditions', ''), 'source_label': reference.get('source_label', '')}
             self.context['field_origins'] = dict(reference.get('field_origins', {}))
+            if reference.get('item_notice'):
+                self.context['item_notice'] = reference['item_notice']
             if self.identity.startswith('items.food.') and reference.get('food_reference'):
                 self.context['food_reference'] = copy.deepcopy(reference['food_reference'])
             if 'strength' in self.context['params']:
@@ -1146,7 +1148,7 @@ class NumericLookup:
         reading_notes = (next((section['reading_notes'] for section in sections if section.get('reading_notes')), [])
                          if not self.dirty and self.calculated is not None and not self.calculating and not self.parameter_error else [])
         fields = [{**field, 'raw': self.variables[field['key']].get(), 'origin': self.input_origins.get(field['key'], '')} for field in self.inputs if field['key'] in self.variables]
-        notice = self.spell_availability_notice()
+        notice = '\n'.join(part for part in (self.spell_availability_notice(), (self.context or {}).get('item_notice', '')) if part)
         sent = self.host.command('lookup_state', draft_revision=self.edit_revision, query=self.query.get(),
             focus_result=self.focus_result, focus_suggestions=self.focus_suggestions,
             focus_listing=self.focus_listing,

@@ -497,7 +497,6 @@ namespace Denghuo.Native {
                     if(id=="monsters" || id=="hidden") { bool conditions; floorExpanded.TryGetValue(identity+"/conditions",out conditions); var explanation=UI.Stack(UI.Text(detail,12,UI.Muted)); if(id=="hidden") explanation.Children.Add(UI.Text("只在助手显示；不改变游戏。",12,UI.Muted)); var scope=UI.Section(id=="hidden" ? "读取范围与说明" : "出现范围与条件",explanation,conditions); scope.Expanded+=delegate { floorExpanded[identity+"/conditions"]=true; }; scope.Collapsed+=delegate { floorExpanded[identity+"/conditions"]=false; }; body.Children.Add(scope); floorControls[identity+"/conditions|header"]=scope; }
                     else body.Children.Add(UI.Text(detail,12,UI.Muted));
                 }
-                if(id=="hidden" && floorReveal!=null) { body.Children.Add(floorReveal); floorControls[identity+"|reveal"]=floorReveal; }
                 if(identity.StartsWith("/monsters/") && (id.StartsWith("actors.mobs.") || id.StartsWith("levels.") || id.StartsWith("items.quest."))) {
                     var button=UI.Button("查看数值",delegate { Host.Send("floor_reference","id",id,"token",floorToken); }); body.Children.Add(button); floorControls[identity+"|reference"]=button;
                 }
@@ -526,9 +525,11 @@ namespace Denghuo.Native {
             floorBody.Children.Clear(); floorControls.Clear();
             floorBody.Children.Add(UI.Text(Data.Text(guide,"caption","当前楼层"),12,UI.Muted));
             string warning=Data.Text(guide,"warning",""); if(warning.Length>0) floorBody.Children.Add(UI.Text(warning,12,UI.Gold));
-            floorReveal=UI.Button(Data.Flag(guide,"revealed") ? "收起隐藏内容" : "主动揭示隐藏内容",delegate { Host.Send("reveal_floor","token",floorToken); }); floorReveal.IsEnabled=Data.Flag(guide,"enabled");
-            var map=UI.Button("查看已探索地图",delegate { OpenPage("map"); }); floorBody.Children.Add(map); floorControls["|map"]=map;
-            FloorNodes(floorBody,Data.Array(guide,"nodes"),""); floorSignature=signature; floorOwner=owner;
+            bool revealed=Data.Flag(guide,"revealed");
+            floorReveal=UI.Button(revealed ? "收起隐藏内容" : "揭示本层隐藏内容",delegate { Host.Send("reveal_floor","token",floorToken); },true); floorReveal.IsEnabled=Data.Flag(guide,"enabled");
+            var map=UI.Button("地图与其他楼层 ›",delegate { OpenPage("map"); }); floorBody.Children.Add(UI.Buttons(floorReveal,map)); floorControls["|map"]=map; floorControls["/hidden|reveal"]=floorReveal;
+            var nodes=new List<object>(); foreach(object raw in Data.Array(guide,"nodes")) { var row=raw as Dictionary<string,object>; if(revealed || row==null || Data.Text(row,"id","")!="hidden") nodes.Add(raw); }
+            FloorNodes(floorBody,nodes.ToArray(),""); floorSignature=signature; floorOwner=owner;
             UIElement target=DisclosureTarget(FloorFocusTarget(sameOwner ? key : ""));
             if(key.Length>0) workFocus=target;
             Dispatcher.BeginInvoke(DispatcherPriority.Loaded,new Action(delegate {

@@ -150,6 +150,16 @@ class NativeProductWorkflows(fixtures.ControllerFixture):
                     self.assertIn('第 1 层', self.lookup.context['source_label'])
                     self.assertIn('未加入背包', self.lookup.context['conditions'])
                     self.assertIn('主动揭示', self.lookup.input_origins['level'])
+                    self.lookup.emit()
+                    notice = self.host.commands[-1][1]['primary_notice']
+                    self.assertIn('第 1 层', notice)
+                    self.assertIn('有诅咒', notice)
+                    self.assertEqual('支线 1' in notice, bool(branch))
+                    if item['entry'] == 'items.weapon.melee.sword':
+                        self.assertIn('速度强化', notice)
+                        self.assertIn('已用精通药剂', notice)
+                        self.assertIn('基础参考未计', notice)
+                        self.assertIn('力量 10', self.lookup.context['conditions'])
                 self.assertEqual(before, {p.name: p.read_bytes() for p in slot.iterdir()})
 
     def test_map_item_actions_reject_hidden_changed_and_late_floor_results(self):

@@ -99,6 +99,35 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual((self.directory/'Denghuo-Setup.exe').read_bytes(), original)
         self.assertFalse((self.directory/'Denghuo-Setup.part').exists())
 
+    def test_recheck_failure_keeps_verified_installer_available_for_install(self):
+        self.ready()
+        self.updates.opener = lambda _: (_ for _ in ()).throw(TimeoutError())
+        self.updates.check()
+        state = self.finished()
+        self.assertEqual(state['state'], 'ready')
+        self.assertIn('无法连接', state['message'])
+        self.assertIn('仍可安装', state['message'])
+        self.updates.install(lambda: {'id': 'offline-install', 'phase': 'confirming'})
+        self.assertEqual(self.finished()['state'], 'installing')
+
+    def test_recheck_reuses_only_installer_verified_against_current_manifest(self):
+        self.ready()
+        self.updates.check()
+        self.assertEqual(self.finished()['state'], 'ready')
+        self.manifest['version'] = '0.9.0'
+        self.manifest['installer']['sha256'] = '0'*64
+        self.updates.check()
+        self.assertEqual(self.finished()['state'], 'available')
+
+    def test_failed_recheck_does_not_keep_tampered_installer_ready(self):
+        self.ready()
+        (self.directory/'Denghuo-Setup.exe').write_bytes(b'MZtampered')
+        self.updates.opener = lambda _: (_ for _ in ()).throw(TimeoutError())
+        self.updates.check()
+        self.assertEqual(self.finished()['state'], 'error')
+        with self.assertRaises(ValueError):
+            self.updates.install(lambda: self.fail('tampered installer must not request exit'))
+
     def test_cancel_download_removes_partial_and_keeps_app_running(self):
         self.updates.check()
         self.finished()

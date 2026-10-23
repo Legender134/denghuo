@@ -651,7 +651,7 @@ class NativeManager:
                 else: rows.append(node)
             for group in groups.values(): group['text']+=f" · {len(group['children'])} 种"
             self._floor_public_key,self._floor_public_nodes=key,{'id':'monsters','text':f"本层可能出现的怪物 · {len(guide['rows'])} 种",
-                'detail':guide['note'],'children':rows,'expanded':True}
+                'detail':guide['note'],'children':rows,'expanded':False}
         contents=[]
         if hidden:
             floor=hidden['result']
