@@ -18,7 +18,7 @@ const ctx=vm.createContext({console,Map,Set,JSON,String,Promise,Date,URL:{},setT
   bindingLabels:{capture:'立即备份已保存进度',show:'显示随行助手'},planLabels:{numeric:'数值计算'},
   document:{createElement:()=>element(),createTextNode:text=>({textContent:text})},$ :get,
   inlineError:(node,text)=>node.textContent=text,navigate(){},
-  post:async(url,payload)=>{posts.push({url,payload});if(url.endsWith('/global-recovery-preview'))return {pending:true,directory:'synthetic/retained',files:['badges.dat'],effect:'恢复导入前原件',expected:'recover-1'};if(url.endsWith('/global-recovery'))return {pending:false,directory:'synthetic/retained',message:'已恢复原件'};return {expected:'export-1',count:2,bytes:123,note:'explicit'};},
+  post:async(url,payload)=>{posts.push({url,payload});if(url.endsWith('/global-recovery-preview'))return {pending:true,directory:'synthetic/retained',files:['badges.dat'],effect:'恢复导入前原件',expected:'recover-1'};if(url.endsWith('/global-recovery'))return {pending:false,directory:'synthetic/retained',message:'已恢复原件'};const rows=structuredClone(status.rows.filter(row=>payload.selected.includes(row.key)));return {expected:'export-1',count:rows.length,bytes:123,note:'explicit',rows};},
   fetch:async(url,options)=>{requests.push({url,options});if(url.endsWith('/preview'))return {ok:true,json:async()=>structuredClone(preview)};if(url.endsWith('/import'))return {ok:true,json:async()=>({results:[{key:globalRow.key,ok:true,saved:true,message:'原字节已保存'}],success_count:1,failure_count:0,note:'原件仍保留'})};return {ok:true,json:async()=>structuredClone(status)};}});
 const run=code=>vm.runInContext(code,ctx);
 vm.runInContext(fs.readFileSync(path.resolve(__dirname,'../web/migration.js'),'utf8'),ctx);
@@ -83,6 +83,23 @@ async function main(){
   await run('restoreMigrationDraft(savedDraft)');
   assert.equal(run('migrationGlobalVersion'),'unknown');assert.equal(run('migrationGlobalVersionConfirmed'),false);assert.equal(run('migrationGlobalConfirmed'),false);assert.equal(run('migrationGlobalChoices.size'),0);
   assert.equal(get('#migration-confirm').checked,false);assert.match(get('#migration-import-info').textContent,/重新选择.*确认已清除/);
-  console.log(JSON.stringify({ok:true,checks:13,scope:'migration VM, explicit optional globals/version/conflicts/headers/recovery/draft reset only'}));
+  // Exercise the real confirmation handler, not just the selection-list formatter.
+  status.rows=[
+    {key:'preference:enabled',group:'preference',label:'游玩显示',valid:true,detail:'true'},
+    {key:'preference:font_scale',group:'preference',label:'字号',valid:true,detail:'1.0'},
+    {key:'preference:opacity',group:'preference',label:'透明度',valid:true,detail:'0.9'},
+    {key:'preference:notice_seconds',group:'preference',label:'提示时长',valid:true,detail:'5'},
+    {key:'preference:bindings',group:'preference',label:'全局快捷键',valid:true,detail:'{"capture":"Ctrl+Alt+B","show":"Ctrl+Alt+L"}'},
+    {key:'plan:test',group:'plan',label:'我的方案',valid:true,detail:'numeric · 资料版本 4.0.2'}];
+  ctx.exportKeys=status.rows.map(row=>row.key);run('migrationExportSelection=new Set(exportKeys)');
+  await click('migration-export-preview');
+  const confirmed=all(get('#migration-export-records')),confirmationText=confirmed.map(node=>node.textContent).join('\n');
+  assert.equal(get('#migration-export-records').children.length,status.rows.length);
+  for(const text of ['已开启','100%','90%','5 秒','2 项快捷键','数值计算 · 资料版本 4.0.2','立即备份已保存进度','Ctrl+Alt+B'])assert(confirmationText.includes(text),text);
+  assert(!/\btrue\b|\bfalse\b|"capture"|\bnumeric\b/.test(confirmationText),confirmationText);
+  const shortcutDetails=confirmed.find(node=>node.children?.some(child=>child.textContent==='快捷键'));
+  assert(shortcutDetails&&!shortcutDetails.open,'shortcut confirmation remains collapsed initially');
+  assert.equal(get('#migration-error').textContent,'');assert(!get('#migration-export-download').disabled);
+  console.log(JSON.stringify({ok:true,checks:14,scope:'migration VM, optional globals/version/conflicts/headers/recovery/draft reset and readable export confirmation'}));
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});
