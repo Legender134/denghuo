@@ -224,6 +224,7 @@
     <button class="dialog-close" id="close-detail" aria-label="关闭详情">×</button>
     <div class="eyebrow" id="detail-category"></div>
     <div class="reference-heading"><div id="detail-image"></div><h2 id="detail-title"></h2></div>
+    <p id="detail-item-state" class="muted" hidden></p>
     <p id="detail-intro" class="reference-intro" hidden></p>
     <p id="detail-reference-status" class="muted" role="status" hidden></p>
     <p id="detail-context" class="rule-warning" role="status" hidden></p>
@@ -232,10 +233,9 @@
     <div id="detail-related" class="backup-actions" aria-label="当前物品相关资料"></div>
     <details id="detail-alchemy" class="recipe-handoff" aria-label="配方炼金目标" hidden></details>
     <div id="detail-rules"></div>
-    <details class="game-description" open><summary>玩法与外观说明</summary><div id="detail-text"></div></details>
+    <details class="game-description" open><summary>说明与来源</summary><div id="detail-text"></div><p class="muted" id="detail-meta"></p></details>
     <details id="detail-encounters" class="reference-encounters" hidden></details>
     <details id="detail-actions" class="detail-actions"><summary>收藏与保存</summary><div id="detail-tools" class="backup-actions"></div></details>
-    <p class="muted" id="detail-meta"></p>
   </dialog>
   <dialog id="plan-dialog" aria-labelledby="plan-title"><button id="plan-close" class="dialog-close" aria-label="关闭方案操作">×</button><h2 id="plan-title">命名保存方案</h2><p id="plan-description"></p><form id="plan-form"><label>方案名称<input id="plan-name" maxlength="80" required></label><label>用户用途 / 假设备注（可选）<textarea id="plan-note" maxlength="1200" rows="4" placeholder="例如：用于核对首领前的资源；尚未确认目标抗性"></textarea><small>仅记录你的用途和假设，不作为已确认游戏事实。</small></label><p id="plan-error" class="rule-warning" role="alert" hidden></p><div class="form-actions"><button id="plan-submit" class="primary" type="submit">保存新方案</button><button id="plan-update" class="secondary" type="button" hidden>明确更新原方案</button><button id="plan-reload" class="secondary" type="button" hidden>重新读取最新已保存方案 / 放弃本地稿</button></div></form></dialog>
   <dialog id="workspace-confirm" aria-labelledby="workspace-confirm-title"><button id="workspace-confirm-close" class="dialog-close" aria-label="取消资料库操作">×</button><h2 id="workspace-confirm-title"></h2><p id="workspace-confirm-description"></p><form id="workspace-confirm-form"><label class="check"><input id="workspace-confirm-check" type="checkbox" required>我已核对并确认此操作</label><p id="workspace-confirm-error" class="rule-warning" role="alert" hidden></p><button id="workspace-confirm-submit" type="submit" class="danger-button">确认</button></form></dialog>

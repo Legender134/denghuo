@@ -299,8 +299,13 @@ async function verifySingleItemReveal(){
       revealed:true,has_hidden_details:false,user_note:{title:'保留备用',body:'玩家自己的备注',scope:'specific_item'}},...overrides});
   h.run('showItem(selected,reference)');
   assert(revealButton());assert.equal(pending.length,0,'opening an unknown item must not disclose automatically');
+  assert.equal(h.get('#detail-related').children.at(-1).textContent,'','static reveal explanation must not interrupt the result');
+  assert(h.get('#detail-related').children.at(-1).hidden);
+  assert.match(h.get('#detail-meta').textContent,/揭示只读取这件物品/,'read-only disclosure scope remains available with the original record');
   const originalButton=revealButton(),revealing=originalButton.listeners.click();
   assert(originalButton.disabled);assert.equal(pending[0].url,'/api/inventory/reveal');
+  assert.match(h.get('#detail-related').children.at(-1).textContent,/正在核对/,'in-flight disclosure feedback stays visible');
+  assert(!h.get('#detail-related').children.at(-1).hidden);
   assert.deepEqual(JSON.parse(JSON.stringify(pending[0].payload)),{expected:'a'.repeat(64),instance_key:'item-2',reveal:true});
   pending.shift().resolve(response());await revealing;
   assert.equal(h.get('#detail-title').textContent,'治疗药剂');assert(!revealButton());
@@ -310,8 +315,10 @@ async function verifySingleItemReveal(){
   assert.equal(h.context.selected.key,'items.potions.potion','the public inventory remains redacted');
 
   h.context.selected={...h.context.selected,name:'长矛',key:'items.weapon.melee.spear',known:true,
-    level:null,game_level_known:false,related:[{id:'items.scrolls.scrollofupgrade',name:'升级风险'}]};
+    level:null,game_level_known:false,tier:2,details:['等级未知','诅咒未知','2 阶 · 力量 12（+0参考）','速度强化'],related:[{id:'items.scrolls.scrollofupgrade',name:'升级风险'}]};
   h.run('showItem(selected,reference)');
+  assert.equal(h.get('#detail-item-state').textContent,'2 阶 · 诅咒未知 · 速度强化','keep judgement-critical public states without a competing original-level strength summary');
+  assert.match(h.get('#detail-meta').textContent,/原物品记录：.*等级未知.*力量 12（\+0参考）/,'the original source remains readable on demand');
   assert(revealButton(),'related links and initial numerical loading must retain the reveal entry');
   assert.equal(h.get('#detail-related').children[0].textContent,'查看 升级风险');
   const knownPending=revealButton().listeners.click();
@@ -333,8 +340,11 @@ async function verifySingleItemReveal(){
   h.run('showItem(selected,reference)');const switched=revealButton().listeners.click();
   h.run("showDetail('另一条资料','','','')");pending.shift().resolve(response());await switched;
   assert.equal(h.get('#detail-title').textContent,'另一条资料','a late item cannot replace another detail');
+  assert(h.get('#detail-item-state').hidden);assert.equal(h.get('#detail-item-state').textContent,'','inventory state cannot leak into another reference');
   h.run("showItem(selected,{...reference,stamp:{mode:'manual'}})");assert(!revealButton());
   h.run('showItem({...selected,revealed:true},reference)');assert(!revealButton());
+  assert.match(h.get('#detail-item-state').textContent,/已主动揭示/);
+  h.run('showItem({...selected,available:false},reference)');assert.match(h.get('#detail-item-state').textContent,/当前记录不可用/);
   console.log('PASS: explicit single-item disclosure; related-link retention; captured instance; revealed numerical origin; preserved notes; retry, close and navigation races');
 }
 async function verifyInventoryEntrySnapshots(){
