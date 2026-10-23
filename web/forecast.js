@@ -103,7 +103,7 @@ function renderForecast(){
 for(const id of ['forecast-depth','forecast-from']){const select=$('#'+id);for(let depth=1;depth<=24;depth++){const option=document.createElement('option');option.value=String(depth);option.textContent=`第 ${depth} 层`;select.append(option);}select.value=id==='forecast-depth'?'24':'1';}
 $('#forecast-read-seed').addEventListener('click',readForecastSeed);$('#forecast-run').addEventListener('click',runForecast);
 $('#forecast-cancel').addEventListener('click',()=>stopForecast('已取消计算，旧结果已收起。'));
-$('#forecast-hide').addEventListener('click',()=>{$('#forecast-confirm').checked=false;stopForecast('预测已收起；种子输入保留。');});
+$('#forecast-hide').addEventListener('click',()=>{$('#forecast-confirm').checked=false;stopForecast('预测已收起；种子输入保留。');$('#forecast-panel').open=false;});
 for(const id of ['forecast-seed','forecast-depth'])$('#'+id).addEventListener('input',()=>{forecastSource=null;$('#forecast-confirm').checked=false;$('#forecast-origin').textContent='手填的独立参考情景；未读取或关联当前存档状态。';stopForecast('输入已变化，请重新确认情景后计算。');});
 $('#forecast-confirm').addEventListener('change',()=>{if(!$('#forecast-confirm').checked)stopForecast('已取消确认，旧结果已收起。');forecastControls();});
 for(const id of ['forecast-from','forecast-kind','forecast-query'])$('#'+id).addEventListener(id==='forecast-query'?'input':'change',renderForecast);
