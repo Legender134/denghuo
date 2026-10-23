@@ -7,7 +7,7 @@ let migrationGlobalVersion='unknown',migrationGlobalVersionConfirmed=false,migra
 const migrationGlobalChoices=new Map();
 const migrationGroups={backup:'游戏进度备份',global:'独立全局游戏进度（默认不选）',plan:'命名方案',favorite:'收藏资料',draft:'已保存未完成草稿',preference:'可携偏好'};
 function migrationDraftLabel(){return migrationDirty;}
-function migrationDraftNotice(){$('#migration-draft-status').textContent=migrationDirty?'选择已修改；切换页面、网络错误和重新连接后保留。结束会话可明确保存选择草稿；ZIP须重新选择。':'本次提交已完成；原包仍保留。继续操作前重新预览，磁盘保存和本会话实际状态见结果。';}
+function migrationDraftNotice(){$('#migration-draft-status').textContent=migrationDirty?'选择已保留 · 本次会话':'本次操作已完成';}
 function captureMigrationDraft(){
   if(!migrationDirty)return null;
   return {format:1,export_selected:[...migrationExportSelection],import_selected:[...migrationImportSelection],file_name:migrationFile?.name||migrationRestoredFile,needs_reselect:true,export_dirty:migrationExportDirty,import_dirty:migrationImportDirty};
@@ -56,6 +56,8 @@ function migrationRows(target,rows,selection,interactive){
   for(const [group,label] of Object.entries(migrationGroups)){
     const own=rows.filter(row=>row.group===group);if(!own.length)continue;
     const section=document.createElement('fieldset'),legend=document.createElement('legend');legend.textContent=label;section.append(legend);
+    const sharedTarget=group==='preference'&&own[0].target&&own.every(row=>row.target===own[0].target)?own[0].target:null;
+    if(sharedTarget){const more=document.createElement('details'),summary=document.createElement('summary'),path=document.createElement('p');summary.textContent='本机保存位置';path.className='muted';path.textContent=sharedTarget;more.append(summary,path);section.append(more);}
     if(group==='global'){
       const note=document.createElement('p');note.textContent='只处理 badges.dat / rankings.dat。整份字节迁移，不合并成就或胜负统计，不随普通槽位回档。全选常规项目不会选择这些文件。';section.append(note);
       if(interactive==='export'){
@@ -75,7 +77,7 @@ function migrationRows(target,rows,selection,interactive){
       if(!preference||row.error){const detail=document.createElement('p');detail.textContent=preference?row.error:migrationDetailText(row,preference)+(row.error?' · '+row.error:'');if(row.error)detail.className='rule-warning';article.append(detail);}
       appendMigrationBindings(article,preference);
       if(group==='backup'&&row.summary){const saved=document.createElement('p');saved.className='muted';saved.textContent=`游戏保存：${row.summary.saved?fmtTime(row.summary.saved):'时间未知'} · 首次保留：${row.summary.time?fmtTime(row.summary.time):'时间未知'}`;article.append(saved);}
-      if(row.target){const path=document.createElement('p');path.className='muted';path.textContent='本机目标：'+row.target;article.append(path);}
+      if(row.target&&!sharedTarget){const path=document.createElement('p');path.className='muted';path.textContent='本机目标：'+row.target;article.append(path);}
       if(group==='global'&&interactive==='import'){
         const label=document.createElement('label'),choice=document.createElement('select');label.textContent=row.target_exists?'目标已存在，冲突处理：':'目标不存在，处理方式：';
         for(const [value,text] of [['','请选择（尚未允许写入）'],['keep','保留本机目标，不写入'],['replace',row.target_exists?'替换整份目标（先保留原件）':'创建所选原文件']]){const option=document.createElement('option');option.value=value;option.textContent=text;choice.append(option);}choice.value=migrationGlobalChoices.get(row.key)||'';choice.disabled=!row.valid;label.append(choice);article.append(label);choice.addEventListener('change',()=>{migrationGlobalChoices.set(row.key,choice.value);migrationEdited('import');});
@@ -93,12 +95,12 @@ async function loadMigration(){
     if(!migrationLoaded&&!migrationDirty&&generation===migrationGeneration)migrationExportSelection=new Set(result.rows.filter(row=>row.valid&&!['backup','global'].includes(row.group)).map(row=>row.key));
     migrationLoaded=true;migrationRows($('#migration-export-list'),result.rows,migrationExportSelection,'export');
     $('#migration-local-target').textContent=`本机游戏存档连接：${result.save_root}。助手档案：${result.backup_target}。${result.note}`;
-    $('#migration-source-version').textContent=`本机灯火 ${result.application_version} · 规则资料 ${result.rules_version}`;
+    $('#migration-source-version').textContent=`灯火 ${result.application_version} · 资料 ${result.rules_version}`;
     inlineError($('#migration-error'),[result.knowledge_error,result.preferences_error,result.global_error].filter(Boolean).join(' '));
     if(result.global_recovery?.pending)renderMigrationGlobalRecovery($('#migration-export-list'),result.global_recovery);
   }catch(error){migrationError(error);}
 }
-function migrationSetBusy(busy){migrationBusy=busy;for(const id of ['migration-reload','migration-export-preview','migration-export-download','migration-preview','migration-import'])$('#'+id).disabled=busy||(id==='migration-export-download'&&!migrationExportPreview);$('#migration-pending').textContent=busy?'正在读取或保存；选择仍可编辑，提交时的结果会单独显示。':'';}
+function migrationSetBusy(busy){migrationBusy=busy;for(const id of ['migration-reload','migration-export-preview','migration-export-download','migration-preview','migration-import'])$('#'+id).disabled=busy||(id==='migration-export-download'&&!migrationExportPreview);$('#migration-pending').textContent=busy?'正在处理…':'';}
 async function migrationUpload(action,file,payload={}){
   if(!file)throw new Error('请重新选择原迁移 ZIP，再预览；选择草稿仍保留');
   if(!token)throw new Error('助手还未连接，原选择仍保留');
@@ -115,7 +117,8 @@ function renderMigrationGlobalRecovery(target,pending){
 }
 function renderMigrationImport(result){
   migrationRows($('#migration-import-list'),result.rows,migrationImportSelection,'import');
-  $('#migration-import-info').textContent=`来源灯火 ${result.source.application_version} · 规则 ${result.source.rules_version} → 本机 ${result.current_application_version} / ${result.current_rules_version}。${result.version_difference?'版本不同：旧方案按来源保存，重开前核对本版可用条件。':'版本一致。'} ${result.note} 本机游戏存档：${result.save_root}${result.config_error?' · '+result.config_error:''}`;
+  $('#migration-import-info').textContent=`来源 ${result.source.application_version} / ${result.source.rules_version} → 本机 ${result.current_application_version} / ${result.current_rules_version}。${result.version_difference?'版本不同：旧方案按来源保存，重开前核对本版可用条件。':'版本一致。'} 槽位备份仅入助手档案，游戏回档另行确认。${result.config_error?' '+result.config_error:''}`;
+  $('#migration-import-target').textContent=`本机游戏存档：${result.save_root}。${result.note}`;
   $('#migration-import-panel').hidden=false;
 }
 function freezeMigrationReceipt(value){if(value&&typeof value==='object'){for(const child of Object.values(value))freezeMigrationReceipt(child);Object.freeze(value);}return value;}

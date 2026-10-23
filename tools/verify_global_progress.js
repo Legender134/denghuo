@@ -33,6 +33,7 @@ async function main(){
     {key:'preference:font_scale',group:'preference',label:'字号比例',valid:true,detail:'{"当前":1.0,"导入":1.3}'},
     {key:'preference:bindings',group:'preference',label:'全局快捷键',valid:true,detail:'{"当前":{"capture":"Ctrl+Alt+B","show":"Ctrl+Alt+L"},"导入":{"capture":"Alt+B","show":"Alt+L"}}'},
     {key:'plan:test',group:'plan',label:'我的方案',valid:true,detail:'numeric · 资料版本 4.0.2'}];
+  for(const row of ctx.displayRows.filter(row=>row.group==='preference'))row.target='synthetic/play-mode.json';
   run('migrationRows(displayHost,displayRows,new Set(["preference:enabled"]),"import")');
   const displayed=all(ctx.displayHost),visibleText=displayed.map(node=>node.textContent).join('\n');
   assert.match(visibleText,/当前 已开启 → 导入 已关闭/);assert.match(visibleText,/当前 100% → 导入 130%/);
@@ -40,6 +41,13 @@ async function main(){
   assert.match(visibleText,/数值计算 · 资料版本 4.0.2/);assert.match(visibleText,/文件已变化，重新预览/);
   const invalidSelected=displayed.find(node=>node.dataset?.key==='preference:enabled');
   assert(invalidSelected.checked);assert(!invalidSelected.disabled,'selected invalid item can still be deselected');
+  assert.equal(displayed.filter(node=>node.textContent==='synthetic/play-mode.json').length,1,'shared target is retained once');
+  const targetDetails=displayed.find(node=>node.children?.some(child=>child.textContent==='本机保存位置'));
+  assert(targetDetails&&!targetDetails.open,'complete shared target is available on demand');
+  ctx.displayRows[1].target='synthetic/other-play.json';run('migrationRows(displayHost,displayRows,new Set(["preference:enabled"]),"import")');
+  const distinctTargets=all(ctx.displayHost).map(node=>node.textContent);
+  assert.equal(distinctTargets.filter(text=>text==='本机目标：synthetic/play-mode.json').length,2);
+  assert(distinctTargets.includes('本机目标：synthetic/other-play.json'),'different destinations remain explicit per item');
   assert.deepEqual([...run('migrationExportSelection')],[preference.key]);
   assert.equal(globalCheck('export').checked,false);
   await click('migration-export-all');assert(!run('migrationExportSelection.has("global:badges.dat")'));
