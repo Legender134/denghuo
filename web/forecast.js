@@ -14,8 +14,9 @@ function forecastControls(){
   $('#forecast-run').disabled=forecastBusy||!valid||!$('#forecast-confirm').checked;
   $('#forecast-read-seed').disabled=forecastBusy||!state?.data||!!state.error||state?.settings?.mode!=='save';
   $('#forecast-cancel').hidden=!forecastBusy;
+  $('#forecast-clear').hidden=!forecastValue;
 }
-function clearForecast(){forecastValue=null;$('#forecast-result').hidden=true;$('#forecast-floors').replaceChildren();$('#forecast-count').textContent='';}
+function clearForecast(){forecastValue=null;$('#forecast-result').hidden=true;$('#forecast-floors').replaceChildren();$('#forecast-count').textContent='';$('#forecast-setup').open=true;$('#forecast-setup-heading').textContent='种子与生成条件';}
 function stopForecast(message,hide=true){forecastSerial++;forecastWorker?.terminate();forecastWorker=null;clearTimeout(forecastTimer);forecastTimer=null;forecastBusy=false;if(hide)clearForecast();if(message)$('#forecast-status').textContent=message;forecastControls();}
 function refreshForecastContext(){
   const current=scoutingContext();if(current===forecastContext)return;forecastContext=current;
@@ -62,8 +63,8 @@ async function runForecast(){
       try{
         if(!event.data?.ok)throw Error(event.data?.error||'离线计算失败。');validateForecastResult(event.data.result,seed,depth);
         forecastValue=event.data.result;forecastWorker.terminate();forecastWorker=null;clearTimeout(forecastTimer);forecastTimer=null;forecastBusy=false;
-        $('#forecast-title').textContent=`${forecastValue.seed_code} · 官方4.0.2新局参考 · 第1–${depth}层`;
-        renderForecast();$('#forecast-result').hidden=false;$('#forecast-status').textContent=`已生成 · ${forecastValue.items.length} 项候选`;forecastControls();
+        $('#forecast-title').textContent=`${forecastValue.seed_code} · 4.0.2 · 第1–${depth}层`;
+        renderForecast();$('#forecast-result').hidden=false;$('#forecast-status').textContent='';$('#forecast-setup').open=false;$('#forecast-setup-heading').textContent='调整生成条件';forecastControls();
       }catch(error){stopForecast('本次未展示预测结果。');inlineError($('#forecast-error'),error.message);}
     };
     forecastWorker.onerror=()=>{if(serial===forecastSerial){stopForecast('本次未展示预测结果。');inlineError($('#forecast-error'),'离线模块加载或运行失败，请完整解压软件后重试。');}};
@@ -78,13 +79,15 @@ function forecastAccess(access,brief=false){
 }
 function showForecastItem(item,definition){
   const label=`${forecastValue.seed_code} · 4.0.2新局参考 · 第 ${item.depth} 层 · ${forecastSources[item.source]}`;
-  showDetail(definition.name,definition.description,'独立种子参考',`${label}；${forecastAccess(item.access)}。预测显示等级 +${item.level}${item.cursed?'，诅咒':''}；未持有、未在游戏中鉴定。`);
+  const access=`${forecastSources[item.source]} · ${forecastAccess(item.access,true)}${item.cursed?' · 诅咒':''}${item.effect?' · '+forecastEffect(item):''}${item.secret?' · 隐藏房间':''}`;
+  showDetail(definition.name,definition.description,'独立种子参考','');
   if(typeof setReferencePortrait==='function'){setReferencePortrait(definition.key,definition.name);void hydrateReference({id:definition.key,name:definition.name,preserve_description:true},detailReferenceSerial);}if(typeof setDetailEntry==='function')setDetailEntry(definition.key);
   const level=definition.kind==='Artifact'?null:definition.kind==='Trinket'?0:item.level;
   const params={...(level===null?{}:{level}),...(definition.tier?{tier:definition.tier}:{})};
-  loadNumericalDetail(definition.key,params,level===null?'unknown':'assumed',{capturedContext:true,ignoreDrafts:true,sourceStamp:null,seedReference:label,
+  loadNumericalDetail(definition.key,params,level===null?'unknown':'assumed',{capturedContext:true,ignoreDrafts:true,sourceStamp:null,seedReference:label,seedAccess:access,
+    seedConditions:`${forecastAccess(item.access)}。预测显示等级 +${item.level}${item.cursed?'，诅咒':''}；未持有、未在游戏中鉴定。`,
     fieldOrigins:Object.fromEntries(Object.keys(params).map(key=>[key,'独立新局参考 · '+label])),
-    skillConditions:`${label}；基础数值，未计入诅咒、附魔/刻印或当前角色增益。${level===null?'神器显示等级未转换为内部等级，等级相关公式需另行确认。':''}`,skillState:'unknown'});
+    skillConditions:`基础数值，未计入诅咒、附魔/刻印或当前角色增益。${level===null?'神器显示等级未转换为内部等级，等级相关公式需另行确认。':''}`,skillState:'unknown'});
 }
 function renderForecast(){
   if(!forecastValue)return;const from=Number($('#forecast-from').value),kind=$('#forecast-kind').value,query=$('#forecast-query').value.trim().toLowerCase(),target=$('#forecast-floors');target.replaceChildren();
@@ -103,7 +106,8 @@ function renderForecast(){
 for(const id of ['forecast-depth','forecast-from']){const select=$('#'+id);for(let depth=1;depth<=24;depth++){const option=document.createElement('option');option.value=String(depth);option.textContent=`第 ${depth} 层`;select.append(option);}select.value=id==='forecast-depth'?'24':'1';}
 $('#forecast-read-seed').addEventListener('click',readForecastSeed);$('#forecast-run').addEventListener('click',runForecast);
 $('#forecast-cancel').addEventListener('click',()=>stopForecast('已取消计算，旧结果已收起。'));
-$('#forecast-hide').addEventListener('click',()=>{$('#forecast-confirm').checked=false;stopForecast('预测已收起；种子输入保留。');$('#forecast-panel').open=false;});
+$('#forecast-hide').addEventListener('click',()=>{$('#forecast-panel').open=false;});
+$('#forecast-clear').addEventListener('click',()=>{$('#forecast-confirm').checked=false;stopForecast('结果已清除');});
 for(const id of ['forecast-seed','forecast-depth'])$('#'+id).addEventListener('input',()=>{forecastSource=null;$('#forecast-confirm').checked=false;$('#forecast-origin').textContent='手填种子 · 未关联存档';stopForecast('请确认情景后计算');});
 $('#forecast-confirm').addEventListener('change',()=>{if(!$('#forecast-confirm').checked)stopForecast('已取消确认，旧结果已收起。');forecastControls();});
 for(const id of ['forecast-from','forecast-kind','forecast-query'])$('#'+id).addEventListener(id==='forecast-query'?'input':'change',renderForecast);

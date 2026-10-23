@@ -1526,19 +1526,27 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   const seedLevel=element();seedLevel.dataset.valueKey='level';seedLevel.value='1';
   seedDetail.context.$$=()=>[seedLevel];
   seedDetail.context.fetch=async url=>({ok:true,json:async()=>({status:'current',version:'4.0.2',blocks:[],inputs:[{key:'level',value:Number(new URL(url,'http://localhost').searchParams.get('level')||1),label:'等级',min:0,max:10}]})});
-  await seedDetail.run("loadNumericalDetail('seed-weapon',{level:1},'assumed',{capturedContext:true,ignoreDrafts:true,sourceStamp:null,seedReference:'ABC-DEF-GHI · 第 1 层 · 地面物品'})");
+  await seedDetail.run("loadNumericalDetail('seed-weapon',{level:1},'assumed',{capturedContext:true,ignoreDrafts:true,sourceStamp:null,seedReference:'ABC-DEF-GHI · 第 1 层 · 地面物品',seedAccess:'悲伤幽灵任务奖励 · 互斥组 0 · 选项 1',seedConditions:'同组不同选项不能同时取得；未持有'})");
   assert.equal(seedDetail.run('numericalDetail.source'),null);assert.equal(seedDetail.run('numericalDetail.unconfirmedSource'),false);
-  assert.equal(seedDetail.get('#values-freshness').textContent,'独立种子参考 · 未绑定当前角色');
+  assert.equal(seedDetail.get('#values-freshness').textContent,'独立种子 · 未持有 · 未绑定当前角色');
   assert(!seedDetail.run("'strength' in numericalDetail.context"));assert.match(seedDetail.get('#values-source').textContent,/ABC-DEF-GHI/);
   seedLevel.value='2';seedLevel.listeners.input();seedDetail.get('#value-calculator').listeners.submit({preventDefault(){}});await new Promise(resolve=>setImmediate(resolve));
   seedDetail.run('cancelNumericalDetail()');await seedDetail.run("loadNumericalDetail('seed-weapon',{},'example')");
-  assert.match(seedDetail.get('#values-freshness').textContent,/独立种子参考/);assert.equal(seedDetail.run('numericalDetail.context.level'),2);
+  assert.match(seedDetail.get('#values-freshness').textContent,/独立种子/);assert.equal(seedDetail.run('numericalDetail.context.level'),2);assert.match(seedDetail.run('numericalDetail.seedAccess'),/互斥组 0 · 选项 1/);assert.match(seedDetail.run('numericalDetail.seedConditions'),/不能同时取得/);
   seedDetail.get('#values-use-latest').listeners.click();await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(seedDetail.run('numericalDetail.seedReference'),null);assert(seedDetail.run('numericalDetail.source')!==null);assert(!seedDetail.get('#values-freshness').textContent.includes('未绑定当前角色'));
+  assert.match(seedDetail.run('numericalDetail.seedReference'),/ABC-DEF-GHI/);assert(seedDetail.run('numericalDetail.source')!==null);assert.match(seedDetail.get('#values-freshness').textContent,/未持有 · 已带入角色条件/);assert.match(seedDetail.run('numericalDetail.seedAccess'),/互斥组 0/);
   seedDetail.get('#values-undo-import').listeners.click();await new Promise(resolve=>setImmediate(resolve));
-  assert.match(seedDetail.get('#values-freshness').textContent,/独立种子参考/);assert.equal(seedDetail.run('numericalDetail.source'),null);
+  assert.match(seedDetail.get('#values-freshness').textContent,/未持有 · 未绑定当前角色/);assert.equal(seedDetail.run('numericalDetail.source'),null);
   seedDetail.run('cancelNumericalDetail()');await seedDetail.run("loadNumericalDetail('unknown-reference',{level:1},'assumed',{capturedContext:true,ignoreDrafts:true,sourceStamp:null})");
   assert.match(seedDetail.get('#values-freshness').textContent,/来源未确认/,'unknown references must retain their warning');
+
+  // Pair only equivalent weapon bounds; retain original conditions in the complete tables.
+  seedDetail.context.weaponBlock={title:'当前 +1 装备数值',values:[{label:'最低基础伤害',value:3,unit:'HP'},{label:'最高基础伤害',value:15,unit:'HP'},{label:'力量需求',value:11,condition:'无精通药剂、诅咒及其他特殊修正'}]};
+  assert.equal(seedDetail.run("equipmentAnswer({identity:'items.weapon.melee.mace',seedReference:'seed'},weaponBlock).primary_values[0].value"),'3–15');
+  assert.equal(seedDetail.run("equipmentAnswer({identity:'items.weapon.melee.mace'},weaponBlock).primary_values[1].value"),11);
+  assert.equal(seedDetail.context.weaponBlock.values[2].condition,'无精通药剂、诅咒及其他特殊修正');
+  seedDetail.context.weaponBlock.values[1].condition='仅特殊攻击';assert.equal(seedDetail.run("equipmentAnswer({identity:'items.weapon.melee.mace'},weaponBlock)"),null);
+  assert.equal(seedDetail.run("equipmentAnswer({identity:'items.armor.mailarmor'},weaponBlock)"),null);
 
   // A delayed risk link keeps its captured hero and full connection identity.
   const handoff=harness();handoff.context.state=stamp();handoff.context.state.settings.save_root='/original-game';handoff.load('rules.js');

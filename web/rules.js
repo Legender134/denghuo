@@ -38,7 +38,7 @@ function associateNumericalPlan(detail,plan,submitted,signature){
   if(typeof showPlanNote==='function')showPlanNote(plan.note);
   showNumericalSkillContext(detail);
 }
-function showNumericalSkillContext(detail){if(detail.skillConditions&&typeof showDetailContext==='function')showDetailContext((detail.fixed?'保存时的技能参考：':'')+detail.skillConditions);}
+function showNumericalSkillContext(detail){if(typeof showDetailContext!=='function')return;if(detail.seedReference)showDetailContext((detail.seedAccess||'独立种子参考')+' · 修正未计入');else if(detail.skillConditions)showDetailContext((detail.fixed?'保存时的技能参考：':'')+detail.skillConditions);}
 function rememberFixedNumericalDraft(){const d=numericalDetail;if(!d?.savedPlan)return;fixedNumericalDrafts.set(d.savedPlan.id,JSON.parse(JSON.stringify({...d,pending:false,rawDraft:numericalFormDrafts.get('plan:'+d.savedPlan.id)||{}})));}
 function currentSkillContext(identity){
   const spell=identity?.startsWith('actors.hero.spells.')&&!identity.includes('$'),talent=identity?.startsWith('actors.hero.talent.'),resource=['items.waterskin','items.dewdrop'].includes(identity),ability=identity?.startsWith('actors.hero.abilities.');
@@ -61,7 +61,7 @@ function cancelNumericalDetail(){
     numericalFormDrafts.set(key,Object.fromEntries($$('[data-value-key]').map(input=>[input.dataset.valueKey,input.value])));
     numericalCalculated.set(key,{params:{...(detail.calculated?.params||detail.context)},origins:{...detail.origins},source:detail.source,
       levelSource:detail.levelSource,result:detail.result,sessionUnsaved:true,characterReference:detail.characterReference||null,
-      skillConditions:detail.skillConditions,skillState:detail.skillState,seedReference:detail.seedReference,unconfirmedSource:detail.unconfirmedSource});
+      skillConditions:detail.skillConditions,skillState:detail.skillState,seedReference:detail.seedReference,seedAccess:detail.seedAccess,seedConditions:detail.seedConditions,unconfirmedSource:detail.unconfirmedSource});
   }
   numericalRequest++;numericalDetail=null;
 }
@@ -114,6 +114,12 @@ function numericalAnswerBasis(detail,result){
   const label=key==='vial'?`凝血试管 ${Number(input.value)<0?'无效果（−1）':'+'+displayNumber(input.value)}`:key==='power'?`${detail.identity==='actors.buffs.poison'?'剩余中毒':'当前流血强度'} ${displayNumber(input.value)}${detail.identity==='actors.buffs.poison'?' 回合':''}`:key==='dew_volume'?`露珠 ${displayNumber(input.value)} 滴`:Number(input.value)===1?'绝命头目':'普通首领';
   return `${label}（${detail.origins[key]||'示例 · 请核对'}）`;
 }
+function equipmentAnswer(detail,first){
+  const values=first?.values||[],[low,high]=values;
+  if(!detail.identity.startsWith('items.weapon.')||!/^当前 [+-]\d+ 装备数值$/.test(first?.title||'')||low?.label!=='最低基础伤害'||high?.label!=='最高基础伤害'||low.unit!==high.unit||low.condition!==high.condition)return null;
+  const strength=values.find(value=>value.label==='力量需求');
+  return {...first,primary_values:[{...low,label:'基础伤害',value:`${displayNumber(low.value)}–${displayNumber(high.value)}`},...(strength?[{...strength,condition:''}]:[])],summary_note:detail.seedReference?'':'基础数值 · 修正未计入'};
+}
 function validNumericalInputs(inputs,detail){
   const invalid=inputs.find(input=>{
     const spec=detail.inputs?.find(field=>field.key===input.dataset.valueKey),raw=input.value.trim(),value=Number(raw);
@@ -156,7 +162,7 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
       }
     }
     numericalDetail={identity,levelOrigin,context:options.fixed?{...params}:{...(options.capturedContext||options.exactContext?{}:visibleCalculationContext(identity)),...params,...drafts},
-      origins:{},source,levelSource:source,seedReference,unconfirmedSource:!options.fixed&&options.sourceStamp===null&&!seedReference,fixed:!!options.fixed,savedPlan:options.savedPlan||null,rulesChanged:options.rulesChanged||false,
+      origins:{},source,levelSource:source,seedReference,seedAccess:seedReference?options.seedAccess||'':null,seedConditions:seedReference?options.seedConditions||'':null,unconfirmedSource:!options.fixed&&options.sourceStamp===null&&!seedReference,fixed:!!options.fixed,savedPlan:options.savedPlan||null,rulesChanged:options.rulesChanged||false,
       skillConditions:options.skillConditions||skill?.conditions||'',skillState:options.skillState||skill?.state||null,
       foodReference:identity.startsWith('items.food.')&&options.capturedContext&&options.foodReference?JSON.parse(JSON.stringify(options.foodReference)):null};
     for(const key of currentParameterKeys(identity))if(key in numericalDetail.context)numericalDetail.origins[key]=key in drafts?'手填保留':heroInputOrigin(key,numericalDetail.source);
@@ -168,7 +174,7 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
     for(const [key,label] of Object.entries(options.fieldOrigins||{}))if(key in params&&!(key in drafts))numericalDetail.origins[key]=label;
     if(options.fixed)for(const key of Object.keys(params))numericalDetail.origins[key]=options.savedPlan?.origin?.fields?.[key]||'保存参数 · 固定参考';
     const calculated=!options.fixed&&!options.ignoreDrafts&&(numericalFormDrafts.has(draftKey)||numericalCalculated.get(draftKey)?.sessionUnsaved)&&numericalCalculated.get(draftKey);
-    if(calculated){numericalDetail.sessionUnsaved=!!calculated.sessionUnsaved;numericalDetail.context={...calculated.params};numericalDetail.origins={...calculated.origins};numericalDetail.source=calculated.source;numericalDetail.levelSource=calculated.levelSource;numericalDetail.seedReference=calculated.seedReference||null;numericalDetail.unconfirmedSource=!!calculated.unconfirmedSource;numericalDetail.characterReference=calculated.characterReference||null;if('skillConditions' in calculated){numericalDetail.skillConditions=calculated.skillConditions;numericalDetail.skillState=calculated.skillState;}restoredResult=calculated.result;}
+    if(calculated){numericalDetail.sessionUnsaved=!!calculated.sessionUnsaved;numericalDetail.context={...calculated.params};numericalDetail.origins={...calculated.origins};numericalDetail.source=calculated.source;numericalDetail.levelSource=calculated.levelSource;numericalDetail.seedReference=calculated.seedReference||null;numericalDetail.seedAccess=calculated.seedAccess||null;numericalDetail.seedConditions=calculated.seedConditions||null;numericalDetail.unconfirmedSource=!!calculated.unconfirmedSource;numericalDetail.characterReference=calculated.characterReference||null;if('skillConditions' in calculated){numericalDetail.skillConditions=calculated.skillConditions;numericalDetail.skillState=calculated.skillState;}restoredResult=calculated.result;}
     if(fixedDraft){numericalDetail={...fixedDraft,savedPlan:options.savedPlan,rulesChanged:!!options.rulesChanged||fixedDraft.result?.version!==options.result?.version};restoredResult=fixedDraft.result;numericalFormDrafts.set(draftKey,{...fixedDraft.rawDraft});}
   }else numericalDetail.context={...numericalDetail.context,...params};
   if(options.restoreSession){numericalDetail=JSON.parse(JSON.stringify(options.restoreSession.detail));restoredResult=numericalDetail.result;numericalDetail.importUndo=null;}
@@ -212,7 +218,7 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
     if(options.commitPending)numericalFormDrafts.delete(currentDraftKey());
     detail.dirty=!!result.missing_inputs?.length||(options.restoreSession?!!options.restoreSession.detail.dirty:!!fixedDraft?.dirty);
     if(!restoredResult&&!options.restoreSession)for(const key of result.missing_inputs||[])detail.origins[key]='未确认 · 请填写';
-    if(!options.restoreSession)detail.calculated=result.missing_inputs?.length?null:{params:Object.fromEntries(result.inputs.map(field=>[field.key,Number(field.value)])),origins:{...detail.origins},source:detail.source,levelSource:detail.levelSource,result,sessionUnsaved:!!detail.sessionUnsaved,characterReference:detail.characterReference||null,skillConditions:detail.skillConditions,skillState:detail.skillState,seedReference:detail.seedReference,unconfirmedSource:detail.unconfirmedSource};
+    if(!options.restoreSession)detail.calculated=result.missing_inputs?.length?null:{params:Object.fromEntries(result.inputs.map(field=>[field.key,Number(field.value)])),origins:{...detail.origins},source:detail.source,levelSource:detail.levelSource,result,sessionUnsaved:!!detail.sessionUnsaved,characterReference:detail.characterReference||null,skillConditions:detail.skillConditions,skillState:detail.skillState,seedReference:detail.seedReference,seedAccess:detail.seedAccess,seedConditions:detail.seedConditions,unconfirmedSource:detail.unconfirmedSource};
     if(detail.calculated&&!detail.fixed&&!restoredResult&&(!options.ignoreDrafts||!numericalFormDrafts.has(currentDraftKey()))&&(!options.ignoreDrafts||!numericalCalculated.get(currentDraftKey())?.sessionUnsaved)){numericalCalculated.set(currentDraftKey(),detail.calculated);if(numericalCalculated.size>64){const clean=Array.from(numericalCalculated).find(([,item])=>!item.sessionUnsaved);if(clean)numericalCalculated.delete(clean[0]);}}
     if(options.commitPending&&!detail.fixed){const drafts={};for(const input of result.inputs)if((detail.origins[input.key]||'').startsWith('手填'))drafts[input.key]=Number(input.value);numericalDrafts.set(currentDraftKey(),drafts);}
     const restoreFocus=focusSelector&&(document.activeElement===document.body||previousForm.contains(document.activeElement));
@@ -224,17 +230,19 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
     const ordinaryLabels=['基础伤害范围','基础减伤范围','基础速度倍率'];
     const ordinary=combat&&['actors.mobs.rat','actors.mobs.gnoll','actors.mobs.crab'].includes(identity)&&!result.blocks.some(block=>block.title==='特殊攻击与机制')&&ordinaryLabels.every(label=>first.values.some(value=>value.label===label));
     const readingNotes=combat&&!ordinary?(first.reading_notes||[]).filter(note=>typeof note==='string'&&note.trim()):[];
-    const summaryBlock=detail.foodReference||(npc||readingNotes.length?null:ordinary?{...first,primary_values:ordinaryLabels.map(label=>first.values.find(value=>value.label===label))}:result.blocks.find(block=>block.primary_values?.length));
-    const basisText=numericalAnswerBasis(detail,result),basis=basisText?`<p class="numeric-basis">${escapeHTML(basisText)}</p>`:'';
+    const equipment=equipmentAnswer(detail,first);
+    const summaryBlock=detail.foodReference||equipment||(npc||readingNotes.length?null:ordinary?{...first,primary_values:ordinaryLabels.map(label=>first.values.find(value=>value.label===label))}:result.blocks.find(block=>block.primary_values?.length));
+    const basisText=equipment?(detail.levelOrigin==='unknown'?'等级未知 · +0 示例':first.title.replace('当前 ','').replace(' 装备数值',' 级参考')):numericalAnswerBasis(detail,result),basis=basisText?`<p class="numeric-basis">${escapeHTML(basisText)}</p>`:'';
     const answer=readingNotes.length?`<section id="values-answer" class="numeric-answer mechanism-answer" ${detail.dirty?'hidden':''}>${basis}<ul>${readingNotes.map(note=>`<li>${escapeHTML(note)}</li>`).join('')}</ul>${first.summary_note?`<p class="muted">${escapeHTML(first.summary_note)}</p>`:''}</section>`:summaryBlock?`<section id="values-answer" class="numeric-answer${ordinary?' ordinary-combat-answer':''}" ${detail.dirty?'hidden':''}>${basis}<dl>${summaryBlock.primary_values.slice(0,ordinary?3:2).map(value=>`<div><dt>${escapeHTML(ordinary?({'基础伤害范围':'普通攻击','基础减伤范围':'基础减伤','基础速度倍率':'移动速度'}[value.label]||value.label):value.label)}</dt><dd>${escapeHTML(displayNumber(value.value))} <small>${escapeHTML(value.unit||'')}</small></dd>${value.condition?`<p class="numeric-condition">${escapeHTML(value.condition)}</p>`:''}</div>`).join('')}</dl>${(summaryBlock.summary_note??summaryBlock.note)?`<p class="muted">${escapeHTML(summaryBlock.summary_note??summaryBlock.note)}</p>`:''}</section>`:'';
     if(intro&&(summaryBlock||readingNotes.length))intro.hidden=true;
-    const compactFirst=summaryBlock===first||ordinary||readingNotes.length||detail.foodReference;
+    const compactFirst=!!equipment||summaryBlock===first||ordinary||readingNotes.length||detail.foodReference;
     const leading=lead?(compactFirst?'':exampleHTML({...first,omit_heading:first.title==='效果数值',...(combat?{compact_conditions:true}:{})})):'';
     const detailBlocks=(detail.foodReference?exampleHTML(detail.foodReference):'')+(compactFirst?result.blocks:result.blocks.slice(lead?1:0)).map(exampleHTML).join('');
     // Keep the complete original tables and the editor in the DOM; only their reading order changes.
     const editor=formHTML?`<details class="numeric-editor"${detail.dirty||focusSelector?' open':''}><summary>调整计算条件${result.inputs.length?`（${result.inputs.length}项）`:''}</summary>${formHTML}</details>`:'';
     const full=detailBlocks?`<details class="numeric-note-details numeric-full"><summary>${npc?'完整原始数值与条件':result.alchemy_recipes?.length?'完整数值与炼金明细':'完整数值与条件'}</summary>${detailBlocks}</details>`:'';
-    const content=npc?`${editor}${full}`:`${answer}${leading}${editor}${full}`;
+    const seedSource=detail.seedReference?`<details class="numeric-note-details"><summary>来源与取得条件</summary><p>${escapeHTML(detail.seedReference)}</p><p>${escapeHTML(detail.seedConditions||'')}</p><p>${escapeHTML(detail.skillConditions||'')}</p></details>`:'';
+    const content=npc?`${editor}${seedSource}${full}`:`${answer}${leading}${editor}${seedSource}${full}`;
     container.innerHTML=`${result.inputs.length||detail.foodReference?'<p id="values-freshness" role="status"></p>':''}${content}${result.no_fixed_values?(result.non_numeric?'':'<p class="rule-warning">此条目的具体数值尚在核对，目前不提供未经确认的结果。</p>'):''}${provenanceHTML(result)}`;
     $('#values-use-character')?.addEventListener('click',()=>{try{applyCharacterToNumeric();}catch(error){toast(error.message,true);}});
     $$('[data-value-key]').forEach(input=>input.addEventListener('input',()=>{
@@ -278,7 +286,7 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
         if(!currentKeys.includes(key)&&(detail.origins[key]||'').startsWith('手填'))detail.origins[key]='手填';
       });
       for(const key of currentKeys)if(key in latest)detail.origins[key]=heroInputOrigin(key);
-      detail.source=calculationStamp();detail.unconfirmedSource=false;detail.seedReference=null;
+      detail.source=calculationStamp();detail.unconfirmedSource=false;
       detail.fixed=false;
       loadNumericalDetail(identity,next,detail.levelOrigin,{commitPending:true});
     });
@@ -308,7 +316,7 @@ function refreshNumericalOrigin(){
   const levelOld=(['物品已知等级','已主动揭示的存档等级'].includes(d.origins.level)||['物品已知阶数','存档物品阶数 · 主动揭示模式'].includes(d.origins.tier))&&d.levelSource&&(!now||['modified','slot','mode','save_root','revision','started'].some(k=>d.levelSource[k]!==now[k]));
   const old=snapshotUsed&&(!now||state.error||state.stale||changed||levelOld);
   freshness.className=old||d.dirty||d.unconfirmedSource?'rule-warning':'muted';
-  freshness.textContent=d.dirty?(d.calculated?'输入已修改，尚未计算；下方仍是修改前的结果，请重新计算。':'条件待补全；请填写有效参数后计算。'):d.unconfirmedSource?'参考来源未确认；请核对原参数或明确带入最新状态。':levelOld?'物品等级来自较早快照，无法唯一确认现在是哪件装备；请核对等级后手填。':old?(changed?'游戏快照已经变化；下方结果仍按原参数计算，请带入最新状态或核对后手填。':'这些结果含旧快照参数，请按游戏画面核对。'):d.seedReference?'独立种子参考 · 未绑定当前角色':'按下列参数计算；随机范围和生效条件见各表。';
+  freshness.textContent=d.dirty?(d.calculated?'输入已修改，尚未计算；下方仍是修改前的结果，请重新计算。':'条件待补全；请填写有效参数后计算。'):d.unconfirmedSource?'参考来源未确认；请核对原参数或明确带入最新状态。':levelOld?'物品等级来自较早快照，无法唯一确认现在是哪件装备；请核对等级后手填。':old?(changed?'游戏快照已经变化；下方结果仍按原参数计算，请带入最新状态或核对后手填。':'这些结果含旧快照参数，请按游戏画面核对。'):d.seedReference?`独立种子 · 未持有 · ${stamp?'已带入角色条件':'未绑定当前角色'}`:'按下列参数计算；随机范围和生效条件见各表。';
   if(d.dirty&&old&&!d.fixed)freshness.textContent+=!now||state.error?' 当前快照不可用；已带入条件保留，请核对。':changed||levelOld?' 游戏快照已变化；已带入条件保留，请核对。':' 已带入条件来自旧快照，请核对。';
   if(d.sessionUnsaved&&!d.fixed&&!d.dirty)freshness.textContent+=' 本次会话试算尚未命名保存。';
   if(d.foodReference&&!d.dirty)freshness.textContent=d.unconfirmedSource?'进食参考来源未确认，请核对条件。':old?'旧快照进食参考；请核对游戏，或从当前局势重新打开。':`${stamp?.mode==='manual'?'手填局势':'捕获的进食参考'}${stamp?' · '+fmtTime(stamp.modified):''}`;
