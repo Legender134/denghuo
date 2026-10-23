@@ -301,7 +301,9 @@ button,.primary,.secondary,.text-button{font-size:14px}
 #detail-dialog .numeric-editor>summary{font-size:14px;color:var(--gold);cursor:pointer;line-height:1.8;min-height:32px}
 #detail-dialog .numeric-editor .value-calculator{margin:8px 0 12px;padding-top:8px;border-top:0}
 #detail-dialog .numeric-full{margin:8px 0}
-#detail-dialog .recipe-handoff{margin:8px 0 12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+#detail-dialog .recipe-handoff{margin:8px 0;display:block}
+#detail-dialog .recipe-handoff>summary{cursor:pointer;min-height:32px;line-height:2;color:var(--gold)}
+#detail-dialog .recipe-handoff>button{margin:6px 8px 6px 0}
 #detail-dialog .recipe-handoff[hidden]{display:none}
 .reference-image[hidden],#detail-image[hidden]{display:none}
 #detail-dialog .recipe-handoff p{flex-basis:100%;margin:0;font-size:14px}
@@ -350,3 +352,35 @@ button,.primary,.secondary,.text-button{font-size:14px}
 #update-entry { margin: 8px 16px; text-align: left; }
 #update-entry.update-available { color: var(--gold); font-weight: 600; }
 #update-notes { white-space: pre-line; }
+
+/* Compact task surfaces: records and actions lead, maintenance stays on demand. */
+.topbar{height:48px;justify-content:flex-end}
+#backup-status:empty{display:none}
+#play-form .play-primary-actions{margin:10px 0 14px}
+.compact-disclosure{margin:10px 0;padding:6px 0;border-top:1px solid var(--border)}
+.compact-disclosure>summary{min-height:30px;line-height:2;cursor:pointer;color:var(--gold);font-size:14px}
+.compact-disclosure[open]>summary{margin-bottom:8px}
+.compact-disclosure p{font-size:14px;line-height:1.6;margin:8px 0}
+.backup-toolbar{display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin:12px 0 18px}
+.backup-toolbar>label{display:flex;align-items:center;gap:8px;font-size:14px}
+.backup-toolbar input{width:auto;min-height:0;margin:0}
+.backup-toolbar select{min-width:120px}
+.backup-primary-status:empty,#backup-recovery:empty{display:none}
+#view-backups .page-heading,#view-workspace .page-heading,#view-play-settings .page-heading,#view-alchemy .page-heading{margin-bottom:14px}
+#view-backups .backup-card{padding:16px}
+#view-workspace .workspace-section{padding:16px 0;background:transparent;border:0}
+#view-workspace .panel-title{margin-bottom:12px}
+#view-workspace .form-grid{margin:12px 0;gap:12px}
+#view-play-settings #play-form{padding:18px}
+#view-play-settings .settings-form h2{margin-bottom:12px}
+#view-play-settings fieldset{margin:12px 0;padding:12px}
+#view-play-settings #play-bindings{gap:10px 16px}
+#view-play-settings .play-secondary-settings{margin:10px 0;padding-top:6px}
+#view-alchemy .alchemy-primary-actions{margin:0 0 14px;padding-bottom:12px;border-bottom:1px solid var(--border)}
+#view-alchemy .settings-form>h2{margin:12px 0}
+#view-alchemy .settings-form .form-grid{margin:12px 0;gap:12px}
+#view-alchemy fieldset{padding:12px;margin:12px 0}
+#view-overview .overview-section{padding:14px 0}
+#view-overview .overview-section>h2{margin-bottom:10px}
+#view-overview .advice{padding:12px 0}
+#view-overview .overview-lead{margin-top:4px;line-height:1.5}

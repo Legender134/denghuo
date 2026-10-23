@@ -10,7 +10,7 @@ function playFormValues(){
   result.bindings=Object.fromEntries($$('#play-bindings [data-binding]').map(input=>[input.dataset.binding,input.value]));return result;
 }
 function renderPlayDraftNotice(){
-  $('#play-draft-status').textContent=playConflict?'其他窗口已修改设置；你的草稿保留。请核对后明确「重新读取已保存设置」，再修改和保存。':playDirty?'有尚未保存的游玩设置；切换页面与重连保留草稿，保存才应用。':'按已保存配置显示；实际桌面应用与快捷键注册见上方状态。';
+  $('#play-draft-status').textContent=playConflict?'设置已被其他窗口修改 · 草稿保留；重新载入后再修改。':playDirty?'设置未保存':'';
 }
 function renderPlayRuntime(result){
   const caps=result.desktop_status||{},live=result.desktop_available===true;

@@ -482,6 +482,13 @@ class NumericLookup:
                            for key, label in labels]
                 return compact, ((section.get('summary_note') or '') + '特殊攻击另计；移速不代表攻击频率。')
         note = section.get('summary_note', section.get('note_summary', section.get('note', '')))
+        # An exact min/max pair is one range, while full source values remain in sections.
+        if (self.identity.startswith('items.weapon.') and len(values) >= 2
+                and [value.get('label') for value in values[:2]] == ['最低基础伤害', '最高基础伤害']
+                and values[0].get('unit', '') == values[1].get('unit', '')
+                and values[0].get('condition', '') == values[1].get('condition', '')):
+            return [{'label': '基础伤害', 'value': f"{values[0]['value']}–{values[1]['value']}",
+                     'unit': values[0].get('unit', ''), 'condition': values[0].get('condition', '')}], note
         if self.identity in ('items.potions.potionofhealing', 'items.potions.elixirs.elixirofhoneyedhealing'):
             value = self.calculated.get('vial', -1)
             basis = '凝血试管 ' + ('无效果（−1）' if value < 0 else f'+{value:g}')
@@ -858,6 +865,7 @@ class NumericLookup:
             self.context['field_origins'] = dict(reference.get('field_origins', {}))
             if reference.get('item_notice'):
                 self.context['item_notice'] = reference['item_notice']
+                self.context['item_notice_brief'] = reference.get('item_notice_brief', reference['item_notice'])
             if self.identity.startswith('items.food.') and reference.get('food_reference'):
                 self.context['food_reference'] = copy.deepcopy(reference['food_reference'])
             if 'strength' in self.context['params']:
@@ -1149,6 +1157,8 @@ class NumericLookup:
                          if not self.dirty and self.calculated is not None and not self.calculating and not self.parameter_error else [])
         fields = [{**field, 'raw': self.variables[field['key']].get(), 'origin': self.input_origins.get(field['key'], '')} for field in self.inputs if field['key'] in self.variables]
         notice = '\n'.join(part for part in (self.spell_availability_notice(), (self.context or {}).get('item_notice', '')) if part)
+        notice_brief = '\n'.join(part for part in (self.spell_availability_notice(),
+            (self.context or {}).get('item_notice_brief', (self.context or {}).get('item_notice', ''))) if part)
         sent = self.host.command('lookup_state', draft_revision=self.edit_revision, query=self.query.get(),
             focus_result=self.focus_result, focus_suggestions=self.focus_suggestions,
             focus_listing=self.focus_listing,
@@ -1162,7 +1172,7 @@ class NumericLookup:
                    'token': binding_token(row), 'artwork': native_artwork(row.get('id'))}
                   for text, row in zip(self.list.values, self.rows)], fields=fields, note=self.note.get(),
             category=self.category, categories=self.categories(), suggested=self.suggested,
-            primary_notice=notice,
+            primary_notice=notice, notice_brief=notice_brief,
             shown_count=len(self.rows), total_count=self.total, page_offset=self.browse_offset,
             scope_source=next((row.get('lookup_context', {}).get('source_label', '') for row in self.rows), '') if self.category == '随身' else '',
             suggestions=[{'text': row['name']+' · '+row['type_label'], 'token': binding_token(row),

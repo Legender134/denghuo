@@ -172,7 +172,7 @@ async function verifyAlchemyResinBoundary(){
 (async()=>{
   const historyChecks=await verifyAlchemyEditHistory(),resinChecks=await verifyAlchemyResinBoundary();
   const h=harness();let checks=0;
-  assert.equal(h.get('#alchemy-targets').children.length>1,true);assert.equal(h.run('alchemyFamilies.length'),73);assert.equal(new Set(metadata.families.map(row=>row.family)).size,39);checks++;
+  assert.equal(h.get('#alchemy-targets').children.filter(row=>row.tagName==='FIELDSET').length,1);assert.equal(h.run('alchemyFamilies.length'),73);assert.equal(new Set(metadata.families.map(row=>row.family)).size,39);checks++;
   const sword='items.weapon.melee.sword';h.apply(plan([target('recipe-stewedmeat-onemeat')],[stock(sword)],10));
   assert.equal(h.run('alchemyName("items.weapon.melee.sword")'),'单手剑');
   const identityPicker=h.field('#alchemy-materials','标准身份');

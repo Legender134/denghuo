@@ -46,7 +46,7 @@ def resource_insight(option, index):
         if summary:
             summary[0] = ('本次饮用 · ' if identity == 'items.waterskin' else '单瓶 · ') + summary[0]
             assumption = ('不含已有治疗' if option.get('healing_timing') == 'instant' else
-                          '逐回合生效；不再受伤且不含已有治疗') if identity == 'items.waterskin' else '逐回合生效；假设期间不再受伤'
+                          '逐回合 · 不再受伤 · 不含已有治疗') if identity == 'items.waterskin' else '逐回合 · 假设不再受伤'
     elif identity.startswith('items.food.'):
         nutrition = next((values[key] for key in ('已知诅咒丰饶之角下的参考恢复', '饥饿游戏基础饱食恢复', '恢复饱食') if key in values), None)
         cost = values.get('进食耗时')
@@ -113,7 +113,7 @@ def overview_insights(data, advice, resources):
               'class': '职业准备', 'unknown': '鉴定与未知', 'strength_potion': '装备准备',
               'upgrade_scroll': '装备准备', 'boss_next': '首领准备', 'pharmacophobia': '恢复限制',
               'starving': '恢复限制', 'paralysis': '行动限制', 'roots': '行动限制'}
-    titles.update(critical_hp='低血量 · 先停止自动探索', low_hp='先核对休息回血的条件')
+    titles.update(critical_hp='低血量 · 停止探索', low_hp='休息回血 · 先核对条件')
     hero = data.get('hero', {})
     hunger = hero.get('hunger')
     strength = data.get('character_scene', {}).get('strength', {})
@@ -127,7 +127,7 @@ def overview_insights(data, advice, resources):
                'group': '装备准备' if tip['id'].startswith('strength_') else groups.get(tip['id'], '状态处理')}
         row['priority'] = 0 if tip.get('severity') == 'critical' else 1 if tip.get('severity') == 'warning' else 8
         if tip['id'] == 'critical_hp':
-            row['summary'] = ('治疗逐回合生效，先确认能否安全用药' if known_healing and '药水恐惧' not in data.get('challenges', [])
+            row['summary'] = ('治疗逐回合 · 先确认安全' if known_healing and '药水恐惧' not in data.get('challenges', [])
                               else '避免试饮未知药剂')
             row['show_artwork'] = False  # A general warning must not look like owned medicine.
         elif tip['id'] == 'low_hp':

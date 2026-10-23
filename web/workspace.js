@@ -59,7 +59,7 @@ function renderWorkspace(){
   inlineError($('#workspace-error'),ws.error||ws.recovery_warning||'');inlineError($('#library-home-error'),ws.error||ws.recovery_warning||'');
   $('#workspace-repair').hidden=ws.available!==false;
   $('#workspace-repair').textContent=ws.primary_missing?'预览现有副本与恢复':'预览损坏记录与恢复';
-  $('#workspace-status').textContent=ws.available===false?(ws.primary_missing?'资料库主文件缺失；现有副本保留，收藏和方案写入暂停，资料查询仍可使用。':'资料查询仍可使用；收藏和方案写入暂停，原文件保留。'):`${ws.plans?.length||0} 个方案 · ${ws.favorite_ids?.length||0} 项收藏。和桌面速查使用同一资料库。`;
+  $('#workspace-status').textContent=ws.available===false?(ws.primary_missing?'资料库主文件缺失；现有副本保留，收藏和方案写入暂停，资料查询仍可使用。':'资料查询仍可使用；收藏和方案写入暂停，原文件保留。'):`${ws.plans?.length||0} 个方案 · ${ws.favorite_ids?.length||0} 项收藏`;
   const emptyQuery=typeof libraryIsHome==='function'?libraryIsHome():!$('#library-search').value.trim()&&$('#library-category').value==='全部';
   $('#library-home').hidden=!emptyQuery;$('#library-results').hidden=emptyQuery;if(emptyQuery){$('#library-more').hidden=true;$('#library-results-label').textContent='';$('#library-results-label').setAttribute('role','status');$('#library-home-button').setAttribute('aria-pressed','true');$('#library-browse-all').setAttribute('aria-pressed','false');}
   referenceList($('#workspace-favorites'),ws.favorites,'尚无收藏；在资料详情中点击收藏。');
@@ -94,7 +94,7 @@ function renderDetailTools(){
   const target=$('#detail-tools');if(!target||!detailEntry)return;const entry=detailEntry,favorite=workspaceState?.favorite_ids?.includes(entry)||false;
   const alchemy=numericalDetail?.identity===entry?numericalDetail.result?.alchemy_recipes||[]:[];
   let recipes=$('#detail-alchemy');const newRecipeSurface=!recipes;
-  if(!recipes){recipes=document.createElement('div');recipes.id='detail-alchemy';recipes.className='recipe-handoff';recipes.setAttribute('aria-label','配方炼金目标');$('#detail-rules').append(recipes);}
+  if(!recipes){recipes=document.createElement('details');recipes.id='detail-alchemy';recipes.className='recipe-handoff';recipes.setAttribute('aria-label','配方炼金目标');$('#detail-rules').append(recipes);}
   const recipeAnchor=$('#detail-rules').querySelector('.numeric-editor')||$('#detail-rules').querySelector('.numeric-full');if(recipeAnchor)recipeAnchor.before(recipes);
   const signature=JSON.stringify([entry,favorite,alchemy.map(r=>r.id)]);if(target.dataset.tools===signature&&target.childElementCount&&!newRecipeSurface)return;target.dataset.tools=signature;
   target.innerHTML=`<button class="secondary" id="detail-favorite" aria-pressed="${favorite}">${favorite?'★ 已收藏 · 点击取消':'☆ 收藏资料'}</button><button class="secondary" id="detail-save-numeric" type="button">命名保存计算</button><p id="detail-workspace-error" class="rule-warning" role="alert" hidden></p>`;
@@ -105,7 +105,7 @@ function renderDetailTools(){
     openPlanSave({kind:'numeric',entry:d.identity,params:actualNumericalParams(d),source:{...(d.fixed?cleanStoredOrigin(d.savedPlan?.origin):planSource(d.source)),fields:Object.fromEntries(d.inputs.map(input=>[input.key,d.origins[input.key]||'示例 · 请核对']))}},d.savedPlan,$('#detail-title').textContent);
   });
   if(recipes){recipes.replaceChildren();recipes.hidden=!alchemy.length;
-    if(alchemy.length){const label=document.createElement('p');label.className='muted';label.textContent=alchemy.length>1?'选择配方，追加到当前炼金计划':'追加到当前炼金计划';recipes.append(label);}
+    if(alchemy.length){const label=document.createElement('summary');label.textContent='炼金配方 · '+alchemy.length;recipes.append(label);}
     for(const recipe of alchemy){const button=document.createElement('button');button.className='secondary';button.type='button';button.textContent='添加目标：'+recipe.name;button.addEventListener('click',async()=>{button.disabled=true;try{await loadAlchemy();if(detailEntry!==entry)return;addAlchemyTarget(recipe.id);$('#detail-dialog').close();navigate('alchemy');$('#alchemy-targets')?.focus();}catch(error){if(detailEntry===entry){const message=document.createElement('p');message.className='rule-warning';message.setAttribute('role','alert');message.textContent=error.message;recipes.append(message);}}finally{if(button.isConnected)button.disabled=false;}});recipes.append(button);}
   }
 }

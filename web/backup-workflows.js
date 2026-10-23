@@ -151,8 +151,8 @@ function recordBackupReceipt(kind,ticket,result,submitted,changed=false,file=nul
 function renderBackupReceipts(){
   const target=$('#backup-operation-receipts');if(!target)return;
   const retryPanels=new Map(backupFlow.receipts.map(receipt=>[receipt.id,$('#backup-receipt-retry-'+receipt.id)]).filter(([,panel])=>panel));
-  target.replaceChildren();const title=document.createElement('h3');title.textContent='已提交操作回执';target.append(title);
-  if(!backupFlow.receipts.length){const p=document.createElement('p');p.textContent='提交后的实际逐项结果会独立保留在这里；修改选择、取消后续确认和切换连接不会隐藏已发生的操作。';target.append(p);return;}
+  target.replaceChildren();target.hidden=!backupFlow.receipts.length;if(target.hidden)return;
+  const title=document.createElement('h3');title.textContent='已提交操作回执';target.append(title);
   const names={automatic:'自动保留策略',import:'批量导入','single-import':'单份备份导入',retention:'移入保留目录',reclaim:'回收原件',stage:'重新尝试回档',restore:'恢复存档',undo:'撤回上次回档',remove:'移出活动备份'};
   for(const receipt of [...backupFlow.receipts].reverse()){
     const details=document.createElement('details');details.className='rule-section';details.open=receipt===backupFlow.receipts.at(-1);const summary=document.createElement('summary');summary.textContent=`操作 ${receipt.id} · ${names[receipt.kind]||receipt.kind} · ${receipt.finished}`;details.append(summary);

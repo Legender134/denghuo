@@ -16,7 +16,7 @@ function renderBackupHealth(){
   const detail=h?`${h.slot?`槽位 ${h.slot}：`:''}${healthName(h)}${h.saved?` · 游戏保存距今 ${ageLabel(Date.now()/1000-h.saved)}`:''}${h.last_success?` · 最近检查成功 ${shortTime(h.last_success)}`:''}${h.error?` · ${h.error}`:''}${h.other_errors?` · 其他槽位：${h.other_errors}`:''}`:'自动备份状态尚未确认';
   el.title=detail;
   el.textContent=h&&!h.error&&!h.other_errors?`${h.slot?`槽位 ${h.slot} · `:''}${healthName(h)}`:detail;
-  if(h?.global_progress&&typeof globalProgressLabel==='function'){
+  if(h?.global_progress&&['warning','blocked','paused'].includes(h.global_progress.state)&&typeof globalProgressLabel==='function'){
     el.textContent+=' · '+globalProgressLabel(h.global_progress);
     if(['warning','blocked'].includes(h.global_progress.state))el.classList.add('error');
   }
@@ -60,7 +60,7 @@ async function loadBackups(){
     const response=await fetch('/api/backups?'+new URLSearchParams({context}));if(!response.ok)throw new Error((await response.json()).error||'备份状态暂时无法读取');
     const result=await response.json();if(context!==state?.backup_context||result.context!==context)return;
     backupState=result;$('#backup-enabled').checked=backupState.enabled;
-    $('#backup-status').textContent=`${healthName({...backupState,state:backupState.health})}。${backupState.error||''} ${backupState.notice||''}`;
+    $('#backup-status').textContent=[backupState.error,backupState.notice,['blocked','paused'].includes(backupState.health)?healthName({...backupState,state:backupState.health}):''].filter(Boolean).join(' · ');
     const amount=backupState.storage_bytes==null?'暂时无法读取':`${(backupState.storage_bytes/1048576).toFixed(2)} MiB`;
     $('#backup-storage').textContent=`活动备份 ${amount} / ${(backupState.storage_limit/1048576).toFixed(0)} MiB · ${backupState.records_available===false?'历史记录暂不可读取':`${backupState.history.length} 份不同进度`}。达到上限会停止新增，固定的记录不能移出。`;
     const sizes=backupState.storage_breakdown;
@@ -420,7 +420,7 @@ function renderBackupRecovery(){
   const rows=recovery.pending||[];
   if(recovery.available!==true){backupViewKeys.delete('#backup-recovery');holder.innerHTML=`<h3>回档恢复记录无法核对</h3><p class="rule-warning" role="alert">${escapeHTML(recovery.error||'恢复记录不可读取，已暂停存档交换。')} 全部相关原件保留，请保留恢复记录和副本。</p>`;invalidateBackupRecovery('恢复记录无法核对；确认草稿与全部原件保留。');return;}
   const key=JSON.stringify(recovery);
-  if(setBackupContent('#backup-recovery',key,rows.length?`<h3>有未完成的回档操作</h3><p>相关槽位暂缓备份和回档。先核对保留的两份进度，再明确选择；所有副本保留。</p>`+rows.map(row=>`<article class="panel"><h4>槽位 ${row.slot} · ${row.kind==='undo'?'中断的撤回':'中断的回档'}</h4><p>开始 ${fmtTime(row.time)}</p><button class="secondary" type="button" data-recovery="${escapeHTML(row.id)}">预览保留进度与恢复选择</button></article>`).join(''):'<p class="muted">没有待处理的回档操作。</p>')){
+  if(setBackupContent('#backup-recovery',key,rows.length?`<h3>有未完成的回档操作</h3><p>相关槽位暂缓备份和回档。先核对保留的两份进度，再明确选择；所有副本保留。</p>`+rows.map(row=>`<article class="panel"><h4>槽位 ${row.slot} · ${row.kind==='undo'?'中断的撤回':'中断的回档'}</h4><p>开始 ${fmtTime(row.time)}</p><button class="secondary" type="button" data-recovery="${escapeHTML(row.id)}">预览保留进度与恢复选择</button></article>`).join(''):'')){
     holder.querySelectorAll('[data-recovery]').forEach(button=>button.addEventListener('click',()=>openBackupRecovery(rows.find(row=>row.id===button.dataset.recovery))));
   }
   if(backupRecoveryTarget&&!recoveryScopeCurrent(backupRecoveryTarget))invalidateBackupRecovery('连接或设置已变化；确认草稿保留，请重新预览。');

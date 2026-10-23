@@ -20,6 +20,7 @@ def item_reference(item, floor):
         states.append('已用精通药剂')
     scope = f"第 {floor['depth']} 层"+(f" / 支线 {floor['branch']}" if floor['branch'] else '')+' · 主动揭示'
     notice = scope+(' · '+' · '.join(states)+'\n基础参考未计上述物品修正' if states else ' · 基础参考')
+    brief = scope+(' · 诅咒' if item.get('cursed') is True else '')+(' · 修正未计入' if states else ' · 基础参考')
     details = ' · '.join(item.get('details', []))
     if details:
         conditions += '\n物品保存属性：'+details
@@ -27,5 +28,6 @@ def item_reference(item, floor):
         conditions += ' 数值手册按4.0.2参考，请核对版本差异。'
     return {'entry': item['key'], 'params': params, 'source': {'mode': 'example'},
         'source_label': item['name']+' · '+label, 'conditions': conditions, 'item_notice': notice,
+        'item_notice_brief': brief,
         'level_origin': 'not_applicable' if item.get('level_applicable') is False else 'unknown' if item.get('level') is None else 'revealed',
         'field_origins': {key: label for key in params}}
