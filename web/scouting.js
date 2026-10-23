@@ -48,7 +48,8 @@ const scoutCoordinate=row=>`(${row.x}, ${row.y})`;
 function scoutingList(id,rows,describe,empty){const target=$('#'+id);target.replaceChildren();for(const row of rows){const li=document.createElement('li');li.textContent=describe(row);target.append(li);}if(!rows.length){const li=document.createElement('li');li.textContent=empty;target.append(li);}}
 function showScoutedItem(item,result){
   const source=result.source,label=`槽位 ${source.slot} · 第 ${result.depth} 层${result.branch?` / 支线 ${result.branch}`:''} · ${fmtTime(source.floor_modified)}`;
-  showDetail(item.name,item.description,item.location,`${label} · 已主动揭示；游戏鉴定状态未改变，未加入背包。${source.version===920?' 数值图鉴按4.0.2参考，请核对版本差异。':''}`);
+  showDetail(item.name,item.description,item.location,`${label} · 已主动揭示；游戏鉴定状态未改变，未加入背包。${source.version===920?' 数值图鉴按4.0.2参考，请核对版本差异。':''}${item.details?.length?' 原物品记录：'+item.details.join(' · '):''}`);
+  showItemState({...item,revealed:true},['未加入背包']);
   showItemNote(item.user_note);if(typeof setReferencePortrait==='function'){setReferencePortrait(publicReferenceId({...item,revealed:true}),item.name);void hydrateReference({id:item.key,name:item.name,appearance_id:publicReferenceId({...item,revealed:true}),preserve_description:true},detailReferenceSerial);}if(typeof setDetailEntry==='function')setDetailEntry(item.key);
   const params={...(item.level==null?{}:{level:item.level}),...(item.tier?{tier:item.tier}:{}),...(item.volume==null?{}:{dew_volume:item.volume})};
   loadNumericalDetail(item.key,params,item.level_applicable===false?'not_applicable':item.level==null?'unknown':'revealed',{

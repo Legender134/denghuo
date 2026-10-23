@@ -301,6 +301,8 @@ async function verifySingleItemReveal(){
   assert(revealButton());assert.equal(pending.length,0,'opening an unknown item must not disclose automatically');
   assert.equal(h.get('#detail-related').children.at(-1).textContent,'','static reveal explanation must not interrupt the result');
   assert(h.get('#detail-related').children.at(-1).hidden);
+  assert(!h.get('#detail-dialog .game-description').open,'unknown items keep descriptive text and original records available on demand');
+  assert(!h.get('#detail-meta').textContent.includes('原物品记录： ·'),'empty details do not add a leading separator');
   assert.match(h.get('#detail-meta').textContent,/揭示只读取这件物品/,'read-only disclosure scope remains available with the original record');
   const originalButton=revealButton(),revealing=originalButton.listeners.click();
   assert(originalButton.disabled);assert.equal(pending[0].url,'/api/inventory/reveal');

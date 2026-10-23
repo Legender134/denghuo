@@ -2,6 +2,7 @@
 // Production DOM/transport handlers under Node; no browser or game access.
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const source=fs.readFileSync(path.join(__dirname,'../web/scouting.js'),'utf8');
+const application=fs.readFileSync(path.join(__dirname,'../web/app.js'),'utf8');
 function harness(){
   const nodes=new Map(),writes=[],details=[],calculations=[],fills=[];
   function node(tag='div'){return {tagName:tag.toUpperCase(),value:'',textContent:'',checked:false,disabled:false,hidden:false,children:[],listeners:{},
@@ -16,11 +17,12 @@ function harness(){
     showDetail:(...args)=>details.push(args),showItemNote:()=>{},setDetailEntry:()=>{},
     loadNumericalDetail:(...args)=>calculations.push(args),visibleCalculationContext:()=>{throw new Error('floor items must not import current hero conditions');}});
   const run=code=>vm.runInContext(code,context);
+  run(application.slice(application.indexOf('function showItemState('),application.indexOf('function showDetail(')));
   run(source);
   return {context,run,get,writes,details,calculations,fills};
 }
 const catalog=()=>({source:{slot:1,depth:4,branch:0,version:922,version_name:'4.0.2',modified:100,expected:'a'.repeat(64)},supported:true,note:'只列已生成楼层',floors:[{depth:3,branch:0,available:true,current:false},{depth:4,branch:0,available:true,current:true},{depth:4,branch:1,available:false,current:false}]});
-const item={key:'items.rings.ringofmight',name:'根骨之戒 +3 <保留原文本>',description:'具体说明',location:'上锁宝箱',quantity:1,level:3,level_applicable:true,revealed:true,known:false,game_level_known:false,cursed:true,tier:null,volume:null,available:false};
+const item={key:'items.rings.ringofmight',name:'根骨之戒 +3 <保留原文本>',description:'具体说明',location:'上锁宝箱',quantity:1,level:3,level_applicable:true,revealed:true,known:false,game_level_known:false,cursed:true,tier:null,volume:null,available:false,details:['已知诅咒']};
 const result=()=>({depth:4,branch:0,source:{...catalog().source,floor_modified:99},item_count:1,note:'存档事实，不是随机掉落',
   map:{width:2,height:2,tiles:[4,16,17,1],hero:3},features:[{x:2,y:1,name:'隐藏门',hidden:true}],
   heaps:[{name:'上锁宝箱',x:1,y:2,seen:false,hidden:true,haunted:false,items:[item]}],
@@ -39,6 +41,13 @@ function enable(h){h.get('#scout-reveal').checked=true;h.get('#scout-reveal').li
   assert.match(h.get('#scout-features').children[0].textContent,/\(2, 1\).*隐藏门/);
   const card=h.get('#scout-heaps').children[0],button=card.children[2];assert.equal(button.textContent,item.name+' ×1 · 诅咒');
   button.listeners.click();assert.match(h.details[0][3],/游戏鉴定状态未改变，未加入背包/);
+  assert.equal(h.get('#detail-item-state').textContent,'已知诅咒 · 已主动揭示 · 未加入背包');
+  assert(!h.get('#detail-item-state').hidden);assert.match(h.details[0][3],/原物品记录：已知诅咒/);
+  assert(!h.get('#detail-item-state').textContent.includes('当前记录不可用'),'floor availability means not held, not an unusable inventory record');
+  h.context.sword={...item,key:'items.weapon.melee.sword',name:'单手剑 +4',level:4,tier:3,details:['已知诅咒','3 阶 · 力量 10','速度强化','已使用精通药剂']};h.context.floor=result();
+  h.run('showScoutedItem(sword,floor)');
+  assert.equal(h.get('#detail-item-state').textContent,'3 阶 · 已知诅咒 · 速度强化 · 已使用精通药剂 · 已主动揭示 · 未加入背包');
+  assert.match(h.details[1][3],/原物品记录：.*力量 10/,'original captured strength remains available without competing with current trial results');
   const calculation=h.calculations[0];assert.equal(calculation[1].level,3);assert.equal(calculation[1].strength,undefined);assert.equal(calculation[2],'revealed');assert.equal(calculation[3].capturedContext,true);assert.equal(calculation[3].ignoreDrafts,true);assert.equal(calculation[3].sourceStamp,null);assert.match(calculation[3].fieldOrigins.level,/第 4 层/);
   h.get('#scout-reveal').checked=false;h.get('#scout-reveal').listeners.change();assert(h.get('#scout-result').hidden);assert.equal(h.get('#scout-heaps').children.length,0);
   enable(h);const late=h.run('revealScoutingFloor()');h.get('#scout-reveal').checked=false;h.get('#scout-reveal').listeners.change();h.writes.at(-1).resolve(result());await late;assert(h.get('#scout-result').hidden);
