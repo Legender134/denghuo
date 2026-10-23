@@ -875,7 +875,8 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   numeric.run("numericalDetail.origins.hp='手填';refreshNumericalOrigin()");
   assert(!numeric.get('#values-freshness').textContent.includes('已经变化'));
   numeric.run('numericalDetail.dirty=true;refreshNumericalOrigin()');
-  assert(numeric.get('#values-freshness').textContent.includes('修改前的结果'));
+  assert(numeric.get('#values-freshness').textContent.includes('待重新计算'));
+  assert(numeric.get('#values-answer').hidden);
   numeric.context.state=null;numeric.run('refreshNumericalOrigin()');
   assert(numeric.get('#values-use-latest').disabled);
 
@@ -923,7 +924,7 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
     drafts.get('#values-use-latest').listeners.click();await new Promise(resolve=>setImmediate(resolve));
     assert.equal(invalidRequests,0);assert.equal(drafts.run('numericalDetail.context.vial'),2);
     assert.equal(drafts.run("numericalDrafts.get('items.potions.potionofhealing').vial"),2);
-    assert(drafts.get('#values-freshness').textContent.includes('补全'));
+    assert(drafts.get('#values-freshness').textContent.includes('参数有误'));
     assert(retainedVial.focused);
     drafts.get('#value-calculator').listeners.submit({preventDefault(){}});
     assert.equal(invalidRequests,0);
@@ -965,7 +966,7 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert.equal(failedHp.value,'4');assert(!failedHp.disabled);
   assert.equal(failedHp.selectionStart,1,'a failed request preserves the retry caret');
   assert(drafts.run('numericalDetail.dirty'),'a failed request must never label previous results as recalculated');
-  assert(drafts.get('#values-freshness').textContent.includes('尚未计算'));
+  assert(drafts.get('#values-freshness').textContent.includes('待重新计算'));
   // Direct Enter in a nested combat condition must keep that condition visible and focused.
   const combatDrafts=harness();combatDrafts.context.state=stamp();
   combatDrafts.context.document.body=element();let combatInputs=[],advancedControl=null,combatHTML='';
@@ -1081,14 +1082,14 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
     drafts.get('#detail-dialog').listeners.close();await drafts.run("loadNumericalDetail('another-reference')");drafts.run('cancelNumericalDetail()');
     await drafts.run("loadNumericalDetail('items.potions.potionofhealing')");
     assert.equal(drafts.get('[data-value-key="hp"]').value,raw,'unsubmitted original string must survive close, another reference, and reopen');
-    assert(drafts.run('numericalDetail.origins.hp').includes('手填'));assert(drafts.get('#values-freshness').textContent.includes('尚未计算'));
+    assert(drafts.run('numericalDetail.origins.hp').includes('手填'));assert(drafts.get('#values-freshness').textContent.includes('待重新计算'));
     assert.equal(Number(drafts.run('numericalDetail.inputs.find(i=>i.key==="hp").value')),lastHP,'reopening pending input must retain the last computed result');
     if(raw!=='7'){assert.equal(drafts.run('validNumericalInputs($$("[data-value-key]"),numericalDetail)'),false);}
   }
   const pendingVial=drafts.get('[data-value-key="vial"]');pendingVial.value='-';pendingVial.validity.valid=true;pendingVial.listeners.input();
   drafts.context.state.data.hero.hp=9;drafts.get('#values-use-latest').listeners.click();
   assert.equal(drafts.get('[data-value-key="hp"]').value,'9');assert.equal(pendingVial.value,'-','explicit latest-state input retains an invalid independent condition');
-  assert(drafts.get('#values-freshness').textContent.includes('修改前'));
+  assert(drafts.get('#values-freshness').textContent.includes('参数有误'));
   pendingVial.value='2';pendingVial.validity.valid=true;pendingVial.listeners.input();drafts.get('#values-use-latest').listeners.click();await new Promise(resolve=>setImmediate(resolve));
   assert.equal(Number(drafts.get('[data-value-key="hp"]').value),9);assert.equal(Number(drafts.get('[data-value-key="vial"]').value),2);assert(!drafts.run('numericalDetail.dirty'));
 
@@ -1547,6 +1548,28 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert.equal(seedDetail.context.weaponBlock.values[2].condition,'无精通药剂、诅咒及其他特殊修正');
   seedDetail.context.weaponBlock.values[1].condition='仅特殊攻击';assert.equal(seedDetail.run("equipmentAnswer({identity:'items.weapon.melee.mace'},weaponBlock)"),null);
   assert.equal(seedDetail.run("equipmentAnswer({identity:'items.armor.mailarmor'},weaponBlock)"),null);
+
+  // An unidentified weapon keeps its identity warning while the basis follows the computed assumption.
+  const unknownWeapon=harness();unknownWeapon.context.state=stamp();unknownWeapon.load('rules.js');
+  const unknownLevel=element();unknownLevel.dataset.valueKey='level';unknownLevel.value='0';
+  unknownWeapon.context.$$=()=>[unknownLevel];
+  unknownWeapon.context.fetch=async url=>{const level=Number(new URL(url,'http://localhost').searchParams.get('level')||0);return {ok:true,json:async()=>({status:'current',version:'4.0.2',inputs:[{key:'level',value:level,label:'等级',min:-5,max:10}],blocks:[{title:`当前 ${level>=0?'+':''}${level} 装备数值`,values:[{label:'最低基础伤害',value:3+level,unit:'HP'},{label:'最高基础伤害',value:20+4*level,unit:'HP'},{label:'力量需求',value:level===0?14:12,unit:'点',condition:'无精通药剂、诅咒及其他特殊修正'}]}]})};};
+  await unknownWeapon.run("loadNumericalDetail('items.weapon.melee.sword',{},'unknown')");
+  assert.match(unknownWeapon.get('#detail-rules').innerHTML,/\+0 示例 · 等级未鉴定/);
+  assert.match(unknownWeapon.get('#detail-rules').innerHTML,/基础力量需求/);
+  unknownLevel.value='3';unknownLevel.listeners.input();
+  assert(unknownWeapon.get('#values-answer').hidden);
+  unknownWeapon.get('#value-calculator').listeners.submit({preventDefault(){}});await new Promise(resolve=>setImmediate(resolve));
+  assert.match(unknownWeapon.get('#detail-rules').innerHTML,/\+3 手填假设 · 等级未鉴定/);
+  assert.match(unknownWeapon.get('#detail-rules').innerHTML,/6–32/);
+  unknownWeapon.run('cancelNumericalDetail()');await unknownWeapon.run("loadNumericalDetail('items.weapon.melee.sword',{},'unknown')");
+  assert.match(unknownWeapon.get('#detail-rules').innerHTML,/\+3 手填假设 · 等级未鉴定/);
+  unknownWeapon.get('#values-use-latest').listeners.click();await new Promise(resolve=>setImmediate(resolve));
+  assert.match(unknownWeapon.get('#detail-rules').innerHTML,/\+3 手填假设 · 等级未鉴定/);
+  unknownWeapon.get('#values-undo-import').listeners.click();await new Promise(resolve=>setImmediate(resolve));
+  assert.match(unknownWeapon.get('#detail-rules').innerHTML,/\+3 手填假设 · 等级未鉴定/);
+  unknownLevel.value='bad';unknownLevel.listeners.input();unknownWeapon.get('#value-calculator').listeners.submit({preventDefault(){}});
+  assert(unknownWeapon.get('#values-answer').hidden);assert.match(unknownWeapon.get('#values-freshness').textContent,/参数有误/);
 
   // A delayed risk link keeps its captured hero and full connection identity.
   const handoff=harness();handoff.context.state=stamp();handoff.context.state.settings.save_root='/original-game';handoff.load('rules.js');

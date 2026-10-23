@@ -487,8 +487,12 @@ class NumericLookup:
                 and [value.get('label') for value in values[:2]] == ['最低基础伤害', '最高基础伤害']
                 and values[0].get('unit', '') == values[1].get('unit', '')
                 and values[0].get('condition', '') == values[1].get('condition', '')):
-            return [{'label': '基础伤害', 'value': f"{values[0]['value']}–{values[1]['value']}",
-                     'unit': values[0].get('unit', ''), 'condition': values[0].get('condition', '')}], note
+            compact = [{'label': '基础伤害', 'value': f"{values[0]['value']}–{values[1]['value']}",
+                        'unit': values[0].get('unit', ''), 'condition': values[0].get('condition', '')}]
+            strength = next((value for value in values if value.get('label') == '力量需求'), None)
+            if strength:
+                compact.append({**copy.deepcopy(strength), 'label': '基础力量需求', 'condition': ''})
+            return compact, note
         if self.identity in ('items.potions.potionofhealing', 'items.potions.elixirs.elixirofhoneyedhealing'):
             value = self.calculated.get('vial', -1)
             basis = '凝血试管 ' + ('无效果（−1）' if value < 0 else f'+{value:g}')
@@ -1139,6 +1143,12 @@ class NumericLookup:
             if not (self.parameter_error or self.plan_error) and operation_brief and self.workspace_error in operation_receipt:
                 origin_brief = ''
         primary_brief = ''
+        if (primary_values and primary_values[0].get('label') == '基础伤害'
+                and self.identity.startswith('items.weapon.') and 'level' in self.calculated):
+            origin = self.input_origins.get('level', '')
+            unknown = bool((self.context or {}).get('level_unknown')) or '等级未知' in origin
+            basis = '手填假设' if origin.startswith('手填') else '示例' if unknown else '基础参考'
+            primary_brief = f"{self.calculated['level']:+g} {basis}" + (' · 等级未鉴定' if unknown else '')
         if (primary_values and self.identity in ('items.potions.potionofhealing', 'items.potions.elixirs.elixirofhoneyedhealing')
                 and all(key in self.calculated for key in ('hp', 'max_hp', 'vial'))):
             value = self.calculated['vial']

@@ -118,7 +118,9 @@ function equipmentAnswer(detail,first){
   const values=first?.values||[],[low,high]=values;
   if(!detail.identity.startsWith('items.weapon.')||!/^当前 [+-]\d+ 装备数值$/.test(first?.title||'')||low?.label!=='最低基础伤害'||high?.label!=='最高基础伤害'||low.unit!==high.unit||low.condition!==high.condition)return null;
   const strength=values.find(value=>value.label==='力量需求');
-  return {...first,primary_values:[{...low,label:'基础伤害',value:`${displayNumber(low.value)}–${displayNumber(high.value)}`},...(strength?[{...strength,condition:''}]:[])],summary_note:detail.seedReference?'':'基础数值 · 修正未计入'};
+  const grade=first.title.match(/^当前 ([+-]\d+) 装备数值$/)[1],origin=detail.origins?.level||'',unknown=detail.levelOrigin==='unknown'||origin.includes('等级未知');
+  const basis=`${grade} ${origin.startsWith('手填')?'手填假设':unknown?'示例':'级参考'}${unknown?' · 等级未鉴定':''}`;
+  return {...first,basis,primary_values:[{...low,label:'基础伤害',value:`${displayNumber(low.value)}–${displayNumber(high.value)}`},...(strength?[{...strength,label:'基础力量需求',condition:''}]:[])],summary_note:detail.seedReference?'':'基础数值 · 修正未计入'};
 }
 function validNumericalInputs(inputs,detail){
   const invalid=inputs.find(input=>{
@@ -134,7 +136,7 @@ function validNumericalInputs(inputs,detail){
   if(!invalid)return true;
   detail.dirty=true;refreshNumericalOrigin();
   const warning=$('#values-freshness');
-  if(warning){warning.className='rule-warning';warning.textContent=detail.calculated?'请先补全或修正数值参数；下方仍是修改前的结果。':'请先补全或修正数值参数，再计算。';}
+  if(warning){warning.className='rule-warning';warning.textContent='参数有误 · 请修正后重新计算';}
   invalid.reportValidity();invalid.focus();return false;
 }
 async function loadNumericalDetail(identity,params={},levelOrigin='manual',options={}){
@@ -232,7 +234,7 @@ async function loadNumericalDetail(identity,params={},levelOrigin='manual',optio
     const readingNotes=combat&&!ordinary?(first.reading_notes||[]).filter(note=>typeof note==='string'&&note.trim()):[];
     const equipment=equipmentAnswer(detail,first);
     const summaryBlock=detail.foodReference||equipment||(npc||readingNotes.length?null:ordinary?{...first,primary_values:ordinaryLabels.map(label=>first.values.find(value=>value.label===label))}:result.blocks.find(block=>block.primary_values?.length));
-    const basisText=equipment?(detail.levelOrigin==='unknown'?'等级未知 · +0 示例':first.title.replace('当前 ','').replace(' 装备数值',' 级参考')):numericalAnswerBasis(detail,result),basis=basisText?`<p class="numeric-basis">${escapeHTML(basisText)}</p>`:'';
+    const basisText=equipment?equipment.basis:numericalAnswerBasis(detail,result),basis=basisText?`<p class="numeric-basis">${escapeHTML(basisText)}</p>`:'';
     const answer=readingNotes.length?`<section id="values-answer" class="numeric-answer mechanism-answer" ${detail.dirty?'hidden':''}>${basis}<ul>${readingNotes.map(note=>`<li>${escapeHTML(note)}</li>`).join('')}</ul>${first.summary_note?`<p class="muted">${escapeHTML(first.summary_note)}</p>`:''}</section>`:summaryBlock?`<section id="values-answer" class="numeric-answer${ordinary?' ordinary-combat-answer':''}" ${detail.dirty?'hidden':''}>${basis}<dl>${summaryBlock.primary_values.slice(0,ordinary?3:2).map(value=>`<div><dt>${escapeHTML(ordinary?({'基础伤害范围':'普通攻击','基础减伤范围':'基础减伤','基础速度倍率':'移动速度'}[value.label]||value.label):value.label)}</dt><dd>${escapeHTML(displayNumber(value.value))} <small>${escapeHTML(value.unit||'')}</small></dd>${value.condition?`<p class="numeric-condition">${escapeHTML(value.condition)}</p>`:''}</div>`).join('')}</dl>${(summaryBlock.summary_note??summaryBlock.note)?`<p class="muted">${escapeHTML(summaryBlock.summary_note??summaryBlock.note)}</p>`:''}</section>`:'';
     if(intro&&(summaryBlock||readingNotes.length))intro.hidden=true;
     const compactFirst=!!equipment||summaryBlock===first||ordinary||readingNotes.length||detail.foodReference;
@@ -316,7 +318,7 @@ function refreshNumericalOrigin(){
   const levelOld=(['物品已知等级','已主动揭示的存档等级'].includes(d.origins.level)||['物品已知阶数','存档物品阶数 · 主动揭示模式'].includes(d.origins.tier))&&d.levelSource&&(!now||['modified','slot','mode','save_root','revision','started'].some(k=>d.levelSource[k]!==now[k]));
   const old=snapshotUsed&&(!now||state.error||state.stale||changed||levelOld);
   freshness.className=old||d.dirty||d.unconfirmedSource?'rule-warning':'muted';
-  freshness.textContent=d.dirty?(d.calculated?'输入已修改，尚未计算；下方仍是修改前的结果，请重新计算。':'条件待补全；请填写有效参数后计算。'):d.unconfirmedSource?'参考来源未确认；请核对原参数或明确带入最新状态。':levelOld?'物品等级来自较早快照，无法唯一确认现在是哪件装备；请核对等级后手填。':old?(changed?'游戏快照已经变化；下方结果仍按原参数计算，请带入最新状态或核对后手填。':'这些结果含旧快照参数，请按游戏画面核对。'):d.seedReference?`独立种子 · 未持有 · ${stamp?'已带入角色条件':'未绑定当前角色'}`:'按下列参数计算；随机范围和生效条件见各表。';
+  freshness.textContent=d.dirty?(d.calculated?'条件已修改 · 待重新计算':'条件待补全 · 请填写后计算'):d.unconfirmedSource?'参考来源未确认；请核对原参数或明确带入最新状态。':levelOld?'物品等级来自较早快照，无法唯一确认现在是哪件装备；请核对等级后手填。':old?(changed?'游戏快照已经变化；下方结果仍按原参数计算，请带入最新状态或核对后手填。':'这些结果含旧快照参数，请按游戏画面核对。'):d.seedReference?`独立种子 · 未持有 · ${stamp?'已带入角色条件':'未绑定当前角色'}`:'按下列参数计算；随机范围和生效条件见各表。';
   if(d.dirty&&old&&!d.fixed)freshness.textContent+=!now||state.error?' 当前快照不可用；已带入条件保留，请核对。':changed||levelOld?' 游戏快照已变化；已带入条件保留，请核对。':' 已带入条件来自旧快照，请核对。';
   if(d.sessionUnsaved&&!d.fixed&&!d.dirty)freshness.textContent+=' 本次会话试算尚未命名保存。';
   if(d.foodReference&&!d.dirty)freshness.textContent=d.unconfirmedSource?'进食参考来源未确认，请核对条件。':old?'旧快照进食参考；请核对游戏，或从当前局势重新打开。':`${stamp?.mode==='manual'?'手填局势':'捕获的进食参考'}${stamp?' · '+fmtTime(stamp.modified):''}`;
@@ -325,7 +327,7 @@ function refreshNumericalOrigin(){
   if(d.characterReference){source.textContent+=' '+numericCharacterLabel(d.characterReference)+(d.characterReference.signature!==JSON.stringify(characterResult?.params)?'；当前共享条件已有变化，此处保留带入时的力量。':'');}
   }
   const button=$('#values-use-latest');if(button)button.disabled=!now;
-  if(d.fixed){if(source)source.textContent=`固定保存参数。${typeof originLabel==='function'?originLabel(d.savedPlan?.origin):'过去来源只用于追溯，不绑定当前角色。'}`;freshness.textContent=d.dirty?'会话草稿已修改，尚未保存；下方仍是修改前的结果，请重新计算。':`${d.sessionUnsaved?'会话计算草稿尚未保存。':'按保存参数计算，'}不跟随最新快照。${d.rulesChanged?'资料规则已更新；请重新计算并核对保留结果与当前规则的差异。':''}`;freshness.className=d.dirty||d.rulesChanged?'rule-warning':'muted';}
+  if(d.fixed){if(source)source.textContent=`固定保存参数。${typeof originLabel==='function'?originLabel(d.savedPlan?.origin):'过去来源只用于追溯，不绑定当前角色。'}`;freshness.textContent=d.dirty?'草稿尚未保存 · 待重新计算':`${d.sessionUnsaved?'会话计算草稿尚未保存。':'按保存参数计算，'}不跟随最新快照。${d.rulesChanged?'资料规则已更新；请重新计算并核对保留结果与当前规则的差异。':''}`;freshness.className=d.dirty||d.rulesChanged?'rule-warning':'muted';}
   if(typeof itemDisclosure!=='undefined'&&itemDisclosure?.expired){freshness.className='rule-warning';freshness.textContent='这件物品的主动揭示已过期；下方仅按旧参数试算，请重新从背包选择并主动揭示。'+(d.dirty?'手填草稿仍保留，尚未计算。':'');if(button)button.disabled=true;}
   freshness.hidden=freshness.textContent==='按下列参数计算；随机范围和生效条件见各表。';
 }

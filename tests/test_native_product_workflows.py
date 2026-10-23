@@ -86,6 +86,27 @@ class NativeProductWorkflows(fixtures.ControllerFixture):
         self.assertEqual(self.lookup.saved_plan['origin']['slot'], 1)
         self.assertIn('主动揭示', self.lookup.saved_plan['origin']['fields']['level'])
 
+    def test_weapon_summary_keeps_grade_and_base_strength_through_manual_trial(self):
+        self.lookup.open_reference({'entry': 'items.weapon.melee.sword', 'level_origin': 'unknown'})
+        self.finish()
+        state = self.host.commands[-1][1]
+        self.assertEqual(state['primary_brief'], '+0 示例 · 等级未鉴定')
+        self.assertEqual([(v['label'], v['value']) for v in state['primary_values']],
+                         [('基础伤害', '3–20'), ('基础力量需求', '14')])
+        self.lookup.variables['level'].set('3')
+        self.assertEqual(self.host.commands[-1][1]['primary_brief'], '')
+        self.assertEqual(self.host.commands[-1][1]['primary_values'], [])
+        self.lookup.calculate(); self.finish()
+        state = self.host.commands[-1][1]
+        self.assertEqual(state['primary_brief'], '+3 手填假设 · 等级未鉴定')
+        self.assertEqual([v['value'] for v in state['primary_values']], ['6–32', '12'])
+        original = next(s for s in state['numeric_sections'] if s['title'] == '当前 +3 装备数值')
+        self.assertIn('无精通药剂', original['values'][2]['condition'])
+        self.lookup.restore_draft(self.lookup.draft(include_result=True))
+        self.assertEqual(self.host.commands[-1][1]['primary_brief'], '')
+        self.lookup.calculate(); self.finish()
+        self.assertEqual(self.host.commands[-1][1]['primary_brief'], '+3 手填假设 · 等级未鉴定')
+
     def test_partial_character_import_persists_distinct_item_and_character_sources(self):
         self.item_reference('weapon.melee.Katana')
         self.switch_slot()
@@ -183,6 +204,10 @@ class NativeProductWorkflows(fixtures.ControllerFixture):
                         self.assertIn('已用精通药剂', notice)
                         self.assertIn('基础参考未计', notice)
                         self.assertIn('力量 10', self.lookup.context['conditions'])
+                        state = self.host.commands[-1][1]
+                        self.assertEqual(state['primary_brief'], '+3 基础参考')
+                        self.assertEqual([(v['label'], v['value']) for v in state['primary_values']],
+                                         [('基础伤害', '6–32'), ('基础力量需求', '12')])
                 self.assertEqual(before, {p.name: p.read_bytes() for p in slot.iterdir()})
 
     def test_map_item_actions_reject_hidden_changed_and_late_floor_results(self):
