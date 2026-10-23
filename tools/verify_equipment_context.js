@@ -65,7 +65,7 @@ function harness(){
   assert.equal(revealed.run('compareItems.some(item=>item.owned)'),false);
   const app=fs.readFileSync(path.join(root,'web/app.js'),'utf8'),start=app.indexOf('function showItem(item,'),end=app.indexOf('\nfunction showReference(',start);
   const calls=[],metadata=[];
-  const detail=vm.createContext({$:revealed.get,showDetail:(name,description,location,meta)=>metadata.push(meta),showItemNote:()=>{},visibleCalculationContext:()=>({}),setDetailEntry:()=>{},currentSkillContext:()=>null,loadNumericalDetail:(...args)=>calls.push(args),showRelatedReferences:()=>{},lookupCalculationOptions:()=>({}),comparisonFamily:()=>null});
+  const detail=vm.createContext({$:revealed.get,showDetail:(name,description,location,meta)=>{revealed.get('#detail-dialog .game-description').open=true;metadata.push(meta);},showItemNote:()=>{},visibleCalculationContext:()=>({}),setDetailEntry:()=>{},currentSkillContext:()=>null,loadNumericalDetail:(...args)=>calls.push(args),showRelatedReferences:()=>{},lookupCalculationOptions:()=>({}),comparisonFamily:()=>null});
   const stateStart=app.indexOf('function showItemState('),stateEnd=app.indexOf('\nfunction showDetail(',stateStart);
   assert(stateStart>=0&&stateEnd>stateStart);vm.runInContext(app.slice(stateStart,stateEnd),detail);
   vm.runInContext(app.slice(start,end),detail);
