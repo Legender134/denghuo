@@ -15,6 +15,7 @@ const preference={key:'preference:font_scale',group:'preference',label:'字号',
 const status={rows:[globalRow,preference],save_root:'synthetic/saves',backup_target:'synthetic/backups',application_version:'1.0',rules_version:'4.0.2',note:'optional'};
 const preview={...status,source:{application_version:'1.0',rules_version:'4.0.2'},current_application_version:'1.0',current_rules_version:'4.0.2',expected:'preview-1'};
 const ctx=vm.createContext({console,Map,Set,JSON,String,Promise,Date,URL:{},setTimeout,token:'synthetic-token',view:'other',
+  bindingLabels:{capture:'立即备份已保存进度',show:'显示随行助手'},planLabels:{numeric:'数值计算'},
   document:{createElement:()=>element(),createTextNode:text=>({textContent:text})},$ :get,
   inlineError:(node,text)=>node.textContent=text,navigate(){},
   post:async(url,payload)=>{posts.push({url,payload});if(url.endsWith('/global-recovery-preview'))return {pending:true,directory:'synthetic/retained',files:['badges.dat'],effect:'恢复导入前原件',expected:'recover-1'};if(url.endsWith('/global-recovery'))return {pending:false,directory:'synthetic/retained',message:'已恢复原件'};return {expected:'export-1',count:2,bytes:123,note:'explicit'};},
@@ -26,6 +27,19 @@ function choose(input,type='import'){get('#view-migration').listeners.change({ta
 function globalCheck(type){return all(get('#migration-'+type+'-list')).find(node=>node.dataset?.key===globalRow.key);}
 async function main(){
   await run('loadMigration()');
+  // Display formatting must preserve migration direction, selected invalid rows and their errors.
+  ctx.displayHost=element();ctx.displayRows=[
+    {key:'preference:enabled',group:'preference',label:'游玩显示开关',valid:false,error:'文件已变化，重新预览',detail:'{"当前":true,"导入":false}'},
+    {key:'preference:font_scale',group:'preference',label:'字号比例',valid:true,detail:'{"当前":1.0,"导入":1.3}'},
+    {key:'preference:bindings',group:'preference',label:'全局快捷键',valid:true,detail:'{"当前":{"capture":"Ctrl+Alt+B","show":"Ctrl+Alt+L"},"导入":{"capture":"Alt+B","show":"Alt+L"}}'},
+    {key:'plan:test',group:'plan',label:'我的方案',valid:true,detail:'numeric · 资料版本 4.0.2'}];
+  run('migrationRows(displayHost,displayRows,new Set(["preference:enabled"]),"import")');
+  const displayed=all(ctx.displayHost),visibleText=displayed.map(node=>node.textContent).join('\n');
+  assert.match(visibleText,/当前 已开启 → 导入 已关闭/);assert.match(visibleText,/当前 100% → 导入 130%/);
+  assert.match(visibleText,/立即备份已保存进度/);assert.match(visibleText,/Ctrl\+Alt\+B → Alt\+B/);
+  assert.match(visibleText,/数值计算 · 资料版本 4.0.2/);assert.match(visibleText,/文件已变化，重新预览/);
+  const invalidSelected=displayed.find(node=>node.dataset?.key==='preference:enabled');
+  assert(invalidSelected.checked);assert(!invalidSelected.disabled,'selected invalid item can still be deselected');
   assert.deepEqual([...run('migrationExportSelection')],[preference.key]);
   assert.equal(globalCheck('export').checked,false);
   await click('migration-export-all');assert(!run('migrationExportSelection.has("global:badges.dat")'));

@@ -8,7 +8,7 @@ function scoutingControls(){
   $('#scout-reveal').disabled=!scoutCatalog?.supported||!row?.available;
   $('#scout-open').disabled=scoutBusy||$('#scout-reveal').disabled||!$('#scout-reveal').checked;
 }
-function clearScoutingResult(){scoutResult=null;$('#scout-result').hidden=true;for(const id of ['scout-features','scout-heaps','scout-traps','scout-mobs'])$('#'+id).replaceChildren();$('#scout-map-text').textContent='';}
+function clearScoutingResult(){scoutResult=null;$('#scout-map-panel').open=false;$('#scout-result').hidden=true;for(const id of ['scout-features','scout-heaps','scout-traps','scout-mobs'])$('#'+id).replaceChildren();$('#scout-map-text').textContent='';}
 function renderScoutingCatalog(result){
   scoutCatalog=result;const source=result.source,select=$('#scout-floor');select.replaceChildren();
   for(const floor of result.floors){const option=document.createElement('option');option.value=`${floor.depth}:${floor.branch}`;option.textContent=`第 ${floor.depth} 层 · ${floor.branch?`支线 ${floor.branch}`:'主地牢'}${floor.current?' · 当前':''}${floor.available?'':' · 文件尚不可读'}`;option.disabled=!floor.available;select.append(option);if(floor.current)select.value=option.value;}
@@ -28,7 +28,8 @@ async function loadScouting(){
   try{
     const result=await post('/api/scouting',{action:'catalog'});if(serial!==scoutSerial||context!==scoutingContext())return;
     renderScoutingCatalog(result);
-    $('#scout-status').textContent=result.supported?result.note+' 勾选后点击揭示；游戏文件只读。':'当前版本尚未支持；已核对官方4.0.1与4.0.2，隐藏内容未展开。';
+    $('#scout-status').textContent=result.supported?'尚未揭示':'当前版本尚未支持；已核对官方4.0.1与4.0.2，隐藏内容未展开。';
+    $('#scout-note').textContent=result.note;
   }catch(error){if(serial===scoutSerial){inlineError($('#scout-error'),error.message);$('#scout-status').textContent='楼层清单尚未读取；隐藏内容未展开。';}}
   finally{if(serial===scoutSerial){scoutBusy=false;scoutingControls();}}
 }
@@ -39,7 +40,7 @@ async function revealScoutingFloor(){
   try{
     const result=await post('/api/scouting',{action:'floor',...location,expected,reveal:true}),current=scoutingLocation();
     if(serial!==scoutSerial||context!==scoutingContext()||!$('#scout-reveal').checked||location.depth!==current.depth||location.branch!==current.branch)return;
-    scoutResult=result;renderScouting(result);$('#scout-status').textContent=result.note;
+    scoutResult=result;renderScouting(result);$('#scout-status').textContent='已揭示 · 仅存档内容';$('#scout-note').textContent=result.note;
   }catch(error){if(serial===scoutSerial){inlineError($('#scout-error'),error.message);$('#scout-status').textContent='本次未展开探查；需要时重新读取楼层清单。';}}
   finally{if(serial===scoutSerial){scoutBusy=false;scoutingControls();}}
 }

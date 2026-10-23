@@ -78,7 +78,7 @@ function renderWorkspace(){
   const plans=$('#workspace-plans');plans.replaceChildren();
   const query=$('#workspace-search').value.trim().toLocaleLowerCase(),kind=$('#workspace-kind').value,sort=$('#workspace-sort').value;
   const filtered=filterWorkspacePlans(ws.plans||[],query,kind,sort);
-  $('#workspace-results-status').textContent=`显示 ${filtered.length} / ${ws.plans?.length||0} 个方案；筛选不会删除记录。`;
+  $('#workspace-results-status').textContent=`${filtered.length} / ${ws.plans?.length||0} 个方案`;
   if(ws.plans?.length&&!filtered.length)plans.innerHTML='<p class="muted">没有匹配的方案。可修改名称或类型条件，或重置筛选。</p>';
   if(!ws.plans?.length)plans.innerHTML='<p class="muted">还没有命名方案。计算之后保存，或先填写并保存局势草稿。</p>';
   for(const plan of filtered){const row=document.createElement('article');row.className='plan-row';row.dataset.planId=plan.id;row.innerHTML=`<div><span class="tiny-label">${escapeHTML(planLabels[plan.kind])} · 规则 ${escapeHTML(plan.rules_version)}</span><h3>${escapeHTML(plan.name)}</h3><p class="muted">${escapeHTML(originLabel(plan.origin))}</p><small>更新于 ${escapeHTML(fmtTime(plan.updated))}</small>${plan.note?`<p class="user-note">用户用途 / 假设：${escapeHTML(plan.note)}</p>`:''}</div><div class="backup-actions"><button class="secondary" data-open>打开${plan.kind==='manual'?'草稿':'固定参考'}</button><button class="secondary" data-copy>另存副本</button><button class="danger-button" data-remove>删除方案</button></div>`;

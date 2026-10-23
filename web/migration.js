@@ -23,6 +23,25 @@ function migrationEdited(type){
 function migrationGlobalExportPayload(){return {global_version:migrationGlobalVersion,global_version_confirmed:migrationGlobalVersionConfirmed};}
 function migrationGlobalImportPayload(selected){const keys=selected.filter(key=>key.startsWith('global:'));return {global_confirmed:migrationGlobalConfirmed,global_choices:Object.fromEntries(keys.map(key=>[key,migrationGlobalChoices.get(key)||'']))};}
 function migrationError(error){inlineError($('#migration-error'),error?.message||String(error));$('#migration-error').tabIndex=-1;$('#migration-error').focus();}
+function migrationPreferenceView(row){
+  if(row.group!=='preference')return null;
+  let value;try{value=JSON.parse(row.detail);}catch{return null;}
+  const key=row.key.slice('preference:'.length),importing=value&&typeof value==='object'&&Object.hasOwn(value,'当前')&&Object.hasOwn(value,'导入');
+  const format=value=>{
+    if(typeof value==='boolean')return value?'已开启':'已关闭';
+    if(['font_scale','opacity'].includes(key)&&typeof value==='number')return `${Math.round(value*100)}%`;
+    if(key==='notice_seconds')return `${value} 秒`;
+    if(key==='bindings'&&value&&typeof value==='object')return `${Object.keys(value).length} 项快捷键`;
+    return String(value??'未设置');
+  };
+  const current=importing?value['当前']:value,incoming=importing?value['导入']:null;
+  const text=importing?`当前 ${format(current)} → 导入 ${format(incoming)}`:format(current);
+  const bindings=key==='bindings'&&current&&typeof current==='object'?Object.keys({...current,...incoming}).map(action=>({
+    label:typeof bindingLabels!=='undefined'?bindingLabels[action]||action:action,
+    value:importing?`${current[action]||'未设置'} → ${incoming?.[action]||'未设置'}`:current[action]||'未设置'
+  })):[];
+  return {text,bindings};
+}
 function migrationRows(target,rows,selection,interactive){
   target.replaceChildren();
   for(const [group,label] of Object.entries(migrationGroups)){
@@ -41,9 +60,11 @@ function migrationRows(target,rows,selection,interactive){
       }
     }
     for(const row of own){
-      const article=document.createElement('article');article.className='support-step';
-      const line=document.createElement('label');line.className='check';const input=document.createElement('input');input.type='checkbox';input.dataset.migrationChoice=interactive;input.dataset.key=row.key;input.dataset.migrationValid=String(row.valid);input.checked=selection.has(row.key);input.disabled=!row.valid&&!input.checked;line.append(input,document.createTextNode(row.label));article.append(line);
-      const detail=document.createElement('p');detail.textContent=row.detail+(row.error?' · '+row.error:'');article.append(detail);
+      const preference=migrationPreferenceView(row),article=document.createElement('article');article.className='support-step'+(preference?' migration-preference':'');
+      const line=document.createElement('label');line.className='check migration-choice';const input=document.createElement('input');input.type='checkbox';input.dataset.migrationChoice=interactive;input.dataset.key=row.key;input.dataset.migrationValid=String(row.valid);input.checked=selection.has(row.key);input.disabled=!row.valid&&!input.checked;const name=document.createElement('span');name.textContent=row.label;line.append(input,name);article.append(line);
+      if(preference){const value=document.createElement('span');value.className='migration-value';value.textContent=preference.text;line.append(value);}
+      if(!preference||row.error){const detail=document.createElement('p');detail.textContent=preference?row.error:String(row.detail||'').replace(/^(numeric|equipment|manual|alchemy|character)(?= ·)/,kind=>typeof planLabels!=='undefined'?planLabels[kind]||kind:kind)+(row.error?' · '+row.error:'');if(row.error)detail.className='rule-warning';article.append(detail);}
+      if(preference?.bindings.length){const more=document.createElement('details'),summary=document.createElement('summary'),list=document.createElement('dl');summary.textContent='快捷键';list.className='migration-bindings';for(const binding of preference.bindings){const label=document.createElement('dt'),value=document.createElement('dd');label.textContent=binding.label;value.textContent=binding.value;list.append(label,value);}more.append(summary,list);article.append(more);}
       if(group==='backup'&&row.summary){const saved=document.createElement('p');saved.className='muted';saved.textContent=`游戏保存：${row.summary.saved?fmtTime(row.summary.saved):'时间未知'} · 首次保留：${row.summary.time?fmtTime(row.summary.time):'时间未知'}`;article.append(saved);}
       if(row.target){const path=document.createElement('p');path.className='muted';path.textContent='本机目标：'+row.target;article.append(path);}
       if(group==='global'&&interactive==='import'){

@@ -320,7 +320,7 @@ function refreshNumericalOrigin(){
   freshness.className=old||d.dirty||d.unconfirmedSource?'rule-warning':'muted';
   freshness.textContent=d.dirty?(d.calculated?'条件已修改 · 待重新计算':'条件待补全 · 请填写后计算'):d.unconfirmedSource?'参考来源未确认；请核对原参数或明确带入最新状态。':levelOld?'物品等级来自较早快照，无法唯一确认现在是哪件装备；请核对等级后手填。':old?(changed?'游戏快照已经变化；下方结果仍按原参数计算，请带入最新状态或核对后手填。':'这些结果含旧快照参数，请按游戏画面核对。'):d.seedReference?`独立种子 · 未持有 · ${stamp?'已带入角色条件':'未绑定当前角色'}`:'按下列参数计算；随机范围和生效条件见各表。';
   if(d.dirty&&old&&!d.fixed)freshness.textContent+=!now||state.error?' 当前快照不可用；已带入条件保留，请核对。':changed||levelOld?' 游戏快照已变化；已带入条件保留，请核对。':' 已带入条件来自旧快照，请核对。';
-  if(d.sessionUnsaved&&!d.fixed&&!d.dirty)freshness.textContent+=' 本次会话试算尚未命名保存。';
+  if(d.sessionUnsaved&&!d.fixed&&!d.dirty)freshness.textContent=freshness.textContent==='按下列参数计算；随机范围和生效条件见各表。'?'试算未保存':freshness.textContent+' · 试算未保存';
   if(d.foodReference&&!d.dirty)freshness.textContent=d.unconfirmedSource?'进食参考来源未确认，请核对条件。':old?'旧快照进食参考；请核对游戏，或从当前局势重新打开。':`${stamp?.mode==='manual'?'手填局势':'捕获的进食参考'}${stamp?' · '+fmtTime(stamp.modified):''}`;
   if(source){
   source.className='muted';source.textContent=stamp?`首次带入：${stamp.mode==='manual'?'手动局势':`槽位 ${stamp.slot}`} · ${fmtTime(stamp.modified)}。手填保留项不会自动跟随游戏。`:d.unconfirmedSource?'参考来源未确认；保留带入时的参数。':d.seedReference?d.seedReference:'没有角色快照；参数为示例或手填。';
