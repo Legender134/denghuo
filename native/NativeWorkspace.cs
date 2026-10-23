@@ -710,12 +710,12 @@ namespace Denghuo.Native {
         readonly ComboBox kind=UI.Combo("方案类型","全部类型","数值方案","装备方案","炼金方案","手动草稿","角色条件"), order=UI.Combo("方案排序","最近更新","名称");
         readonly StackPanel rows=new StackPanel(); bool rendering;
         public PlansForm(Helper host) {
-            Host=host; RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto }); RowDefinitions.Add(new RowDefinition());
-            var filters=UI.Stack(UI.Field("搜索方案",search),UI.Field("类型",kind),UI.Field("排序",order));
-            var filterScroll=UI.Scroll(filters); filterScroll.MaxHeight=120;
-            var fold=UI.Section("筛选我的方案",filterScroll,false); Children.Add(fold);
-            var scroll=UI.Scroll(rows); Grid.SetRow(scroll,1); Children.Add(scroll);
-            SizeChanged+=delegate { filterScroll.MaxHeight=Math.Max(32,ActualHeight*.5-28); };
+            Host=host;
+            var choices=new Grid(); choices.ColumnDefinitions.Add(new ColumnDefinition()); choices.ColumnDefinitions.Add(new ColumnDefinition());
+            var typeField=UI.Field("类型",kind); typeField.Margin=new Thickness(0,0,8,14); choices.Children.Add(typeField);
+            var orderField=UI.Field("排序",order); Grid.SetColumn(orderField,1); choices.Children.Add(orderField);
+            var filters=UI.Stack(UI.Field("搜索方案",search),choices);
+            Children.Add(UI.Scroll(UI.Stack(UI.Section("筛选我的方案",filters,false),rows)));
             search.TextChanged+=delegate { Filter(); }; kind.SelectionChanged+=delegate { Filter(); }; order.SelectionChanged+=delegate { Filter(); };
         }
         void Filter() { if(!rendering && !Host.Frozen) Host.Send("filter_plans","surface","lookup","query",search.Text,"kind",Convert.ToString(kind.SelectedItem),"order",Convert.ToString(order.SelectedItem)); }

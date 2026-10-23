@@ -384,7 +384,7 @@ class NativeProductWorkflows(fixtures.ControllerFixture):
         self.lookup.variables['max_hp'].set('50')
         self.lookup.calculate(); self.finish()
         state = self.host.commands[-1][1]
-        for text in ('生命基准 3/50', '未计后续受伤', '药水恐惧不治疗', '试管'):
+        for text in ('生命基准 3/50', '未计后续受伤', '药水恐惧挑战下不治疗', '试管'):
             self.assertIn(text, state['primary_brief'])
         self.assertIn('其他生命变化', state['primary_note'])
         self.lookup.input_origins['vial'] = '手填 · 最新记录未确认'

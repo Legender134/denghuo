@@ -1155,7 +1155,7 @@ class NumericLookup:
             vial = '试管无效果' if value < 0 else f'试管 +{value:g}'
             origin = self.input_origins.get('vial', '示例')
             caution = '未确认' if '最新记录未确认' in origin or '未确认' in origin else '手填' if origin.startswith('手填') else '示例' if origin.startswith('示例') else ''
-            primary_brief = f"生命基准 {self.calculated['hp']:g}/{self.calculated['max_hp']:g} · 未计后续受伤等变化\n"+vial+('（'+caution+'）' if caution else '')+' · 药水恐惧不治疗'
+            primary_brief = f"生命基准 {self.calculated['hp']:g}/{self.calculated['max_hp']:g} · 未计后续受伤等变化\n"+vial+('（'+caution+'）' if caution else '')+' · 药水恐惧挑战下不治疗'
         if self.calculated is not None and not self.dirty and not self.calculating and not self.parameter_error:
             basis = ''
             if self.identity == 'items.waterskin':
