@@ -42,11 +42,21 @@ def field(key, label, value='', choices=None, section='条件'):
             'choices': [{'id': str(k), 'text': v} for k, v in choices] if choices is not None else [], 'section': section}
 
 
-def backup_version_text(summary):
+def inventory_item_text(item):
+    states = []
+    if item.get('level_applicable') and item.get('level') is None:
+        states.append('等级待确认' if item.get('level_known') else '等级未知')
+    if item.get('cursed') is True: states.append('有诅咒')
+    elif item.get('level_applicable') and item.get('cursed') is None: states.append('诅咒未知')
+    return item['name']+f" ×{item['quantity']}"+(' · '+' · '.join(states) if states else '')
+
+
+def backup_version_text(summary, *, brief=False):
     if summary.get('empty'): return ''
     version = summary.get('version')
-    if type(version) is not int: return '来源版本未知，请核对游戏版本。'
+    if type(version) is not int: return '版本未知' if brief else '来源版本未知，请核对游戏版本。'
     # SPD 4.0.2 GamesInProgress rejects versions before v3_1_1 (850).
+    if brief: return f'旧版 {version} · 当前游戏不可继续' if version < 850 else ''
     return '版本码 '+str(version)+(' · 当前参考游戏无法继续此旧档，需对应旧版游戏。' if version < 850 else '')
 
 
@@ -792,8 +802,7 @@ class GameWorkspace:
         rows = []
         for item in [] if snap.get('error') else (snap.get('data') or {}).get('items', []):
             item = self.revealed.get(item['instance_key'], item)
-            curse = ' · 有诅咒' if item.get('cursed') is True else ''
-            rows.append({'id': item['instance_key'], 'text': item['name']+f" ×{item['quantity']}"+curse+' · '+item['location'],
+            rows.append({'id': item['instance_key'], 'text': inventory_item_text(item)+' · '+item['location'],
                          'token': binding_token([binding, item]), 'item': copy.deepcopy(item), 'expected': expected})
         self.rows['inventory'] = rows
         current = next((r for r in rows if r['id'] == self.selected.get('inventory')), None)
@@ -900,8 +909,7 @@ class GameWorkspace:
             selected = self.selected.get(page)
             row = next((r for r in rows if r['id'] == selected), None)
             if row:
-                item = row['item']; text = item['name']+f" ×{item['quantity']}"
-                if item.get('cursed') is True: text += ' · 有诅咒'
+                item = row['item']; text = inventory_item_text(item)
                 result_details.append({'id': 'item_description', 'title': '物品说明', 'expanded': False,
                     'text': item['location']+'\n\n'+item['description']+'\n\n'+' · '.join(item.get('details', []))})
                 if item.get('revealed'):
@@ -1296,11 +1304,13 @@ class GameWorkspace:
                     for key,title in [('target','目标进度'),('current','当前进度')])
                 request = {**payload, 'action': action, 'expected_current': result['expected_current'],
                     'confirm': ('恢复' if action == 'restore' else '撤回')+f"槽位 {entry['slot']}"}
+                version_warnings = [title+' · '+warning for key, title in [('target', '目标'), ('current', '当前')]
+                    if (warning := backup_version_text(result[key], brief=True))]
                 self.backup_preview = {'action': action, 'text': text, 'brief': brief, 'payload': request, 'token': binding_token([request, text]),
                     'save_root': result.get('save_root', ''),
                     'summary': {'heading': f"槽位 {entry['slot']} · "+label,
                         'target': '目标 · '+self.progress_brief(result['target']),
-                        'warning': '\n'.join(filter(None, [result['target'].get('warning'), result['current'].get('warning'),
+                        'warning': '\n'.join(filter(None, version_warnings+[result['target'].get('warning'), result['current'].get('warning'),
                             '' if result['same_run'] else '不同冒险或无法确认，请核对目标。']))},
                     'progress': {'current': result['current'], 'target': result['target'], 'same_run': result['same_run']}}
             self.emit('backups')

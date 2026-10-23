@@ -48,6 +48,29 @@ class NativeProductWorkflows(fixtures.ControllerFixture):
         self.session.update_settings({'slot': 2})
         self.session.refresh()
 
+    def test_inventory_summary_retains_unknown_properties_without_revealing_them(self):
+        _, slot = self.saved_game()
+        path = slot/'game.dat'; game = json.loads(path.read_text())
+        game['hero']['inventory'][0].update(level=4, levelKnown=False, cursedKnown=False, cursed=True)
+        path.write_text(json.dumps(game), encoding='utf-8'); self.session.refresh()
+        before = {p.name: p.read_bytes() for p in slot.iterdir()}
+        sword, potion = self.workspace.inventory()
+        self.assertTrue(sword['item']['known'])
+        self.select('inventory', sword); self.workspace.emit('inventory')
+        for text in (sword['text'], self.host.commands[-1][1]['text']):
+            self.assertIn('等级未知', text); self.assertIn('诅咒未知', text)
+            self.assertNotIn('+4', text); self.assertNotIn('有诅咒', text)
+        self.assertNotIn('等级未知', potion['text']); self.assertNotIn('诅咒未知', potion['text'])
+        self.assertFalse(self.host.commands[-1][1]['result_details'][0]['expanded'])
+        self.workspace.inventory_action('reveal'); self.finish_job()
+        for text in (self.workspace.inventory()[0]['text'], self.host.commands[-1][1]['text']):
+            self.assertIn('+4', text); self.assertIn('有诅咒', text)
+            self.assertNotIn('等级未知', text); self.assertNotIn('诅咒未知', text)
+        self.workspace.inventory_action('hide_reveal'); self.workspace.emit('inventory')
+        self.assertIn('等级未知', self.host.commands[-1][1]['text'])
+        self.assertIn('诅咒未知', self.host.commands[-1][1]['text'])
+        self.assertEqual(before, {p.name: p.read_bytes() for p in slot.iterdir()})
+
     def test_revealed_item_without_character_inputs_keeps_original_source(self):
         self.item_reference('rings.RingOfMight', known=False)
         self.assertIn('主动揭示', self.lookup.input_origins['level'])

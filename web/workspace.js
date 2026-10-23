@@ -95,6 +95,7 @@ function renderDetailTools(){
   const alchemy=numericalDetail?.identity===entry?numericalDetail.result?.alchemy_recipes||[]:[];
   let recipes=$('#detail-alchemy');const newRecipeSurface=!recipes;
   if(!recipes){recipes=document.createElement('details');recipes.id='detail-alchemy';recipes.className='recipe-handoff';recipes.setAttribute('aria-label','配方炼金目标');$('#detail-rules').append(recipes);}
+  if(recipes.dataset.entry!==entry){recipes.open=false;recipes.dataset.entry=entry;}
   const recipeAnchor=$('#detail-rules').querySelector('.numeric-editor')||$('#detail-rules').querySelector('.numeric-full');if(recipeAnchor)recipeAnchor.before(recipes);
   const signature=JSON.stringify([entry,favorite,alchemy.map(r=>r.id)]);if(target.dataset.tools===signature&&target.childElementCount&&!newRecipeSurface)return;target.dataset.tools=signature;
   target.innerHTML=`<button class="secondary" id="detail-favorite" aria-pressed="${favorite}">${favorite?'★ 已收藏 · 点击取消':'☆ 收藏资料'}</button><button class="secondary" id="detail-save-numeric" type="button">命名保存计算</button><p id="detail-workspace-error" class="rule-warning" role="alert" hidden></p>`;

@@ -1036,6 +1036,10 @@ class GameWorkspaceTests(ControllerFixture):
                 self.assertNotIn('保存时间',state['text'])
                 self.assertFalse(state['result_details'][0]['expanded'])
                 self.assertIn(submitted['text'],state['result_details'][0]['text'])
+                warning = state['backup_summary']['warning']
+                if version == 849: self.assertIn('目标 · 旧版 849 · 当前游戏不可继续', warning)
+                elif version is None: self.assertIn('目标 · 版本未知', warning)
+                else: self.assertEqual(warning, '')
                 self.workspace.handle({'page':'backups','command':'backup_confirm'})
                 confirmation = next(value for action,value in reversed(self.host.commands) if action=='game_confirm')
                 expected = '来源版本未知' if version is None else '版本码 '+str(version)
@@ -1066,6 +1070,7 @@ class GameWorkspaceTests(ControllerFixture):
         self.select('backups',row); self.workspace.preview_backup(); self.finish_job()
         preview=self.workspace.backup_preview
         self.assertTrue(preview['progress']['same_run'])
+        self.assertIn('当前 · 旧版 849 · 当前游戏不可继续', preview['summary']['warning'])
         self.assertIn('种子和职业一致，请核对是否同一局',preview['text'])
         self.assertNotIn('同一次冒险',preview['text'])
         self.assertNotIn(preview['progress']['target']['run_id'][:12],preview['text'])
@@ -1076,6 +1081,7 @@ class GameWorkspaceTests(ControllerFixture):
         preview=self.workspace.backup_preview
         self.assertEqual(preview['progress']['current']['version'],922)
         self.assertEqual(preview['progress']['target']['version'],849)
+        self.assertIn('目标 · 旧版 849 · 当前游戏不可继续', preview['summary']['warning'])
         self.workspace.handle({'page':'backups','command':'backup_confirm'})
         confirmation=next(value for action,value in reversed(self.host.commands) if action=='game_confirm')
         self.assertIn('版本码 849',confirmation['text']); self.assertIn('无法继续此旧档',confirmation['text'])
