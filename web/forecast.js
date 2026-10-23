@@ -63,7 +63,7 @@ async function runForecast(){
         if(!event.data?.ok)throw Error(event.data?.error||'离线计算失败。');validateForecastResult(event.data.result,seed,depth);
         forecastValue=event.data.result;forecastWorker.terminate();forecastWorker=null;clearTimeout(forecastTimer);forecastTimer=null;forecastBusy=false;
         $('#forecast-title').textContent=`${forecastValue.seed_code} · 官方4.0.2新局参考 · 第1–${depth}层`;
-        renderForecast();$('#forecast-result').hidden=false;$('#forecast-status').textContent='参考情景已生成。数值可点击查询；这些装备未加入背包，实际冒险请以存档探查为准。';forecastControls();
+        renderForecast();$('#forecast-result').hidden=false;$('#forecast-status').textContent=`已生成 · ${forecastValue.items.length} 项候选`;forecastControls();
       }catch(error){stopForecast('本次未展示预测结果。');inlineError($('#forecast-error'),error.message);}
     };
     forecastWorker.onerror=()=>{if(serial===forecastSerial){stopForecast('本次未展示预测结果。');inlineError($('#forecast-error'),'离线模块加载或运行失败，请完整解压软件后重试。');}};
@@ -72,8 +72,8 @@ async function runForecast(){
 }
 function forecastEffect(item){return item.effect?(forecastInfo.effects?.[item.kind]?.[item.effect.replaceAll('-','').replaceAll('_','').toLowerCase()]||item.effect):'';}
 function forecastAccess(access,brief=false){
-  if(access.type==='choice')return `互斥组 ${access.group} · 选项 ${access.option+1}（同组不同选项不能同时取得）`;
-  if(access.type==='scenarios'){const paths=[],mask=BigInt(access.mask);for(let bit=0;bit<64;bit++)if(mask&(1n<<BigInt(bit)))paths.push(bit+1);return `取得路径组 ${access.group} · 可走路径 ${paths.join('、')}（同组物品共有至少一条路径才可兼得）`;}
+  if(access.type==='choice')return `互斥组 ${access.group} · 选项 ${access.option+1}${brief?'':'（同组不同选项不能同时取得）'}`;
+  if(access.type==='scenarios'){const paths=[],mask=BigInt(access.mask);for(let bit=0;bit<64;bit++)if(mask&(1n<<BigInt(bit)))paths.push(bit+1);return `取得路径组 ${access.group} · 可走路径 ${paths.join('、')}${brief?'':'（同组物品共有至少一条路径才可兼得）'}`;}
   return brief?'未记录互斥':'无该引擎记录的互斥组；仍需符合来源条件';
 }
 function showForecastItem(item,definition){
@@ -82,7 +82,7 @@ function showForecastItem(item,definition){
   if(typeof setReferencePortrait==='function'){setReferencePortrait(definition.key,definition.name);void hydrateReference({id:definition.key,name:definition.name,preserve_description:true},detailReferenceSerial);}if(typeof setDetailEntry==='function')setDetailEntry(definition.key);
   const level=definition.kind==='Artifact'?null:definition.kind==='Trinket'?0:item.level;
   const params={...(level===null?{}:{level}),...(definition.tier?{tier:definition.tier}:{})};
-  loadNumericalDetail(definition.key,params,level===null?'unknown':'assumed',{capturedContext:true,ignoreDrafts:true,sourceStamp:null,
+  loadNumericalDetail(definition.key,params,level===null?'unknown':'assumed',{capturedContext:true,ignoreDrafts:true,sourceStamp:null,seedReference:label,
     fieldOrigins:Object.fromEntries(Object.keys(params).map(key=>[key,'独立新局参考 · '+label])),
     skillConditions:`${label}；基础数值，未计入诅咒、附魔/刻印或当前角色增益。${level===null?'神器显示等级未转换为内部等级，等级相关公式需另行确认。':''}`,skillState:'unknown'});
 }
@@ -90,13 +90,13 @@ function renderForecast(){
   if(!forecastValue)return;const from=Number($('#forecast-from').value),kind=$('#forecast-kind').value,query=$('#forecast-query').value.trim().toLowerCase(),target=$('#forecast-floors');target.replaceChildren();
   const definitions=new Map(forecastInfo.items.map(item=>[item.id,item]));
   const items=forecastValue.items.filter(item=>item.depth>=from&&(!kind||item.kind===kind)&&(!query||[definitions.get(item.id).name,definitions.get(item.id).english_name,forecastSources[item.source],forecastEffect(item),item.effect].join(' ').toLowerCase().includes(query)));
-  $('#forecast-count').textContent=`第 ${from}–${forecastValue.maximum_depth} 层显示 ${items.length} 项候选；筛选仅影响显示，不改变互斥条件。隐藏房间只列类型，不提供未生成楼层坐标。`;
+  $('#forecast-count').textContent=`第 ${from}–${forecastValue.maximum_depth} 层 · ${items.length} 项候选`;
   for(let depth=from;depth<=forecastValue.maximum_depth;depth++){
     const rows=items.filter(item=>item.depth===depth),floor=forecastValue.floors.find(row=>row.depth===depth);
     const section=document.createElement('section');section.className='scout-card';const heading=document.createElement('h3');heading.textContent=`第 ${depth} 层${floor?' · '+forecastFeelings[floor.feeling]:''}`;section.append(heading);
-    if(floor){const rooms=floor.rooms.filter(room=>room in forecastRooms).map(room=>forecastRooms[room]);const note=document.createElement('p');note.className='muted';note.textContent=rooms.length?'特殊、任务与隐藏房间：'+rooms.join('、'):'未记录所列特殊、任务或隐藏房间类型。';section.append(note);}
+    if(floor){const rooms=floor.rooms.filter(room=>room in forecastRooms).map(room=>forecastRooms[room]);const note=document.createElement('p');note.className='muted';note.textContent=rooms.length?'房间：'+rooms.join('、'):'无特殊房间记录';section.append(note);}
     for(const item of rows){const definition=definitions.get(item.id),card=document.createElement('div');card.className='forecast-item';const button=document.createElement('button');button.type='button';button.className='secondary';button.textContent=`${definition.name}${item.kind==='Trinket'?' · 初始候选':` +${item.level}`}${item.cursed?' · 诅咒':''}${item.effect?' · '+forecastEffect(item):''}${item.secret?' · 隐藏房间':''}`;if(typeof referenceNameHTML==='function'){const label=button.textContent;button.innerHTML=referenceNameHTML(definition.key,definition.name)+escapeHTML(label.slice(definition.name.length));if(typeof bindReferencePreview==='function')bindReferencePreview(button,{id:definition.key,name:definition.name,condition:'4.0.2独立新局参考 · 未持有，非本局实物'},{params:{...(definition.kind==='Artifact'?{}:{level:definition.kind==='Trinket'?0:item.level}),...(definition.tier?{tier:definition.tier}:{}),depth:item.depth}});}button.addEventListener('click',()=>showForecastItem(item,definition));const note=document.createElement('p');note.className='muted';note.textContent=`${forecastSources[item.source]} · ${forecastAccess(item.access,true)}`;card.append(button,note);section.append(card);}
-    if(!rows.length){const note=document.createElement('p');note.className='muted';note.textContent=kind||query?'没有符合此筛选的装备。':'此层未预测到所支持的静态装备；不代表没有消耗品、机关或其他内容。';section.append(note);}target.append(section);
+    if(!rows.length){const note=document.createElement('p');note.className='muted';note.textContent=kind||query?'没有符合筛选的装备':'无支持的装备候选';section.append(note);}target.append(section);
   }
   if(from>forecastValue.maximum_depth){const note=document.createElement('p');note.textContent='查看起始楼层超过计算范围，请调整起始楼层或重新计算到更深处。';target.append(note);}
 }
@@ -104,7 +104,7 @@ for(const id of ['forecast-depth','forecast-from']){const select=$('#'+id);for(l
 $('#forecast-read-seed').addEventListener('click',readForecastSeed);$('#forecast-run').addEventListener('click',runForecast);
 $('#forecast-cancel').addEventListener('click',()=>stopForecast('已取消计算，旧结果已收起。'));
 $('#forecast-hide').addEventListener('click',()=>{$('#forecast-confirm').checked=false;stopForecast('预测已收起；种子输入保留。');$('#forecast-panel').open=false;});
-for(const id of ['forecast-seed','forecast-depth'])$('#'+id).addEventListener('input',()=>{forecastSource=null;$('#forecast-confirm').checked=false;$('#forecast-origin').textContent='手填的独立参考情景；未读取或关联当前存档状态。';stopForecast('输入已变化，请重新确认情景后计算。');});
+for(const id of ['forecast-seed','forecast-depth'])$('#'+id).addEventListener('input',()=>{forecastSource=null;$('#forecast-confirm').checked=false;$('#forecast-origin').textContent='手填种子 · 未关联存档';stopForecast('请确认情景后计算');});
 $('#forecast-confirm').addEventListener('change',()=>{if(!$('#forecast-confirm').checked)stopForecast('已取消确认，旧结果已收起。');forecastControls();});
 for(const id of ['forecast-from','forecast-kind','forecast-query'])$('#'+id).addEventListener(id==='forecast-query'?'input':'change',renderForecast);
 refreshForecastContext();

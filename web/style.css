@@ -66,6 +66,7 @@ textarea{font:inherit;color:var(--text);background:#f7f3e8;border:1px solid #ddd
 #view-scouting .panel{margin-bottom:20px}.scout-map-scroll{overflow:auto;margin:16px 0;max-height:650px}.scout-map-scroll canvas{display:block;max-width:100%;height:auto;image-rendering:pixelated}.scout-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-top:12px}.scout-card{border:1px solid var(--border);border-radius:8px;padding:14px}.scout-card h3{font-size:14px;margin:0 0 8px}.scout-card button{display:block;margin-top:10px;text-align:left}#scout-map-text{white-space:pre;overflow:auto;max-height:480px;font-size:12px;line-height:1.25}#scout-features,#scout-traps{max-height:400px;overflow:auto}
 
 .forecast-item{padding:.65rem 0;border-top:1px solid var(--border)}.forecast-item .muted{margin:.4rem 0 0}.forecast-item button{max-width:100%;text-align:left;white-space:normal}
+#forecast-floors{grid-template-columns:1fr;gap:12px}#forecast-floors>.scout-card{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));gap:8px 16px;align-items:start}#forecast-floors>.scout-card>h3,#forecast-floors>.scout-card>p{grid-column:1/-1;margin:0}#forecast-floors .forecast-item{min-width:0;padding:8px 0 0}#forecast-floors .forecast-item button{margin-top:0}#forecast-status:empty{display:none}
 
 /* Navigation is separate from optional floor reference. */
 .sidebar{width:232px;overflow-y:auto;padding:22px 16px;gap:12px}main{margin-left:232px}

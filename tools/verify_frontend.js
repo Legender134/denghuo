@@ -1521,6 +1521,25 @@ print(json.dumps({'entries':[e for e in c.entries if e['id'] in (wand,sword)],'s
   assert.equal(fixed.run('numericalDetail.context.level'),-1);assert.equal(fixed.run('numericalDetail.context.hp'),7);
   assert(!fixed.run("'strength' in numericalDetail.context"),'captured item links must not borrow newer live fields under the older snapshot stamp');
 
+  // A known independent seed is not an unknown snapshot; edits, reopening and import undo keep that distinction.
+  const seedDetail=harness();seedDetail.context.state=stamp();seedDetail.load('rules.js');
+  const seedLevel=element();seedLevel.dataset.valueKey='level';seedLevel.value='1';
+  seedDetail.context.$$=()=>[seedLevel];
+  seedDetail.context.fetch=async url=>({ok:true,json:async()=>({status:'current',version:'4.0.2',blocks:[],inputs:[{key:'level',value:Number(new URL(url,'http://localhost').searchParams.get('level')||1),label:'等级',min:0,max:10}]})});
+  await seedDetail.run("loadNumericalDetail('seed-weapon',{level:1},'assumed',{capturedContext:true,ignoreDrafts:true,sourceStamp:null,seedReference:'ABC-DEF-GHI · 第 1 层 · 地面物品'})");
+  assert.equal(seedDetail.run('numericalDetail.source'),null);assert.equal(seedDetail.run('numericalDetail.unconfirmedSource'),false);
+  assert.equal(seedDetail.get('#values-freshness').textContent,'独立种子参考 · 未绑定当前角色');
+  assert(!seedDetail.run("'strength' in numericalDetail.context"));assert.match(seedDetail.get('#values-source').textContent,/ABC-DEF-GHI/);
+  seedLevel.value='2';seedLevel.listeners.input();seedDetail.get('#value-calculator').listeners.submit({preventDefault(){}});await new Promise(resolve=>setImmediate(resolve));
+  seedDetail.run('cancelNumericalDetail()');await seedDetail.run("loadNumericalDetail('seed-weapon',{},'example')");
+  assert.match(seedDetail.get('#values-freshness').textContent,/独立种子参考/);assert.equal(seedDetail.run('numericalDetail.context.level'),2);
+  seedDetail.get('#values-use-latest').listeners.click();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(seedDetail.run('numericalDetail.seedReference'),null);assert(seedDetail.run('numericalDetail.source')!==null);assert(!seedDetail.get('#values-freshness').textContent.includes('未绑定当前角色'));
+  seedDetail.get('#values-undo-import').listeners.click();await new Promise(resolve=>setImmediate(resolve));
+  assert.match(seedDetail.get('#values-freshness').textContent,/独立种子参考/);assert.equal(seedDetail.run('numericalDetail.source'),null);
+  seedDetail.run('cancelNumericalDetail()');await seedDetail.run("loadNumericalDetail('unknown-reference',{level:1},'assumed',{capturedContext:true,ignoreDrafts:true,sourceStamp:null})");
+  assert.match(seedDetail.get('#values-freshness').textContent,/来源未确认/,'unknown references must retain their warning');
+
   // A delayed risk link keeps its captured hero and full connection identity.
   const handoff=harness();handoff.context.state=stamp();handoff.context.state.settings.save_root='/original-game';handoff.load('rules.js');
   const workspaceSource=fs.readFileSync(path.join(root,'web/workspace.js'),'utf8');
