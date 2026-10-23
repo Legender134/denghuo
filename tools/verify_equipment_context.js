@@ -65,14 +65,19 @@ function harness(){
   assert.equal(revealed.run('compareItems.some(item=>item.owned)'),false);
   const app=fs.readFileSync(path.join(root,'web/app.js'),'utf8'),start=app.indexOf('function showItem(item,'),end=app.indexOf('\nfunction showReference(',start);
   const calls=[],metadata=[];
-  const detail=vm.createContext({showDetail:(name,description,location,meta)=>metadata.push(meta),showItemNote:()=>{},visibleCalculationContext:()=>({}),setDetailEntry:()=>{},currentSkillContext:()=>null,loadNumericalDetail:(...args)=>calls.push(args),showRelatedReferences:()=>{},lookupCalculationOptions:()=>({}),comparisonFamily:()=>null});
+  const detail=vm.createContext({$:revealed.get,showDetail:(name,description,location,meta)=>metadata.push(meta),showItemNote:()=>{},visibleCalculationContext:()=>({}),setDetailEntry:()=>{},currentSkillContext:()=>null,loadNumericalDetail:(...args)=>calls.push(args),showRelatedReferences:()=>{},lookupCalculationOptions:()=>({}),comparisonFamily:()=>null});
+  const stateStart=app.indexOf('function showItemState('),stateEnd=app.indexOf('\nfunction showDetail(',stateStart);
+  assert(stateStart>=0&&stateEnd>stateStart);vm.runInContext(app.slice(stateStart,stateEnd),detail);
   vm.runInContext(app.slice(start,end),detail);
   const item={...revealed.context.state.data.items[0],revealed:true,details:[],level_applicable:true};
   detail.showItem(item,{stamp:null});
   assert.equal(calls.length,1);assert.equal(calls[0][1].level,3);assert.equal(calls[0][2],'revealed');
   assert.match(metadata[0],/已主动揭示/);assert.doesNotMatch(metadata[0],/保留未知身份/);
+  assert.equal(revealed.get('#detail-dialog .game-description').open,false);
+  assert.equal(revealed.get('#detail-item-state').hidden,false);assert.match(revealed.get('#detail-item-state').textContent,/已主动揭示/);
   detail.showItem({...item,revealed:false},{stamp:null});
   assert.equal(calls.length,1);assert.match(metadata[1],/保留未知身份/);
+  assert.equal(revealed.get('#detail-item-state').hidden,true);assert.equal(revealed.get('#detail-item-state').textContent,'');
   // Exercise the production unfinished-draft loader with mixed manual/reference cells.
   const recovered=harness(),controls=[];
   const cell=(id,value,manual='',edited='')=>{const input=recovered.get('#'+id);input.id=id;input.value=value;input.dataset={manual,edited};controls.push(input);return {value,checked:false,manual,edited};};
