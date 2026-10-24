@@ -3,9 +3,9 @@
 <h1 align="center">灯火</h1>
 <p align="center"><strong>把地牢里的关键选择，看得更清楚。</strong><br>《破碎的像素地牢》的 Windows 随行助手</p>
 
-<p align="center"><a href="https://room.riftbuddy.dpdns.org/denghuo/Denghuo-Setup.exe">下载 Windows 安装包</a> · <a href="https://github.com/Legender134/denghuo/releases/latest">GitHub 下载 / 免安装版</a> · <a href="https://github.com/Legender134/denghuo/releases/download/v0.7.0/denghuo-introduction-0.7.0.mp4">观看 36 秒操作短片</a></p>
+<p align="center"><a href="https://room.riftbuddy.dpdns.org/denghuo/Denghuo-Setup.exe">下载 Windows 安装包</a> · <a href="https://github.com/Legender134/denghuo/releases/latest">GitHub 下载 / 免安装版</a></p>
 
-![灯火：随行提醒、图鉴与决策工具](docs/images/overview.png)
+![灯火0.7.6：隐藏物品与额外计算](docs/images/companion.png)
 
 力量还差多少，升级一卷够不够？现在喝药能恢复多少，正在生效的治疗还能回多少？下一层遇到的首领，有什么需要提前准备？
 
@@ -15,11 +15,9 @@
 
 ## 游戏旁边，留给重要的事
 
-随行窗口先显示行动限制、力量缺口和资源收益。生命与角色概况收进详情，完整说明点开再看。
+随行窗口默认只显示主动揭示的隐藏内容和有效额外计算。图鉴、背包、存档各有直接入口；物品与数值操作放在一起，完整资料按需打开。
 
 窗口可以自由拖动、缩放，记住你的大小和位置；点灯收起，再点回到原来的页面。随游戏显示，切到其他应用时隐藏。想重新摆放，菜单里可以恢复默认布局。
-
-![随行窗口的精简提醒、展开详情与收起灯柄](docs/images/companion.png)
 
 ## 查得到，也算得明白
 
@@ -49,7 +47,7 @@
 
 1. 下载并安装，打开 **灯火**。免安装版请完整解压后运行 `灯火.exe`。
 2. 开始或继续游戏。默认自动连接标准存档目录，并跟随最新有效槽位；自定义目录可在设置中选择。
-3. 游戏保存后查看随行提示。更多资料与规划工具可在小窗口内打开，也可进入 **更多 → 完整面板**。
+3. 游戏保存后查看本层隐藏内容与额外计算。更多资料与规划工具可在小窗口内打开，也可进入 **更多 → 完整面板**。
 
 启动时会在后台检查更新。**更多 → 软件更新**可以手动检查、下载，确认后退出并安装；不会自动安装或中断游戏。设置、方案与备份保存在安装目录之外，更新会保留。
 
@@ -75,7 +73,7 @@
 - **存档与分析留在本机。** 更新检查只获取公开版本信息，不上传存档、背包或方案。自动备份需要助手保持运行。
 - **全屏兼容性取决于环境。** 推荐窗口化或无边框游玩，独占全屏下的覆盖显示与焦点行为可能受系统和显卡影响。
 
-图片来自本版实际运行界面，演示使用独立测试存档；展示数值随角色与条件而变。灯火是独立开源项目，与游戏官方没有隶属或背书关系。
+侧栏为0.7.6原始WPF界面渲染，其余为功能未变的网页操作截图。演示使用独立测试存档，展示数值随角色与条件而变。灯火是独立开源项目，与游戏官方没有隶属或背书关系。
 
 [使用指南](docs/guide.md) · [反馈问题](https://github.com/Legender134/denghuo/issues) · [开发指南](CONTRIBUTING.md) · [构建说明](BUILD.md) · [版本记录](CHANGELOG.md)
 

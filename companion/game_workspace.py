@@ -976,14 +976,14 @@ class GameWorkspace:
                 if self.backup_catalog.get('records_available') is False:
                     text = '存档历史暂时无法读取。请核对下方原因后刷新。'
                 elif task_snap['settings']['mode'] != 'save' or task_snap.get('error') or not task_snap.get('data'):
-                    text = '暂无存档记录。请先在游戏中保存一局，再刷新历史。'
+                    text = '暂无存档记录。先在游戏中保存一局。'
                 elif self.backup_catalog.get('enabled'):
                     if self.backup_catalog.get('health') == 'blocked' or self.backup_catalog.get('error'):
                         text = '暂无存档记录，备份暂时受阻。'
                     else:
-                        text = '暂无存档记录。已保存进度会自动备份，也可从窗口右上角「···」选择「立即备份已保存进度」。'
+                        text = '暂无存档记录。保存游戏后会自动备份。'
                 else:
-                    text = '暂无存档记录，自动备份已暂停。可从窗口右上角「···」选择「立即备份已保存进度」。'
+                    text = '暂无存档记录，自动备份已暂停。'
             selected_record = next((r for r in rows if r['id'] == self.selected.get('backups')), None)
             if selected_record:
                 text = self.backup_row_summary(selected_record['action'], selected_record['entry'])+'\n\n'+text

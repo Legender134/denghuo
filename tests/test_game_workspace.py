@@ -1415,7 +1415,7 @@ class GameWorkspaceTests(ControllerFixture):
         self.assertEqual(status, before)
         self.assertIn('保存时间（存档文件） 未记录', GameWorkspace.backup_row_text('restore', {'id': 'c'*64, 'slot': 1, 'time': observed}))
 
-    def test_empty_backup_history_explains_first_save_and_existing_capture_entry(self):
+    def test_empty_backup_history_explains_first_save_and_backup_state(self):
         self.workspace.reload('backups'); self.finish_job()
         state = self.host.commands[-1][1]
         self.assertEqual(state['rows'], [])
@@ -1426,12 +1426,10 @@ class GameWorkspaceTests(ControllerFixture):
         state = self.host.commands[-1][1]
         self.assertEqual(state['rows'], [])
         self.assertIn('会自动备份', state['text'])
-        self.assertIn('立即备份已保存进度', state['text'])
         self.session.backups.set_enabled(False)
         self.workspace.reload('backups'); self.finish_job()
         state = self.host.commands[-1][1]
         self.assertIn('自动备份已暂停', state['text'])
-        self.assertIn('立即备份已保存进度', state['text'])
         self.assertTrue(next(row for row in state['actions'] if row['id'] == 'backup_preview')['disabled'])
 
     def test_unreadable_backup_history_does_not_claim_successful_empty_library(self):

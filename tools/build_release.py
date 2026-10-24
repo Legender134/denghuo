@@ -33,7 +33,7 @@ FILES = (
     "tools/verify_updates.js",
     "tools/publish_update.py",
     "docs/updates.md",
-    "docs/guide.md", "docs/media.md", "tools/make_promo.py",
+    "docs/guide.md", "docs/media.md",
     "docs/images/overview.png", "docs/images/companion.png", "docs/images/library.png",
     "docs/images/planning.png", "docs/images/alchemy.png", "docs/images/history.png",
     "companion/values_investment.py",

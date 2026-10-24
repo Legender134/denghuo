@@ -214,6 +214,7 @@ class CompactOverviewTests(ControllerFixture):
         payload, _ = self.render(game)
         row = next(row for row in payload['insights'] if row['id'].startswith('resource-'))
         self.assertEqual(row['summary'], '再喝一瓶 · 首次恢复 1 → 25 HP · 最终额外恢复 0 HP')
+        self.assertTrue(row['has_result'])
         self.assertIn('不再受伤', row['assumption'])
         self.assertIn('不预测敌方伤害', row['body'])
 
@@ -242,6 +243,7 @@ class CompactOverviewTests(ControllerFixture):
                 payload, _ = self.render(game)
                 row = next(row for row in payload['insights'] if row['id']=='resource-items.waterskin')
                 result = self.session.values.detail('items.waterskin', {'hp':32,'max_hp':90,'dew_volume':volume,'vial':-1,'shielding_dew':0,'current_shield':0})
+                self.assertEqual(row['has_result'], bool(volume))
                 if volume:
                     text = f'消耗 {cost} 滴，剩 {remaining} 滴'
                     self.assertIn(text, row['summary'])

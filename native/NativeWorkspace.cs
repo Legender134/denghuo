@@ -32,7 +32,7 @@ namespace Denghuo.Native {
                     if(Data.Flag(spec,"multiple")) { var multi=new StackPanel(); foreach(object choice in choices) { var option=(Dictionary<string,object>)choice; string id=Data.Text(option,"id",""); if(id.Length==0) continue; var check=UI.Name(new CheckBox { Content=UI.Text(Data.Text(option,"text","")),Tag=id },label+" · "+Data.Text(option,"text","")); check.Checked+=delegate { Edited(key,false); }; check.Unchecked+=delegate { Edited(key,false); }; multi.Children.Add(check); } control=multi; }
                     else if(choices.Length>0) { var combo=UI.Combo(label); foreach(object choice in choices) { var option=(Dictionary<string,object>)choice; combo.Items.Add(new Choice(Data.Text(option,"id",""),Data.Text(option,"text",""))); } combo.SelectionChanged+=delegate { Edited(key,!numeric); }; control=combo; }
                     else { var text=UI.Edit(label,numeric ? 80 : 1200); text.TextChanged+=delegate { Edited(key,false); }; if(numeric) text.KeyDown+=delegate(object sender,KeyEventArgs e) { if(e.Key==Key.Enter && Submit!=null) { Submit(); e.Handled=true; } }; control=text; }
-                    controls[key]=control; var title=UI.Text(label,12,UI.Muted); title.Margin=new Thickness(0,0,0,6); var hint=UI.Text("",11,UI.Muted); hint.Margin=new Thickness(0,4,0,0); hints[key]=hint; var field=UI.Stack(title,control,hint); field.Margin=new Thickness(0,0,0,10); group.Children.Add(field);
+                    controls[key]=control; var title=UI.Text(label,12,UI.Muted); title.Margin=new Thickness(0,0,0,4); var hint=UI.Text("",11,UI.Muted); hint.Margin=new Thickness(0,4,0,0); hints[key]=hint; var field=UI.Stack(title,control,hint); field.Margin=new Thickness(0,0,0,8); group.Children.Add(field);
                 } if(helpDetails!=null) helpDetails.Content=null; helpDetails=UI.Section("输入说明与来源",helpBody,expanded.ContainsKey("__help") && expanded["__help"]); helpDetails.Expanded+=delegate { expanded["__help"]=true; }; helpDetails.Collapsed+=delegate { expanded["__help"]=false; }; Children.Add(helpDetails); signature=next; }
                 helpBody.Children.Clear();
                 foreach(object item in fields) { var spec=(Dictionary<string,object>)item; string key=Data.Text(spec,"key",""), value=Data.Text(values,key,Data.Text(spec,"raw","")); var control=controls[key]; var text=control as TextBox; var combo=control as ComboBox; var multi=control as StackPanel;
@@ -147,9 +147,9 @@ namespace Denghuo.Native {
         public bool Dirty;
         public TaskPane(Helper owner,string name) {
             host=owner; page=name; Focusable=true; RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto }); RowDefinitions.Add(new RowDefinition()); RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto });
-            mode=UI.Button("编辑条件",delegate { SetEditing(!editing); }); mode.HorizontalAlignment=HorizontalAlignment.Left; mode.Background=Brushes.Transparent; var taskHeader=new WrapPanel(); taskHeader.Children.Add(mode); if(page=="inventory") taskHeader.Children.Add(UI.Button("装备比较 ›",delegate { host.Manager.OpenPage("equipment"); })); if(page=="equipment") taskHeader.Children.Add(UI.Button("选背包装备 ›",delegate { host.Manager.OpenPage("inventory"); }));
+            mode=UI.Button("编辑条件",delegate { SetEditing(!editing); }); mode.HorizontalAlignment=HorizontalAlignment.Left; mode.Background=Brushes.Transparent; var taskHeader=new WrapPanel(); taskHeader.Children.Add(mode); if(page=="backups") { var capture=UI.Button("立即备份",delegate { if(!host.Frozen) host.Send("capture"); },true); capture.FontSize=12; taskHeader.Children.Add(capture); } if(page=="inventory") taskHeader.Children.Add(UI.Button("装备比较 ›",delegate { host.Manager.OpenPage("equipment"); })); if(page=="equipment") taskHeader.Children.Add(UI.Button("选背包装备 ›",delegate { host.Manager.OpenPage("inventory"); }));
             Children.Add(UI.Stack(origin,taskHeader));
-            selection=UI.Section(page=="inventory" ? "物品" : page=="map" ? "楼层" : "历史记录",selector,true); output.Children.Add(selection); if(page=="map") output.Children.Add(article); output.Children.Add(map); mapDetails=UI.Section("图例与坐标",UI.Stack(mapLegend,mapCoordinates),false); output.Children.Add(mapDetails); if(page=="equipment") { output.Children.Add(comparison); details=UI.Section("完整数值与条件",article,true); output.Children.Add(details); } else if(page!="map") output.Children.Add(article); output.Children.Add(resultDetails); scroll=UI.Scroll(output); Grid.SetRow(scroll,1); Children.Add(scroll); actions.Margin=new Thickness(0,10,0,0); if(page=="backups") { receipt=UI.Section("回执详情",notice,false); output.Children.Insert(0,receipt); output.Children.Insert(0,receiptBrief); Grid.SetRow(actions,2); Children.Add(actions); } else { var feedback=UI.Scroll(notice); feedback.MaxHeight=64; var bottom=UI.Stack(feedback,actions); Grid.SetRow(bottom,2); Children.Add(bottom); }
+            selection=UI.Section(page=="inventory" ? "物品" : page=="map" ? "楼层" : "历史记录",selector,true); output.Children.Add(selection); if(page=="map") output.Children.Add(article); output.Children.Add(map); mapDetails=UI.Section("图例与坐标",UI.Stack(mapLegend,mapCoordinates),false); output.Children.Add(mapDetails); if(page=="equipment") { output.Children.Add(comparison); details=UI.Section("完整数值与条件",article,true); output.Children.Add(details); } else if(page!="map") output.Children.Add(article); output.Children.Add(resultDetails); scroll=UI.Scroll(output); Grid.SetRow(scroll,1); Children.Add(scroll); actions.Margin=new Thickness(0,10,0,0); if(page=="backups") { receipt=UI.Section("回执详情",notice,false); output.Children.Insert(0,receipt); output.Children.Insert(0,receiptBrief); Grid.SetRow(actions,2); Children.Add(actions); } else if(page=="inventory") { output.Children.Add(notice); output.Children.Add(actions); } else { var feedback=UI.Scroll(notice); feedback.MaxHeight=64; var bottom=UI.Stack(feedback,actions); Grid.SetRow(bottom,2); Children.Add(bottom); }
             if(page=="equipment" || page=="alchemy") output.Children.Insert(0,taskContext);
             if(page=="alchemy") { output.Children.Remove(article); output.Children.Insert(0,article); }
             if(page=="backups") output.Children.Insert(0,backupSummary);
@@ -310,7 +310,7 @@ namespace Denghuo.Native {
                 UI.Name(origin,"任务条件来源 · "+origin.Text); object[] specs=Data.Array(d,"fields"); bool first=fields.Children.Count==0; currentSpecs=specs; fields.Render(specs,values); mode.Visibility=specs.Length>0 ? Visibility.Visible : Visibility.Collapsed; if(first && specs.Length>0 && page!="equipment" && page!="alchemy") SetEditing(true); mode.Content=ModeLabel(); UI.Name(mode,Convert.ToString(mode.Content));
                 RenderTaskContext(); taskContext.Visibility=specs.Length>0 ? Visibility.Visible : Visibility.Collapsed;
                 if(page=="equipment") { int desired=calculated ? 0 : 1; if(output.Children.IndexOf(comparison)!=desired) { output.Children.Remove(comparison); output.Children.Insert(desired,comparison); } }
-                string text=Data.Text(d,"text",""); if(page=="alchemy" && !calculated && text=="填写条件后计算。") text=""; if(page=="inventory" && text.Length==0) text="选择一件物品"; if(text!=articleText) { articleText=text; UI.IllustratedArticle(article,text,Data.Object(d,"artwork")); if(page=="equipment") RenderComparison(Data.Object(d,"comparison")); }
+                string text=Data.Text(d,"text",""); if(page=="alchemy" && !calculated && text=="填写条件后计算。") text=""; if(text!=articleText) { articleText=text; UI.IllustratedArticle(article,text,Data.Object(d,"artwork")); if(page=="equipment") RenderComparison(Data.Object(d,"comparison")); }
                 if(page=="backups") {
                     var summary=Data.Object(d,"backup_summary"); backupSummary.Children.Clear();
                     string heading=Data.Text(summary,"heading",""), target=Data.Text(summary,"target",""), warning=Data.Text(summary,"warning","");
@@ -323,7 +323,7 @@ namespace Denghuo.Native {
                     }
                 }
                 RenderResultDetails(Data.Array(d,"result_details"));
-                map.Render(Data.Object(d,"map")); mapLegend.Visibility=mapDetails.Visibility=map.Visibility; mapCoordinates.Text=map.Description(); var rows=Data.Array(d,"rows"); string next=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(rows)+Data.Text(d,"selected",""); if(next!=rowSignature) { var priorRowFocus=Keyboard.FocusedElement; var previousRows=new Dictionary<string,Control>(rowControls); rowControls.Clear(); selector.Children.Clear(); foreach(object item in rows) { var row=(Dictionary<string,object>)item; string id=Data.Text(row,"id",""), token=Data.Text(row,"token",""); var button=UI.Button("",delegate { if(!host.Frozen) { host.Send("game_select","page",page,"id",id,"token",token); selection.IsExpanded=false; } }); string caption=Data.Text(row,"summary",Data.Text(row,"text","")); button.Content=UI.ImageRow(caption,Data.Object(row,"artwork")); UI.Name(button,caption); button.HorizontalContentAlignment=HorizontalAlignment.Stretch; button.Margin=new Thickness(0); button.Padding=new Thickness(2,6,4,6); button.Background=id==Data.Text(d,"selected","") ? UI.Panel : Brushes.Transparent; button.BorderBrush=UI.Line; button.BorderThickness=new Thickness(0,0,0,1); selector.Children.Add(button); rowControls[id]=button; } host.Manager.RebindTaskFocus(page,previousRows,rowControls,this,priorRowFocus); rowSignature=next; } selection.Visibility=rows.Length>0 ? Visibility.Visible : Visibility.Collapsed;
+                map.Render(Data.Object(d,"map")); mapLegend.Visibility=mapDetails.Visibility=map.Visibility; mapCoordinates.Text=map.Description(); var rows=Data.Array(d,"rows"); if(page=="backups") { if(rows.Length==0) { if(Children.Contains(actions)) Children.Remove(actions); if(!output.Children.Contains(actions)) output.Children.Add(actions); } else { if(output.Children.Contains(actions)) output.Children.Remove(actions); if(!Children.Contains(actions)) { Grid.SetRow(actions,2); Children.Add(actions); } } } string next=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(rows)+Data.Text(d,"selected",""); if(next!=rowSignature) { var priorRowFocus=Keyboard.FocusedElement; var previousRows=new Dictionary<string,Control>(rowControls); rowControls.Clear(); selector.Children.Clear(); foreach(object item in rows) { var row=(Dictionary<string,object>)item; string id=Data.Text(row,"id",""), token=Data.Text(row,"token",""); var button=UI.Button("",delegate { if(!host.Frozen) { host.Send("game_select","page",page,"id",id,"token",token); selection.IsExpanded=false; } }); string caption=Data.Text(row,"summary",Data.Text(row,"text","")); var rowBody=new DockPanel(); var chevron=UI.Text("›",17,UI.Muted); chevron.VerticalAlignment=VerticalAlignment.Center; chevron.Margin=new Thickness(6,0,0,0); DockPanel.SetDock(chevron,Dock.Right); rowBody.Children.Add(chevron); rowBody.Children.Add(UI.ImageRow(caption,Data.Object(row,"artwork"))); button.Content=rowBody; UI.Name(button,caption); button.HorizontalContentAlignment=HorizontalAlignment.Stretch; button.Margin=new Thickness(0); button.Padding=new Thickness(4,4,6,4); button.Background=id==Data.Text(d,"selected","") ? UI.Panel : Brushes.Transparent; button.BorderBrush=UI.Line; button.BorderThickness=new Thickness(0); selector.Children.Add(button); rowControls[id]=button; } host.Manager.RebindTaskFocus(page,previousRows,rowControls,this,priorRowFocus); rowSignature=next; } selection.Visibility=rows.Length>0 ? Visibility.Visible : Visibility.Collapsed;
                 notice.Text=Data.Text(d,"notice",""); if(notice.Text.Length==0 && Dirty && specs.Length>0) notice.Text=calculated ? "有未保存的修改" : "条件已修改，待重新计算"; notice.Visibility=notice.Text.Length>0 ? Visibility.Visible : Visibility.Collapsed; if(receipt!=null) { receipt.Visibility=receiptBrief.Visibility=notice.Visibility; receiptBrief.Text=Data.Text(d,"notice_brief","操作回执"); }
                 string nextActions=new JavaScriptSerializer().Serialize(Data.Array(d,"actions"))+"/"+(Data.Text(d,"selected","").Length>0);
                 if(nextActions!=actionSignature) { var priorFocus=Keyboard.FocusedElement; var previousControls=new Dictionary<string,Control>(actionControls); actions.Children.Clear(); actionControls.Clear(); var extras=new List<MenuItem>(); Button more=null;
@@ -335,14 +335,15 @@ namespace Denghuo.Native {
                     var action=(Dictionary<string,object>)item; string command=Data.Text(action,"id","");
                     Action clicked=delegate { if(host.Frozen) return; if(page=="alchemy" && (command=="add_target" || command=="add_resource" || command=="add_path")) { string count=command=="add_target" ? "targets" : command=="add_resource" ? "resources" : "paths"; int index; Int32.TryParse(Data.Text(Raw(),count,"0"),out index); pendingEditorSection=(command=="add_target" ? "产出目标 " : command=="add_resource" ? "独立库存 " : "明确指定前置生产路径 ")+(index+1)+(command=="add_target" || command=="add_resource" ? " ·" : ""); } Flush(); host.Send("game_action","page",page,"command",command=="save" ? "name_plan" : command,"values",Raw(),"draft_revision",revision); };
                     string label=Data.Text(action,"text",""), reason=Data.Text(action,"reason",""); bool disabled=Data.Flag(action,"disabled"); if(page=="inventory" && Data.Text(d,"selected","").Length==0) continue;
-                    bool direct=command==primaryCommand || page=="inventory" && (command=="equip_a" || command=="equip_b") || page=="alchemy" && (command=="add_target" || command=="import");
+                    if(page=="backups" && command=="backup_preview" && Data.Array(d,"rows").Length==0) continue;
+                    bool direct=command==primaryCommand || page=="backups" && command=="reload" || page=="inventory" && (command=="equip_a" || command=="equip_b") || page=="alchemy" && (command=="add_target" || command=="import");
                     if(page=="alchemy" && command=="import") label="带入库存";
                     if(command=="calculate" && page=="equipment") label="比较装备";
                     if(command=="calculate" && page=="alchemy") label="计算";
-                    if(direct) { var button=UI.Button(label,clicked,command==primaryCommand); button.Padding=new Thickness(10,6,10,6); button.MinHeight=30; button.IsEnabled=!disabled; string help=reason.Length>0 ? reason : command=="import" && page=="alchemy" ? "主动替换当前库存与能量；保留目标。未知身份与未确认状态不猜测，可撤回。" : ""; if(help.Length>0) { button.ToolTip=help; System.Windows.Controls.ToolTipService.SetShowOnDisabled(button,true); System.Windows.Automation.AutomationProperties.SetHelpText(button,help); } actions.Children.Add(button); actionControls[command]=button; }
+                    if(direct) { string caption=page=="inventory" ? command=="reference" ? "查数值" : command=="equip_a" ? "比较 A" : command=="equip_b" ? "比较 B" : label : label; var button=UI.Button(caption,clicked,command==primaryCommand); UI.Name(button,label); button.FontSize=12; button.Padding=new Thickness(9,4,9,4); button.MinHeight=30; button.IsEnabled=!disabled; string help=reason.Length>0 ? reason : command=="import" && page=="alchemy" ? "主动替换当前库存与能量；保留目标。未知身份与未确认状态不猜测，可撤回。" : ""; if(help.Length>0) { button.ToolTip=help; System.Windows.Controls.ToolTipService.SetShowOnDisabled(button,true); System.Windows.Automation.AutomationProperties.SetHelpText(button,help); } actions.Children.Add(button); actionControls[command]=button; }
                     else if(!(page=="inventory" && Data.Text(d,"selected","").Length==0)) { var menuItem=UI.Item(label,clicked,!disabled); if(reason.Length>0) { menuItem.ToolTip=reason; System.Windows.Controls.ToolTipService.SetShowOnDisabled(menuItem,true); System.Windows.Automation.AutomationProperties.SetHelpText(menuItem,reason); } extras.Add(menuItem); actionControls[command]=menuItem; }
                 }
-                if(extras.Count>0) { string extraLabel=page=="alchemy" ? "计划操作" : page=="inventory" ? "鉴定详情" : "更多操作"; more=UI.Button(extraLabel,delegate { UI.Menu(more,extras.ToArray()); }); if(page=="alchemy") { more.Padding=new Thickness(10,6,10,6); more.MinHeight=30; more.ToolTip="移除目标、增减独立库存与前置路径"; } actions.Children.Add(more); actionControls["__more"]=more; }
+                if(extras.Count>0) { string extraLabel=page=="alchemy" ? "计划操作" : page=="inventory" ? "隐藏资料" : "更多操作"; more=UI.Button(extraLabel,delegate { UI.Menu(more,extras.ToArray()); }); if(page=="alchemy") { more.Padding=new Thickness(10,6,10,6); more.MinHeight=30; more.ToolTip="移除目标、增减独立库存与前置路径"; } actions.Children.Add(more); actionControls["__more"]=more; }
                 host.Manager.RebindTaskFocus(page,previousControls,actionControls,this,priorFocus); actionSignature=nextActions; }
                 if(Data.Flag(d,"focus_result")) { SetEditing(false); scroll.ScrollToTop(); }
                 if(pendingEditorSection.Length>0) { string section=pendingEditorSection; foreach(UIElement child in fields.Children) { var group=child as Expander; if(group!=null && System.Windows.Automation.AutomationProperties.GetName(group).StartsWith(section)) { pendingEditorSection=""; OpenEditor(section); break; } } }
@@ -387,23 +388,23 @@ namespace Denghuo.Native {
             RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto });
             search.ToolTip="搜索名称、别名或用途 · ↓进入结果 · Enter打开首项；近似建议需选择";
             var searchLine=new Grid { Margin=new Thickness(0,0,0,8) };
-            search.Padding=new Thickness(10,3,38,3); search.Height=38; searchLine.Children.Add(search);
+            search.Padding=new Thickness(10,3,38,3); search.Height=30; searchLine.Children.Add(search);
             searchHint.IsHitTestVisible=false; searchHint.VerticalAlignment=VerticalAlignment.Center; searchHint.Margin=new Thickness(12,0,42,0); searchHint.TextWrapping=TextWrapping.NoWrap; searchHint.TextTrimming=TextTrimming.CharacterEllipsis; searchLine.Children.Add(searchHint);
             clearSearch=UI.Button("×",delegate { if(!Host.Frozen) { search.Clear(); search.Focus(); } }); UI.Name(clearSearch,"清空搜索"); clearSearch.ToolTip="清空搜索";
             clearSearch.FontSize=20; clearSearch.Width=30; clearSearch.MinHeight=30; clearSearch.Height=30; clearSearch.Padding=new Thickness(0); clearSearch.Margin=new Thickness(0,0,5,0); clearSearch.HorizontalAlignment=HorizontalAlignment.Right; clearSearch.VerticalAlignment=VerticalAlignment.Center; clearSearch.Background=Brushes.Transparent; clearSearch.BorderThickness=new Thickness(0); clearSearch.Visibility=Visibility.Collapsed; searchLine.Children.Add(clearSearch);
             searchHeader.Children.Add(searchLine);
             var browseLine=new DockPanel { Margin=new Thickness(0,0,0,8) };
-            category.MinHeight=30; category.MinWidth=135; category.MaxWidth=210;
+            category.MinHeight=30; category.MinWidth=95; category.MaxWidth=165;
             category.SelectionChanged+=delegate { if(!rendering && !Host.Frozen && category.SelectedItem!=null) Host.Send("browse","surface","lookup","category",Convert.ToString(category.SelectedItem)); };
             DockPanel.SetDock(category,Dock.Left); browseLine.Children.Add(category);
             var all=UI.Button("全部",delegate { if(!Host.Frozen) { FlushEdit(); Host.Send("browse","surface","lookup","category","全部"); search.Focus(); } });
-            all.Background=Brushes.Transparent; all.Padding=new Thickness(10,4,10,4); all.Margin=new Thickness(6,0,0,0); UI.Name(all,"浏览全部图鉴"); DockPanel.SetDock(all,Dock.Right); browseLine.Children.Add(all);
+            all.Background=Brushes.Transparent; all.Padding=new Thickness(10,4,10,4); all.Margin=new Thickness(6,0,0,0); UI.Name(all,"浏览全部图鉴"); DockPanel.SetDock(all,Dock.Right);
             listing.HorizontalAlignment=HorizontalAlignment.Right; listing.VerticalAlignment=VerticalAlignment.Center; listing.Margin=new Thickness(10,0,0,0); browseLine.Children.Add(listing); searchHeader.Children.Add(browseLine);
             scopeSource.Margin=new Thickness(0,0,0,6); scopeSource.Visibility=Visibility.Collapsed; searchHeader.Children.Add(scopeSource);
             pinned=UI.Button("查看固定参考 ›",delegate { FlushEdit(); Host.Send("view_pin","surface","lookup"); }); pinned.Visibility=Visibility.Collapsed; pinned.HorizontalAlignment=HorizontalAlignment.Left; searchHeader.Children.Add(pinned);
             Children.Add(searchHeader);
             back=UI.Button("‹ 图鉴",delegate { if(mode=="edit") SetMode("result"); else { SetMode("search"); search.Focus(); } });
-            more=UI.Button("···",ShowActions); UI.Name(more,"条目操作"); more.ToolTip="收藏、保存与参考来源"; more.MinWidth=34; more.FontSize=18;
+            more=UI.Button("···",ShowActions); UI.Name(more,"条目操作"); more.ToolTip="收藏、固定与方案"; more.MinWidth=34; more.FontSize=18;
             foreach(var button in new[]{back,more}) { button.MinHeight=28; button.Padding=new Thickness(8,3,8,3); button.Margin=new Thickness(0,0,6,4); }
             back.Background=more.Background=Brushes.Transparent; back.HorizontalAlignment=HorizontalAlignment.Left;
             DockPanel.SetDock(more,Dock.Right); DockPanel.SetDock(back,Dock.Left); readingHeader.Children.Add(more); readingHeader.Children.Add(back); headerReceipt.VerticalAlignment=VerticalAlignment.Center; headerReceipt.Margin=new Thickness(4,0,8,4); headerReceipt.TextWrapping=TextWrapping.NoWrap; headerReceipt.TextTrimming=TextTrimming.CharacterEllipsis; headerReceipt.Visibility=Visibility.Collapsed; readingHeader.Children.Add(headerReceipt); readingHeader.Visibility=Visibility.Collapsed; Children.Add(readingHeader);
@@ -449,7 +450,16 @@ namespace Denghuo.Native {
             feedback.Visibility=feedback.Text.Length>0 && !receiptInHeader && !errorInArticle ? Visibility.Visible : Visibility.Collapsed;
             bool hasEntry=Data.Text(state,"entry_id","").Length>0;
             bool custom=Data.Flag(state,"can_save") && Dirty;
-            bottom.Visibility=hasEntry && mode!="search" && (Data.Array(state,"fields").Length>0 || custom) ? Visibility.Visible : Visibility.Collapsed;
+            if(mode=="result") {
+                if(bottom.Children.Contains(primary)) bottom.Children.Remove(primary);
+                if(!readingHeader.Children.Contains(primary)) { DockPanel.SetDock(primary,Dock.Right); readingHeader.Children.Insert(0,primary); }
+                primary.MinHeight=28; primary.Padding=new Thickness(7,3,7,3); primary.Margin=new Thickness(0,0,6,4);
+            } else {
+                if(readingHeader.Children.Contains(primary)) readingHeader.Children.Remove(primary);
+                if(!bottom.Children.Contains(primary)) bottom.Children.Insert(0,primary);
+                primary.Margin=new Thickness(0,0,6,6);
+            }
+            bottom.Visibility=hasEntry && (mode=="edit" && Data.Array(state,"fields").Length>0 || mode=="result" && custom) ? Visibility.Visible : Visibility.Collapsed;
             saveCalculation.Visibility=custom && mode=="result" ? Visibility.Visible : Visibility.Collapsed;
             primary.Visibility=Data.Array(state,"fields").Length>0 ? Visibility.Visible : Visibility.Collapsed;
             primary.IsEnabled=!busy; primary.Content=busy ? "正在计算…" : mode=="edit" ? "重新计算" : Data.Flag(state,"needs_calculation") ? "补全条件" : "调整条件"; UI.Name(primary,Convert.ToString(primary.Content));
@@ -468,20 +478,22 @@ namespace Denghuo.Native {
             button.KeyDown+=delegate(object sender,KeyEventArgs e) { if(e.Key==Key.Down && index+1<resultButtons.Count) { resultButtons[index+1].Focus(); e.Handled=true; } else if(e.Key==Key.Up) { if(index>0) resultButtons[index-1].Focus(); else search.Focus(); e.Handled=true; } };
             resultButtons.Add(button); candidates.Children.Add(button);
         }
-        void ShowActions() {
+        List<object> CreateActions() {
             bool valid=Data.Flag(state,"can_save"), hasEntry=Data.Text(state,"entry_id","").Length>0;
             var items=new List<object>();
-            foreach(string[] pair in new[]{new[]{"带入最新已知角色条件","use_latest"},new[]{"撤回本次条件带入","undo_import"},new[]{"","separator"},new[]{Data.Flag(state,"has_saved_plan") ? "更新或另存方案…" : "保存方案…","save_plan"},new[]{"重新读取当前方案","reload_plan"},new[]{"我的方案…","choose_plan"},new[]{"","separator"},new[]{"查看固定参考","view_pin"},new[]{"清除固定参考","clear_pin"}}) {
+            foreach(string[] pair in new[]{new[]{Data.Flag(state,"favorite") ? "取消收藏" : "收藏条目","favorite"},new[]{"固定到本层","pin"},new[]{"","separator"},new[]{"带入最新已知角色条件","use_latest"},new[]{"撤回本次条件带入","undo_import"},new[]{"","separator"},new[]{Data.Flag(state,"has_saved_plan") ? "更新或另存方案…" : "保存方案…","save_plan"},new[]{"重新读取当前方案","reload_plan"},new[]{"我的方案…","choose_plan"},new[]{"","separator"},new[]{"查看固定参考","view_pin"},new[]{"清除固定参考","clear_pin"}}) {
                 string action=pair[1]; bool enabled=action=="view_pin" || action=="clear_pin" ? Data.Flag(state,"has_pin") : action=="undo_import" ? Data.Flag(state,"undo") : action=="use_latest" ? Data.Flag(state,"can_latest") : action=="save_plan" || action=="pin" ? valid : action=="favorite" || action=="provenance" ? hasEntry : action=="reload_plan" ? Data.Flag(state,"has_saved_plan") : true;
                 if(action=="separator") { items.Add(new Separator()); continue; }
                 var item=UI.Item(pair[0],delegate { FlushEdit(); if(action=="choose_plan") Host.Manager.OpenPage("plans"); else Host.Send(action,"surface","lookup"); },enabled);
                 if(!enabled) {
-                    string reason=action=="undo_import" ? "尚无可撤回的条件带入" : action=="reload_plan" ? "先打开一个已保存方案" : action=="view_pin" || action=="clear_pin" ? "先在数值条目点击「固定」" : action=="use_latest" ? "当前没有可带入的已知角色条件" : Data.Flag(state,"needs_calculation") ? "先重新计算有效条件" : "当前没有可保存的有效数值条件";
+                    string reason=action=="undo_import" ? "尚无可撤回的条件带入" : action=="reload_plan" ? "先打开一个已保存方案" : action=="view_pin" || action=="clear_pin" ? "先固定一个条目" : action=="use_latest" ? "当前没有可带入的已知角色条件" : Data.Flag(state,"needs_calculation") ? "先重新计算有效条件" : "当前没有可保存的有效数值条件";
                     item.ToolTip=reason; System.Windows.Controls.ToolTipService.SetShowOnDisabled(item,true); System.Windows.Automation.AutomationProperties.SetHelpText(item,reason);
                 }
                 items.Add(item);
             }
-            items.Add(UI.Item("方案与收藏（完整面板）",delegate { Host.Send("panel","page","workspace"); })); UI.Menu(more,items.ToArray());
+            items.Add(UI.Item("方案与收藏（完整面板）",delegate { Host.Send("panel","page","workspace"); })); return items;
+        }
+        void ShowActions() { UI.Menu(more,CreateActions().ToArray());
         }
         static Grid LabeledValues(object[] values) {
             var grid=new Grid { Margin=new Thickness(0,4,0,8) }; grid.ColumnDefinitions.Add(new ColumnDefinition()); grid.ColumnDefinitions.Add(new ColumnDefinition { Width=new GridLength(1.05,GridUnitType.Star) }); int index=0;
@@ -514,32 +526,25 @@ namespace Denghuo.Native {
             bool compactResult=main.Length==2 && (identity.StartsWith("actors.hero.spells.") || primaryBrief.Length>0);
             bool compactHealing=main.Length==2 && primaryBrief.Length>0;
             var title=new DockPanel { Margin=new Thickness(0,0,0,6) };
-            var pin=UI.Button("固定",delegate { if(!Host.Frozen) { FlushEdit(); Host.Send("pin","surface","lookup"); } });
-            pin.IsEnabled=Data.Flag(data,"can_save"); pin.ToolTip=pin.IsEnabled ? "固定到随行 · 保留本次条件" : Data.Flag(data,"needs_calculation") ? "先重新计算有效条件" : "当前没有可固定的有效数值条件";
-            System.Windows.Controls.ToolTipService.SetShowOnDisabled(pin,true); System.Windows.Automation.AutomationProperties.SetHelpText(pin,Convert.ToString(pin.ToolTip)); UI.Name(pin,"固定到随行"); pin.Padding=new Thickness(6,2,6,2); pin.Margin=new Thickness(0); pin.Background=Brushes.Transparent; DockPanel.SetDock(pin,Dock.Right); title.Children.Add(pin); articleLinks[identity+"/pin"]=pin;
-            var favorite=UI.Button(Data.Flag(data,"favorite") ? "★" : "☆",delegate { if(!Host.Frozen) { FlushEdit(); Host.Send("favorite","surface","lookup"); } });
-            favorite.FontSize=22; favorite.Padding=new Thickness(6,0,6,0); favorite.Background=Brushes.Transparent; favorite.Foreground=UI.Gold; favorite.ToolTip=Data.Flag(data,"favorite") ? "取消收藏" : "收藏"; UI.Name(favorite,Convert.ToString(favorite.ToolTip));
-            if(compactResult) favorite.Margin=new Thickness(0);
-            if(compactHealing) favorite.FontSize=18;
-            DockPanel.SetDock(favorite,Dock.Right); title.Children.Add(favorite); articleLinks[identity+"/favorite"]=favorite;
-            var picture=UI.Artwork(Data.Object(data,"artwork"),28); DockPanel.SetDock(picture,Dock.Left); title.Children.Add(picture);
-            var nameText=UI.Text(name,17); nameText.FontWeight=FontWeights.SemiBold;
+            var picture=UI.Artwork(Data.Object(data,"artwork"),24); DockPanel.SetDock(picture,Dock.Left); title.Children.Add(picture);
+            var nameText=UI.Text(name,14); nameText.FontWeight=FontWeights.SemiBold;
             var headingText=UI.Stack(nameText); headingText.VerticalAlignment=VerticalAlignment.Center;
-            string variant=Data.Text(data,"entry_hint",""); if(variant.Length>0 && !(compactResult && variant=="法术")) headingText.Children.Add(UI.Text(variant,13,UI.Muted));
+            string variant=Data.Text(data,"entry_hint",""); if(variant.Length>0 && !(compactResult && variant=="法术")) headingText.Children.Add(UI.Text(variant,12,UI.Muted));
             string imageCaption=Data.Text(Data.Object(data,"artwork"),"caption","");
             title.Children.Add(headingText); article.Children.Add(title);
+            var contextNotes=new StackPanel();
             string prerequisite=Data.Text(data,"primary_notice","");
             if(prerequisite.Length>0) {
                 string shortNotice=Data.Text(data,"notice_brief",prerequisite);
-                var notice=UI.Text(shortNotice,13,UI.Gold); notice.Margin=new Thickness(0,0,0,4); article.Children.Add(notice);
+                var notice=UI.Text(shortNotice,11,UI.Gold); notice.Margin=new Thickness(0,0,0,4); contextNotes.Children.Add(notice);
                 if(shortNotice!=prerequisite) secondary.Children.Add(UI.Text(prerequisite,13,UI.Gold));
             }
-            if(primaryBrief.Length>0) { var basis=UI.Text(primaryBrief,13,UI.Gold); basis.LineHeight=17; article.Children.Add(basis); }
+            if(primaryBrief.Length>0) { var basis=UI.Text(primaryBrief,11,UI.Muted); basis.LineHeight=16; contextNotes.Children.Add(basis); }
             string introduction=Data.Text(data,"introduction","");
             string origin=Data.Text(data,"origin_brief","");
             bool conditioned=Data.Array(data,"fields").Length>0;
             bool caution=origin.StartsWith("旧") || origin.StartsWith("条件") || origin.StartsWith("需要") || origin.StartsWith("参考来源") || origin.StartsWith("种植");
-            foreach(object raw in readingNotes) { string text=Convert.ToString(raw); if(text.Length==0) continue; var mechanism=UI.Text(text,15); mechanism.Margin=new Thickness(0,0,0,8); article.Children.Add(mechanism); }
+            foreach(object raw in readingNotes) { string text=Convert.ToString(raw); if(text.Length==0) continue; var mechanism=UI.Text(text,13); mechanism.Margin=new Thickness(0,0,0,8); article.Children.Add(mechanism); }
             var primaryKeys=new HashSet<string>(); var notes=new HashSet<string>();
             var metrics=new UniformGrid { Columns=main.Length, Margin=new Thickness(0,compactHealing ? 0 : 2,0,compactHealing ? 0 : compactResult ? 4 : 10) };
             foreach(object raw in main) {
@@ -562,11 +567,12 @@ namespace Denghuo.Native {
                 } else {
                 var line=new DockPanel { Margin=new Thickness(0,0,0,5) };
                 var metric=UI.Text(number+(unit.Length>0 ? " "+unit : ""),16); metric.FontWeight=FontWeights.SemiBold; DockPanel.SetDock(metric,Dock.Right); line.Children.Add(metric);
-                var caption=UI.Text(label,14); caption.VerticalAlignment=VerticalAlignment.Center; caption.Margin=new Thickness(0,0,12,0); line.Children.Add(caption); primaryBody.Children.Add(line);
+                var caption=UI.Text(label,13); caption.VerticalAlignment=VerticalAlignment.Center; caption.Margin=new Thickness(0,0,12,0); line.Children.Add(caption); primaryBody.Children.Add(line);
                 }
                 string noteText=Data.Text(value,"condition",""); if(noteText.Length>0) notes.Add(noteText);
             }
             if(main.Length==3 || compactResult) primaryBody.Children.Add(metrics);
+            if(contextNotes.Children.Count>0) article.Children.Add(contextNotes);
             string primaryNote=Data.Text(data,"primary_note",""); if(primaryNote.Length>0) { if(compactResult) secondary.Children.Add(UI.Text(primaryNote,14,UI.Gold)); else if(identity.StartsWith("items.weapon.") || identity.StartsWith("items.armor.")) { secondary.Children.Add(UI.Text(primaryNote,14,UI.Gold)); if(prerequisite.Length==0) article.Children.Add(UI.Text(primaryBrief.Length>0 ? "修正未计入" : "基础参考 · 未计其他加成",12,UI.Muted)); } else notes.Add(primaryNote); }
             foreach(string noteText in notes) { var noteLine=UI.Text(noteText,14,UI.Gold); noteLine.Margin=new Thickness(0,2,0,8); (compactResult ? secondary : article).Children.Add(noteLine); }
             if(caution || conditioned) { var context=UI.Text(origin,13,caution ? UI.Gold : UI.Muted); context.Margin=new Thickness(0,0,0,8); (compactResult && !caution ? secondary : article).Children.Add(context); }
@@ -648,9 +654,9 @@ namespace Denghuo.Native {
                         var button=UI.Button("",delegate { if(!Host.Frozen) Host.Send("select","surface","lookup","index",index,"token",token); });
                         string text=Data.Text(row,"text",""); string nextGroup=Data.Text(row,"group","");
                         if(nextGroup.Length>0 && nextGroup!=group) { var label=UI.Text(nextGroup,12,UI.Muted); label.Margin=new Thickness(2,10,0,4); candidates.Children.Add(label); group=nextGroup; }
-                        button.Content=UI.ReferenceRow(Data.Text(row,"name",text),Data.Text(row,"hint",""),Data.Object(row,"artwork"));
+                        button.Content=UI.ReferenceRow(Data.Text(row,"name",text),Data.Text(row,"hint","").Length>0 ? Data.Text(row,"hint","") : Data.Text(row,"kind",""),Data.Object(row,"artwork"));
                         UI.Name(button,text); button.ToolTip=Data.Text(row,"context",""); button.HorizontalContentAlignment=HorizontalAlignment.Stretch;
-                        button.Background=Brushes.Transparent; button.BorderBrush=UI.Line; button.BorderThickness=new Thickness(0,0,0,1); button.Padding=new Thickness(2,6,6,6); button.Margin=new Thickness(0);
+                        button.Background=Brushes.Transparent; button.BorderBrush=UI.Line; button.BorderThickness=new Thickness(0); button.Padding=new Thickness(2,4,4,4); button.Margin=new Thickness(0);
                         AddResultButton(button,index);
                     }
                     if(rows.Length==0 && suggestions.Length>0) {

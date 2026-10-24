@@ -18,7 +18,7 @@ def resource_insight(option, index):
     restriction = option.get('restriction', '')
     missing = option.get('calculation_missing', '')
     values = {row['label']: row for row in option.get('values', [])}
-    summary, assumption = [], ''
+    summary, assumption, empty_resource = [], '', False
     if restriction:
         summary = [restriction]
     elif missing:
@@ -76,7 +76,7 @@ def resource_insight(option, index):
         consumed, remaining = values.get('本次消耗露珠'), values.get('饮用后剩余露珠')
         if consumed and remaining:
             if float(consumed['value']) == 0 and float(remaining['value']) == 0:
-                summary, assumption = ['水袋已空'], ''
+                summary, assumption, empty_resource = ['水袋已空'], '', True
             else:
                 summary.append('消耗 ' + str(consumed['value']) + ' 滴，剩 ' + str(remaining['value']) + ' 滴')
     if not summary:
@@ -84,9 +84,15 @@ def resource_insight(option, index):
     details = '\n'.join(filter(None, (restriction, missing, option.get('note', ''),
         *[row['label'] + ' ' + str(row['value']) + ' ' + row.get('unit', '')
           + (' · ' + row['condition'] if row.get('condition') else '') for row in values.values()])))
+    compact_summary = ' · '.join(summary)
+    if identity == 'items.potions.potionofhealing' and not (restriction or missing or option.get('comparison')):
+        first, total = values.get('首次恢复'), values.get('最终实际恢复')
+        if first and total:
+            compact_summary = f"首次 +{first['value']} · 最多 +{total['value']} HP · 逐回合"
     return {'id': 'resource-' + identity, 'title': option['name'] + ' · 库存 ' + str(option['quantity']),
-            'group': '随身资源', 'resource_entry': identity,
-            'summary': ' · '.join(summary), 'assumption': assumption, 'body': details,
+            'group': '随身资源', 'resource_entry': identity, 'resource_name':option['name'],
+            'has_result':bool(values) and not (restriction or missing or empty_resource),
+            'summary': ' · '.join(summary), 'compact_summary':compact_summary, 'assumption': assumption, 'body': details,
             'severity': 'warning' if restriction else 'info',
             'actions': [{'index': index, 'text': '查看计算' if not (restriction or missing) else '核对条件'}]}
 
@@ -592,7 +598,7 @@ class NativeManager:
 
     def floor_state(self, snap):
         from .floor_guide import floor_encounters
-        from .reference import native_artwork
+        from .reference import native_artwork, native_item_artwork
         data = snap.get('data') or {}
         token = self.floor_token(snap)
         available = bool(type(data.get('depth')) is int and not snap.get('error') and snap['settings']['mode']=='save')
@@ -603,10 +609,13 @@ class NativeManager:
         owner=binding_token([snap.get(k) for k in ('started','active_slot','run_id')]+
             [snap.get('settings',{}).get(k) for k in ('save_root','mode')]+[data.get(k) for k in ('depth','branch','version','challenges_mask','challenges_known')])
         result = {'token':token,'owner':owner,'enabled':available and not self.io_busy,'revealed':bool(hidden),
-                  'caption':'连接有效存档后显示本层资料。','nodes':[]}
+                  'title':'未连接存档','hero_brief':'','caption':'连接有效存档后显示本层资料。','nodes':[]}
         self._floor_item_references = {}
         if not available: return result
         result['caption']=f"第 {data['depth']} 层"+(f" · 支线 {data['branch']}" if data.get('branch') else '')
+        result['title']=result['caption']
+        hero=data.get('hero', {})
+        result['hero_brief']=f"Lv.{hero.get('level','?')} · 生命 {hero.get('hp','?')}/{hero.get('ht','?')}"
         hero=data.get('hero',{})
         result['caption']+=f" · 按角色等级 {hero.get('level','未确认')} 参考"
         result['warning'] = ('版本未确认 · 仅作参考' if data.get('version') != self.session.catalog.data['version_code'] else
@@ -641,7 +650,7 @@ class NativeManager:
                 name=row['name']+('' if row['group']=='普通轮换' else ' · '+row['group'])
                 node={'id':row.get('reference_key',row['id']),'text':f"{name} · 生命 {row['hp']} · 普攻 {row['damage']} · 减伤 {row['dr']}",
                     'detail':row['condition']+f'\n本层条件参考；角色等级 {hero}；累计成功掉落示例0次。实际财富、掉落次数、临时状态另查完整数值。',
-                    'children':blocks, 'artwork': native_artwork(row['id'])}
+                    'children':blocks, 'name':name, 'quick':f"生命 {row['hp']} · 攻击 {row['damage']} · 减伤 {row['dr']}", 'artwork': native_artwork(row['id'])}
                 group=row.get('fold_group')
                 if group:
                     if group not in groups:
@@ -669,6 +678,7 @@ class NativeManager:
                         identity='item-'+item['instance_key']
                         self._floor_item_references[identity]=(item,floor)
                         children.append({'id':identity,'text':f"{item['name']} ×{item['quantity']}"+(' · 诅咒' if item.get('cursed') is True else ''),
+                                         'artwork':native_item_artwork({**item, 'revealed':True}), 'caution':item.get('cursed') is True,
                                          'detail':'\n'.join(part for part in (' · '.join(item.get('details', [])), item['description'], item.get('location',''),
                                              '已主动揭示；游戏鉴定状态未改变，未加入背包。可查看所选资料数值。') if part)})
                     caption=f"{row['name']} ({row['x']}, {row['y']})"
@@ -676,7 +686,7 @@ class NativeManager:
                     if kind=='mobs':
                         caption+=' · '+('保存生命未确认' if row.get('hp') is None else f"保存生命 {row['hp']}")
                         if row.get('ht') is not None:caption+=f" / {row['ht']}"
-                    entries.append({'id':f'{kind}-{i}','text':caption,'children':children})
+                    entries.append({'id':f'{kind}-{i}','text':caption,'caution':bool(row.get('haunted')),'children':children})
                 if entries:
                     label='地上物品与容器' if kind=='heaps' else '本层已保存生物'
                     contents.append({'id':'hidden-'+kind,'text':f'{label} · {len(entries)} 处',
@@ -994,12 +1004,13 @@ class NativeManager:
         brief_source = ('读取受阻' if snap.get('error') else '等待存档' if not data else
                         ('手填已过期' if snap.get('stale') else '手填') if snap['settings']['mode'] == 'manual' else
                         '旧快照' if snap.get('stale') else '存档快照')
+        badge_source = '快照' if brief_source == '存档快照' else brief_source
         if data:
             brief_source += f" · {data.get('depth', '?')} 层"
         source_notice = bool(snap.get('warning') or snap.get('configuration_notice'))
         if source_notice: brief_source += ' · 有提示'
         state = {'text': '\n\n'.join(filter(None, texts)), 'source': source_text,
-            'source_brief': brief_source, 'source_warning': bool(snap.get('stale') or snap.get('error') or source_notice),
+            'source_brief': brief_source, 'source_badge':badge_source, 'source_warning': bool(snap.get('stale') or snap.get('error') or source_notice),
             'snapshot_notes': snapshot_notes,
             'pinned_reference': pinned_reference_state(self.manager.play, snap, self.session.catalog),
             'insights': insights, 'secondary_advice': secondary,
