@@ -186,8 +186,8 @@ namespace Denghuo.Native {
         public double SystemDpi = 96;
         bool rendering, changingLayout = true, shutdown, attached, handleDragged;
         Rect expandedBounds = new Rect(0,0,380,460), gameBounds;
-        double readerWidth=380, readerHeight=460, briefWidth=310, briefHeight=240;
-        bool briefAuto=true, defaultPlacement=true, fitQueued;
+        double readerWidth=310, readerHeight=300, briefWidth=310, briefHeight=240;
+        bool briefAuto=true, readerAuto=true, defaultPlacement=true, fitQueued;
         int textScale=100;
         Size sizingStart;
         bool Brief { get { return Page=="overview" || Page=="floor"; } }
@@ -209,7 +209,8 @@ namespace Denghuo.Native {
         public Dictionary<string,object> TaskRaw() { var raw = new Dictionary<string,object>(); foreach (var pair in tasks) if (pair.Value.Dirty) raw[pair.Key] = pair.Value.Raw(); return raw; }
         public void FlushTasks() { foreach (var pane in tasks.Values) if (pane.Dirty) pane.Flush(); }
         public void SetTaskPlanMetadata(string page,string name,string note) { if(tasks.ContainsKey(page)) tasks[page].SetPlanMetadata(name,note); }
-        public void RenderTask(Dictionary<string,object> data) { string page = Data.Text(data,"page",""); if (tasks.ContainsKey(page)) tasks[page].Render(data); }
+        public void RenderTask(Dictionary<string,object> data) { string page = Data.Text(data,"page",""); if (tasks.ContainsKey(page)) tasks[page].Render(data); QueueBriefFit(); }
+        public void FitContent() { QueueBriefFit(); }
         public ManagerForm(Helper host) {
             UI.Chrome(this);
             Host = host; Title = "灯火 · 随行"; UI.Name(this,Title); Width = 310; Height = 240; MinWidth = 280; MinHeight = MinimumBriefHeight; MaxWidth = MaxHeight = 2400; Background = UI.Background; Foreground = UI.Ink; FontFamily = new FontFamily("Microsoft YaHei UI, Segoe UI, Microsoft YaHei"); FontSize = 13;
@@ -245,7 +246,7 @@ namespace Denghuo.Native {
 
             var grip = UI.Name(new Thumb { Width = 18, Height = 18, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Cursor = Cursors.SizeNWSE, ToolTip = "拖动调整窗口大小" }, "调整窗口大小");
             var gripArea = new FrameworkElementFactory(typeof(Border)); gripArea.SetValue(Border.BackgroundProperty,Brushes.Transparent); var gripVisual = new FrameworkElementFactory(typeof(Path)); gripVisual.SetValue(Path.DataProperty,Geometry.Parse("M 6,16 L 16,6 M 11,16 L 16,11")); gripVisual.SetValue(Path.StrokeProperty,UI.Muted); gripVisual.SetValue(Path.StrokeThicknessProperty,1.0); gripArea.AppendChild(gripVisual); grip.Template = new ControlTemplate(typeof(Thumb)) { VisualTree = gripArea };
-            grip.DragDelta += delegate(object sender,DragDeltaEventArgs e) { if (Host.Frozen) return; if(Brief) briefAuto=false; Width = Math.Max(MinWidth,Math.Min(MaxWidth,Width+e.HorizontalChange)); Height = Math.Max(MinHeight,Math.Min(MaxHeight,Height+e.VerticalChange)); }; grip.DragCompleted += delegate { ClampBounds(); SaveLayout(); }; Grid.SetRow(grip,2); frame.Children.Add(grip);
+            grip.DragDelta += delegate(object sender,DragDeltaEventArgs e) { if (Host.Frozen) return; if(Brief) briefAuto=false; else readerAuto=false; Width = Math.Max(MinWidth,Math.Min(MaxWidth,Width+e.HorizontalChange)); Height = Math.Max(MinHeight,Math.Min(MaxHeight,Height+e.VerticalChange)); }; grip.DragCompleted += delegate { ClampBounds(); SaveLayout(); }; Grid.SetRow(grip,2); frame.Children.Add(grip);
             summary.Focusable=true; overview.Children.Add(floorBody); overview.Children.Add(summary);
 
             pages["overview"] = UI.Scroll(overview); pages["floor"] = pages["overview"];
@@ -270,7 +271,7 @@ namespace Denghuo.Native {
         }
         IntPtr WindowMessage(IntPtr hwnd,int msg,IntPtr wParam,IntPtr lParam,ref bool handled) {
             if(msg==0x231) sizingStart=new Size(Width,Height);
-            if(msg==0x232) { if(Brief && !Collapsed && (Math.Abs(Width-sizingStart.Width)>1 || Math.Abs(Height-sizingStart.Height)>1)) briefAuto=false; defaultPlacement=false; SaveLayout(); }
+            if(msg==0x232) { if(!Collapsed && (Math.Abs(Width-sizingStart.Width)>1 || Math.Abs(Height-sizingStart.Height)>1)) { if(Brief) briefAuto=false; else readerAuto=false; } defaultPlacement=false; SaveLayout(); }
             if (msg == 0x84 && !Collapsed) { long value = lParam.ToInt64(); int x = (short)(value&65535), y = (short)((value>>16)&65535); Point p = PointFromScreen(new Point(x,y)); bool left = p.X < 6, right = p.X > ActualWidth-6, topEdge = p.Y < 6, bottom = p.Y > ActualHeight-6; int hit = topEdge ? left ? 13 : right ? 14 : 12 : bottom ? left ? 16 : right ? 17 : 15 : left ? 10 : right ? 11 : 0; if (hit != 0) { handled = true; return new IntPtr(hit); } }
             return IntPtr.Zero;
         }
@@ -281,7 +282,7 @@ namespace Denghuo.Native {
             var connection = UI.Stack(UI.Text("连接更改立即应用；保存按钮仅保存跟随与快捷键。",13,UI.Muted),UI.Field("已应用的存档目录（可选择复制）",saveRoot),UI.Field("存档槽位",slot),top,UI.Field("启动时打开",startup),UI.Buttons(UI.Button("选择并连接存档目录…",delegate { using (var picker = new Forms.FolderBrowserDialog { Description = "选择包含 game1、game2 等文件夹的存档目录", SelectedPath=saveRoot.Text, ShowNewFolderButton = false }) { if (picker.ShowDialog(new NativeOwner(Handle)) == Forms.DialogResult.OK) Host.Send("directory","path",picker.SelectedPath); } }),UI.Button("刷新存档",delegate { Host.Send("refresh"); }),UI.Button("重新读取已应用连接",delegate { Host.Send("reload_connection"); })));
             Host.Settings.Connection = connection; Host.Settings.Prepend(connection); pages[page] = pane;
         } else pages[page] = pane; }
-        public void OpenPage(string page) { if (Host.Frozen) return; if (page == "lookup") Host.Send("show_lookup"); else if (page == "settings") Host.Send("show_settings"); else if (page == "plans") Host.Send("choose_plan","surface","lookup"); else if (page != "overview" && page != "floor") Host.Send("game_page","page",page); ShowPage(page); }
+        public void OpenPage(string page) { if (Host.Frozen) return; if (page == "lookup") Host.Send("show_lookup","preserve_view",true); else if (page == "settings") Host.Send("show_settings"); else if (page == "plans") Host.Send("choose_plan","surface","lookup"); else if (page != "overview" && page != "floor") Host.Send("game_page","page",page); ShowPage(page); }
         public void ShowPage(string page) {
             if(page=="floor") page="overview";
             if(!pages.ContainsKey(page)) return;
@@ -295,7 +296,7 @@ namespace Denghuo.Native {
                 changingLayout=false;
             }
             var names=new Dictionary<string,string> {{"overview","最近局势"},{"inventory","背包"},{"equipment","装备比较"},{"alchemy","炼金计划"},{"floor","本层"},{"lookup","图鉴"},{"character","角色条件"},{"map","已探索地图"},{"backups","存档历史"},{"plans","我的方案"},{"settings","设置"}};
-            heading.Text=names[page]; heading.Visibility=navigation.ContainsKey(page) || page=="floor" ? Visibility.Collapsed : Visibility.Visible;
+            heading.Text=names[page]; heading.Visibility=navigation.ContainsKey(page) || page=="floor" || page=="map" ? Visibility.Collapsed : Visibility.Visible;
             string selected=page=="equipment" ? "inventory" : page=="map" || page=="floor" ? "overview" : page=="character" ? "overview" : page;
             foreach(var pair in navigation) {
                 bool active=pair.Key==selected; pair.Value.Background=Brushes.Transparent;
@@ -313,7 +314,7 @@ namespace Denghuo.Native {
         void ShowMore() {
             UI.Menu(more,UI.Item("炼金计划",delegate { OpenPage("alchemy"); }),UI.Item("我的方案",delegate { OpenPage("plans"); }),UI.Item("继续编辑草稿…",delegate { Host.Send("list_drafts"); }),
                 new Separator(),UI.Item("立即备份已保存进度",delegate { Host.Send("capture"); }),UI.Item("刷新存档",delegate { Host.Send("refresh"); }),UI.Item("存档历史",delegate { OpenPage("backups"); }),
-                new Separator(),UI.Item("界面大小 · "+textScale+"%",ChooseScale),UI.Item(briefAuto ? "随行已按内容调整高度" : "随行高度适应内容",delegate { briefAuto=true; QueueBriefFit(); SaveLayout(); },!briefAuto),UI.Item("恢复默认大小与位置",ResetLayout),UI.Item("设置",delegate { OpenPage("settings"); }),UI.Item("完整面板",delegate { Host.Send("panel","page","overview"); }),
+                new Separator(),UI.Item("界面大小 · "+textScale+"%",ChooseScale),UI.Item((Brief ? briefAuto : readerAuto) ? "已按内容调整高度" : "高度适应内容",delegate { if(Brief) briefAuto=true; else readerAuto=true; QueueBriefFit(); SaveLayout(); },!(Brief ? briefAuto : readerAuto)),UI.Item("恢复默认大小与位置",ResetLayout),UI.Item("设置",delegate { OpenPage("settings"); }),UI.Item("完整面板",delegate { Host.Send("panel","page","overview"); }),
                 UI.Item(Data.Text(updateState,"state","")=="available" ? "更新灯火 · "+Data.Text(updateState,"latest_version","") : "软件更新",ShowUpdates),
                 new Separator(),UI.Item("退出灯火",delegate { Host.Send("exit"); }));
         }
@@ -355,7 +356,7 @@ namespace Denghuo.Native {
         }
         void QueueLayout() { if (!changingLayout && !Host.Frozen) { layoutTimer.Stop(); layoutTimer.Start(); } }
         void ClampBounds() { var scale = SystemDpi/96; var area = Forms.Screen.FromRectangle(new System.Drawing.Rectangle((int)(Left*scale),(int)(Top*scale),(int)(Width*scale),(int)(Height*scale))).WorkingArea; double x=area.Left/scale,y=area.Top/scale,w=area.Width/scale,h=area.Height/scale;
-            if(!Collapsed) { double zoom=textScale/100.0; MinWidth=Math.Min((Brief ? 280 : 340)*zoom,w); MinHeight=Math.Min((Brief ? MinimumBriefHeight : 360)*zoom,h); }
+            if(!Collapsed) { double zoom=textScale/100.0; MinWidth=Math.Min(280*zoom,w); MinHeight=Math.Min((Brief ? MinimumBriefHeight : 180)*zoom,h); }
             Width = Math.Min(Width,w); Height = Math.Min(Height,h); Left = Math.Max(x,Math.Min(Left,x+w-Width)); Top = Math.Max(y,Math.Min(Top,y+h-Height)); }
         public void Collapse() { if (Collapsed) return; RememberGeometry(); changingLayout = true; if (WindowState != WindowState.Normal) WindowState = WindowState.Normal; expandedBounds = new Rect(Left,Top,Width,Height); Collapsed = true; frame.Visibility = Visibility.Collapsed; MinWidth = MinHeight = 0; ResizeMode = ResizeMode.NoResize; Width = 36; Height = 68; handle.Visibility = Visibility.Visible; ClampBounds(); changingLayout = false; SaveLayout(); Host.VisibilityAll(); }
         static UIElement DisclosureTarget(UIElement target) {
@@ -379,7 +380,7 @@ namespace Denghuo.Native {
             else { readerWidth=Width; readerHeight=Height; }
         }
         void UsePageSize() {
-            double zoom=textScale/100.0; MinWidth=(Brief ? 280 : 340)*zoom; MinHeight=(Brief ? MinimumBriefHeight : 360)*zoom;
+            double zoom=textScale/100.0; MinWidth=280*zoom; MinHeight=(Brief ? MinimumBriefHeight : 180)*zoom;
             Width=Math.Max(MinWidth,Brief ? briefWidth : readerWidth); Height=Math.Max(MinHeight,Brief ? briefHeight : readerHeight);
             frame.RowDefinitions[0].Height=new GridLength(28);
         }
@@ -404,23 +405,47 @@ namespace Denghuo.Native {
             else { UsePageSize(); ClampBounds(); RememberGeometry(); expandedBounds=new Rect(Left,Top,Width,Height); }
             changingLayout=false; QueueBriefFit(); SaveLayout();
         }
-        void QueueBriefFit() {
-            if(fitQueued || changingLayout || !Brief || !briefAuto || Collapsed) return;
+        double ReaderContentHeight(FrameworkElement pane,double width) {
+            // A constrained ScrollViewer reports its viewport as DesiredSize. Measure
+            // its actual content without a scrollbar to include wrapped action rows.
+            var grid=pane as Grid;
+            if(grid==null) { pane.Measure(new Size(width,Double.PositiveInfinity)); return pane.DesiredSize.Height; }
+            var rows=new double[Math.Max(1,grid.RowDefinitions.Count)];
+            foreach(UIElement child in grid.Children) {
+                if(child.Visibility==Visibility.Collapsed) continue;
+                var scroll=child as ScrollViewer; var inner=scroll==null ? null : scroll.Content as FrameworkElement;
+                double height;
+                if(inner!=null) { inner.Measure(new Size(Math.Max(120,width-scroll.Padding.Left-scroll.Padding.Right-scroll.Margin.Left-scroll.Margin.Right),Double.PositiveInfinity)); height=inner.DesiredSize.Height+scroll.Padding.Top+scroll.Padding.Bottom+scroll.Margin.Top+scroll.Margin.Bottom; }
+                else { child.Measure(new Size(width,Double.PositiveInfinity)); height=child.DesiredSize.Height; }
+                int row=Math.Min(rows.Length-1,Grid.GetRow(child)); rows[row]=Math.Max(rows[row],height);
+            }
+            double total=0;foreach(double height in rows) total+=height;return total;
+        }
+        void QueueBriefFit(int pass=0) {
+            if(fitQueued || changingLayout || !(Brief ? briefAuto : readerAuto) || Collapsed) return;
             fitQueued=true;
             Dispatcher.BeginInvoke(DispatcherPriority.Loaded,new Action(delegate {
                 fitQueued=false;
-                if(changingLayout || !Brief || !briefAuto || Collapsed) return;
+                if(changingLayout || !(Brief ? briefAuto : readerAuto) || Collapsed) return;
                 double zoom=textScale/100.0, client=frame.ActualWidth>0 ? frame.ActualWidth : (Width-2)/zoom;
                 double available=Math.Max(180,client-32);
-                overview.Measure(new Size(available,Double.PositiveInfinity));
+                var body=Brief ? (FrameworkElement)overview : pages[Page];
+                double readerContent=Brief ? 0 : ReaderContentHeight(body,Math.Max(180,content.ActualWidth>0 ? content.ActualWidth : client-18));
+                if(Brief) body.Measure(new Size(available,Double.PositiveInfinity));
                 footerScroll.Measure(new Size((Width-2)/zoom,Double.PositiveInfinity));
                 double chrome=Math.Max(2,Height-frame.ActualHeight*zoom);
                 var view=(ScrollViewer)pages["overview"];
-                double desired=view.ViewportHeight>0 && !Double.IsInfinity(view.ViewportHeight) ? Height+(overview.DesiredSize.Height-view.ViewportHeight)*zoom : (28+31+8+overview.DesiredSize.Height+footerScroll.DesiredSize.Height)*zoom+chrome;
+                double desired=Brief && view.ViewportHeight>0 && !Double.IsInfinity(view.ViewportHeight) ? Height+(body.DesiredSize.Height-view.ViewportHeight)*zoom : (28+31+10+(Brief ? body.DesiredSize.Height : readerContent)+footerScroll.DesiredSize.Height+(heading.Visibility==Visibility.Visible ? heading.DesiredSize.Height : 0))*zoom+chrome;
+                if(!Brief && body.ActualHeight>0 && !Double.IsInfinity(body.ActualHeight)) desired=Height+(readerContent-body.ActualHeight+2)*zoom;
                 double target=Math.Max(MinHeight,Math.Min(420*zoom,Math.Ceiling(desired)));
                 if(Math.Abs(Height-target)<1) return;
-                changingLayout=true; Height=target; ClampBounds(); briefHeight=Height;
-                expandedBounds=new Rect(Left,Top,Width,Height); changingLayout=false; SaveLayout();
+                double previousHeight=Height; var previousBounds=new Rect(Left,Top,Width,Height); changingLayout=true; Height=target; ClampBounds(); if(Brief) briefHeight=Height; else readerHeight=Height;
+                expandedBounds=new Rect(Left,Top,Width,Height); changingLayout=false;
+                if(expandedBounds==previousBounds) return;
+                SaveLayout();
+                // The footer limit depends on the new height. Recheck after layout,
+                // stopping at screen constraints and bounding rounding oscillation.
+                if(pass<6 && Math.Abs(Height-previousHeight)>=1) QueueBriefFit(pass+1);
             }));
         }
         public void Expand() {
@@ -437,7 +462,7 @@ namespace Denghuo.Native {
             Rect normal=Collapsed ? expandedBounds : new Rect(Left,Top,Width,Height);
             if(attached) { gameX=(int)Math.Round(Left-gameBounds.Left); gameY=(int)Math.Round(Top-gameBounds.Top); }
             Host.Send(reset ? "layout_reset" : "window_layout","layout",Data.Map(
-                "width",Math.Max(340,(int)Math.Round(readerWidth)),"height",Math.Max(360,(int)Math.Round(readerHeight)),
+                "width",Math.Max(280,(int)Math.Round(readerWidth)),"height",Math.Max(180,(int)Math.Round(readerHeight)),"reader_auto",readerAuto,
                 "brief_width",Math.Max(280,(int)Math.Round(briefWidth)),"brief_height",Math.Max(MinimumBriefHeight,(int)Math.Round(briefHeight)),
                 "brief_auto",briefAuto,"text_scale",textScale,"follow_default",defaultPlacement,"x",(int)Math.Round(normal.X),"y",(int)Math.Round(normal.Y),
                 "game_x",gameX,"game_y",gameY,"collapsed",Collapsed,"page",Page));
@@ -445,7 +470,7 @@ namespace Denghuo.Native {
         public void ApplyLayout(Dictionary<string,object> d) {
             changingLayout=true; bool collapsed=Data.Flag(d,"collapsed");
             gameX=(int)Data.Number(d,"game_x"); gameY=(int)Data.Number(d,"game_y");
-            readerWidth=Math.Max(340,Data.Number(d,"width")); readerHeight=Math.Max(360,Data.Number(d,"height"));
+            readerWidth=Math.Max(280,Data.Number(d,"width")); readerHeight=Math.Max(180,Data.Number(d,"height")); readerAuto=Data.Flag(d,"reader_auto");
             briefWidth=Math.Max(280,Data.Number(d,"brief_width")); briefHeight=Math.Max(MinimumBriefHeight,Data.Number(d,"brief_height"));
             briefAuto=Data.Flag(d,"brief_auto"); textScale=d.ContainsKey("text_scale") ? (int)Data.Number(d,"text_scale") : 100;
             frame.LayoutTransform=new ScaleTransform(textScale/100.0,textScale/100.0);
@@ -472,7 +497,7 @@ namespace Denghuo.Native {
         }
         void ResetLayout() {
             bool collapsed=Collapsed; Expand(); changingLayout=true;
-            double zoom=textScale/100.0; readerWidth=380*zoom; readerHeight=460*zoom; briefWidth=310*zoom; briefHeight=240*zoom; briefAuto=true; defaultPlacement=!attached;
+            double zoom=textScale/100.0; readerWidth=310*zoom; readerHeight=300*zoom; briefWidth=310*zoom; briefHeight=240*zoom; briefAuto=readerAuto=true; defaultPlacement=!attached;
             UsePageSize(); DefaultPosition(); expandedBounds=new Rect(Left,Top,Width,Height); changingLayout=false;
             if(collapsed) Collapse(); else QueueBriefFit(); SaveLayout(true);
         }

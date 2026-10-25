@@ -919,13 +919,13 @@ class NumericLookup:
         self.dirty, self.draft_modified = True, True
         self.edit_revision += 1
         self.search(preserve_detail=True)
-        self.show()
+        self.show(preserve_view=True)
         selected = next((index for index, row in enumerate(self.rows) if row['id'] == self.identity), None)
         if selected is not None:
             self.list.selection_set(selected)
         self.origin.text = '已载入未完成草稿；尚未重新计算或保存，不会应用到游戏。'
         self.show_text('原始草稿已恢复，请核对后重新计算。')
-        self.emit()
+        self.emit(focus_edit=True)
 
     def undo_import(self):
         if self.undo_state is None:
@@ -1118,7 +1118,7 @@ class NumericLookup:
         return [{'id': row['id'], 'name': row['name'], 'token': binding_token([self.identity, row])}
                 for row in self.rendered.get('alchemy_recipes', [])]
 
-    def emit(self):
+    def emit(self, *, focus_edit=False):
         from .reference import native_artwork
         self.host.revision += 1
         entry = self.owner.manager.session.catalog.entry_index.get(self.identity, {})
@@ -1170,7 +1170,7 @@ class NumericLookup:
         notice_brief = '\n'.join(part for part in (self.spell_availability_notice(),
             (self.context or {}).get('item_notice_brief', (self.context or {}).get('item_notice', ''))) if part)
         sent = self.host.command('lookup_state', draft_revision=self.edit_revision, query=self.query.get(),
-            focus_result=self.focus_result, focus_suggestions=self.focus_suggestions,
+            focus_result=self.focus_result, focus_edit=focus_edit, focus_suggestions=self.focus_suggestions,
             focus_listing=self.focus_listing,
             rows=[{'text': text, 'name': row['name'], 'kind': row.get('type_label', ''),
                    'hint': ' · '.join(filter(None, (row.get('display_hint', ''),
@@ -1238,13 +1238,17 @@ class NumericLookup:
         self.host.command('focus_search')
         return 'break'
 
-    def show(self):
+    def show(self, *, preserve_view=False):
         target = self.owner.native.game()
         if target or not self.visible():
             self.return_target = target
         if not self.query.get().strip():
             self.search(preserve_detail=True)
-        self.host.command('show', surface='lookup')
+        if preserve_view:
+            self.emit()
+            self.host.command('show', surface='lookup', preserve_view=True)
+        else:
+            self.host.command('show', surface='lookup')
 
     def hide(self):
         # Only an explicit helper close may return to a previously verified game.

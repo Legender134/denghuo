@@ -910,6 +910,8 @@ class GameWorkspace:
             row = next((r for r in rows if r['id'] == selected), None)
             if row:
                 item = row['item']; text = inventory_item_text(item)
+                if item.get('known') and item.get('key') in self.session.catalog.entry_index:
+                    actions[0] = ('reference', '基础示例' if item.get('level_applicable') is not False and item.get('level') is None else '查看数值')
                 result_details.append({'id': 'item_description', 'title': '物品说明', 'expanded': False,
                     'text': item['location']+'\n\n'+item['description']+'\n\n'+' · '.join(item.get('details', []))})
                 if item.get('revealed'):
@@ -940,9 +942,14 @@ class GameWorkspace:
         elif page == 'map':
             self.sync_map_source()
             rows = self.rows.get('map', [])
+            selected_floor = next((r['floor'] for r in rows if r['id'] == self.selected.get('map')), None)
             actions = [('map_known', '查看当前已探索地形'), ('reload', '读取已生成楼层'), ('map_reveal', '主动揭示所选楼层'), ('map_hide', '收起隐藏内容')]
             text = '当前保存楼层默认只显示已探索地形，未知区域保持遮蔽。其他已生成楼层需选择后主动揭示；地图只读，非实时视野。'
             public = self.public_map()
+            pending_map = bool(selected_floor and not self.map_result and (not public or
+                (selected_floor['depth'], selected_floor['branch']) != (public['depth'], public['branch'])))
+            if selected_floor:
+                actions[2] = ('map_reveal', f"揭示第 {selected_floor['depth']} 层")
             if self.map_result:
                 floor = self.map_result
                 text = f"第 {floor['depth']} 层 / 支线 {floor['branch']} · 已主动揭示\n\n"+floor['note']
@@ -968,6 +975,10 @@ class GameWorkspace:
                 text += '\n存档地图，非实时视野'
                 item_detail = self.map_items_detail() if self.map_result else None
                 if item_detail: result_details.append(item_detail)
+            if pending_map:
+                text = f"第 {selected_floor['depth']} 层"+(f" · 支线 {selected_floor['branch']}" if selected_floor['branch'] else '')+' · 未揭示'
+                result_details = []
+            map_content = {} if pending_map else (self.map_result or public or {}).get('map', {})
         else:
             rows = self.rows.get('backups', [])
             actions = [('reload', '刷新历史'), ('backup_preview', '预览所选进度')]
@@ -1050,7 +1061,7 @@ class GameWorkspace:
             notice=self.notices.get(page, '') if page not in self.dirty else '',
             notice_brief=self.notice_briefs.get(page, ''),
             result_details=result_details,
-            map=(self.map_result or self.public_map() or {}).get('map', {}) if page == 'map' else {},
+            map=map_content if page == 'map' else {},
             map_revealed=bool(self.map_result) if page == 'map' else False,
             progress=copy.deepcopy((self.backup_preview or {}).get('progress', {})) if page == 'backups' else {},
             backup_summary=copy.deepcopy((self.backup_preview or {}).get('summary', {})) if page == 'backups' else {},
@@ -1095,6 +1106,14 @@ class GameWorkspace:
             self.map_items_page = max(0, min((len(rows)-1)//20, self.map_items_page+(-1 if action.endswith('previous') else 1)))
         elif action in ('map_hide', 'map_known'):
             self.map_result = None; self.map_generation += 1
+            if action == 'map_known':
+                public = self.public_map()
+                current = next((r for r in self.rows.get('map', []) if public and
+                    (r['floor']['depth'], r['floor']['branch']) == (public['depth'], public['branch'])), None)
+                if current:
+                    self.selected['map'], self.selected_tokens['map'] = current['id'], current['token']
+                else:
+                    self.selected.pop('map', None); self.selected_tokens.pop('map', None)
         elif action == 'backup_preview': self.preview_backup()
         elif action == 'backup_confirm':
             preview = self.backup_preview
@@ -1229,6 +1248,12 @@ class GameWorkspace:
         self.native.queue_io('正在只读揭示所选保存楼层', lambda: inspect_saved(self.session, payload), complete)
 
     @staticmethod
+    def backup_saved_label(row):
+        from .native_workspace import plan_updated_text
+        saved = row.get('saved')
+        return plan_updated_text(saved)+' 保存' if type(saved) in (int, float) else '保存时间未记录'
+
+    @staticmethod
     def backup_row_summary(action, row):
         from .engine import CLASSES
         from .native_workspace import plan_updated_text
@@ -1310,6 +1335,8 @@ class GameWorkspace:
                     'save_root': result.get('save_root', ''),
                     'summary': {'heading': f"槽位 {entry['slot']} · "+label,
                         'target': '目标 · '+self.progress_brief(result['target']),
+                        'current': '当前 · '+self.progress_brief(result['current']),
+                        'saved': self.backup_saved_label(entry if action == 'restore' else entry.get('before') or {}),
                         'warning': '\n'.join(filter(None, version_warnings+[result['target'].get('warning'), result['current'].get('warning'),
                             '' if result['same_run'] else '不同冒险或无法确认，请核对目标。']))},
                     'progress': {'current': result['current'], 'target': result['target'], 'same_run': result['same_run']}}

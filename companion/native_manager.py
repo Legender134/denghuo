@@ -776,7 +776,10 @@ class NativeManager:
                 self.manager.play_settings.handle(item)
             elif action == 'show_lookup':
                 self.workspace.hide_inventory_reveals()
-                self.manager.open_lookup()
+                if item.get('preserve_view') is True and self.lookup() is not None:
+                    self.lookup().show(preserve_view=True)
+                else:
+                    self.manager.open_lookup()
             elif action == 'show_settings':
                 self.workspace.hide_inventory_reveals()
                 self.manager.open_play_settings()

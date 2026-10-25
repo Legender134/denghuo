@@ -7,6 +7,24 @@ from companion.window_layout import DEFAULT, LEGACY_KEYS, WindowLayout, validate
 
 
 class WindowLayoutTests(unittest.TestCase):
+    def test_compact_manual_reader_geometry_survives_restart(self):
+        value = {**DEFAULT, 'width': 280, 'height': 200, 'reader_auto': False, 'page': 'lookup'}
+        layout = WindowLayout(self.config)
+        layout.update(value); self.assertTrue(layout.flush(5)); self.assertTrue(layout.close())
+        reopened = WindowLayout(self.config); self.addCleanup(reopened.close)
+        self.assertEqual((reopened.values['width'], reopened.values['height']), (280, 200))
+        self.assertFalse(reopened.values['reader_auto'])
+
+    def test_previous_reader_size_is_not_silently_migrated_to_auto(self):
+        value = {key: val for key, val in DEFAULT.items() if key != 'reader_auto'}
+        value.update(width=620, height=700, page='lookup')
+        original = json.dumps(value).encode()
+        self.path.write_bytes(original)
+        layout = WindowLayout(self.config); self.addCleanup(layout.close)
+        self.assertEqual((layout.values['width'], layout.values['height']), (620, 700))
+        self.assertFalse(layout.values['reader_auto'])
+        self.assertEqual(self.path.read_bytes(), original)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix='lamp-window-layout-')
         self.addCleanup(self.directory.cleanup)

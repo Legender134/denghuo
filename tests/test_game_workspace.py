@@ -12,6 +12,32 @@ from companion.character_scene import calculate_scene, empty_scene
 
 
 class GameWorkspaceTests(ControllerFixture):
+    def test_selecting_another_floor_does_not_display_the_current_map_as_its_preview(self):
+        _, slot = self.saved_game()
+        game = json.loads((slot/'game.dat').read_text('utf8'))
+        game['generated_levels'] = [2, 5]
+        (slot/'game.dat').write_text(json.dumps(game), 'utf8')
+        level = json.loads((slot/'depth2.dat').read_text('utf8'))
+        level['level'].update(map=[1]*16, visited=[True]*16)
+        (slot/'depth2.dat').write_text(json.dumps(level), 'utf8')
+        (slot/'depth5.dat').write_bytes((slot/'depth2.dat').read_bytes())
+        self.session.refresh()
+        self.workspace.reload('map'); self.finish_job()
+        target = next(row for row in self.workspace.rows['map'] if row['floor']['depth'] == 5)
+        self.select('map', target)
+        state = self.host.commands[-1][1]
+        self.assertIn('第 5 层', state['text'])
+        self.assertIn('未揭示', state['text'])
+        self.assertNotIn('第 2 层', state['text'])
+        self.assertEqual(state['map'], {})
+        self.assertEqual(state['result_details'], [])
+        reveal = next(a for a in state['actions'] if a['id'] == 'map_reveal')
+        self.assertFalse(reveal['disabled']); self.assertIn('5', reveal['text'])
+        self.workspace.handle({'page': 'map', 'command': 'map_known'})
+        state = self.host.commands[-1][1]
+        self.assertIn('第 2 层', state['text'])
+        self.assertEqual(self.workspace.selected['map'], '2:0')
+
     def test_library_recipe_appends_without_replacing_drafts_or_inventory_and_can_undo(self):
         raw = {**self.workspace.raw['alchemy'], 'targets':'2', 't1.recipe':'potion-healing', 't1.quantity':'1e',
                'resources':'1', 'r0.id':'items.potions.potionofhealing', 'r0.quantity':'2', 'r0.reserve':'1',
@@ -1145,6 +1171,11 @@ class GameWorkspaceTests(ControllerFixture):
         self.select('backups', self.workspace.rows['backups'][0])
         self.workspace.preview_backup(); self.finish_job()
         self.assertIsNotNone(self.workspace.backup_preview)
+        summary = self.workspace.backup_preview['summary']
+        self.assertIn('保存', summary['saved'])
+        self.assertNotIn('未记录', summary['saved'])
+        self.assertIn('当前', summary['current']); self.assertIn('3/30', summary['current'])
+        self.assertIn('目标', summary['target']); self.assertIn('20/30', summary['target'])
         self.workspace.handle({'page': 'backups', 'command': 'backup_confirm'})
         self.assertEqual(self.host.commands[-2][0], 'game_confirm')
         confirmation = self.host.commands[-2][1]

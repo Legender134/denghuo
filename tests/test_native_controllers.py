@@ -1328,5 +1328,34 @@ class SettingsControllerTests(ControllerFixture):
         self.assertIn('已注册', text)
 
 
+class SidebarResumeTests(ControllerFixture):
+    def test_workspace_resume_keeps_pending_input_and_uses_resume_protocol(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['max_hp'].set('91')
+        self.lookup.note.set('核对背包后继续')
+        before = copy.deepcopy(self.lookup.draft())
+        self.host.commands.clear()
+        self.lookup.show(preserve_view=True)
+        show = next(payload for action, payload in reversed(self.host.commands) if action == 'show')
+        self.assertEqual(show, {'surface': 'lookup', 'preserve_view': True})
+        self.assertEqual(self.lookup.draft(), before)
+        self.assertTrue(self.lookup.has_draft())
+
+    def test_loading_numeric_draft_explicitly_opens_editor_without_calculating(self):
+        self.open('items.potions.potionofhealing')
+        self.lookup.variables['max_hp'].set('91')
+        draft = copy.deepcopy(self.lookup.draft())
+        self.lookup.variables['max_hp'].set('44')
+        self.host.commands.clear()
+        self.lookup.restore_draft(draft)
+        state = next(payload for action, payload in reversed(self.host.commands) if action == 'lookup_state')
+        self.assertTrue(state['focus_edit'])
+        self.assertTrue(state['needs_calculation'])
+        self.assertEqual(self.lookup.variables['max_hp'].get(), '91')
+        self.assertIsNone(self.lookup.calculated)
+        show = next(payload for action, payload in reversed(self.host.commands) if action == 'show')
+        self.assertTrue(show['preserve_view'])
+
+
 if __name__ == '__main__':
     unittest.main()

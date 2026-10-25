@@ -97,7 +97,7 @@ namespace Denghuo.Native {
             var d=json.Deserialize<Dictionary<string,object>>(line); string action=Data.Text(d,"action",""); if(action=="eof") { Shutdown(); return; }
             if(Data.Number(d,"version")!=1 || Data.Text(d,"session","")!=session) throw new IOException("原生协议身份不匹配"); revision=Math.Max(revision,Data.Number(d,"revision"));
             switch(action) {
-                case "show": ShowSurface(Data.Text(d,"surface","manager")); break;
+                case "show": ShowSurface(Data.Text(d,"surface","manager"),Data.Flag(d,"preserve_view")); break;
                 case "hide": HideSurface(Data.Text(d,"surface","manager")); break;
                 case "minimize_manager": Manager.WindowState=WindowState.Minimized; break;
                 case "manager_state": Manager.Render(d); break;
@@ -109,9 +109,9 @@ namespace Denghuo.Native {
                 case "game_state": Manager.RenderTask(d); break;
                 case "game_show": ShowSurface("manager"); Manager.ShowPage(Data.Text(d,"page","inventory")); break;
                 case "game_confirm": GameConfirm(d); break;
-                case "lookup_state": Lookup.Render(d); break;
-                case "settings_state": Settings.Render(d); break;
-                case "plans": Plans.Render(d); break;
+                case "lookup_state": Lookup.Render(d); Manager.FitContent(); break;
+                case "settings_state": Settings.Render(d); Manager.FitContent(); break;
+                case "plans": Plans.Render(d); Manager.FitContent(); break;
                 case "focus_search": ShowSurface("lookup"); Lookup.FocusSearch(); break;
                 case "name_plan": NamePlan(d); break;
                 case "game_name_plan": GameNamePlan(d); break;
@@ -133,7 +133,7 @@ namespace Denghuo.Native {
             if(Manager==null) return;
             foreach(string surface in new[]{"manager","lookup","settings","plans"}) Send("visibility","surface",surface,"visible",Manager.IsVisible && (surface=="manager" || !Manager.Collapsed && Manager.Page==surface),"hwnd",Manager.Handle.ToInt64(),"collapsed",Manager.Collapsed);
         }
-        public void ShowSurface(string surface) { Manager.Expand(); if(surface!="manager") Manager.ShowPage(surface); if(!Manager.IsVisible) Manager.Show(); if(Manager.WindowState==WindowState.Minimized) Manager.WindowState=WindowState.Normal; Manager.Activate(); VisibilityAll(); if(surface=="lookup") Lookup.FocusSearch(); }
+        public void ShowSurface(string surface,bool preserveView=false) { Manager.Expand(); if(surface!="manager") Manager.ShowPage(surface); if(!Manager.IsVisible) Manager.Show(); if(Manager.WindowState==WindowState.Minimized) Manager.WindowState=WindowState.Normal; Manager.Activate(); VisibilityAll(); if(surface=="lookup" && !preserveView) Lookup.FocusSearch(); }
         public void HideSurface(string surface) { if(surface=="lookup" || surface=="settings" || surface=="plans") Manager.Collapse(); else Manager.Hide(); VisibilityAll(); }
         void SetFrozen(bool value) { Manager.Editable.IsEnabled=!value; if(activeName!=null) activeName.Editable.IsEnabled=!value; }
         void CloseExitDialog() { var dialog=activeExit; activeExit=null; if(dialog!=null) dialog.CloseSilently(); }
