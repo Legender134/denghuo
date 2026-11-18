@@ -24,8 +24,8 @@ namespace Denghuo.Native {
         [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint pid);
         [DllImport("user32.dll")] static extern bool IsWindow(IntPtr hwnd);
         [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hwnd);
-        [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr hwnd,int command);
         [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
         [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd,System.Text.StringBuilder text,int maximum);
         [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr hwnd,System.Text.StringBuilder text,int maximum);
         public static bool OwnsForeground(Dictionary<string,object> game) {
@@ -33,8 +33,10 @@ namespace Denghuo.Native {
             GetWindowThreadProcessId(hwnd,out pid);
             return hwnd!=IntPtr.Zero && pid==(uint)Data.Number(game,"pid") && GetForegroundWindow()==hwnd;
         }
+        public static bool EscapeDown { get { return (GetAsyncKeyState(0x1B)&0x8000)!=0; } }
         public static bool Return(Dictionary<string,object> game) {
             // Only the foreground helper may yield focus, and only to the verified game.
+            if(EscapeDown) return false;
             uint foregroundPid,gamePid;
             GetWindowThreadProcessId(GetForegroundWindow(),out foregroundPid);
             if(foregroundPid!=(uint)System.Diagnostics.Process.GetCurrentProcess().Id) return false;
@@ -45,8 +47,8 @@ namespace Denghuo.Native {
             GetWindowText(hwnd,title,title.Capacity); GetClassName(hwnd,kind,kind.Capacity);
             if(!title.ToString().StartsWith("Shattered Pixel Dungeon",StringComparison.Ordinal) ||
                 kind.ToString()!="GLFW30" && kind.ToString()!="LWJGL") return false;
-            if(IsIconic(hwnd)) ShowWindow(hwnd,9);
-            return SetForegroundWindow(hwnd) && GetForegroundWindow()==hwnd;
+            if(IsIconic(hwnd)) return false;
+            return !EscapeDown && SetForegroundWindow(hwnd) && GetForegroundWindow()==hwnd;
         }
     }
     static class UI {
@@ -130,6 +132,30 @@ namespace Denghuo.Native {
         }
     }
 
+    sealed class EscapeRelease {
+        bool pending;
+        public void Press(bool repeat) { if(!repeat) pending=true; }
+        public bool Release() { bool accepted=pending; pending=false; return accepted; }
+        public void Cancel() { pending=false; }
+        public static void Bind(Window window,Action action,Func<bool> enabled,bool preview) {
+            var escape=new EscapeRelease();
+            KeyEventHandler down=delegate(object sender,KeyEventArgs e) {
+                if(e.Key!=Key.Escape || !enabled()) return;
+                escape.Press(e.IsRepeat); e.Handled=true;
+            };
+            // Keep focus here until release, so the game cannot receive a held
+            // Escape as a new press when the sidebar yields the foreground.
+            window.AddHandler(preview ? Keyboard.PreviewKeyDownEvent : Keyboard.KeyDownEvent,down);
+            window.AddHandler(Keyboard.PreviewKeyUpEvent,new KeyEventHandler(delegate(object sender,KeyEventArgs e) {
+                if(e.Key!=Key.Escape || !escape.Release()) return;
+                e.Handled=true;
+                if(window.IsActive && enabled()) action();
+            }));
+            window.Deactivated+=delegate { escape.Cancel(); };
+            window.Closed+=delegate { escape.Cancel(); };
+        }
+    }
+
     class Dialog : Window {
         public readonly StackPanel Body = new StackPanel();
         public readonly WrapPanel Actions = new WrapPanel();
@@ -147,7 +173,7 @@ namespace Denghuo.Native {
             var grid = new Grid { Margin = new Thickness(20), LayoutTransform = new ScaleTransform(InterfaceScale,InterfaceScale) }; grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); grid.RowDefinitions.Add(new RowDefinition()); grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             var header = new DockPanel { Margin = new Thickness(0,0,0,16) }; var close = UI.Button("×", delegate { Close(); }); close.ToolTip = "关闭并返回"; DockPanel.SetDock(close,Dock.Right); header.Children.Add(close); header.Children.Add(UI.Text(title,18)); header.MouseLeftButtonDown += delegate(object s,MouseButtonEventArgs e) { if (e.OriginalSource is TextBlock) DragMove(); };
             var scroll = UI.Scroll(Body); Grid.SetRow(scroll,1); Grid.SetRow(Actions,2); Actions.Margin = new Thickness(0,14,0,0); grid.Children.Add(header); grid.Children.Add(scroll); grid.Children.Add(Actions); Content = new Border { BorderBrush = UI.Line, BorderThickness = new Thickness(1), Child = grid };
-            PreviewKeyDown += delegate(object s,KeyEventArgs e) { if (e.Key == Key.Escape) { Close(); e.Handled = true; } };
+            EscapeRelease.Bind(this,delegate { Close(); },delegate { return true; },true);
         }
         public void Choose(string value) { Decision = value; DialogResult = value != "cancel"; }
         public void CloseSilently() { Silent = true; Close(); }
@@ -185,6 +211,7 @@ namespace Denghuo.Native {
         public string Page = "overview";
         public double SystemDpi = 96;
         bool rendering, changingLayout = true, shutdown, attached, handleDragged;
+        readonly GameDisplay gameDisplay=new GameDisplay();
         Rect expandedBounds = new Rect(0,0,380,460), gameBounds;
         double readerWidth=310, readerHeight=300, briefWidth=310, briefHeight=240;
         bool briefAuto=true, readerAuto=true, defaultPlacement=true, fitQueued;
@@ -264,7 +291,7 @@ namespace Denghuo.Native {
             layoutTimer.Interval = TimeSpan.FromMilliseconds(250); layoutTimer.Tick += delegate { layoutTimer.Stop(); SaveLayout(); }; SizeChanged += delegate { bool small=ActualHeight<480 && !Collapsed; frame.RowDefinitions[0].Height=new GridLength(28); heading.Margin=new Thickness(0,0,0,small ? 4 : 8); footerScroll.MaxHeight=Math.Min(220,Math.Max(32,ActualHeight/InterfaceScale*.25)); QueueLayout(); }; LocationChanged += delegate { QueueLayout(); };
             Loaded+=delegate { QueueBriefFit(); };
             IsVisibleChanged += delegate { Host.VisibilityAll(); }; Closing += delegate(object s,CancelEventArgs e) { if (!shutdown) { e.Cancel = true; Host.Send("collapse"); } };
-            KeyDown += delegate(object s,KeyEventArgs e) { if (e.Key == Key.Escape && !Host.Frozen) { Host.Send("collapse"); e.Handled = true; } };
+            EscapeRelease.Bind(this,delegate { Host.Send("collapse"); },delegate { return !Host.Frozen; },false);
             PreviewKeyDown += delegate(object s,KeyEventArgs e) { if (e.Key == Key.F1) Host.Send("panel","page","help"); if (e.Key == Key.F && Keyboard.Modifiers == ModifierKeys.Control) { OpenPage("lookup"); Host.Lookup.FocusSearch(); e.Handled = true; } };
             PreviewGotKeyboardFocus+=delegate(object s,KeyboardFocusChangedEventArgs e) { var element=e.NewFocus as DependencyObject; if(element!=null && content.IsAncestorOf(element)) workFocus=e.NewFocus; };
             new WindowInteropHelper(this).EnsureHandle(); expandedBounds = new Rect(Left,Top,Width,Height);
@@ -312,11 +339,32 @@ namespace Denghuo.Native {
             Host.Send("panel","page",page);
         }
         void ShowMore() {
+            var compatible=UI.Item("兼容全屏",ToggleGameDisplay); compatible.IsCheckable=true; compatible.IsChecked=gameDisplay.Active;
+            compatible.ToolTip="关闭游戏内全屏后开启；再次点击恢复窗口。";
             UI.Menu(more,UI.Item("炼金计划",delegate { OpenPage("alchemy"); }),UI.Item("我的方案",delegate { OpenPage("plans"); }),UI.Item("继续编辑草稿…",delegate { Host.Send("list_drafts"); }),
                 new Separator(),UI.Item("立即备份已保存进度",delegate { Host.Send("capture"); }),UI.Item("刷新存档",delegate { Host.Send("refresh"); }),UI.Item("存档历史",delegate { OpenPage("backups"); }),
-                new Separator(),UI.Item("界面大小 · "+textScale+"%",ChooseScale),UI.Item((Brief ? briefAuto : readerAuto) ? "已按内容调整高度" : "高度适应内容",delegate { if(Brief) briefAuto=true; else readerAuto=true; QueueBriefFit(); SaveLayout(); },!(Brief ? briefAuto : readerAuto)),UI.Item("恢复默认大小与位置",ResetLayout),UI.Item("设置",delegate { OpenPage("settings"); }),UI.Item("完整面板",delegate { Host.Send("panel","page","overview"); }),
+                new Separator(),compatible,UI.Item("界面大小 · "+textScale+"%",ChooseScale),UI.Item((Brief ? briefAuto : readerAuto) ? "已按内容调整高度" : "高度适应内容",delegate { if(Brief) briefAuto=true; else readerAuto=true; QueueBriefFit(); SaveLayout(); },!(Brief ? briefAuto : readerAuto)),UI.Item("恢复默认大小与位置",ResetLayout),UI.Item("设置",delegate { OpenPage("settings"); }),UI.Item("完整面板",delegate { Host.Send("panel","page","overview"); }),
                 UI.Item(Data.Text(updateState,"state","")=="available" ? "更新灯火 · "+Data.Text(updateState,"latest_version","") : "软件更新",ShowUpdates),
                 new Separator(),UI.Item("退出灯火",delegate { Host.Send("exit"); }));
+        }
+        void ToggleGameDisplay() {
+            if(Host.Frozen) return;
+            try {
+                if(gameDisplay.Active) gameDisplay.Restore(); else gameDisplay.Enable();
+                Error("");
+                // Finish closing the menu before yielding its focus. Only this
+                // explicit display transition may reassert our own tool window.
+                Dispatcher.BeginInvoke(DispatcherPriority.Background,new Action(delegate {
+                    if(gameDisplay.CanReturnFocus) GameFocus.Return(gameDisplay.Game);
+                    RaiseForCompatibleGame();
+                }));
+            } catch(Win32Exception exc) { Error("兼容全屏未切换："+exc.Message); }
+              catch(InvalidOperationException exc) { Error(exc.Message); }
+        }
+        void RaiseForCompatibleGame() {
+            if(gameDisplay.Active && IsVisible && GameFocus.OwnsForeground(gameDisplay.Game)) {
+                Topmost=false; Topmost=true;
+            }
         }
         void UpdateAction(string action) { if(!Host.Frozen) Host.Send("update","update_action",action); }
         void ShowUpdates() {
@@ -512,8 +560,13 @@ namespace Denghuo.Native {
                 changingLayout=false; Topmost=true;
             } else { attached=false; Topmost=top.IsChecked==true; }
             if(attached) { if(Data.Flag(d,"visible") && !IsVisible) Show(); else if(!Data.Flag(d,"visible") && IsVisible) Hide(); Host.VisibilityAll(); }
+            if(attached && Data.Flag(d,"visible")) RaiseForCompatibleGame();
         }
-        public void CloseForShutdown() { shutdown=true; layoutTimer.Stop(); Close(); }
+        public void CloseForShutdown() {
+            try { gameDisplay.Restore(); }
+            catch(Win32Exception exc) { Console.Error.WriteLine("恢复游戏窗口失败："+exc.Message); }
+            shutdown=true; layoutTimer.Stop(); Close();
+        }
         public void Error(string text) { if(Status.Text==text) return; Status.Text=text; Status.Visibility=String.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible; QueueBriefFit(); }
         string FloorFocusKey(IInputElement focused) {
             var target=focused as DependencyObject; string best="";

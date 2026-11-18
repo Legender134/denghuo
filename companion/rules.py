@@ -459,6 +459,14 @@ class NumericRules:
             result.append({"title": "力量需求", "note": "普通投掷武器比同阶普通武器少需1点力量；负等级按+0需求。未使用精通药剂，使用后再减2。",
                            "columns": ["L", "力量"], "rows": [[str(l), str(missile_strength_requirement(MISSILE_PUBLIC_TYPES[short][0],l))] for l in levels]})
         if short.startswith("items.rings.ringof"):
+            from .game_math import ring_multiplier
+            kind = short.rsplit('.',1)[-1][6:]
+            multiplier_methods = {
+                'accuracy': 'accuracyMultiplier', 'arcana': 'enchantPowerMultiplier',
+                'energy': 'armorChargeMultiplier', 'evasion': 'evasionMultiplier',
+                'furor': 'attackSpeedMultiplier', 'haste': 'speedMultiplier',
+                'might': 'HTMultiplier', 'wealth': 'dropChanceMultiplier',
+            }
             # Evaluate only direct expressions, explicitly under the solo uncursed assumption.
             ring_fields = []
             for rule in row["rules"]:
@@ -467,8 +475,12 @@ class NumericRules:
                     continue
                 expression = re.sub(r"getBuffedBonus\([^)]*\)", "B", match[1])
                 try:
-                    normal = [display(Formula({"B": l+1}).evaluate(expression)) for l in levels]
-                    cursed = [display(Formula({"B": min(0, l-2)}).evaluate(expression)) for l in levels]
+                    if rule["name"] == multiplier_methods.get(kind):
+                        normal = [display(ring_multiplier(kind,l+1)) for l in levels]
+                        cursed = [display(ring_multiplier(kind,min(0,l-2))) for l in levels]
+                    else:
+                        normal = [display(Formula({"B": l+1}).evaluate(expression)) for l in levels]
+                        cursed = [display(Formula({"B": min(0, l-2)}).evaluate(expression)) for l in levels]
                     ring_fields.append((LABELS.get(rule["name"], rule["name"]), normal, cursed))
                 except UnknownFormula:
                     continue

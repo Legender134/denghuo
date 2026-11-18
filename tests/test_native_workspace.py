@@ -472,8 +472,8 @@ class NativeStrengthWorkflowTests(ControllerFixture):
 
     def test_dot_primary_answers_state_their_example_or_manual_condition(self):
         for identity, labels, note in (
-            ('actors.buffs.poison', ['首次毒伤', '完整毒伤总量'], '后续续毒'),
-            ('actors.buffs.bleeding', ['下一次流血', '预计总流血伤害'], '平均估计')):
+            ('actors.buffs.poison', ['首次毒伤', '剩余基础毒伤总量'], '后续续毒'),
+            ('actors.buffs.bleeding', ['下一次基础流血', '连续衰减近似总量'], '平均估计')):
             self.open(identity)
             payload = self.host.commands[-1][1]
             self.assertEqual([row['label'] for row in payload['primary_values']], labels)

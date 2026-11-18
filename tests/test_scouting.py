@@ -12,7 +12,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, build_opener, ProxyHandler
 
 from companion.engine import PREFIX, Catalog
-from companion.scouting import ScoutingConflict, inspect_saved, project_floor
+from companion.scouting import ScoutingConflict, inspect_saved, project_floor, map_view
 from companion.saves import SaveError
 from companion.service import Session
 
@@ -23,6 +23,24 @@ def item(kind, **fields):
 
 
 class ScoutingTests(unittest.TestCase):
+    def test_cell_descriptions_keep_saved_items_and_public_maps_have_no_hidden_objects(self):
+        original = copy.deepcopy(self.level)
+        floor = project_floor(self.level, self.game, self.catalog, 4, 0)
+        view = floor['map']
+        self.assertEqual(view['terrain_names'][16:20], ['隐藏门', '隐藏陷阱', '已发现陷阱', '失效陷阱'])
+        heap = next(row for row in view['markers'] if row['kind'] == 'heap')
+        self.assertEqual(heap['pos'], 8)
+        self.assertTrue(any('单手剑' in line and '×1' in line for line in heap['lines']))
+        trap = next(row for row in view['markers'] if row['kind'] == 'trap')
+        self.assertEqual(trap['pos'], 5)
+        self.assertIn('可触发', trap['name'])
+        mob = next(row for row in view['markers'] if row['pos'] == 9)
+        self.assertIn('22/36', mob['name'])
+        self.assertEqual(self.level, original, 'presentation must not alter saved data')
+        public = map_view({**view, 'tiles': [-1] * 12})
+        self.assertEqual(public['markers'], [])
+        self.assertEqual(view['markers'][0], heap, 'public projection must not mutate the revealed view')
+
     @classmethod
     def setUpClass(cls):
         cls.catalog = Catalog()

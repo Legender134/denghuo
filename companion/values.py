@@ -11,7 +11,7 @@ from .values_abilities import add_advanced_values
 from .values_decisions import add_operation_values
 from .values_resources import add_resource_values
 from .reference_sources import provenance
-from .game_math import augmented_damage, float32, healing_tick, healing_pool_with_vial, potion_healing_pool
+from .game_math import augmented_damage, challenge_healing, float32, healing_tick, healing_pool_with_vial, potion_healing_pool, ring_multiplier
 from .public_source_data import MISSILE_PUBLIC_TYPES
 from .monster_reference import add_monster_values, monster_record
 
@@ -37,6 +37,7 @@ INPUTS = {
     'target_hp': ('目标当前生命', 40, 0, 10000),
     'target_max_hp': ('目标最大生命', 40, 1, 10000),
     'targets': ('视野内目标数量', 3, 0, 100),
+    'effect_hits': ('元素风暴有效命中计数（棱光存活敌人计2次）', 3, 0, 200),
     'accuracy': ('你的命中值', 20, 0, 1000000),
     'evasion': ('目标闪避值', 10, 0, 1000000),
     'glyph_multiplier': ('刻印强度倍率（无增益填1）', 1, 0, 1000),
@@ -469,7 +470,11 @@ class PlayerValues:
         if identity.split('$')[0]=='actors.buffs.monkenergy':
             for input_value in inputs:
                 if input_value['key']=='power':input_value['label']='当前内力（可填小数）'
-        power_labels={'actors.buffs.poison':'剩余中毒回合','actors.buffs.bleeding':'当前流血强度','actors.buffs.barrier':'当前屏障护盾','actors.hero.abilities.warrior.heroicleap':'此次护甲随机减伤','actors.hero.talent.body_slam':'此次护甲随机减伤','actors.buffs.amok':'当前狂乱剩余回合','actors.buffs.revealedarea':'当前感知剩余回合'}
+        if identity.split('$')[0] in ('actors.hero.abilities.duelist.elementalstrike','actors.hero.talent.directed_power'):
+            for input_value in inputs:
+                if input_value['key']=='targets':input_value['label']='施放前扇形内敌对单位数'
+                if input_value['key']=='power':input_value['label']='当前动能储存池（精确手填假设）'
+        power_labels={'actors.buffs.poison':'剩余中毒回合（精确手填假设）','actors.buffs.bleeding':'当前内部流血强度（精确手填假设）','actors.hero.abilities.duelist.elementalstrike':'当前动能储存池（精确手填假设）','items.weapon.enchantments.kinetic$conserveddamage':'当前动能储存池（精确手填假设）','actors.buffs.barrier':'当前屏障护盾','actors.hero.abilities.warrior.heroicleap':'此次护甲随机减伤','actors.hero.talent.body_slam':'此次护甲随机减伤','actors.buffs.amok':'当前狂乱剩余回合','actors.buffs.revealedarea':'当前感知剩余回合'}
         if identity in power_labels:
             for input_value in inputs:
                 if input_value['key']=='power':input_value['label']=power_labels[identity]
@@ -571,7 +576,10 @@ class PlayerValues:
         if identity=='items.armor.glyphs.camouflage':
             requested.add('level');rows=[metric('踏草获得隐形',0 if l<0 else rounded(3+l/2),'回合',
                 '普通角色、无奥术之戒及额外形态／光环；负护甲等级的刻印等级被取为−1，触发前即返回，不获得隐形' if l<0 else '普通角色、无奥术之戒及额外形态／光环')]
-        if identity=='items.armor.glyphs.obfuscation':requested.add('level');rows=[metric('潜行值增益',1+l/3,'点','无奥术之戒等修正')]
+        if identity=='items.armor.glyphs.obfuscation':
+            requested.add('level');rows=[metric('潜行值增益',0 if l<0 else float32(1+float32(l/float32(3))),'点','普通英雄，无奥术之戒、额外形态或光环；负等级护甲不生效')]
+        if identity=='items.armor.glyphs.brimstone':
+            requested.add('level');rows=[metric('燃烧免疫','生效' if l>=0 else '不生效','','普通英雄，无额外形态或光环；不保护地面物品')]
         if identity in ('items.artifacts.driedrose','items.artifacts.driedrose$ghosthero'):
             requested.add('hero_level');result.append(table('幽灵属性',['玫瑰等级','最大生命HP','力量','无武器伤害HP'],[[f'+{n}',40+10*n,13+n//2,f'1–{5+n//2}'] for n in range(11)]));rows=[metric('幽灵基础命中',h+9,'点'),metric('幽灵基础闪避',h+4,'点'),metric('无敌人在场时回复到满血',500,'回合','近似平均时间；无能量戒指'),metric('从空到满的召唤充能',500,'回合','近似时间；允许自然恢复且无能量戒指')]
         if identity in ('items.artifacts.capeofthorns','items.artifacts.capeofthorns$thorns'):
@@ -614,12 +622,12 @@ class PlayerValues:
             return
         kind=identity.rsplit('.',1)[-1][6:]
         formulas={
-            'accuracy': [('命中倍率',1.3,'倍')], 'arcana': [('附魔/刻印强度倍率',1.175,'倍')],
-            'elements': [('所受元素伤害倍率',.825,'倍')],
-            'energy': [('法杖充能速度',1.175,'倍'),('神器充能速度',1.175,'倍'),('英雄护甲充能速度',1.175,'倍')],
-            'evasion': [('闪避倍率',1.125,'倍')], 'furor': [('攻击速度倍率',1.09051,'倍')],
-            'haste': [('移动速度倍率',1.15,'倍')], 'wealth': [('普通掉落概率倍率',1.2,'倍')],
-            'might': [('最大生命倍率',1.035,'倍')], 'sharpshooting': [('投掷耐久倍率',1.2,'倍')],
+            'accuracy': [('命中倍率','倍')], 'arcana': [('附魔/刻印强度倍率','倍')],
+            'elements': [('所受元素伤害倍率','倍')],
+            'energy': [('法杖充能速度','倍'),('神器充能速度','倍'),('英雄护甲充能速度','倍')],
+            'evasion': [('闪避倍率','倍')], 'furor': [('攻击速度倍率','倍')],
+            'haste': [('移动速度倍率','倍')], 'wealth': [('普通掉落概率倍率','倍')],
+            'might': [('最大生命倍率','倍')], 'sharpshooting': [('投掷耐久倍率','倍')],
         }
         requested.add('level')
         force_tier=max(1,(p['strength']-8)/2)
@@ -643,17 +651,16 @@ class PlayerValues:
                 state=bonuses[channel]
                 return metric(label, '待确认' if state['value'] is None else calculate(state['value']), unit,
                               '、'.join(state['missing']) if state['missing'] else state['source'])
-            rows=[effect(label,unit,lambda bonus,base=base:base**bonus,
+            rows=[effect(label,unit,lambda bonus:ring_multiplier(kind,bonus),
                          'unbuffed' if kind=='sharpshooting' else 'buffed')
-                  for label,base,unit in formulas.get(kind,[])]
+                  for label,unit in formulas.get(kind,[])]
             if kind in ('might','sharpshooting','force'):
                 label='力量增益' if kind=='might' else '投掷有效等级增益' if kind=='sharpshooting' else '持武器额外伤害'
                 rows.append(effect(label,'HP' if kind=='force' else '点',lambda bonus:bonus,
                                    'unbuffed' if kind=='might' else 'buffed'))
             if kind=='tenacity':
                 requested.update(('max_hp','hp'))
-                missing=(p['max_hp']-p['hp'])/p['max_hp']
-                rows.append(effect('当前血量下的减伤','%',lambda bonus:100*(1-.85**(bonus*missing))))
+                rows.append(effect('当前血量下的减伤','%',lambda bonus:100*(1-ring_multiplier(kind,bonus,p['max_hp'],p['hp']))))
                 rows[-1]['condition']+=f'；当前生命 {p["hp"]}/{p["max_hp"]}；负数表示增伤'
             if kind=='force':
                 requested.add('strength')
@@ -668,14 +675,14 @@ class PlayerValues:
 
         levels=sorted(set([*range(11),p['level']]))
         first_ring_section=len(result)
-        for label,base,unit in formulas.get(kind,[]):
-            result.append(table(label,['戒指等级','正常（'+unit+'）','诅咒（'+unit+'）'],[[f'{l:+d}',display(base**(l+1)),display(base**min(0,l-2))] for l in levels], '只佩戴一枚，无其他天赋或临时等级修正。'))
+        for label,unit in formulas.get(kind,[]):
+            result.append(table(label,['戒指等级','正常（'+unit+'）','诅咒（'+unit+'）'],[[f'{l:+d}',display(ring_multiplier(kind,l+1)),display(ring_multiplier(kind,min(0,l-2)))] for l in levels], '只佩戴一枚，无其他天赋或临时等级修正。'))
         if kind in ('might','sharpshooting','force'):
             label='力量增益' if kind=='might' else '投掷有效等级增益' if kind=='sharpshooting' else '持武器额外伤害'
             result.append(table(label,['戒指等级','正常','诅咒'],[[f'{l:+d}',l+1,min(0,l-2)] for l in levels]))
         if kind=='tenacity':
-            requested.update(('max_hp','hp'));missing=(p['max_hp']-p['hp'])/p['max_hp']
-            result.append(table('当前血量下的减伤',['戒指等级','正常减伤%','诅咒减伤%'],[[f'{l:+d}',display(100*(1-.85**((l+1)*missing))),display(100*(1-.85**(min(0,l-2)*missing)))] for l in levels], f'当前生命 {p["hp"]}/{p["max_hp"]}；负数表示增伤。'))
+            requested.update(('max_hp','hp'))
+            result.append(table('当前血量下的减伤',['戒指等级','正常减伤%','诅咒减伤%'],[[f'{l:+d}',display(100*(1-ring_multiplier(kind,l+1,p['max_hp'],p['hp']))),display(100*(1-ring_multiplier(kind,min(0,l-2),p['max_hp'],p['hp'])))] for l in levels], f'当前生命 {p["hp"]}/{p["max_hp"]}；负数表示增伤。'))
         if kind=='force':
             requested.add('strength')
             rows=[]
@@ -732,7 +739,7 @@ class PlayerValues:
                 requested.update(('max_hp','hp','damage'));chance=.05+.25*(p['max_hp']-p['hp'])/p['max_hp']
                 rows=[metric('触发概率',100*chance,'%'),metric('触发时实际治疗',min(p['max_hp']-p['hp'],rounded(.5*p['damage'])),'HP')]
             elif identity.endswith('.antientropy'):rows=[metric('周围覆盖',8,'格'),metric('自身燃烧',4,'回合','不在水中')]
-            elif identity=='items.armor.curses.corrosion':rows=[metric('周围淤泥覆盖',9,'格'),metric('淤泥时长',10,'回合')]
+            elif identity=='items.armor.curses.corrosion':rows=[metric('淤泥作用范围',9,'格','自身及相邻8格内的角色'),metric('淤泥时长',10,'回合')]
             elif identity.endswith('.metabolism'):
                 requested.update(('hp','max_hp'));amount=min(4,p['max_hp']-p['hp']);rows=[metric('单次治疗',amount,'HP','尚未饿损时'),metric('饱食消耗',10*amount,'点')]
             elif identity.endswith('.multiplicity'):rows=[metric('触发后召唤数量',1,'个'),metric('英雄召唤镜像概率',50,'%','否则复制敌人或生成敌人')]
@@ -744,7 +751,7 @@ class PlayerValues:
                 requested.update(('hp','max_hp'));amount=(p['hp']/p['max_hp'])**2*p['max_hp']/8;rows=[metric('流血强度',max(1,amount),'点'),metric('最终施加概率',10*min(1,amount),'%','包含两次概率检查，无触发强度修正')]
             elif identity.endswith('.explosive'):rows=[metric('初始爆炸耐久',100,'点'),metric('每次攻击消耗','0–10','点'),metric('平均爆炸间隔',20,'次攻击','估计值；独立随机消耗')]
             elif identity=='items.weapon.enchantments.crystal':
-                requested.add('damage');rows=[metric('追加魔法伤害',math.ceil(p['damage']*.33),'HP','无触发强度修正')]
+                requested.add('damage');rows=[metric('追加魔法伤害',math.ceil(float32(float32(p['damage'])*float32(.33))),'HP','无触发强度修正')]
             elif identity=='items.weapon.enchantments.kinetic':
                 requested.add('damage');rows=[metric('超额击杀伤害保留',p['damage'],'HP','这里输入的是击杀的超额伤害，下次命中追加')]
             elif identity=='items.weapon.enchantments.grim':
@@ -759,11 +766,19 @@ class PlayerValues:
             requested.update(('level','max_hp','target_hp','target_max_hp'));cost=rounded(p['max_hp']*.05);amount=cost+3*level;healed=min(p['target_max_hp']-p['target_hp'],amount)
             result.append(block('移血的不同目标',[metric('治疗友军时自身损血',cost,'HP','未获得战斗法师免费施法'),metric('目标实际治疗',healed,'HP'),metric('目标溢出护盾',max(0,amount-healed),'HP'),metric('对敌施法自身护盾',5+level,'HP'),metric('活体敌人魅惑',self.duration('Charm')/2,'回合')]))
         if identity in ('items.wands.wandofregrowth','items.wands.wandofregrowth$lotus'):
-            requested.update(('level','hero_level','charges'));c=p['charges'];limit='无限' if level>=10 else rounded(20+hero*(2+level)*(1+level/(50-5*level)))
+            requested.update(('level','hero_level','charges'));c=p['charges'];limit='无限' if level>=10 else rounded(20+hero*(2+level)*(1+level//(50-5*level)))
             result.append(block('再生与金莲',[metric('本次高草数量上限',rounded((3.67+level/3)*c),'格','仅可生长地形；超量使用后可能变为枯草'),metric('缠绕时长',4*c,'回合'),metric('生露草/种子荚总概率',100*c/6,'%','未过量使用，有剩余生长位置；两种各占一半'),metric('随机植物概率',100*c/3,'%','同上'),metric('正常产草的累计充能额度',limit,'次充能'),metric('金莲生成所需充能',3,'次'),metric('金莲寿命',25+3*level,'回合'),metric('金莲作用半径',level,'格'),metric('金莲种子保留概率',min(1,.4+.04*level)*100,'%')]))
         if identity=='items.wands.wandofcorruption':
-            requested.update(('level','enemy_exp','target_hp','target_max_hp','minor','major'));power=3+level/3;resist=(1+p['enemy_exp'])*(1+4*(p['target_hp']/p['target_max_hp'])**2)*.75**p['minor']*.5**p['major'];sure=power>resist
-            result.append(block('普通敌人的腐化结果',[metric('直接腐化概率',100 if sure else 0,'%','目标可被腐化、仍有可施加的负面状态；无飞升加成'),metric('改为施加重度负面概率',0 if sure else min(1,power/resist)*100,'%'),metric('改为施加轻度负面概率',0 if sure else (1-min(1,power/resist))*100,'%')], '已无可施加的负面状态时也可直接腐化；该情况不在此概率内。重度包括狂乱、迟缓、虚弱诅咒、麻痹等；其他负面按轻度计。宝箱怪、雕像、蜜蜂、食人鱼、咒缚灵须不适用本表。'))
+            requested.update(('level','enemy_exp','target_hp','target_max_hp','minor','major'))
+            # Java float division/addition, double Math.pow, then float compound assignment.
+            power=float32(3+float32(level/float32(3)))
+            health=float32(p['target_hp']/float32(p['target_max_hp']))
+            resist=float32(float32(1+p['enemy_exp'])*(1+4*math.pow(health,2)))
+            for _ in range(p['minor']):resist=float32(resist*.75)
+            for _ in range(p['major']):resist=float32(resist*.5)
+            sure=power>resist
+            chance=min(1,float32(power/resist))
+            result.append(block('普通敌人的腐化结果',[metric('直接腐化概率',100 if sure else 0,'%','目标可被腐化、仍有可施加的负面状态；无飞升、已有腐化或末日'),metric('改为施加重度负面概率',0 if sure else chance*100,'%'),metric('改为施加轻度负面概率',0 if sure else (1-chance)*100,'%')], '已无可施加的负面状态时也可直接腐化；该情况不在此概率内。重度包括狂乱、迟缓、虚弱诅咒、麻痹等；其他负面按轻度计。宝箱怪、雕像、蜜蜂、食人鱼、咒缚灵、蝇群不适用本表。'))
         if identity.startswith('items.wands.') and '$' not in identity:
             requested.add('level')
             try:
@@ -779,17 +794,17 @@ class PlayerValues:
             requested.add('depth')
             fixed={
                 'alarmtrap':[('直接伤害',0,'HP','吸引整层敌人')],
-                'burningtrap':[('初始覆盖',9,'格','中心及相邻8格'),('每格火焰量',2,'单位','')],
+                'burningtrap':[('初始覆盖上限',9,'格','中心及相邻8格，排除实心地形'),('每格火焰量',2,'单位','')],
                 'blazingtrap':[('火焰距离',2,'格','沿可通行地形'),('普通地面火焰量',5,'单位/格',''),('水面/深渊火焰量',1,'单位/格','')],
-                'chillingtrap':[('初始覆盖',9,'格',''),('每格冰雾量',10,'单位','')],
+                'chillingtrap':[('初始覆盖上限',9,'格','中心及相邻8格，排除实心地形'),('每格冰雾量',10,'单位','')],
                 'frosttrap':[('冰雾距离',2,'格','沿可通行地形'),('每格冰雾量',20,'单位','')],
-                'shockingtrap':[('初始覆盖',9,'格',''),('每格电场量',10,'单位','')],
+                'shockingtrap':[('初始覆盖上限',9,'格','中心及相邻8格，排除实心地形'),('每格电场量',10,'单位','')],
                 'stormtrap':[('电场距离',2,'格','沿可通行地形'),('每格电场量',20,'单位','')],
-                'oozetrap':[('初始覆盖',9,'格','非浮空目标'),('淤泥持续',20,'回合','入水洗去')],
+                'oozetrap':[('作用范围上限',9,'格','排除实心地形；只影响格内非浮空角色'),('淤泥持续',20,'回合','入水洗去')],
                 'disarmingtrap':[('丢失武器',1,'件','非诅咒主武器'),('目标距离','10–20','格','沿可通行地形；寻找不到合适位置会失败')],
                 'distortiontrap':[('召唤数量','3–5','个','有足够空格'),('召唤3个概率',50,'%',''),('召唤4个概率',25,'%',''),('召唤5个概率',25,'%',''),('召唤延迟',2,'回合','')],
                 'summoningtrap':[('召唤数量','1–3','个','有足够空格'),('召唤1个概率',50,'%',''),('召唤2个概率',25,'%',''),('召唤3个概率',25,'%',''),('召唤延迟',2,'回合','')],
-                'pitfalltrap':[('坍塌延迟',1,'回合','首领层、支线及26层无效'),('初始覆盖',9,'格','')],
+                'pitfalltrap':[('坍塌延迟',1,'回合','首领层、支线及26层无效'),('作用范围上限',9,'格','排除不可通行的实心地形；延后结算时再次检查地图与地形')],
                 'teleportationtrap':[('传送目标',1,'个','角色或地上物品堆')],
                 'gatewaytrap':[('同时连接出口',1,'个','反复通过传送到同一出口')],
                 'warpingtrap':[('传送目标',1,'个','英雄同时遗忘本层地图')],
@@ -823,7 +838,9 @@ class PlayerValues:
             name=identity.rsplit('.',1)[-1];requested.add('depth')
             try: radius=self.pure_value(owner,'explosionRange')
             except UnknownFormula:radius=None
-            if radius is not None:rows.append(metric('爆炸距离',radius,'格','沿可爆破地形'))
+            if radius is not None:
+                rows.append(metric('视线范围上限' if name=='shrapnelbomb' else '爆炸距离',radius,'格',
+                    '受视线遮挡影响' if name=='shrapnelbomb' else '沿可爆破地形'))
             if name in ('bomb','bomb$doublebomb','arcanebomb','shrapnelbomb','holybomb','flashbangbomb','firebomb','frostbomb','woollybomb','smokebomb','noisemaker'):
                 low,high=4+d,12+3*d
                 rows.append(metric('基础爆炸伤害',f'{low}–{high}','HP','普通爆炸减去目标护甲；奥术炸弹无视护甲'))
@@ -844,9 +861,14 @@ class PlayerValues:
                 result.append(table('炸弹炼金配方',['材料','数量'],[['炸弹',1],[material,1]],f'额外炼金能量 {cost}；产出1枚。'))
         if identity in ('actors.buffs.poison','plants.sorrowmoss','items.potions.potionoftoxicgas'):
             if identity=='actors.buffs.poison':
-                requested.add('power');n=p['power'];ticks=math.ceil(n);rows=[metric('首次毒伤',math.floor(n/3)+1 if n>0 else 0,'HP'),metric('完整毒伤总量',sum(math.floor(max(0,n-i)/3)+1 for i in range(ticks)),'HP','不计免疫、减伤和后续续毒'),metric('剩余时间',n,'回合')]
+                requested.add('power');n=float32(p['power']);ticks=math.ceil(n)
+                rows=[metric('首次毒伤',int(float32(n/3))+1 if n>0 else 0,'HP'),
+                      metric('剩余基础毒伤总量',sum(int(float32(float32(n-i)/3))+1 for i in range(ticks)),'HP',
+                             '按精确手填假设量化为游戏单精度；不计免疫、减伤、续毒或死亡中断。零值表示没有剩余池；若零时长状态仍执行一次更新，会造成1点基础毒伤后移除'),
+                      metric('剩余时间假设',n,'回合','游戏显示的舍入时间不能确定内部精确值')]
         if identity=='actors.buffs.bleeding':
-            requested.add('power');n=p['power'];rows=[metric('下一次流血',rounded(n),'HP'),metric('预计总流血伤害',rounded(n*4),'HP','随机衰减，平均估计值')]
+            requested.add('power');n=float32(p['power']);rows=[metric('下一次基础流血',rounded(n),'HP','精确手填当前内部强度，已包含施加时预随机；不重新抽取来源强度'),
+                metric('连续衰减近似总量',rounded(n*4),'HP','忽略逐次整数取整、低值终止及其他防护的近似值，不是精确期望；游戏显示的整数流血值不能确定内部小数')]
         if identity in ('actors.buffs.ooze','items.potions.brews.causticbrew'):
             requested.add('depth');rows.extend([metric('淤泥伤害',1+d//5 if d>=5 else .5,'HP/回合','入水洗去；对粘咕为1HP/回合')])
         if identity in ('actors.buffs.burning','actors.blobs.fire','items.potions.potionofliquidflame'):
@@ -864,7 +886,7 @@ class PlayerValues:
         if identity=='items.armor.glyphs.flow':rows=[metric('水中移动速度倍率',1 if l<0 else 2+.5*l,'倍','英雄负等级护甲不触发此移动增益')];requested.add('level')
         if identity=='items.armor.glyphs.swiftness':rows=[metric('无近敌时移动速度倍率',1 if l<0 else 1.2+.04*l,'倍','英雄负等级护甲不触发此移动增益'),metric('近敌检查距离',3,'格','沿可通行路径')];requested.add('level')
         if identity=='items.armor.glyphs.viscosity':
-            requested.update(('level','damage'));n=p['damage'];effective=max(0,l);deferred=math.ceil(n*(effective+1)/(effective+6));rows=[metric('转为延缓伤害',deferred,'HP'),metric('立即承受',n-deferred,'HP')]
+            requested.update(('level','damage'));n=p['damage'];effective=max(0,l);percent=float32((effective+1)/float32(effective+6));deferred=math.ceil(float32(float32(n)*percent));rows=[metric('转为延缓伤害',deferred,'HP'),metric('立即承受',n-deferred,'HP')]
         if identity=='items.armor.glyphs.stone':
             from .game_math import stone_factor
             requested.update(('accuracy','evasion','damage','glyph_multiplier'))
@@ -916,14 +938,14 @@ class PlayerValues:
                 diff=h-(1+2*n)-(n-6 if n>=7 else 0)
                 xp=rounded(10*(1.1**diff if diff>=0 else .75**(-diff)))
                 rows.append([f'+{n}',cap,display(45-cap-extra),display(44-extra),xp,(n+1)*50 if n<10 else '已满级'])
-            result.append(table('法典容量、充能与升级',['法典等级','最大充能','空池恢复首个充能的平均回合','仅缺1充能时平均回合','消耗1充能获得经验','下一等级所需经验'],rows,f'角色等级 {h}；已装备、可正常恢复、无能量戒指。充能速度随当前缺口变化；经验按一次消耗1充能计算。'))
+            result.append(table('法典容量、充能与升级',['法典等级','最大充能','空池首个充能名义回合','缺1充能时名义回合','消耗1充能获得经验','下一等级所需经验'],rows,f'角色等级 {h}；已装备、可正常恢复、无能量戒指。充能速度随当前缺口变化；经验按一次消耗1充能计算。'))
             result.append(table('背包中的轻装阅读',['天赋点数','相对已装备充能速度%'],[[0,0],[1,25],[2,50],[3,75]]))
         elif identity=='items.artifacts.lloydsbeacon':
-            result.append(table('道标容量与自然充能',['显示等级','最大充能','空池恢复首个充能的平均回合','仅缺1充能时平均回合'],[[label,3+n,70-10*n,90] for n,label in enumerate(['+0','+3','+7','+10'])],'等级只在这些显示节点变化；已装备、无诅咒、可正常恢复。'))
+            result.append(table('道标容量与自然充能',['显示等级','最大充能','空池首个充能名义回合','缺1充能时名义回合'],[[label,3+n,70-10*n,90] for n,label in enumerate(['+0','+3','+7','+10'])],'等级只在这些显示节点变化；已装备、无诅咒、可正常恢复。'))
             result.append(table('道标使用成本',['用途','消耗充能','耗时回合'],[['设置返回点',0,1],['返回已设位置',0,0],['随机传送：等效1–20层',1,1],['随机传送：等效21层起',2,1]],'设置/返回点要求相邻8格无敌人，封层、首领层或禁止跨层传送的区域会阻止返回。当前版本不能用普通升级卷轴升级此神器。'))
             result.append(block('额外充能',[metric('每单位神器充能效果恢复',.25,'充能')]))
         elif identity=='items.artifacts.skeletonkey':
-            result.append(table('骷髅钥匙容量与恢复',['神器等级','最大充能','空池恢复首个充能的平均回合','仅缺1充能时平均回合','零经验时升到下一级至少需要经验'],[[f'+{n}',3+n//2,display(120-(3+n//2)*7.5),112.5,5+n if n<10 else '已满级'] for n in range(11)],'已装备、无能量戒指且可正常恢复；升级要求经验超过门槛，已有经验会保留。'))
+            result.append(table('骷髅钥匙容量与恢复',['神器等级','最大充能','空池首个充能名义回合','缺1充能时名义回合','零经验时升到下一级至少需要经验'],[[f'+{n}',3+n//2,display(120-(3+n//2)*7.5),112.5,5+n if n<10 else '已满级'] for n in range(11)],'已装备、无能量戒指且可正常恢复；升级要求经验超过门槛，已有经验会保留。'))
             result.append(table('钥匙使用成本',['用途','充能','神器经验','耗时回合'],[['开铁锁门',1,3,1],['开金锁箱',2,4,1],['开水晶门/箱',5,7,1],['锁普通门',2,2,1],['制造钥匙墙',2,2,1],['开自己锁住的门',0,0,1]]))
             result.append(block('钥匙墙与充能',[metric('钥匙墙最多持续',10,'回合'),metric('制造墙时击退',1,'格','需要可移动且可落脚的目标'),metric('每单位神器充能效果恢复',.133,'充能')]))
         elif identity=='items.artifacts.masterthievesarmband':
@@ -939,7 +961,7 @@ class PlayerValues:
             result.append(table('商店偷窃实际概率',['神器等级','成功时消耗充能','成功概率%','成功时神器经验'],rows,f'物品基础售价 {price}，当前整数充能 {p["stored_charges"]}；每行按该等级容量截断。失败不消耗充能，也不增加经验。'))
             result.append(block('敌人偷窃成本与诅咒',[metric('偷敌人消耗',1,'充能'),metric('一般敌人偷窃经验',3,'点'),metric('伏击敌人偷窃经验',5,'点'),metric('诅咒每回合偷走1金币概率',20,'%','当前金币大于0')]))
         elif identity=='items.artifacts.unstablespellbook':
-            result.append(table('魔典容量与充能',['神器等级','最大充能','空池恢复首个充能的平均回合','仅缺1充能时平均回合'],[[f'+{n}',2+math.floor(.6*n),120-5*(2+math.floor(.6*n)),115] for n in range(11)],'已装备、可正常恢复、无诅咒、无魔法免疫、无能量戒指。'))
+            result.append(table('魔典容量与充能',['神器等级','最大充能','空池首个充能名义回合','缺1充能时名义回合'],[[f'+{n}',2+math.floor(.6*n),120-5*(2+math.floor(.6*n)),115] for n in range(11)],'已装备、可正常恢复、无诅咒、无魔法免疫、无能量戒指。'))
             names=['鉴定','祛邪','镜像','充能','传送','催眠','魔法地图','盛怒','复仇','恐惧'];weights=[3,2,3,3,3,2,1,2,2,2]
             result.append(table('随机卷轴效果概率',['效果','概率%'],[[name,display(100*w/23)] for name,w in zip(names,weights)],'不产生升级或嬗变；鉴定、祛邪和地图效果已经计入重新抽取概率。'))
             result.append(table('魔典使用成本',['效果','充能'],[['普通卷轴效果',1],['已喂入卷轴的对应秘卷效果',2]],'秘卷选项还要求第一次扣费后至少剩1充能；不会触发使用卷轴的天赋。'))
@@ -954,10 +976,10 @@ class PlayerValues:
             note=f'状态强度填写此次护甲随机减伤，当前 {display(p["power"])}；目标护甲仍可减伤。'
         elif name=='invigorating_victory':
             requested.update(('damage','max_hp','hp'));columns=['投入点数','治疗额度HP','当前最多实际恢复HP']
-            rows=[[n,rounded(p['damage']*(1-.707**n))+5*n,min(p['max_hp']-p['hp'],rounded(p['damage']*(1-.707**n))+5*n)] for n in range(1,5)]
+            rows=[[n,challenge_healing(p['damage'],n),min(p['max_hp']-p['hp'],challenge_healing(p['damage'],n))] for n in range(1,5)]
             note=f'基础伤害填写决斗累计承伤，当前 {p["damage"]}；仅击败决斗目标时生效。'
         elif name=='directed_power':
-            requested.add('targets');columns=['投入点数','附魔强度增益%'];rows=[[n,30*n*p['targets']] for n in range(1,5)];note=f'当前范围内 {p["targets"]} 个敌人，作用于主要目标直接攻击。'
+            requested.add('targets');columns=['投入点数','附魔强度增益%'];rows=[[n,display(float32(float32(float32(.3)*p['targets'])*n)*100)] for n in range(1,5)];note=f'施放前扇形内 {p["targets"]} 个敌对单位；作用于主要目标直接攻击。'
         elif name=='runic_transference':
             columns=['投入点数','可携带升级层数','常见刻印转移概率%','强力/诅咒刻印转移概率%'];rows=[[1,1,100,0],[2,1,100,100]];note='刻印必须在纹章已贴附时刻上。'
         elif name=='cached_rations':
@@ -965,7 +987,9 @@ class PlayerValues:
         elif name=='wide_search':
             columns=['投入点数','搜索外框','无遮挡且远离边界时最多检查格数'];rows=[[0,'5×5方形',24],[1,'7×7圆角',44],[2,'7×7方形',48]];note='盗贼，不含自身格；只检查当前视野内格子。'
         elif name=='natures_bounty':
-            columns=['投入点数','最多浆果颗数','掉落加速层数','此前踩草概率%','该层踩草概率%','之后踩草概率%'];rows=[[n,2+2*n,2+2*n,display(100/90),display(100/30),10] for n in [1,2]];note='每踩一格符合条件的高草分别判定；库存未耗尽时。每颗100饱食，每吃2颗得到1粒种子。'
+            columns=['投入点数','本局最多浆果','此前已掉落颗数','本颗对应层数','此前踩草概率%','该层踩草概率%','之后踩草概率%']
+            rows=[[n,2+2*n,dropped,dropped+(3 if dropped>=5 else 2),display(100/90),display(100/30),10] for n in (1,2) for dropped in range(2+2*n)]
+            note='每踩一格符合条件的高草分别判定；本局掉落总量耗尽后不再产生。每颗100饱食，每吃2颗得到1粒种子。'
         elif name=='twin_upgrades':
             columns=['投入点数','低等级武器最少落后阶数'];rows=[[1,2],[2,1],[3,0]];note='符合阶数要求时，将低等级武器的有效等级提高到另一把武器的等级。'
         elif name=='unencumbered_spirit':
@@ -1034,7 +1058,7 @@ class PlayerValues:
             elif name=='holylance':rows.extend([metric('基础伤害',f'{15+15*t}–{rounded(27.5+27.5*t)}','HP')])
             elif name=='holyweapon':rows.extend([metric('附魔持续',50,'回合')])
             elif name=='holyward':rows.extend([metric('刻印持续',50,'回合')])
-            elif name=='mnemonicprayer':rows.extend([metric('正面状态延长/负面缩短',2+t,'回合')])
+            elif name=='mnemonicprayer':rows.extend([metric('友方正面/敌方负面状态延长',2+t,'回合','每个合格状态最多延长一次；部分高阶状态除外，治疗或毒等池按各自延长规则')])
             elif name=='bodyform':rows.extend([metric('持续',rounded(13.33+6.67*t),'回合')])
             elif name=='mindform':rows.extend([metric('模拟法杖等级',2+t,'级')])
             elif name=='spiritform':rows.extend([metric('模拟戒指等级',t,'级'),metric('模拟神器等级',2+2*t,'级'),metric('持续',20,'回合')])
@@ -1158,7 +1182,7 @@ class PlayerValues:
             result.append(block('当前伤势下的效果',[metric('单个目标伤害',amount,'HP','未计目标抗性'),metric('自身失明',self.duration('Blindness'),'回合'),metric('自身虚弱',self.duration('Weakness'),'回合')]))
         if identity=='items.scrolls.exotic.scrollofpsionicblast':
             requested.update(('max_hp','target_hp','target_max_hp','targets'))
-            result.append(block('灵爆伤害',[metric('单个目标伤害',rounded((p['target_max_hp']+p['target_hp'])/2),'HP'),metric('自身伤害',rounded(maximum*.5*.9**p['targets']),'HP',f'{p["targets"]}个目标；未计抗性'),metric('自身失明',self.duration('Blindness'),'回合'),metric('自身虚弱',5*self.duration('Weakness'),'回合')]))
+            result.append(block('灵爆伤害',[metric('单个目标伤害',rounded((p['target_max_hp']+p['target_hp'])/2),'HP'),metric('自身伤害',rounded(float32(float32(maximum)*float32(.5*float32(math.pow(.9,p['targets']))))),'HP',f'{p["targets"]}个目标；未计抗性'),metric('自身失明',self.duration('Blindness'),'回合'),metric('自身虚弱',5*self.duration('Weakness'),'回合')]))
         if identity.startswith('items.trinkets.') and identity.rsplit('.',1)[-1] in TRINKETS:
             name=identity.rsplit('.',1)[-1];effects=TRINKETS[name];columns=['饰物等级']+[label+'（'+unit+'）' for label,_,unit in effects];rows=[]
             for l in range(4):
@@ -1169,7 +1193,7 @@ class PlayerValues:
                 rows.append(row)
             result.append(table('饰物升级对照',columns,rows,'概率超过100%时，100%部分保证一次，剩余部分用于额外次数。'))
             if name=='vialofblood':
-                requested.add('max_hp');result.append(table('治疗速度上限',['饰物等级','每回合最多恢复HP'],[[f'{l:+d}',[4+rounded(.15*maximum),3+rounded(.1*maximum),2+rounded(.07*maximum),1+rounded(.05*maximum)][l]] for l in range(4)],f'最大生命 {maximum}'))
+                requested.add('max_hp');result.append(table('治疗速度上限',['饰物等级','每回合最多恢复HP'],[[f'{l:+d}',[4+augmented_damage(maximum,.15),3+augmented_damage(maximum,.1),2+augmented_damage(maximum,.07),1+augmented_damage(maximum,.05)][l]] for l in range(4)],f'最大生命 {maximum}'))
         if identity.startswith('actors.hero.heroclass.'):
             requested.add('hero_level');result.append(block('角色基础数值',[metric('初始生命',20,'HP'),metric('初始力量',10,'点'),metric('当前等级基础最大生命',20+5*(hero-1),'HP'),metric('升到下一等级所需经验',5+5*hero,'经验','30级后不再升级'),metric('最高角色等级',30,'级')]))
         if identity=='mechanics.accuracy':

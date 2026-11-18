@@ -20,9 +20,93 @@ HEAPS = {'HEAP': '地面物品', 'FOR_SALE': '待售物品', 'CHEST': '宝箱', 
 FEATURES = {7: '上行楼梯', 8: '下行楼梯', 10: '上锁的门', 16: '隐藏门', 17: '隐藏陷阱',
             18: '已发现陷阱', 19: '失效陷阱', 21: '锁住的出口', 22: '解锁的出口',
             24: '水井', 28: '炼金装置', 31: '水晶门', 37: '特殊入口', 38: '骷髅钥匙锁门'}
+TERRAIN_NAMES = (
+    '深渊', '地面', '草地', '干涸水井', '墙壁', '关闭的门', '打开的门', '上行楼梯',
+    '下行楼梯', '余烬', '上锁的门', '基座', '装饰墙', '路障', '特殊地面', '高草',
+    '隐藏门', '隐藏陷阱', '已发现陷阱', '失效陷阱', '装饰地面', '锁住的出口', '解锁的出口',
+    '自定义障碍', '水井', '石像', '特殊石像', '书架', '炼金装置', '水地', '茂草',
+    '水晶门', '自定义地面', '区域障碍', '特殊区域障碍', '矿晶', '矿石巨岩', '特殊入口',
+    '骷髅钥匙锁门', '水中实心装饰',
+)
+
+
+def map_view(map_data, revealed_floor=None, depth=1):
+    """Small read-only cell descriptions; only an opt-in floor supplies objects."""
+    if not map_data:
+        return {}
+    markers, icons = [], {}
+    icon_bytes = 0
+    for kind, rows in (() if revealed_floor is None else (
+            ('heap', revealed_floor['heaps']), ('trap', revealed_floor['traps']),
+            ('mob', revealed_floor['mobs']))):
+        for row in rows:
+            name = row['name']
+            if kind == 'trap':
+                name += ' · ' + ('可触发' if row['active'] else '已失效')
+            elif kind == 'mob' and row.get('hp') is not None:
+                name += f" · 保存生命 {row['hp']}" + (f"/{row['ht']}" if row.get('ht') else '')
+            elif kind == 'heap' and row.get('haunted'):
+                name += ' · 闹鬼'
+            marker = {'pos': row['pos'], 'kind': kind, 'name': name,
+                      'lines': [f"{item['name']} ×{item['quantity']}" for item in row.get('items', [])]}
+            if kind == 'heap':
+                container = {'SKELETON':32, 'REMAINS':33, 'TOMB':34, 'CHEST':36, 'LOCKED_CHEST':37, 'CRYSTAL_CHEST':38}.get(row.get('type'))
+                if container is not None: marker['sprite_frame'] = container
+                elif row.get('items'):
+                    from .reference import native_item_artwork
+                    icon = native_item_artwork(row['items'][0])
+                    if icon.get('png'):
+                        key, png = icon['sha256'], icon['png']
+                        if key in icons or (len(icons) < 80 and icon_bytes + len(png) <= 60000):
+                            if key not in icons:
+                                icons[key] = png
+                                icon_bytes += len(png)
+                            marker['icon'] = key
+            elif kind == 'mob':
+                from .reference import native_artwork
+                icon = native_artwork(row.get('id', ''))
+                if icon.get('png'):
+                    key, png = icon['sha256'], icon['png']
+                    if key in icons or (len(icons) < 80 and icon_bytes + len(png) <= 60000):
+                        if key not in icons:
+                            icons[key] = png
+                            icon_bytes += len(png)
+                        marker['icon'] = key
+            markers.append(marker)
+    from .map_art import terrain_art
+    art = terrain_art(map_data, revealed_floor['depth'] if revealed_floor else depth)
+    art['icons'] = icons
+    return {**map_data, 'terrain_names': list(TERRAIN_NAMES), 'markers': markers, 'art': art}
 FEATURES.update({13:'路障',23:'实心环境装饰',25:'石像',26:'特殊石像',27:'书架',33:'区域障碍',
                  34:'特殊区域障碍',35:'矿晶',36:'矿石巨岩',39:'水中实心装饰'})
 MIMICS = {'Mimic', 'GoldenMimic', 'CrystalMimic', 'EbonyMimic'}
+# Official saved Mob subclasses outside the usual mob/room/quest/trap namespaces.
+SUMMONED_MOBS = {
+    'actors.hero.abilities.Ratmogrify$TransmogRat',
+    'actors.hero.abilities.cleric.PowerOfMany$LightAlly',
+    'actors.hero.abilities.duelist.Feint$AfterImage',
+    'actors.hero.abilities.huntress.SpiritHawk$HawkAlly',
+    'actors.hero.abilities.rogue.ShadowClone$ShadowAlly',
+    'actors.hero.abilities.rogue.SmokeBomb$NinjaLog',
+    'items.artifacts.DriedRose$GhostHero',
+    'items.wands.WandOfLivingEarth$EarthGuardian',
+    'items.wands.WandOfRegrowth$Lotus',
+    'items.wands.WandOfWarding$Ward',
+    'items.wands.WandOfWarding$Ward$WardSentry',
+}
+
+# Concrete official items/traps whose saved runtime classes are outside the usual packages.
+EXTRA_SAVED_ITEMS = {'plants.'+name+'$Seed' for name in (
+    'BlandfruitBush', 'Blindweed', 'Earthroot', 'Fadeleaf', 'Firebloom', 'Icecap',
+    'Mageroyal', 'Rotberry', 'Sorrowmoss', 'Starflower', 'Stormvine', 'Sungrass', 'Swiftthistle',
+)} | {
+    'actors.mobs.Tengu$BombAbility$BombItem',
+    'actors.mobs.Tengu$ShockerAbility$ShockerItem',
+}
+EXTRA_SAVED_TRAPS = {
+    'levels.VaultLevel$VaultFlameTrap',
+    'levels.rooms.special.ToxicGasRoom$ToxicVent',
+}
 
 
 class ScoutingConflict(SaveError):
@@ -126,7 +210,9 @@ def inspect_saved(session, payload):
                 raise ScoutingConflict('当前楼层与角色保存时间不一致，尚未混合展示；请在游戏内完成保存后重读。')
             result = project_floor(level, game, session.catalog, *location)
             result.update(source={**source, 'floor_modified': level_modified, 'floor_sha256': level_hash,
-                                  'floor_version': level['version']}, revealed=True)
+                                  'floor_version': level['version'],
+                                  'snapshot_content': hashlib.sha256(json.dumps([game, level], sort_keys=True).encode()).hexdigest()
+                                      if location == (game['depth'], game.get('branch', 0)) else None}, revealed=True)
             # Re-read hashes as well as metadata: cloud copies can preserve times.
             if read_snapshot(path)[1] != level_hash:
                 raise ScoutingConflict('楼层在探查期间变化，结果未发布；请重新读取。')
@@ -165,7 +251,9 @@ def project_floor(level, game, catalog, depth, branch):
         projected = []
         for raw in values:
             item_count += 1
-            if item_count > 5000 or not isinstance(raw, dict) or not isinstance(raw.get('__className'), str) or not raw['__className'].startswith(PREFIX + 'items.'):
+            kind = raw.get('__className') if isinstance(raw, dict) else None
+            if (item_count > 5000 or not isinstance(kind, str) or not kind.startswith(PREFIX)
+                    or not (kind.startswith(PREFIX+'items.') or kind.removeprefix(PREFIX) in EXTRA_SAVED_ITEMS)):
                 raise SaveError('楼层物品格式无效或超出探查数量限制。')
             row = catalog.item(raw, game, location, reveal=True)
             row.update(available=False, instance_key=f'floor-{depth}-{branch}-item-{item_count}')
@@ -184,7 +272,9 @@ def project_floor(level, game, catalog, depth, branch):
             'haunted': flag(heap, 'haunted'), 'items': items(heap.get('items', []), label)})
     traps = []
     for trap in collection('traps'):
-        if not isinstance(trap.get('__className'), str) or not trap['__className'].startswith(PREFIX + 'levels.traps.'):
+        kind = trap.get('__className')
+        if (not isinstance(kind, str) or not kind.startswith(PREFIX)
+                or not (kind.startswith(PREFIX+'levels.traps.') or kind.removeprefix(PREFIX) in EXTRA_SAVED_TRAPS)):
             raise SaveError('陷阱类型无效，隐藏内容未展开。')
         name = catalog.name(trap)
         if catalog.key(trap)+'.name' not in catalog.messages and catalog.key(trap) not in catalog.entry_index:
@@ -194,7 +284,8 @@ def project_floor(level, game, catalog, depth, branch):
     mobs = []
     for mob in collection('mobs'):
         kind = str(mob.get('__className', '')).removeprefix(PREFIX)
-        if not kind.startswith(('actors.mobs.', 'items.quest.', 'levels.rooms.', 'levels.traps.')):
+        if not (str(mob.get('__className', '')).startswith(PREFIX) and
+                (kind.startswith(('actors.mobs.', 'items.quest.', 'levels.rooms.', 'levels.traps.')) or kind in SUMMONED_MOBS)):
             raise SaveError('楼层生物类型无效，隐藏内容未展开。')
         short = kind.rsplit('.', 1)[-1]
         saved_items = []
@@ -219,8 +310,12 @@ def project_floor(level, game, catalog, depth, branch):
     hero = game.get('hero', {}).get('pos') if (depth, branch) == (game['depth'], game.get('branch', 0)) else None
     if type(hero) is not int or not 0 <= hero < cells:
         hero = None
-    return {'depth': depth, 'branch': branch, 'map': {'width': width, 'height': height,
-        'tiles': list(level['map']), 'hero': hero, 'caption': '主动揭示的已保存完整楼层；非实时视野'},
+    from .map_art import theme_for
+    water_theme = 'halls' if str(level.get('__className', '')).endswith('.DeadEndLevel') else None
+    result = {'depth': depth, 'branch': branch, 'map': {'width': width, 'height': height, 'theme': theme_for(level, depth, game), 'water_theme': water_theme,
+        'tiles': list(level['map']), 'hero': hero, 'caption': '主动揭示的已保存地形与物品、生物、陷阱；非实时视野'},
         'features': features, 'heaps': heaps, 'traps': traps, 'mobs': mobs,
-        'item_count': item_count, 'note': '存档中已生成且仍保存的内容，不是未来随机掉落。宝箱、售卖、墓碑、生物持有物品不等于可立即取得；房间或奖励可能互斥。秘密门位置来自地形，房间名称未从地图猜测。',
+        'item_count': item_count, 'note': '存档中已生成且仍保存的内容，不是未来随机掉落。宝箱、售卖、墓碑、生物持有物品不等于可立即取得；房间或奖励可能互斥。秘密门位置来自地形，房间名称未从地图猜测；不含植物、气体与自定义地形效果。',
         'sources': [{'label': '官方楼层存档格式', 'url': 'https://github.com/00-Evan/shattered-pixel-dungeon/blob/v' + VERSIONS[game['version']] + '/core/src/main/java/com/shatteredpixel/shatteredpixeldungeon/levels/Level.java'}]}
+    result['map'] = map_view(result['map'], result)
+    return result

@@ -12,6 +12,31 @@ def augmented_damage(value, factor):
     return math.floor(float32(float32(value) * float32(factor)) + .5)
 
 
+def challenge_healing(damage, points):
+    # Challenge: .707f is widened to double by Math.pow, not kept as a float.
+    return math.floor(damage * (1 - math.pow(float32(.707), points)) + .5) + 5 * points
+
+
+RING_POWER_BASES = {
+    'accuracy': float32(1.3), 'arcana': float32(1.175),
+    'elements': .825, 'energy': 1.175, 'evasion': 1.125, 'furor': 1.09051,
+    'haste': 1.15, 'might': 1.035, 'sharpshooting': 1.2, 'wealth': 1.2,
+    'tenacity': .85,
+}
+
+
+def ring_multiplier(kind, bonus, maximum=1, current=1):
+    # Only Accuracy and Arcana widen a float literal into Math.pow's double base.
+    exponent = bonus
+    if kind == 'tenacity':
+        missing = float32((maximum-current)/float32(maximum))
+        exponent = float32(float32(bonus)*missing)
+    try:
+        return float32(math.pow(RING_POWER_BASES[kind], exponent))
+    except OverflowError as exc:
+        raise ValueError('戒指效果超出游戏单精度有限数值范围') from exc
+
+
 def potion_healing_pool(maximum):
     # PotionOfHealing: cast to int after float multiplication and addition.
     return int(float32(float32(float32(.8) * maximum) + 14))

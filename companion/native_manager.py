@@ -566,8 +566,8 @@ class NativeManager:
             self.manager.action_error_until = time.monotonic()+15
         self.update(self.session.snapshot(), force=True)
 
-    def change_connection(self, patch):
-        revision = self.session.snapshot()['settings_revision']
+    def change_connection(self, patch, expected_revision=None):
+        revision = self.session.snapshot()['settings_revision'] if expected_revision is None else expected_revision
         submitted = copy.deepcopy(patch)
         return self.queue_io('正在保存连接设置', lambda: self.session.update_settings(
             submitted, expected_revision=revision))
@@ -709,8 +709,11 @@ class NativeManager:
             data=snap.get('data') or {}
             if (source['depth'],source['branch'])!=(data.get('depth'),data.get('branch',0)):
                 raise ValueError('角色正在换层，请等待保存完成后刷新。')
-            return inspect_saved(self.session,{'action':'floor','depth':source['depth'],'branch':source['branch'],
+            result=inspect_saved(self.session,{'action':'floor','depth':source['depth'],'branch':source['branch'],
                 'expected':source['expected'],'reveal':True})
+            if not snap.get('snapshot_content') or result['source'].get('snapshot_content')!=snap['snapshot_content']:
+                raise ValueError('游戏已保存新快照，请刷新后重新揭示。')
+            return result
         def complete(result,error):
             if token!=self.floor_token(self.session.snapshot()): return
             self.manager.action_error=error or ''
@@ -741,6 +744,8 @@ class NativeManager:
             elif action in ('window_layout', 'layout_reset'):
                 self.layout.update(item['layout'], reset=action == 'layout_reset')
             elif action == 'collapse':
+                if self.frozen:
+                    return
                 play = self.manager.play
                 target = play.native.remembered_game() if play else None
                 self.host.command('collapse', game={key: target[key] for key in ('hwnd','pid')} if target else {})
@@ -1051,7 +1056,7 @@ class NativeManager:
             if signature != getattr(self, '_task_source_signature', None):
                 self._task_source_signature = signature
                 workspace.emit(workspace.page)
-        if workspace and workspace.sync_map_source(snap) and workspace.page == 'map':
+        if workspace and workspace.sync_map_source(snap):
             workspace.emit('map')
         if workspace and workspace.page == 'inventory':
             current = binding_token([snap.get('started'), snap.get('revision'), snap.get('settings_revision'), snap.get('error')])
@@ -1067,10 +1072,11 @@ class NativeManager:
 
     def track_game(self, game, visible):
         rect = list(game['rect']) if game else []
-        key = (tuple(rect), bool(visible))
+        helper = getattr(self.host, 'process', None)
+        key = (tuple(rect), bool(visible), bool(getattr(self.host, 'ready', False)), getattr(helper, 'pid', None))
         if key != getattr(self, '_game_window_state', None):
-            self._game_window_state = key
-            self.host.command('game_bounds', rect=rect, visible=bool(visible))
+            if self.host.command('game_bounds', rect=rect, visible=bool(visible)) is not False:
+                self._game_window_state = key
 
     def hide(self):
         self.host.command('hide' if self.manager.tray is not None else 'minimize_manager', surface='manager')

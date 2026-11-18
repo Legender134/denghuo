@@ -99,20 +99,26 @@ namespace Denghuo.Native {
             switch(action) {
                 case "show": ShowSurface(Data.Text(d,"surface","manager"),Data.Flag(d,"preserve_view")); break;
                 case "hide": HideSurface(Data.Text(d,"surface","manager")); break;
-                case "minimize_manager": Manager.WindowState=WindowState.Minimized; break;
+                case "minimize_manager": if(!Frozen) Manager.WindowState=WindowState.Minimized; break;
                 case "manager_state": Manager.Render(d); break;
                 case "window_layout": Manager.LayoutRestored=Data.Flag(d,"restored"); Manager.ApplyLayout(Data.Object(d,"layout")); break;
                 case "game_bounds": Manager.FollowGame(d); break;
                 case "collapse":
-                    bool returned=GameFocus.Return(Data.Object(d,"game")); Manager.Collapse();
+                    bool returned=false;
+                    // A newer Escape press can overtake the Python round trip.
+                    // Leave both focus and sidebar intact until its own release.
+                    if(!Frozen && !GameFocus.EscapeDown) {
+                        returned=GameFocus.Return(Data.Object(d,"game"));
+                        if(!GameFocus.EscapeDown) Manager.Collapse();
+                    }
                     Send("collapse_result","returned",returned && GameFocus.OwnsForeground(Data.Object(d,"game")),"game_pid",Data.Number(Data.Object(d,"game"),"pid")); break;
                 case "game_state": Manager.RenderTask(d); break;
-                case "game_show": ShowSurface("manager"); Manager.ShowPage(Data.Text(d,"page","inventory")); break;
+                case "game_show": if(!Frozen) { ShowSurface("manager"); Manager.ShowPage(Data.Text(d,"page","inventory")); } break;
                 case "game_confirm": GameConfirm(d); break;
                 case "lookup_state": Lookup.Render(d); Manager.FitContent(); break;
                 case "settings_state": Settings.Render(d); Manager.FitContent(); break;
                 case "plans": Plans.Render(d); Manager.FitContent(); break;
-                case "focus_search": ShowSurface("lookup"); Lookup.FocusSearch(); break;
+                case "focus_search": if(!Frozen) { ShowSurface("lookup"); Lookup.FocusSearch(); } break;
                 case "name_plan": NamePlan(d); break;
                 case "game_name_plan": GameNamePlan(d); break;
                 case "confirm": Confirm(d); break;
@@ -133,8 +139,8 @@ namespace Denghuo.Native {
             if(Manager==null) return;
             foreach(string surface in new[]{"manager","lookup","settings","plans"}) Send("visibility","surface",surface,"visible",Manager.IsVisible && (surface=="manager" || !Manager.Collapsed && Manager.Page==surface),"hwnd",Manager.Handle.ToInt64(),"collapsed",Manager.Collapsed);
         }
-        public void ShowSurface(string surface,bool preserveView=false) { Manager.Expand(); if(surface!="manager") Manager.ShowPage(surface); if(!Manager.IsVisible) Manager.Show(); if(Manager.WindowState==WindowState.Minimized) Manager.WindowState=WindowState.Normal; Manager.Activate(); VisibilityAll(); if(surface=="lookup" && !preserveView) Lookup.FocusSearch(); }
-        public void HideSurface(string surface) { if(surface=="lookup" || surface=="settings" || surface=="plans") Manager.Collapse(); else Manager.Hide(); VisibilityAll(); }
+        public void ShowSurface(string surface,bool preserveView=false) { if(Frozen) return; Manager.Expand(); if(surface!="manager") Manager.ShowPage(surface); if(!Manager.IsVisible) Manager.Show(); if(Manager.WindowState==WindowState.Minimized) Manager.WindowState=WindowState.Normal; Manager.Activate(); VisibilityAll(); if(surface=="lookup" && !preserveView) Lookup.FocusSearch(); }
+        public void HideSurface(string surface) { if(Frozen) return; if(surface=="lookup" || surface=="settings" || surface=="plans") Manager.Collapse(); else Manager.Hide(); VisibilityAll(); }
         void SetFrozen(bool value) { Manager.Editable.IsEnabled=!value; if(activeName!=null) activeName.Editable.IsEnabled=!value; }
         void CloseExitDialog() { var dialog=activeExit; activeExit=null; if(dialog!=null) dialog.CloseSilently(); }
         void CancelExit(string id) { if(!exitRequests.Cancel(id)) return; CloseExitDialog(); Frozen=false; SetFrozen(false); }

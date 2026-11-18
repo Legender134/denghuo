@@ -1,6 +1,8 @@
 """Evaluated class abilities and a few stateful effects, with explicit assumptions."""
 import math
 
+from .game_math import challenge_healing, float32
+
 
 def add_advanced_values(engine, identity, p, result, requested):
     from .values import block, metric, table, rounded, display
@@ -64,8 +66,8 @@ def add_advanced_values(engine, identity, p, result, requested):
         for label, factor in [('雷霆/解离/焰浪/霜冻',1),('魔弹/大地',.5),('冲击波/棱光',.67)]:
             rank_table('元素之力 · '+label, ['基础伤害HP'], lambda n,f=factor: [f'{rounded(15*(1+.25*n)*f)}–{rounded(25*(1+.25*n)*f)}'], '未计目标抗性；与魔杖等级无关。')
         rank_table('元素之力 · 额外效果', ['雷霆麻痹回合','霜冻冻结回合','酸蚀起始强度','再生缠绕回合','输血治疗额度HP'], lambda n: [display((1+.25*n)*engine.duration('Paralysis')/2),display((1+.25*n)*engine.duration('Frost')),rounded(6*(1+.25*n)),display((1+.25*n)*engine.duration('Roots')),rounded(10*(1+.25*n))])
-        requested.add('targets')
-        rank_table('反应护盾', ['获得护盾HP'], lambda n: [rounded(min(4+n,p['targets'])*2.5*n)], '目标数量填写实际被技能效果命中的单位数。')
+        requested.add('effect_hits')
+        rank_table('反应护盾', ['获得护盾HP'], lambda n: [rounded(min(4+n,p['effect_hits'])*2.5*n)], '填写技能有效命中计数：棱光伤害后仍存活的敌人再因失明计1次，击杀仅计1次；其他法杖按实际伤害或专属效果分支计数，不按唯一单位数。')
     elif base == 'actors.hero.abilities.huntress.spectralblades':
         requested.add('damage')
         rows = [metric('主目标伤害',damage,'HP'), metric('额外目标伤害',rounded(damage*.5),'HP','未计其他效果及目标护甲')]
@@ -87,18 +89,24 @@ def add_advanced_values(engine, identity, p, result, requested):
         requested.update(('damage','hp','max_hp'))
         rows = [metric('决斗持续',10,'回合'),metric('与对手最大距离',5,'格'),metric('施放耗时',0,'回合'),metric('连续决斗优惠窗口',3,'回合')]
         rank_table('拉近距离', ['施放时最大瞬移格数'],lambda n:[1+n if n else 0])
-        rank_table('振奋胜利', ['胜利后实际治疗HP'],lambda n:[min(ht-hp,rounded(damage*(1-.707**n))+5*n)], f'基础伤害输入决斗期间实际损失的生命（当前 {damage}）；无治疗禁用效果。')
+        rank_table('振奋胜利', ['胜利后实际治疗HP'],lambda n:[min(ht-hp,challenge_healing(damage,n))], f'基础伤害输入决斗期间实际损失的生命（当前 {damage}）；无治疗禁用效果。')
         rank_table('淘汰赛', ['下次基础充能消耗%'],lambda n:[display(50*.84**n)], '未计英勇能量。')
     elif base == 'actors.hero.abilities.duelist.elementalstrike':
         requested.update(('targets','damage','hp','max_hp','target_hp','target_max_hp','power'))
+        def strike_power(n):return float32(1+float32(float32(.3)*n))
+        def strike_scale(value,n):return float32(float32(value)*strike_power(n))
+        missing=float32(1-float32(p['target_hp']/float32(p['target_max_hp'])))
+        def strike_chance(base,rate,n):
+            chance=float32(float32(base)+float32(float32(rate)*missing))
+            return display(min(1,strike_scale(chance,n))*100)
+        stored_damage=math.ceil(float32(p['power']))
         rank_table('元素延展', ['最远格数','扇形角度°'],lambda n:[4+n,65+10*n])
-        rank_table('定向能量', ['主攻击附魔强度增益%'],lambda n:[30*p['targets']*n])
-        rank_table('强力打击 · 无附魔/结晶', ['无附魔区域伤害HP','结晶区域伤害HP','结晶修复量'],lambda n:[f'{rounded(6*(1+.3*n))}–{rounded(12*(1+.3*n))}',f'{rounded(10*(1+.3*n))}–{rounded(20*(1+.3*n))}',display(4*(1+.3*n))])
-        rank_table('强力打击 · 恢复/弹力', ['招架护盾HP','吸血实际治疗HP','弹力最大击退格'],lambda n:[rounded(6*p['targets']*(1+.3*n)),min(ht-hp,rounded(2.5*p['targets']*(1+.3*n))),rounded(5*(1+.3*n))])
-        rank_table('强力打击 · 状态', ['剧毒强度','流血强度','恐惧回合','缠绕回合'],lambda n:[display(10*(1+.3*n)),display(10*(1+.3*n)),display(10*(1+.3*n)),rounded(6*(1+.3*n))], '剧毒首次生效延迟3回合；附魔版本不作用于已被主攻击命中的目标。')
-        missing=1-p['target_hp']/p['target_max_hp']
-        rank_table('强力打击 · 概率', ['幸运掉落%','腐化%','死神斩杀%'],lambda n:[display(12.5*(1+.3*n)),display(min(100,(5+20*missing)*(1+.3*n))),display(min(100,(6+24*missing)*(1+.3*n)))], '区域目标有相应附魔且满足触发条件时；只输入一个目标的当前生命计算。')
-        rank_table('强力打击 · 伤害传递', ['索敌区域伤害HP','动能区域伤害HP'],lambda n:[rounded(damage*.3*(1+.3*n)),rounded(p['power']*.4*(1+.3*n))], '索敌输入本次英雄随机伤害；动能的状态强度输入储存伤害。')
+        rank_table('定向能量', ['主攻击附魔强度增益%'],lambda n:[display(float32(float32(float32(.3)*p['targets'])*n)*100)])
+        rank_table('强力打击 · 无附魔/结晶', ['无附魔区域伤害HP','结晶区域伤害HP','结晶修复量'],lambda n:[f'{rounded(strike_scale(6,n))}–{rounded(strike_scale(12,n))}',f'{rounded(strike_scale(10,n))}–{rounded(strike_scale(20,n))}',display(strike_scale(4,n))])
+        rank_table('强力打击 · 恢复/弹力', ['招架护盾HP','吸血实际治疗HP','弹力最大击退格'],lambda n:[rounded(strike_scale(6*p['targets'],n)),min(ht-hp,rounded(strike_scale(2.5*p['targets'],n))),rounded(strike_scale(5,n))])
+        rank_table('强力打击 · 状态', ['剧毒追加回合','流血施加强度','恐惧回合','缠绕回合'],lambda n:[display(strike_scale(10,n)),display(strike_scale(10,n)),display(strike_scale(10,n)),rounded(strike_scale(6,n))], '新施加剧毒延迟3回合；流血强度是施加时预随机前的值。剧毒、流血排除已被主攻击命中的目标，恐惧、缠绕仍可影响主目标。')
+        rank_table('强力打击 · 概率', ['幸运掉落%','腐化%','死神斩杀%'],lambda n:[display(strike_scale(.125,n)*100),strike_chance(.05,.2,n),strike_chance(.06,.24,n)], '区域目标有相应附魔且满足触发条件时；只输入一个目标的当前生命计算。')
+        rank_table('强力打击 · 伤害传递', ['索敌区域伤害HP','动能区域伤害HP'],lambda n:[rounded(strike_scale(float32(float32(damage)*float32(.3)),n)),rounded(strike_scale(float32(float32(stored_damage)*float32(.4)),n))], '只影响非主击目标。索敌输入本次英雄随机伤害；动能填当前内部储存池，先按游戏向上取整再传递。')
     elif base == 'actors.hero.abilities.cleric.powerofmany':
         requested.add('hero_level')
         rows = [metric('强化持续',100,'回合','辐光和血色羁绊生效时暂停倒计时'),metric('获得护盾',25,'HP'),metric('圣天誓盟生命',80,'HP'),metric('圣天誓盟伤害','5–30','HP'),metric('圣天誓盟护甲','1–5','HP'),metric('圣天誓盟命中',h+9,'点'),metric('圣天誓盟闪避',h+4,'点'),metric('指挥誓盟消耗',0,'充能')]
@@ -147,7 +155,9 @@ def add_advanced_values(engine, identity, p, result, requested):
     if identity == 'items.weapon.enchantments.blocking$blockbuff':
         requested.add('level');rows=[metric('每次触发后护盾',2+p['level'],'HP','无触发强度修正'),metric('护盾时限',5,'回合','不动如山可减慢衰减')]
     elif identity == 'items.weapon.enchantments.kinetic$conserveddamage':
-        requested.add('power');rows=[metric('下次命中追加伤害',p['power'],'HP'),metric('每回合储存伤害衰减',max(.1,p['power']*.025),'HP','本回合值；衰减后向上取整作为下次追加伤害')]
+        requested.add('power');pool=float32(p['power'])
+        rows=[metric('下次命中追加伤害',math.ceil(pool),'HP','当前内部储存池向上取整；精确手填假设，不由游戏显示的整数反推小数'),
+              metric('本回合储存池衰减',max(float32(.1),float32(pool*float32(.025))),'HP','按原始小数池计算；衰减后的池仍向上取整作为追加伤害')]
     elif identity == 'actors.buffs.prismaticguard':
         requested.add('hero_level');rows=[metric('虹光守卫最大生命',10+math.floor(h*2.5),'HP'),metric('未召出时生命恢复速度',.1,'HP/回合','允许自然恢复时')]
     elif identity in ('actors.blobs.freezing','actors.blobs.blizzard'):
@@ -199,7 +209,12 @@ def add_advanced_values(engine, identity, p, result, requested):
         rows=[metric('戒指有效等级提升',1,'级')]
         result.append(table('戒指强化天赋',['投入点数','使用神器后的持续回合'],[[n,3*n] for n in range(1,4)]))
     elif identity == 'actors.buffs.championenemy$growing':
-        result.append(table('成长精英成长对照',['已触发成长次数','首次成长后经过回合','命中/闪避/物理伤害倍率','伤害减免%'],[[n,4*(n-1) if n else '尚未行动',display(1.19+.01*n),display((1-1/(1.19+.01*n))*100)] for n in [0,1,5,10,20,50,100]],'未包含其他精英效果；第一次成长在状态首次行动时触发。'))
+        growth_rows=[];multiplier=float32(1.19)
+        for n in range(101):
+            if n in (0,1,5,10,20,50,100):
+                growth_rows.append([n,4*(n-1) if n else '尚未行动',display(multiplier),display((1-float32(1/multiplier))*100)])
+            multiplier=float32(multiplier+float32(.01))
+        result.append(table('成长精英成长对照',['已触发成长次数','首次成长后经过回合','命中/闪避/物理伤害倍率','伤害减免%'],growth_rows,'未包含其他精英效果；第一次成长在状态首次行动时触发，倍率逐次按游戏单精度累加。'))
     elif identity == 'items.quest.corpsedust':
         result.append(table('尸尘召唤间隔',['当前尸尘怨灵数','再召一只所需回合'],[[n,min(49,(n+1)**2)] for n in range(8)],'有可用生成格且尸尘在可用背包内时；失败不会照常生成。'))
     elif identity == 'items.wands.wandofregrowth$dewcatcher':rows=[metric('产出露珠','3–6','滴','周围可用位置足够时；每格最多一滴')]

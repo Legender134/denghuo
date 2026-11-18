@@ -1154,12 +1154,37 @@ class GameWorkspaceTests(ControllerFixture):
         root, slot = self.saved_game(); original = {p.name: p.read_bytes() for p in slot.iterdir()}
         self.workspace.reload('map'); self.finish_job()
         self.assertIsNone(self.workspace.map_result)
-        row = self.workspace.rows['map'][0]; self.select('map', row)
+        row = self.workspace.rows['map'][0]
+        self.assertEqual(self.workspace.selected['map'], row['id'])
+        self.assertEqual(self.workspace.selected_tokens['map'], row['token'])
+        state = self.host.commands[-1][1]
+        self.assertFalse(next(a for a in state['actions'] if a['id'] == 'map_reveal')['disabled'])
         self.workspace.reveal_map(); self.finish_job()
         self.assertEqual(self.workspace.map_result['depth'], 2)
         self.assertEqual(self.workspace.map_result['map']['width'], 4)
         self.assertEqual({p.name: p.read_bytes() for p in slot.iterdir()}, original)
         self.workspace.handle({'page': 'map', 'command': 'map_hide'}); self.assertIsNone(self.workspace.map_result)
+
+    def test_inventory_all_reveal_control_is_visible_without_selection_and_toggle_is_reversible(self):
+        self.saved_game()
+        self.native.change_connection = Mock()
+        self.workspace.emit('inventory')
+        actions = self.host.commands[-1][1]['actions']
+        self.assertEqual(actions[0]['id'], 'enable_all_reveal')
+        self.assertEqual(actions[0]['text'], '揭示全部物品')
+        revision = actions[0]['settings_revision']
+        self.workspace.handle({'page': 'inventory', 'command': 'enable_all_reveal', 'settings_revision': revision})
+        self.native.change_connection.assert_called_once_with({'reveal': True}, expected_revision=revision)
+        self.session.update_settings({'reveal': True})
+        self.workspace.emit('inventory')
+        self.assertEqual(self.host.commands[-1][1]['actions'][0]['text'], '关闭全部物品揭示')
+        row = next(r for r in self.workspace.inventory() if r['item'].get('revealed'))
+        self.select('inventory', row)
+        self.assertNotIn('hide_reveal', [a['id'] for a in self.host.commands[-1][1]['actions']])
+        with self.assertRaisesRegex(ValueError, '设置已变化'):
+            self.workspace.handle({'page': 'inventory', 'command': 'enable_all_reveal', 'settings_revision': revision})
+        self.workspace.handle({'page': 'inventory', 'command': 'disable_all_reveal', 'settings_revision': self.session.snapshot()['settings_revision']})
+        self.native.change_connection.assert_called_with({'reveal': False}, expected_revision=self.session.snapshot()['settings_revision'])
 
     def test_native_backup_preview_keeps_closed_game_guard_and_preserves_original(self):
         root, slot = self.saved_game()
@@ -1275,6 +1300,27 @@ class GameWorkspaceTests(ControllerFixture):
                 states = [value for action, value in self.host.commands if action == 'game_state' and value['page'] == 'map']
                 self.assertFalse(states[-1]['map_revealed'])
                 self.assertNotIn('已主动揭示', states[-1]['text'])
+
+    def test_inactive_map_retracts_source_without_navigating_or_losing_other_drafts(self):
+        self.saved_game(); self.workspace.reload('map'); self.finish_job()
+        self.select('map', self.workspace.rows['map'][0]); self.workspace.reveal_map(); self.finish_job()
+        shown = self.host.commands[-1][1]['map']
+        self.assertTrue(self.host.commands[-1][1]['map_revealed'])
+        self.assertIn('markers', shown)
+        self.assertIn('view_key', shown)
+        self.workspace.page = 'equipment'
+        self.workspace.raw['equipment']['level_a'] = '1e'
+        before = copy.deepcopy(self.workspace.drafts())
+        self.saved_game(hp=17); self.host.commands.clear(); self.native_update()
+        states = [data for command, data in self.host.commands if command == 'game_state']
+        maps = [data for data in states if data['page'] == 'map']
+        self.assertEqual(len(maps), 1)
+        self.assertFalse(maps[0]['map_revealed'])
+        self.assertFalse(maps[0]['map']['markers'])
+        self.assertNotEqual(maps[0]['map']['view_key'], shown['view_key'])
+        self.assertEqual(self.workspace.page, 'equipment')
+        self.assertEqual(self.workspace.drafts(), before)
+        self.assertFalse(any(command == 'game_show' for command, _ in self.host.commands))
 
     def test_old_map_catalog_and_reveal_callbacks_cannot_publish(self):
         self.saved_game()

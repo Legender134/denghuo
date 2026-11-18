@@ -22,6 +22,11 @@ terms above apply. Random potion, scroll and ring appearances are separate from
 effect icons; representative variants are explicitly marked. The extractor is
 `tools/build_reference_images.py`; no replacement or generated artwork is used.
 
+`web/map-atlas/` contains the original 4.0.2 terrain, water and item sprite
+atlases at the same revision. `data/map_atlas.json` records their SHA-256
+hashes. `companion/map_art.py` follows the game's terrain sprite mapping;
+the original game copyrights and GPL-3.0-or-later terms above apply.
+
 `companion/values_resources.py` ports the dew-consumption and recovery branches from `Waterskin.execute`, `Dewdrop.consumeDew`, `VialOfBlood` and `Healing.setHeal` at the fixed revision above. Its arithmetic follows the original Java single-precision operations before rounding and is a GPL-3.0-or-later derivative. Player-facing provenance links point to the same commit. Other reviewed calculation tables retain the same source and license obligations.
 
 `companion/game_math.py`, `decisions.py` and `engine.py` also translate the public remaining-healing projection, `Healing.healingThisTick` / `setHeal`, `PotionOfHealing` pool and `VialOfBlood` limit branches from that same revision under GPL-3.0-or-later. `global_progress.py` checks the two byte-preserved global file structures against `Badges`, `Rankings`, `Bundle` and `FileUtils`; it does not instantiate game objects or edit their statistics. The game copyrights above apply to the translated arithmetic.

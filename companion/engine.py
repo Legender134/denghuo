@@ -348,7 +348,7 @@ def walk_inventory(hero):
     yield from visit(hero.get("inventory", []), "背包")
 
 
-def known_map(level, hero_pos):
+def known_map(level, hero_pos, depth=1, game=None):
     try:
         validate_map(level, maximum=128)
     except SaveError:
@@ -364,7 +364,9 @@ def known_map(level, hero_pos):
             # A visited secret door/trap still looks like wall/floor in the game.
             safe_tiles.append({16: 4, 17: 1}.get(tile, tile))
     pos = hero_pos if type(hero_pos) is int and 0 <= hero_pos < len(tiles) else None
-    return {"width": width, "height": height, "tiles": safe_tiles, "hero": pos,
+    from .map_art import theme_for
+    water_theme = 'halls' if str((level or {}).get('__className', '')).endswith('.DeadEndLevel') else None
+    return {"width": width, "height": height, "tiles": safe_tiles, "hero": pos, "theme": theme_for(level, depth, game), "water_theme": water_theme,
             "explored": sum(t != -1 for t in safe_tiles), "caption": "最近保存的已探索地形；不代表当前视野"}
 
 
@@ -548,7 +550,7 @@ def analyze(game, catalog: Catalog, level=None, reveal=False):
                       for b in buffs if short_class(b) not in ("Regeneration", "Hunger")
                       and (catalog.key(b) in catalog.entry_index or catalog.key(b) + '.name' in catalog.messages
                            or short_class(b) == 'Berserk' or short_class(b).rsplit('$', 1)[-1] == 'TimeStasis')],
-            "items": items, "tips": tips, "map": known_map(level, hero.get("pos")),
+            "items": items, "tips": tips, "map": known_map(level, hero.get("pos"), depth, game),
             "region": region(depth, branch), "reveal": reveal}
 
 

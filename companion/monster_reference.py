@@ -262,8 +262,8 @@ def _exotic_loot_target(identity):
 def loot_rows(values, identity, row, p):
     name = _family(identity)
     depth, count, hero = p['depth'], p['loot_count'], p['hero_level']
-    chance = float(row['base_loot_chance'])
-    if name == 'swarm': chance = 1/(6*(p['swarm_generation']+1))
+    chance = float32(row['base_loot_chance'])
+    if name == 'swarm': chance = float32(1/float32(6*(p['swarm_generation']+1)))
     limit = row['stats']['maxLvl']+2
     gate = hero <= limit
     condition = f'角色等级不超过 {limit} 级' if limit > 0 else '此种敌人的普通掉落通道关闭'
@@ -288,17 +288,18 @@ def loot_rows(values, identity, row, p):
             fragment=float32(1+float32(float32(.2)*effective))
             multiplier=float32(multiplier+float32(fragment-1))
             modifier_condition += f'；遗忘碎片生效等级 {level}，合格未鉴定项 {eligible}，按等级上限计入 {effective} 项；碎片额外倍率与财富、赏金猎人相加'
-        chance *= multiplier
+        chance = float32(chance*multiplier)
         modifier_condition = f'；财富有效加成 {wealth}，普通掉率倍率 {display(multiplier)}，概率最高100%'+modifier_condition
     if name in ('skeleton','necromancer$necroskeleton','guard','shaman','thief','bandit','dm200','dm201','golem'):
-        chance *= (1/3)**count
+        chance = float32(chance*float32(math.pow(float32(1/3),count)))
         condition += f'；本局同类战利品已生成 {count} 次（含袖章成功偷取），每次后概率降至原来的 1/3'
     elif name in ('slime','causticslime'):
-        chance *= (1/4)**count
+        chance = float32(chance*float32(math.pow(.25,count)))
         condition += f'；本局史莱姆武器已生成 {count} 次（含袖章成功偷取），每次后概率降至原来的 1/4'
     elif name in ('bat','necromancer','spectralnecromancer','swarm'):
         cap = 7 if name == 'bat' else 5 if name == 'swarm' else 6
-        chance *= max(0,cap-count)/cap
+        chance = (float32(float32(chance*(cap-count))/float32(cap)) if name=='swarm'
+                  else float32(chance*float32((cap-count)/float32(cap))))
         condition += f'；本局此计数已生成 {count} 瓶（含袖章成功偷取），达到 {cap} 瓶后为 0%'
         if name == 'swarm': condition += f'；分裂代数 {p["swarm_generation"]}（原始蝇群为 0）'
     condition += modifier_condition
@@ -364,6 +365,12 @@ def loot_rows(values, identity, row, p):
         condition+=f'；异晶生效等级 {level}（−1为无效果），普通掉落成功后按 {display(100*conversion)}% 转换为对应合剂／秘卷；两行互斥，不额外增加掉落次数'
     for item in rows:
         item['condition'] = condition + ('；'+item['condition'] if item.get('condition') else '')
+    if name == 'quest.vault.vaultghoul':
+        for item in rows:
+            item['condition'] += '；普通个体，含多敌藏宝室中间一只，不适用于两侧两只'
+        rows.append(_item(values,'items.quest.dwarftoken',chance if hero<=2 else 0,1,
+            '多敌藏宝室两侧两只：角色超过2级不掉代币；'
+            +('已被袖章成功偷取，不再普通掉落' if p.get('loot_stolen',0) else '未被袖章成功偷取')+modifier_condition))
     extras = {
         'causticslime':('items.quest.gooblob',1,1), 'dm201':('items.quest.metalshard',1,1),
         'spectralnecromancer':('items.scrolls.scrollofremovecurse',1,1),
@@ -781,7 +788,7 @@ def add_monster_values(values, identity, p, result, requested):
                      _metric('存活时单次跨段后的生命下限','当前段下界再减120','HP','在实际承伤之后才将生命抬至此下限；例如600降到100会抬至360。直接致死不进入此保护，不是保证防秒杀'),
                      _metric('新生成时三种初始形态概率','各1/3','','火焰／冰霜／电光；未读取本局当前形态'),
                      _metric('新生成连续战斗的各形态初始可用次数',2,'次','初始形态也扣1次；之后按剩余次数加权抽取并排除当前形态，不是每次各1/3。此上限仅适用于未读档的连续战斗；形态次数数组未保存，读档不保证沿用该上限'),
-                     _metric('初始特殊／环境冷却','6–10／10–15','整数计数','新生成时抽取，初始为电光也不缩放；范围内非等概率。无待发技能分支时每次自身行动先减1，包括麻痹及非追击行动，不是固定玩家回合数'),
+                     _metric('房间生成后初始特殊／环境冷却','6–10／5–7','整数计数','宝库最终房间自然出现时，初始环境冷却已减半；初始电光与另两种形态相同。范围内非等概率。无待发技能分支时每次自身行动先减1，包括麻痹及非追击行动，不是固定玩家回合数'),
                      _metric('特殊施放后重设冷却：火焰／冰霜','6–10','整数计数','完成施放后重设；追击、未麻痹且有敌人时，先减1后检查不大于0才准备，特殊技能优先于环境技能'),
                      _metric('特殊施放后重设冷却：电光','4–6','整数计数','从6–10抽取后乘0.67并向零取整；不是初始冷却或4–6回合保证攻击一次'),
                      _metric('环境施放后重设冷却：火焰／冰霜','10–15','整数计数','追击、未麻痹且有敌人，并且特殊技能本次没有优先准备时检查不大于0'),

@@ -300,6 +300,10 @@ class Overlay:
                 command, value = self.commands.get_nowait()
             except Empty:
                 return True
+            if (getattr(self.native_ui, 'frozen', False)
+                    and command in ('show', 'quick', 'play_toggle', 'play_settings',
+                                    'library', 'panel', 'backups', 'workspace', 'help', 'capture')):
+                continue
             if command == 'exit':
                 if self.close(confirm_drafts=True):
                     return False

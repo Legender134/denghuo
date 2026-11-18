@@ -344,8 +344,9 @@ def build(index, catalog, upstream):
         'levels/rooms/secret/SecretRoom.java','levels/rooms/secret/SecretHoneypotRoom.java',
         'levels/rooms/quest/MassGraveRoom.java','levels/rooms/quest/RotGardenRoom.java','levels/rooms/quest/RitualSiteRoom.java',
         'levels/rooms/quest/MineLargeRoom.java','levels/rooms/quest/MineGiantRoom.java',
-        'levels/rooms/quest/vault/VaultRoom.java','levels/rooms/quest/vault/VaultLasersRoom.java',
+        'levels/rooms/quest/vault/VaultRoom.java','levels/rooms/quest/vault/VaultFinalRoom.java','levels/rooms/quest/vault/VaultLasersRoom.java',
         'levels/rooms/quest/vault/treasure/VaultTreasureRoom.java','levels/rooms/quest/vault/treasure/VaultCircleScanTreasureRoom.java',
+        'levels/rooms/quest/vault/treasure/VaultMultipleEnemyTreasureRoom.java',
         'items/Heap.java','items/quest/CorpseDust.java','items/quest/CeremonialCandle.java','items/trinkets/MimicTooth.java')]
     for path in condition_sources: source(path)
     # Player-facing special mechanisms and the ordinary loot modifier use

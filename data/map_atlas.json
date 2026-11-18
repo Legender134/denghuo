@@ -1,0 +1,19 @@
+{
+  "source": "https://github.com/00-Evan/shattered-pixel-dungeon",
+  "commit": "57a4e06a4caf162446d1c28caa7983f0493fecf0",
+  "files": {
+    "tiles_sewers.png": "4a097755d0b0335b04238ef5e848da45d9c313348865e4dc17ccac44dc487567",
+    "tiles_prison.png": "67e88eb7596b2d963b458480f6b025aa9107ef610f291961d0e257d8b68fd5cb",
+    "tiles_caves.png": "85141c7c7ad9450bb324a79707b4645343542b74160a98ff5fdf0c6f82968056",
+    "tiles_city.png": "a1f5d8b76321e2774811e7a4144832ab50666c5cebca52334824c087d3d97b80",
+    "tiles_halls.png": "6c8a81bd9e32832e78f647fc833c76ab8db640e56de03255efdf5644075316f0",
+    "water0.png": "4d50a06e9381824d50495c6df332c4644349021693cdbceef1a80f25ffae9202",
+    "water1.png": "16b7cd5e206e0938694112f27ab8bf5ec47cb7c3080b90ffc697cd929872f71f",
+    "water2.png": "e3cb69225c9d27234474d80dbe30fbb411d0042fea8e3ebaeba519a1f5f0b894",
+    "water3.png": "35811bc2cfccd53a7278748e4202ed6a175d6993158f1cd48679e4392ae4ca69",
+    "water4.png": "ada5c5a29bb564b15380fa07c161004b3f11bc6c5907bbda34cf539d19f5a84c",
+    "items.png": "86b2fd9e99efc34718cb0194bfd4a4d856882cf3e97416283f44889e81e11404",
+    "tiles_caves_crystal.png": "e9d55a8059fef86c2fd43b3124455e62335cfb6e5473b6b22423a0871ccbed9c",
+    "tiles_caves_gnoll.png": "8258601b286b685530e26835ff20962ad4d6b43a64bc3458653e618088701ef5"
+  }
+}

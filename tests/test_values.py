@@ -291,10 +291,10 @@ class PlayerValuesTests(unittest.TestCase):
     def test_fractional_dot_values_and_expired_poison(self):
         poison=self.metrics('actors.buffs.poison',power='3.5')
         self.assertEqual(poison['首次毒伤'],'2')
-        self.assertEqual(poison['完整毒伤总量'],'5')
+        self.assertEqual(poison['剩余基础毒伤总量'],'5')
         self.assertEqual(self.metrics('actors.buffs.poison',power=0)['首次毒伤'],'0')
         self.assertEqual(self.metrics('actors.buffs.corrosion',power='7.5',remaining_turns=1,depth=10)['下一次基础伤害'],'7')
-        self.assertEqual(self.metrics('actors.buffs.bleeding',power='7.5')['下一次流血'],'8')
+        self.assertEqual(self.metrics('actors.buffs.bleeding',power='7.5')['下一次基础流血'],'8')
 
     def test_traps_and_holy_bomb_have_current_version_values(self):
         self.assertEqual(self.metrics('levels.traps.flashingtrap',depth=10)['未计护甲的流血强度'],'9')

@@ -40,6 +40,21 @@ class NativeExitTests(ControllerFixture):
                                'decision': decision, **raw})
         self.wait_exit_copies()
 
+    def test_exit_confirmation_blocks_quick_collapse_until_cancelled(self):
+        game = {'hwnd': 123, 'pid': 456}
+        self.owner.native.remembered_game.return_value = game
+        self.ui.request_exit()
+        self.ui.process_exit()
+        self.assertTrue(self.ui.frozen)
+        before = list(self.host.commands)
+        self.ui.dispatch({'action': 'collapse'})
+        self.assertEqual(self.host.commands, before)
+        self.owner.native.remembered_game.assert_not_called()
+        self.decide('cancel')
+        self.assertFalse(self.ui.frozen)
+        self.ui.dispatch({'action': 'collapse'})
+        self.assertIn(('collapse', {'game': game}), self.host.commands)
+
     def test_layout_write_delays_exit_ack_but_cancel_and_new_layout_remain_available(self):
         import json
         from companion import window_layout

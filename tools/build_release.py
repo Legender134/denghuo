@@ -52,6 +52,7 @@ FILES = (
     "companion/alchemy.py",
     "native/NativeCompanion.cs",
     "native/NativeShell.cs",
+    "native/NativeGameDisplay.cs",
     "native/NativeWorkspace.cs",
     "native/NativeTheme.xaml",
     "native/NativeCompanion.manifest",
@@ -63,6 +64,7 @@ FILES = (
     "tests/test_recovery_journal.py",
     "tests/test_game_process.py",
     "tests/test_native_controllers.py",
+    "tests/test_native_game_follow.py",
     "tests/test_native_disk_actions.py",
     "tests/test_native_exit_controls.py",
     "tests/test_native_packaging.py",
@@ -155,6 +157,9 @@ FILES += ('companion/reference.py', 'web/references.js', 'data/reference_images.
           'tools/build_reference_images.py', 'tests/test_reference_images.py',
           'tests/test_reference_api.py', 'tools/verify_references.js',
           *('web' + url for url in _artwork_urls))
+FILES += ('companion/map_art.py', 'data/map_atlas.json', 'tests/test_map_art.py', 'web/map-atlas/items.png',
+          *('web/map-atlas/tiles_'+name+'.png' for name in ('sewers', 'prison', 'caves', 'caves_crystal', 'caves_gnoll', 'city', 'halls')),
+          *('web/map-atlas/water'+str(i)+'.png' for i in range(5)))
 STAMP = (2026, 10, 2, 0, 0, 0)
 
 

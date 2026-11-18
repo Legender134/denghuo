@@ -392,8 +392,9 @@ class MonsterReferenceTests(unittest.TestCase):
 
     def test_vault_elemental_boss_cooldowns_distinguish_initial_reset_and_integer_update(self):
         metrics=self.mechanisms('quest.vault.vaultbosselemental')
-        self.assertEqual(metrics['初始特殊／环境冷却']['value'],'6–10／10–15')
-        self.assertIn('初始为电光也不缩放',metrics['初始特殊／环境冷却']['condition'])
+        self.assertEqual(metrics['房间生成后初始特殊／环境冷却']['value'],'6–10／5–7')
+        self.assertIn('初始环境冷却已减半',metrics['房间生成后初始特殊／环境冷却']['condition'])
+        self.assertIn('初始电光与另两种形态相同',metrics['房间生成后初始特殊／环境冷却']['condition'])
         for label,value in (('特殊施放后重设冷却：火焰／冰霜','6–10'),
                             ('特殊施放后重设冷却：电光','4–6'),
                             ('环境施放后重设冷却：火焰／冰霜','10–15'),
@@ -505,7 +506,17 @@ class MonsterReferenceTests(unittest.TestCase):
             self.assertEqual(self.chance(identity,'items.quest.dwarftoken',wealth_bonus=-1),1)
             self.assertNotIn('wealth_bonus',{r['key'] for r in self.detail(identity)['inputs']})
         for name in ('vaultdm100','vaultghoul','vaultelemental$fire'):
-            self.assertAlmostEqual(self.chance('quest.vault.'+name,'items.quest.dwarftoken',wealth_bonus=-1),5/6,places=6)
+            self.assertAlmostEqual(self.chance('quest.vault.'+name,'items.quest.dwarftoken',wealth_bonus=-1,hero_level=3),5/6,places=6)
+
+    def test_vault_ghoul_side_and_middle_rewards_are_distinct_scenarios(self):
+        for level, expected in ((2, [1, 1]), (3, [1, 0])):
+            rows=self.loot('quest.vault.vaultghoul',hero_level=level)
+            tokens=[r for r in rows if r['id']=='items.quest.dwarftoken']
+            self.assertEqual([r['probability'] for r in tokens],expected)
+            self.assertIn('普通个体',tokens[0]['condition'])
+            self.assertIn('两侧两只',tokens[1]['condition'])
+            stolen=self.loot('quest.vault.vaultghoul',hero_level=level,loot_stolen=1)
+            self.assertTrue(all(r['probability']==0 for r in stolen if r['id']=='items.quest.dwarftoken'))
 
     def test_acidic_keeps_scorpio_attacks_and_ooze_action_order(self):
         for depth,expected in ((5,'1'),(6,'2'),(24,'5'),(25,'6')):
@@ -1029,7 +1040,9 @@ class MonsterReferenceTests(unittest.TestCase):
         self.assertNotIn('items.potions.potionofhealing',{r['id'] for r in scorpio})
         succubus=self.loot('succubus')
         self.assertEqual(len(succubus),10)
-        self.assertTrue(all(abs(r['probability']-.033)<1e-12 for r in succubus))
+        self.assertTrue(all(abs(r['probability']-0.33000001311302185/10)<1e-12 for r in succubus))
+        self.assertNotIn('items.scrolls.scrollofidentify',{r['id'] for r in succubus})
+        self.assertNotIn('items.scrolls.scrollofupgrade',{r['id'] for r in succubus})
 
     def test_boss_quantity_distribution_and_fixed_rewards_bypass_regular_gate(self):
         goo=self.loot('goo',hero_level=30)

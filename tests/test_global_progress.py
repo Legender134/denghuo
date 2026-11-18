@@ -38,6 +38,15 @@ def rankings():
                        'daily_history_dates': [1234567], 'daily_history_scores': [54321]}, indent=2).encode()
 
 
+def steam_rankings():
+    # Installed Steam 4.0.2 Rankings.save / Record.storeInBundle additions.
+    value = json.loads(rankings())
+    value.update(localTotal=75, localWon=9)
+    for record in value['records'] + [value['latest_daily']]:
+        record.update(updated=1700000000123, note='Synthetic Steam Hall note')
+    return json.dumps(value, ensure_ascii=False, indent=3).encode()
+
+
 class GlobalProgressTests(unittest.TestCase):
     def setUp(self):
         self.base = Path(tempfile.mkdtemp(prefix='denghuo-global-progress-'))
@@ -94,6 +103,33 @@ class GlobalProgressTests(unittest.TestCase):
             self.assertEqual((Path(self.target.settings['save_root']) / name).read_bytes(), original)
             self.assertEqual((Path(self.source.settings['save_root']) / name).read_bytes(), original)
         self.assertIsNone(global_files.pending(self.target.backups, self.target.settings['save_root']))
+
+    def test_steam_rankings_extensions_accept_integer_boundaries_and_bounded_notes(self):
+        self.assertEqual(global_files.validate('rankings.dat', steam_rankings())['records'], 1)
+        for counter, updated, note in ((0, 0, ''), (2**31-1, 2**63-1, '注'*65536)):
+            with self.subTest(counter=counter, updated=updated, note_length=len(note)):
+                value = json.loads(steam_rankings())
+                value.update(localTotal=counter, localWon=counter)
+                for record in value['records'] + [value['latest_daily']]:
+                    record.update(updated=updated, note=note)
+                self.assertEqual(global_files.validate('rankings.dat', json.dumps(value).encode())['total'], 75)
+
+    def test_steam_rankings_export_import_preserves_exact_json_and_gzip_bytes(self):
+        for compressed in (False, True):
+            with self.subTest(compressed=compressed):
+                original = steam_rankings()
+                if compressed:
+                    original = gzip.compress(original, mtime=123456789)
+                source = Path(self.source.settings['save_root']) / 'rankings.dat'
+                source.write_bytes(original)
+                raw = self.bundle(['rankings.dat'])
+                with ZipFile(BytesIO(raw)) as archive:
+                    self.assertEqual(archive.read('global/rankings.dat'), original)
+                result = migration.import_bundle(self.target, raw, self.payload(raw))
+                self.assertEqual((result['success_count'], result['failure_count']), (1, 0))
+                self.assertEqual((Path(self.target.settings['save_root']) / 'rankings.dat').read_bytes(), original)
+                self.assertEqual(source.read_bytes(), original)
+                self.assertIsNone(global_files.pending(self.target.backups, self.target.settings['save_root']))
 
     def test_existing_conflicts_default_unresolved_then_keep_or_explicit_replace_with_originals(self):
         before = badges(('UNLOCK_ROGUE',), compressed=False)
@@ -221,6 +257,30 @@ class GlobalProgressTests(unittest.TestCase):
         with patch.object(global_files, 'MAX_BYTES', 10):
             with self.assertRaises(ValueError):
                 global_files.validate('badges.dat', badges())
+
+    def test_steam_rankings_reject_invalid_extension_types_ranges_and_unknown_keys(self):
+        invalid_numbers = (True, False, -1, 1.0, '1', None, [], {})
+        for key in ('localTotal', 'localWon'):
+            for invalid in (*invalid_numbers, 2**31):
+                with self.subTest(key=key, invalid=invalid):
+                    value = json.loads(steam_rankings()); value[key] = invalid
+                    with self.assertRaises(ValueError):
+                        global_files.validate('rankings.dat', json.dumps(value).encode())
+        for location in ('records', 'latest_daily'):
+            for key, invalid_values in (
+                    ('updated', (*invalid_numbers, 2**63)),
+                    ('note', (True, 1, None, [], {}, 'x'*65537)),
+                    ('unknown_steam_field', (0,))):
+                for invalid in invalid_values:
+                    with self.subTest(location=location, key=key, invalid_type=type(invalid).__name__):
+                        value = json.loads(steam_rankings())
+                        record = value['records'][0] if location == 'records' else value['latest_daily']
+                        record[key] = invalid
+                        with self.assertRaises(ValueError):
+                            global_files.validate('rankings.dat', json.dumps(value).encode())
+        value = json.loads(steam_rankings()); value['unknown_steam_field'] = 0
+        with self.assertRaises(ValueError):
+            global_files.validate('rankings.dat', json.dumps(value).encode())
 
     def test_unknown_local_files_never_scanned_and_malformed_known_file_disabled(self):
         root = Path(self.source.settings['save_root'])

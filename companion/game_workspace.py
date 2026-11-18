@@ -904,21 +904,23 @@ class GameWorkspace:
         result_details = self.result_details(page)
         if page == 'inventory':
             rows = self.inventory()
-            actions = [('reference', '查看物品数值'), ('reveal', '揭示这一件…'), ('equip_a', '加入比较 A'), ('equip_b', '加入比较 B')]
+            actions = [('disable_all_reveal' if task_snap['settings'].get('reveal') else 'enable_all_reveal', '关闭全部物品揭示' if task_snap['settings'].get('reveal') else '揭示全部物品'), ('reference', '查看物品数值'), ('reveal', '揭示这一件…'), ('equip_a', '加入比较 A'), ('equip_b', '加入比较 B')]
             text = '' if rows else '暂无背包物品；请连接存档并在游戏内保存。'
             selected = self.selected.get(page)
             row = next((r for r in rows if r['id'] == selected), None)
             if row:
                 item = row['item']; text = inventory_item_text(item)
                 if item.get('known') and item.get('key') in self.session.catalog.entry_index:
-                    actions[0] = ('reference', '基础示例' if item.get('level_applicable') is not False and item.get('level') is None else '查看数值')
+                    actions[1] = ('reference', '基础示例' if item.get('level_applicable') is not False and item.get('level') is None else '查看数值')
                 result_details.append({'id': 'item_description', 'title': '物品说明', 'expanded': False,
                     'text': item['location']+'\n\n'+item['description']+'\n\n'+' · '.join(item.get('details', []))})
                 if item.get('revealed'):
-                    actions[1] = ('hide_reveal', '收起所选物品揭示')
+                    actions[2] = ('hide_reveal', '收起所选物品揭示')
                 if item.get('revealed'): text += '\n已主动揭示；游戏鉴定状态未改变。'
                 elif not item.get('known'): text += '\n身份未鉴定。'
                 if item.get('available') is False: text += ' 当前不可用，仅作阅读参考。'
+            if task_snap['settings'].get('reveal'):
+                actions = [entry for entry in actions if entry[0] not in ('reveal', 'hide_reveal')]
         elif page in self.raw:
             if page == 'alchemy': self.legacy_alchemy = json.loads(self.raw[page]['legacy']) if self.raw[page].get('legacy') else None
             specs = self.equipment_fields() if page == 'equipment' else self.alchemy_fields() if page == 'alchemy' else self.character_fields()
@@ -972,13 +974,19 @@ class GameWorkspace:
                 floor = self.map_result or public
                 text = f"第 {floor['depth']} 层"+(f" · 支线 {floor['branch']}" if floor['branch'] else '')
                 text += ' · 已主动揭示' if self.map_result else ' · 已探索地形'
-                text += '\n存档地图，非实时视野'
+                stamp = (self.map_result or {}).get('source', {}).get('floor_modified') if self.map_result else task_snap.get('modified')
+                from .native_workspace import plan_updated_text
+                saved = plan_updated_text(stamp) if isinstance(stamp, (int, float)) and stamp > 0 else '时间未知'
+                text += '\n槽位 '+str(task_snap.get('active_slot') or '—')+' · '+saved+(' · 旧快照' if task_snap.get('stale') else '')+' · 非实时视野'
                 item_detail = self.map_items_detail() if self.map_result else None
                 if item_detail: result_details.append(item_detail)
             if pending_map:
                 text = f"第 {selected_floor['depth']} 层"+(f" · 支线 {selected_floor['branch']}" if selected_floor['branch'] else '')+' · 未揭示'
                 result_details = []
-            map_content = {} if pending_map else (self.map_result or public or {}).get('map', {})
+            from .scouting import map_view
+            map_content = {} if pending_map else map_view((self.map_result or public or {}).get('map', {}), self.map_result, (self.map_result or public or {}).get('depth', 1))
+            if map_content:
+                map_content['view_key'] = binding_token([self.map_binding, self.map_generation])
         else:
             rows = self.rows.get('backups', [])
             actions = [('reload', '刷新历史'), ('backup_preview', '预览所选进度')]
@@ -1033,7 +1041,8 @@ class GameWorkspace:
                 reason = '当前没有可带入的有效局势；仍可手填条件'
             if command == 'import' and task_snap['settings']['mode'] == 'manual' and page in ('equipment', 'character'):
                 label = '带入手填局势力量' if page == 'equipment' else '带入手填角色条件'
-            presented_actions.append({'id': command, 'text': label, 'disabled': bool(reason), 'reason': reason})
+            presented_actions.append({'id': command, 'text': label, 'disabled': bool(reason), 'reason': reason,
+                **({'settings_revision': task_snap['settings_revision']} if command in ('enable_all_reveal', 'disable_all_reveal') else {})})
         task_source = self.source_status(page, task_snap) if page in self.raw else {}
         origins = self.sources.get(page, {}).get('fields', {})
         for spec in specs:
@@ -1097,6 +1106,10 @@ class GameWorkspace:
             if page == 'backups': self.backup_preview = None
             if page == 'map': self.map_result = None; self.map_generation += 1
         elif action == 'reload': self.reload(page)
+        elif action in ('enable_all_reveal', 'disable_all_reveal') and page == 'inventory':
+            if item.get('settings_revision') != self.session.snapshot()['settings_revision']:
+                raise ValueError('物品揭示设置已变化，请重新查看后操作。')
+            self.native.change_connection({'reveal': action == 'enable_all_reveal'}, expected_revision=item['settings_revision'])
         elif action == 'map_reveal': self.reveal_map()
         elif action == 'map_item_reference': self.map_item_reference(item)
         elif action in ('map_items_previous', 'map_items_next'):
@@ -1219,6 +1232,10 @@ class GameWorkspace:
                 self.rows[page] = rows
             self.selected.pop(page, None)
             self.selected_tokens.pop(page, None)
+            if not error and page == 'map':
+                current = next((row for row in self.rows[page] if row['floor']['current'] and row['floor']['available']), None)
+                if current:
+                    self.selected[page], self.selected_tokens[page] = current['id'], current['token']
             if not error and page == 'backups' and preserve_selection:
                 retained = next((row for row in self.rows[page] if row['id'] == preserve_selection), None)
                 if retained:

@@ -123,7 +123,7 @@ def integer(value, minimum=0, maximum=2147483647):
 def _record(row):
     required = {'__className', 'win', 'score', 'class', 'tier', 'level', 'depth',
                 'ascending', 'custom_seed', 'daily'}
-    optional = {'cause', 'gameData', 'gameID', 'date', 'version'}
+    optional = {'cause', 'gameData', 'gameID', 'date', 'version', 'note', 'updated'}
     if (not isinstance(row, dict) or not required <= set(row) or set(row) - required - optional
             or row['__className'] != RECORD_CLASS
             or row['class'] not in ('WARRIOR', 'MAGE', 'ROGUE', 'HUNTRESS', 'DUELIST', 'CLERIC')
@@ -132,6 +132,8 @@ def _record(row):
             or not isinstance(row['custom_seed'], str) or len(row['custom_seed']) > 200
             or any(key in row and (not isinstance(row[key], str) or len(row[key]) > 300)
                    for key in ('cause', 'gameID', 'date', 'version'))
+            or 'note' in row and not isinstance(row['note'], str)
+            or 'updated' in row and not integer(row['updated'], 0, 2**63-1)
             or 'gameData' in row and not isinstance(row['gameData'], dict)):
         raise ValueError('排行榜记录结构不兼容；未改写原件')
 
@@ -151,12 +153,13 @@ def validate(name, raw):
                 raise ValueError('成就文件结构不兼容')
             return {'badges': len(names), 'encoding': 'gzip' if raw.startswith(b'\x1f\x8b') else 'json'}
         required = {'records', 'latest', 'total', 'won'}
-        optional = {'latest_daily', 'daily_history_dates', 'daily_history_scores'}
+        optional = {'latest_daily', 'daily_history_dates', 'daily_history_scores', 'localTotal', 'localWon'}
         records = value.get('records')
         if (not required <= set(value) or set(value) - required - optional
                 or not isinstance(records, list) or len(records) > 11
                 or not integer(value['latest'], -1, max(0, len(records) - 1))
                 or not integer(value['total']) or not integer(value['won'])
+                or any(key in value and not integer(value[key]) for key in ('localTotal', 'localWon'))
                 or value['won'] > max(value['total'], len(records))):
             raise ValueError('排行榜全局统计结构不兼容')
         for row in records:

@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Web.Script.Serialization;
 
 namespace Denghuo.Native {
@@ -48,63 +49,204 @@ namespace Denghuo.Native {
     }
 
     sealed class SavedMap : FrameworkElement {
+        const string MapHelp="滚轮缩放 · 拖动移动 · 点击格子 · 方向键选择";
+        readonly ToolTip cellTip=new ToolTip { Content=MapHelp };
         Dictionary<string,object> data=new Dictionary<string,object>();
+        readonly Dictionary<int,List<Dictionary<string,object>>> markers=new Dictionary<int,List<Dictionary<string,object>>>();
+        BitmapSource terrainAtlas, waterTexture, itemAtlas;
+        readonly Dictionary<int,BitmapSource> terrainFrames=new Dictionary<int,BitmapSource>();
+        readonly Dictionary<string,BitmapSource> itemIcons=new Dictionary<string,BitmapSource>();
         static readonly HashSet<int> Obstacles=new HashSet<int>(new[]{0,4,12,13,23,25,26,27,28,33,34,35,36,39});
         static readonly HashSet<int> Stairs=new HashSet<int>(new[]{7,8,21,22,37});
-        public SavedMap() { Height=230; Margin=new Thickness(0,12,0,16); UI.Name(this,"保存地图 · 未探索区域保持遮住，地形与坐标可在下方展开"); }
-        public void Render(Dictionary<string,object> value) { data=value; Visibility=Data.Array(value,"tiles").Length>0 ? Visibility.Visible : Visibility.Collapsed; InvalidateVisual(); }
-        static string ImportantTerrain(int tile) {
-            if(tile<0) return "";
-            if(tile==0) return "深渊";
-            if(tile==17 || tile==18) return tile==17 ? "已主动揭示的隐藏陷阱" : "已发现陷阱";
-            if(tile==19) return "失效陷阱";
-            if(tile==29) return "水地";
-            if(tile==13) return "路障";
-            if(tile==12) return "装饰墙";
-            if(tile==28) return "炼金台（不可通行）";
-            if(tile==24) return "水井";
-            if(tile==16) return "已主动揭示的隐藏门";
-            if(Stairs.Contains(tile)) return tile==7 ? "上行楼梯" : tile==8 ? "下行楼梯" : tile==21 ? "锁住的出口" : tile==22 ? "解锁的出口" : "特殊入口";
-            if(tile>39) return "未识别地形 "+tile;
-            return "";
+        readonly TextBlock scaleLabel=UI.Text("100%",12,UI.Muted), cellTitle=UI.Text("点击格子查看",13,UI.Muted), cellText=UI.Text("",12,UI.Muted);
+        public readonly WrapPanel Tools=new WrapPanel();
+        public readonly ScrollViewer CellDetails;
+        public Func<bool> CanInteract=delegate { return true; };
+        double zoom=1,panX,panY;
+        int selected=-1,hover=-1;
+        bool pressed,dragged;
+        Point start,startPan;
+        string signature="";
+        Dialog expanded;
+        readonly bool large;
+        bool Allowed { get { return IsEnabled && CanInteract(); } }
+        public SavedMap(bool isLarge=false) {
+            large=isLarge; Height=230; Margin=new Thickness(0,4,0,8); Focusable=true; ClipToBounds=true; Cursor=Cursors.Hand; RenderOptions.SetBitmapScalingMode(this,BitmapScalingMode.NearestNeighbor);
+            UI.Name(this,"楼层地图"); ToolTip=cellTip;
+            Tools.Margin=new Thickness(0,8,0,0);
+            AddTool("−","缩小地图",delegate { ZoomAt(1/1.25,new Point(ActualWidth/2,ActualHeight/2)); });
+            scaleLabel.Margin=new Thickness(7,5,7,0); Tools.Children.Add(scaleLabel);
+            AddTool("+","放大地图",delegate { ZoomAt(1.25,new Point(ActualWidth/2,ActualHeight/2)); });
+            AddTool("复位","复位地图",ResetView);
+            if(!large) AddTool("大图","放大查看地图",OpenLarge);
+            CellDetails=UI.Scroll(UI.Stack(cellTitle,cellText)); CellDetails.MaxHeight=130; CellDetails.Margin=new Thickness(0,0,0,8);
+            SizeChanged+=delegate { ClampPan(); InvalidateVisual(); };
+            // Clicking a partially visible map must not move its coordinate origin.
+            RequestBringIntoView+=delegate(object sender,RequestBringIntoViewEventArgs e) { if(IsMouseOver) e.Handled=true; };
+            LostMouseCapture+=delegate { pressed=false; Cursor=Cursors.Hand; };
+            IsVisibleChanged+=delegate { if(!IsVisible) CancelDrag(); };
+            IsEnabledChanged+=delegate { if(!IsEnabled) CancelDrag(); };
+            Unloaded+=delegate { CancelDrag(); if(expanded!=null) expanded.Close(); };
+            Visibility=Tools.Visibility=CellDetails.Visibility=Visibility.Collapsed;
+        }
+        void AddTool(string label,string name,Action action) {
+            var button=UI.Button(label,delegate { if(Allowed) action(); }); button.Padding=new Thickness(6,3,6,3); button.Margin=new Thickness(0,0,4,0); button.FontSize=12;
+            UI.Name(button,name); button.ToolTip=name; Tools.Children.Add(button);
+        }
+        public void Render(Dictionary<string,object> value) {
+            string next=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(value);
+            if(next==signature) return;
+            CancelDrag(); if(expanded!=null) expanded.Close(); signature=next; data=value; markers.Clear();
+            var art=Data.Object(data,"art"); terrainAtlas=ReadBitmap(Data.Text(art,"atlas","")); waterTexture=ReadBitmap(Data.Text(art,"water","")); itemAtlas=ReadBitmap(Data.Text(art,"items","")); terrainFrames.Clear(); itemIcons.Clear();
+            foreach(var pair in Data.Object(art,"icons")) { var icon=ReadBitmap(Convert.ToString(pair.Value)); if(icon!=null) itemIcons[pair.Key]=icon; }
+            foreach(object raw in Data.Array(data,"markers")) {
+                var row=raw as Dictionary<string,object>; if(row==null) continue; int pos=(int)Data.Number(row,"pos");
+                if(!markers.ContainsKey(pos)) markers[pos]=new List<Dictionary<string,object>>(); markers[pos].Add(row);
+            }
+            bool valid=Data.Number(data,"width")>0 && Data.Number(data,"height")>0 && Data.Array(data,"tiles").Length==Data.Number(data,"width")*Data.Number(data,"height");
+            Visibility=Tools.Visibility=CellDetails.Visibility=valid ? Visibility.Visible : Visibility.Collapsed;
+            selected=hover=-1; cellTitle.Text="点击格子查看"; cellText.Text=""; ResetView();
+        }
+        static BitmapSource ReadBitmap(string value) {
+            if(value.Length==0 || value.Length>100000) return null;
+            try { var bytes=Convert.FromBase64String(value); using(var stream=new System.IO.MemoryStream(bytes)) { var image=new BitmapImage(); image.BeginInit(); image.CacheOption=BitmapCacheOption.OnLoad; image.StreamSource=stream; image.EndInit(); image.Freeze(); return image; } }
+            catch(FormatException) { return null; } catch(System.IO.IOException) { return null; } catch(NotSupportedException) { return null; } catch(ArgumentException) { return null; } catch(InvalidOperationException) { return null; }
+        }
+        BitmapSource TerrainFrame(int frame) {
+            if(terrainAtlas==null || frame<0 || frame>=256 || terrainAtlas.PixelWidth!=256 || terrainAtlas.PixelHeight<256) return null;
+            BitmapSource result; if(terrainFrames.TryGetValue(frame,out result)) return result;
+            var crop=new CroppedBitmap(terrainAtlas,new Int32Rect((frame%16)*16,(frame/16)*16,16,16)); crop.Freeze(); terrainFrames[frame]=crop; return crop;
+        }
+        BitmapSource MarkerImage(Dictionary<string,object> marker) {
+            BitmapSource image; string key=Data.Text(marker,"icon",""); if(itemIcons.TryGetValue(key,out image)) return image;
+            if(!marker.ContainsKey("sprite_frame") || itemAtlas==null || itemAtlas.PixelWidth!=256) return null;
+            int frame=(int)Data.Number(marker,"sprite_frame"); if(frame<0 || frame>=256 || (frame/16+1)*16>itemAtlas.PixelHeight) return null;
+            key="frame:"+frame; if(itemIcons.TryGetValue(key,out image)) return image;
+            var crop=new CroppedBitmap(itemAtlas,new Int32Rect((frame%16)*16,(frame/16)*16,16,16)); crop.Freeze(); itemIcons[key]=crop; return crop;
+        }
+        bool Geometry(out double size,out double left,out double top) {
+            int width=(int)Data.Number(data,"width"),height=(int)Data.Number(data,"height"); size=left=top=0;
+            if(width<1 || height<1 || ActualWidth<=0 || ActualHeight<=0) return false;
+            size=Math.Min(ActualWidth/width,ActualHeight/height)*zoom;
+            left=(ActualWidth-width*size)/2+panX; top=(ActualHeight-height*size)/2+panY; return true;
+        }
+        void ClampPan() {
+            double size,left,top; if(!Geometry(out size,out left,out top)) return;
+            double limitX=Math.Max(0,(Data.Number(data,"width")*size-ActualWidth)/2),limitY=Math.Max(0,(Data.Number(data,"height")*size-ActualHeight)/2);
+            panX=Math.Max(-limitX,Math.Min(limitX,panX)); panY=Math.Max(-limitY,Math.Min(limitY,panY));
+        }
+        public void ResetView() { CancelDrag(); cellTip.IsOpen=false; cellTip.Content=MapHelp; zoom=1; panX=panY=0; selected=hover=-1; cellTitle.Text="点击格子查看"; cellText.Text=""; UI.Name(this,"楼层地图"); scaleLabel.Text="100%"; InvalidateVisual(); }
+        public void ZoomAt(double factor,Point point) {
+            double size,left,top; if(!Allowed || !Geometry(out size,out left,out top)) return;
+            double next=Math.Max(1,Math.Min(12,zoom*factor)),ratio=next/zoom;
+            double x=(point.X-left)*ratio,y=(point.Y-top)*ratio; zoom=next;
+            panX=point.X-x-(ActualWidth-Data.Number(data,"width")*size*ratio)/2;
+            panY=point.Y-y-(ActualHeight-Data.Number(data,"height")*size*ratio)/2;
+            ClampPan(); scaleLabel.Text=Math.Round(zoom*100)+"%"; InvalidateVisual();
+        }
+        int CellAt(Point point) {
+            double size,left,top; if(!Geometry(out size,out left,out top)) return -1;
+            int x=(int)Math.Floor((point.X-left)/size),y=(int)Math.Floor((point.Y-top)/size),width=(int)Data.Number(data,"width"),height=(int)Data.Number(data,"height");
+            return x>=0 && y>=0 && x<width && y<height ? y*width+x : -1;
+        }
+        string Terrain(int tile) {
+            if(tile<0) return "未探索";
+            var names=Data.Array(data,"terrain_names"); return tile<names.Length ? Convert.ToString(names[tile]) : "未识别地形 "+tile;
+        }
+        string CellHeading(int pos) { int width=(int)Data.Number(data,"width"); return "("+(pos%width+1)+", "+(pos/width+1)+") · "+Terrain(Convert.ToInt32(Data.Array(data,"tiles")[pos])); }
+        public void SelectCell(int pos) {
+            var tiles=Data.Array(data,"tiles"); if(!Allowed || pos<0 || pos>=tiles.Length) return; selected=pos;
+            cellTitle.Text=CellHeading(pos); var lines=new List<string>();
+            // No object information is exposed for an unexplored cell.
+            if(Convert.ToInt32(tiles[pos])>=0) {
+                if(data.ContainsKey("hero") && data["hero"]!=null && Convert.ToInt32(data["hero"])==pos) lines.Add("角色保存位置");
+                List<Dictionary<string,object>> rows; if(markers.TryGetValue(pos,out rows)) foreach(var row in rows) {
+                    lines.Add(Data.Text(row,"name","")); foreach(object line in Data.Array(row,"lines")) lines.Add("  "+Convert.ToString(line));
+                }
+            }
+            cellText.Text=String.Join("\n",lines.ToArray()); UI.Name(this,"楼层地图 · "+cellTitle.Text); InvalidateVisual();
+        }
+        void CancelDrag() { pressed=false; cellTip.IsOpen=false; if(IsMouseCaptured) ReleaseMouseCapture(); Cursor=Cursors.Hand; }
+        protected override void OnMouseDown(MouseButtonEventArgs e) {
+            base.OnMouseDown(e); if(e.ChangedButton!=MouseButton.Left || !Allowed) return;
+            Focus(); start=e.GetPosition(this); startPan=new Point(panX,panY); dragged=false; pressed=CaptureMouse(); e.Handled=true;
+        }
+        protected override void OnMouseMove(MouseEventArgs e) {
+            base.OnMouseMove(e); if(!Allowed) { CancelDrag(); return; } Point point=e.GetPosition(this);
+            if(pressed) {
+                if(e.LeftButton!=MouseButtonState.Pressed) { CancelDrag(); return; }
+                var delta=point-start; if(delta.Length>4) dragged=true;
+                if(dragged) { Cursor=Cursors.SizeAll; panX=startPan.X+delta.X; panY=startPan.Y+delta.Y; ClampPan(); InvalidateVisual(); } e.Handled=true;
+            } else { int pos=CellAt(point); if(pos!=hover) { hover=pos; cellTip.Content=pos<0 ? MapHelp : CellHeading(pos); } }
+        }
+        protected override void OnMouseUp(MouseButtonEventArgs e) {
+            base.OnMouseUp(e); if(e.ChangedButton!=MouseButton.Left || !pressed) return;
+            bool click=!dragged; int pos=CellAt(e.GetPosition(this)); CancelDrag(); if(click) SelectCell(pos); e.Handled=true;
+        }
+        protected override void OnMouseWheel(MouseWheelEventArgs e) {
+            base.OnMouseWheel(e); if(!Allowed) return; ZoomAt(e.Delta>0 ? 1.25 : 1/1.25,e.GetPosition(this)); e.Handled=true;
+        }
+        protected override void OnKeyDown(KeyEventArgs e) {
+            base.OnKeyDown(e); if(!Allowed) return;
+            if(e.Key==Key.Add || e.Key==Key.OemPlus) ZoomAt(1.25,new Point(ActualWidth/2,ActualHeight/2));
+            else if(e.Key==Key.Subtract || e.Key==Key.OemMinus) ZoomAt(1/1.25,new Point(ActualWidth/2,ActualHeight/2));
+            else if(e.Key==Key.Home) ResetView();
+            else if(e.Key==Key.Left || e.Key==Key.Right || e.Key==Key.Up || e.Key==Key.Down || e.Key==Key.Enter) {
+                int width=(int)Data.Number(data,"width"),height=(int)Data.Number(data,"height"); if(width<1 || height<1) return;
+                int pos=selected>=0 ? selected : CellAt(new Point(ActualWidth/2,ActualHeight/2)); if(pos<0) pos=0;
+                int x=pos%width,y=pos/width;
+                if(e.Key==Key.Left) x=Math.Max(0,x-1); if(e.Key==Key.Right) x=Math.Min(width-1,x+1);
+                if(e.Key==Key.Up) y=Math.Max(0,y-1); if(e.Key==Key.Down) y=Math.Min(height-1,y+1);
+                SelectCell(y*width+x); double size,left,top;
+                if(Geometry(out size,out left,out top)) { double cx=left+(x+.5)*size,cy=top+(y+.5)*size;
+                    if(cx<0 || cx>ActualWidth) panX+=ActualWidth/2-cx; if(cy<0 || cy>ActualHeight) panY+=ActualHeight/2-cy; ClampPan(); InvalidateVisual(); }
+            } else return; e.Handled=true;
+        }
+        void OpenLarge() {
+            if(expanded!=null || !Allowed) return;
+            var dialog=new Dialog(Window.GetWindow(this),"楼层地图",920,740); var view=new SavedMap(true); view.CanInteract=CanInteract; view.Render(data); if(selected>=0) view.SelectCell(selected);
+            var selectedSnapshot=signature; dialog.Body.Children.Add(view.Tools); dialog.Body.Children.Add(view); dialog.Body.Children.Add(view.CellDetails); expanded=dialog;
+            dialog.SizeChanged+=delegate { view.Height=Math.Max(140,dialog.ActualHeight/dialog.InterfaceScale-260); };
+            dialog.Loaded+=delegate { view.Height=Math.Max(140,dialog.ActualHeight/dialog.InterfaceScale-260); view.Focus(); };
+            dialog.Closed+=delegate { view.CancelDrag(); if(selectedSnapshot==signature && view.selected>=0) SelectCell(view.selected); expanded=null; };
+            dialog.Show();
         }
         public string Description() {
-            int width=(int)Data.Number(data,"width"); if(width<1) return "";
-            var groups=new Dictionary<string,List<string>>(); var tiles=Data.Array(data,"tiles");
-            for(int i=0;i<tiles.Length;i++) {
-                string name=ImportantTerrain(Convert.ToInt32(tiles[i])); if(name.Length==0) continue;
-                if(!groups.ContainsKey(name)) groups[name]=new List<string>();
-                groups[name].Add("("+(i%width+1)+", "+(i/width+1)+")");
-            }
-            var lines=new List<string>();
-            if(data.ContainsKey("hero") && data["hero"]!=null) { int hero=Convert.ToInt32(data["hero"]); lines.Add("角色：("+(hero%width+1)+", "+(hero/width+1)+")"); }
-            foreach(var pair in groups) lines.Add(pair.Key+" · "+pair.Value.Count+"处："+String.Join("、",pair.Value.ToArray()));
-            lines.Add("坐标为（列，行），从1计；未探索区域不列出。未识别编号不代表可以通行。");
+            int width=(int)Data.Number(data,"width"); if(width<1) return ""; var lines=new List<string>(); var tiles=Data.Array(data,"tiles");
+            for(int i=0;i<tiles.Length;i++) { int tile=Convert.ToInt32(tiles[i]); if(tile<0) continue; bool hero=data.ContainsKey("hero") && data["hero"]!=null && Convert.ToInt32(data["hero"])==i; if(!hero && (tile==1 || tile==4 || tile==20 || tile==32)) continue; lines.Add("("+(i%width+1)+", "+(i/width+1)+") · "+Terrain(tile)+(hero ? " · 角色保存位置" : "")); }
             return String.Join("\n",lines.ToArray());
         }
         protected override void OnRender(DrawingContext context) {
-            int width=(int)Data.Number(data,"width"), height=(int)Data.Number(data,"height"); var tiles=Data.Array(data,"tiles");
-            if(width<1 || height<1 || tiles.Length!=width*height) return;
-            double size=Math.Min(ActualWidth/width,ActualHeight/height), left=(ActualWidth-width*size)/2, top=(ActualHeight-height*size)/2;
-            var symbol=new Pen(UI.Brush("#29312C"),Math.Max(.7,size/10));
-            for(int i=0;i<tiles.Length;i++) {
-                int tile=Convert.ToInt32(tiles[i]); double x=left+(i%width)*size,y=top+(i/width)*size;
-                Brush brush=tile<0 ? UI.Background : tile>39 ? UI.Brush("#9175A1") :
-                    tile==17 || tile==18 ? UI.Brush("#B66F55") : tile==19 ? UI.Brush("#8C8170") :
-                    tile==29 || tile==24 ? UI.Brush("#537C86") : Stairs.Contains(tile) ? UI.Brush("#74998A") :
-                    Obstacles.Contains(tile) ? UI.Brush("#555E53") : tile==5 || tile==6 || tile==16 || tile==10 || tile==31 || tile==38 ? UI.Brush("#A18760") :
-                    tile==2 || tile==3 || tile==15 || tile==30 ? UI.Brush("#788E69") : UI.Brush("#B8BAAC");
-                context.DrawRectangle(brush,null,new Rect(x,y,Math.Max(1,size-.65),Math.Max(1,size-.65)));
-                if(tile==17 || tile==18 || tile>39) {
-                    context.DrawLine(symbol,new Point(x+size*.25,y+size*.25),new Point(x+size*.7,y+size*.7));
-                    context.DrawLine(symbol,new Point(x+size*.7,y+size*.25),new Point(x+size*.25,y+size*.7));
-                } else if(tile==19) context.DrawRectangle(null,symbol,new Rect(x+size*.25,y+size*.25,size*.45,size*.45));
-                else if(tile==24) context.DrawEllipse(null,symbol,new Point(x+size*.5,y+size*.5),size*.25,size*.25);
-                else if(tile==29) context.DrawLine(symbol,new Point(x+size*.15,y+size*.55),new Point(x+size*.75,y+size*.55));
-                else if(tile==13) context.DrawLine(new Pen(UI.Panel,Math.Max(.7,size/10)),new Point(x+size*.2,y+size*.8),new Point(x+size*.8,y+size*.2));
-                if(data.ContainsKey("hero") && data["hero"]!=null && Convert.ToInt32(data["hero"])==i)
-                    context.DrawRectangle(UI.Gold,new Pen(UI.Panel,Math.Max(.7,size/10)),new Rect(x+size*.12,y+size*.12,size*.7,size*.7));
+            double size,left,top; if(!Geometry(out size,out left,out top)) return;
+            int width=(int)Data.Number(data,"width"),height=(int)Data.Number(data,"height"); var tiles=Data.Array(data,"tiles"); if(tiles.Length!=width*height) return;
+            context.DrawRectangle(UI.Background,null,new Rect(0,0,ActualWidth,ActualHeight));
+            int x0=Math.Max(0,(int)Math.Floor(-left/size)),y0=Math.Max(0,(int)Math.Floor(-top/size)),x1=Math.Min(width,(int)Math.Ceiling((ActualWidth-left)/size)),y1=Math.Min(height,(int)Math.Ceiling((ActualHeight-top)/size));
+            var symbol=new Pen(UI.Brush("#29312C"),Math.Max(.7,size/10)); var art=Data.Object(data,"art"); var frames=Data.Array(art,"frames");
+            for(int row=y0;row<y1;row++) for(int col=x0;col<x1;col++) {
+                int i=row*width+col,tile=Convert.ToInt32(tiles[i]); double x=left+col*size,y=top+row*size;
+                Brush brush=tile<0 ? UI.Background : tile>39 ? UI.Brush("#9175A1") : tile==17 || tile==18 ? UI.Brush("#B66F55") : tile==19 ? UI.Brush("#8C8170") : tile==29 || tile==24 ? UI.Brush("#537C86") : Stairs.Contains(tile) ? UI.Brush("#74998A") : Obstacles.Contains(tile) ? UI.Brush("#555E53") : tile==5 || tile==6 || tile==16 || tile==10 || tile==31 || tile==38 ? UI.Brush("#A18760") : tile==2 || tile==3 || tile==15 || tile==30 ? UI.Brush("#788E69") : UI.Brush("#B8BAAC");
+                int frame=i<frames.Length ? Convert.ToInt32(frames[i]) : -1; var sprite=TerrainFrame(frame);
+                if(frame==-2 && terrainAtlas!=null) continue;
+                var bounds=new Rect(x,y,size,size);
+                if(tile>=0 && sprite!=null) { if((tile==29 || tile==39) && waterTexture!=null) context.DrawImage(waterTexture,bounds); context.DrawImage(sprite,bounds); }
+                else context.DrawRectangle(brush,null,new Rect(x,y,size>=4 ? size-.6 : size,size>=4 ? size-.6 : size));
+                if(tile<0) continue;
+                if(tile==16) context.DrawRectangle(null,new Pen(UI.Gold,Math.Max(1,size*.1)),new Rect(x+size*.18,y+size*.18,size*.6,size*.6));
+                else if(tile==17 || tile==18 || tile>39) { context.DrawLine(symbol,new Point(x+size*.25,y+size*.25),new Point(x+size*.7,y+size*.7)); context.DrawLine(symbol,new Point(x+size*.7,y+size*.25),new Point(x+size*.25,y+size*.7)); }
+                else if(tile==19) context.DrawRectangle(null,symbol,new Rect(x+size*.25,y+size*.25,size*.45,size*.45));
+                else if(tile==24 && sprite==null) context.DrawEllipse(null,symbol,new Point(x+size*.5,y+size*.5),size*.25,size*.25);
+                else if(tile==29 && sprite==null) context.DrawLine(symbol,new Point(x+size*.15,y+size*.55),new Point(x+size*.75,y+size*.55));
+                else if(tile==13 && sprite==null) context.DrawLine(symbol,new Point(x+size*.2,y+size*.8),new Point(x+size*.8,y+size*.2));
+                List<Dictionary<string,object>> entries; if(markers.TryGetValue(i,out entries)) foreach(var marker in entries) {
+                    string kind=Data.Text(marker,"kind",""); var pen=new Pen(kind=="mob" ? UI.Brush("#96C8EF") : kind=="trap" ? UI.Brush("#F49C87") : UI.Gold,Math.Max(1,size*.1));
+                    var icon=MarkerImage(marker);
+                    if(icon!=null) { double scale=size/Math.Max(icon.PixelWidth,icon.PixelHeight),w=icon.PixelWidth*scale,h=icon.PixelHeight*scale; context.DrawImage(icon,new Rect(x+(size-w)/2,y+(size-h)/2,w,h)); }
+                    else if(kind=="mob") context.DrawEllipse(null,pen,new Point(x+size*.5,y+size*.5),size*.26,size*.26);
+                    else context.DrawRectangle(null,pen,new Rect(x+size*.18,y+size*.18,size*.6,size*.6));
+                }
+                if(data.ContainsKey("hero") && data["hero"]!=null && Convert.ToInt32(data["hero"])==i) context.DrawRectangle(UI.Gold,symbol,new Rect(x+size*.33,y+size*.33,size*.3,size*.3));
             }
+            if(selected>=0) context.DrawRectangle(null,new Pen(UI.Gold,2),new Rect(left+(selected%width)*size,top+(selected/width)*size,size,size));
         }
     }
 
@@ -119,12 +261,14 @@ namespace Denghuo.Native {
         readonly Dictionary<string,Button> targetControls=new Dictionary<string,Button>();
         object[] currentSpecs=new object[0];
         string quickSignature="", pendingEditorSection="";
-        readonly TextBlock mapLegend=UI.Text("金色：角色 · 绿色：楼梯 · 深色：未探索\n棕色×：陷阱 · 蓝色横线：水地 · 深灰：障碍\n蓝色圆圈：水井 · 空框：失效陷阱 · 紫色×：未识别地形",12,UI.Muted);
+        readonly TextBlock mapLegend=UI.Text("亮点：角色 · 金框：隐藏门 · 红框：陷阱\n缺少图像时，金框：物品 · 蓝圈：生物",12,UI.Muted);
         readonly TextBlock mapCoordinates=UI.Text("",12,UI.Muted);
         readonly Expander mapDetails;
         readonly SavedMap map=new SavedMap();
         readonly ScrollViewer scroll;
         readonly WrapPanel actions=new WrapPanel();
+        readonly WrapPanel taskHeader=new WrapPanel();
+        Button inventoryReveal;
         readonly TextBlock notice=UI.Text("",12,UI.Gold);
         readonly TextBlock receiptBrief=UI.Text("",13,UI.Gold);
         Expander receipt;
@@ -146,10 +290,10 @@ namespace Denghuo.Native {
         Dictionary<string,object> values=new Dictionary<string,object>();
         public bool Dirty;
         public TaskPane(Helper owner,string name) {
-            host=owner; page=name; Focusable=true; RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto }); RowDefinitions.Add(new RowDefinition()); RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto });
-            mode=UI.Button("编辑条件",delegate { SetEditing(!editing); }); mode.HorizontalAlignment=HorizontalAlignment.Left; mode.Background=Brushes.Transparent; var taskHeader=new WrapPanel(); taskHeader.Children.Add(mode); if(page=="backups") { var capture=UI.Button("立即备份",delegate { if(!host.Frozen) host.Send("capture"); },true); capture.FontSize=12; taskHeader.Children.Add(capture); } if(page=="inventory") taskHeader.Children.Add(UI.Button("装备比较 ›",delegate { host.Manager.OpenPage("equipment"); })); if(page=="equipment") taskHeader.Children.Add(UI.Button("选背包装备 ›",delegate { host.Manager.OpenPage("inventory"); }));
+            host=owner; page=name; map.CanInteract=delegate { return !host.Frozen; }; Focusable=true; RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto }); RowDefinitions.Add(new RowDefinition()); RowDefinitions.Add(new RowDefinition { Height=GridLength.Auto });
+            mode=UI.Button("编辑条件",delegate { SetEditing(!editing); }); mode.HorizontalAlignment=HorizontalAlignment.Left; mode.Background=Brushes.Transparent; taskHeader.Children.Add(mode); if(page=="backups") { var capture=UI.Button("立即备份",delegate { if(!host.Frozen) host.Send("capture"); },true); capture.FontSize=12; taskHeader.Children.Add(capture); } if(page=="inventory") taskHeader.Children.Add(UI.Button("装备比较 ›",delegate { host.Manager.OpenPage("equipment"); })); if(page=="equipment") taskHeader.Children.Add(UI.Button("选背包装备 ›",delegate { host.Manager.OpenPage("inventory"); }));
             Children.Add(UI.Stack(origin,taskHeader));
-            selection=UI.Section(page=="inventory" ? "物品" : page=="map" ? "楼层" : "历史记录",selector,true); output.Children.Add(selection); if(page=="map") output.Children.Add(article); output.Children.Add(map); mapDetails=UI.Section("图例与坐标",UI.Stack(mapLegend,mapCoordinates),false); output.Children.Add(mapDetails); if(page=="equipment") { output.Children.Add(comparison); details=UI.Section("完整数值与条件",article,true); output.Children.Add(details); } else if(page!="map") output.Children.Add(article); output.Children.Add(resultDetails); scroll=UI.Scroll(output); Grid.SetRow(scroll,1); Children.Add(scroll); actions.Margin=new Thickness(0,10,0,0); if(page=="backups") { receipt=UI.Section("回执详情",notice,false); output.Children.Insert(0,receipt); output.Children.Insert(0,receiptBrief); output.Children.Add(actions); } else if(page=="inventory") { output.Children.Add(notice); output.Children.Add(actions); } else { var feedback=UI.Scroll(notice); feedback.MaxHeight=64; var bottom=UI.Stack(feedback,actions); Grid.SetRow(bottom,2); Children.Add(bottom); }
+            selection=UI.Section(page=="inventory" ? "物品" : page=="map" ? "楼层" : "历史记录",selector,true); output.Children.Add(selection); if(page=="map") output.Children.Add(article); output.Children.Add(map.Tools); output.Children.Add(map); output.Children.Add(map.CellDetails); mapDetails=UI.Section("图例与坐标",UI.Stack(mapLegend,mapCoordinates),false); output.Children.Add(mapDetails); if(page=="equipment") { output.Children.Add(comparison); details=UI.Section("完整数值与条件",article,true); output.Children.Add(details); } else if(page!="map") output.Children.Add(article); output.Children.Add(resultDetails); scroll=UI.Scroll(output); Grid.SetRow(scroll,1); Children.Add(scroll); actions.Margin=new Thickness(0,10,0,0); if(page=="backups") { receipt=UI.Section("回执详情",notice,false); output.Children.Insert(0,receipt); output.Children.Insert(0,receiptBrief); output.Children.Add(actions); } else if(page=="inventory") { output.Children.Add(notice); output.Children.Add(actions); } else { var feedback=UI.Scroll(notice); feedback.MaxHeight=64; var bottom=UI.Stack(feedback,actions); Grid.SetRow(bottom,2); Children.Add(bottom); }
             if(page=="equipment" || page=="alchemy") output.Children.Insert(0,taskContext);
             if(page=="alchemy") { output.Children.Remove(article); output.Children.Insert(0,article); }
             if(page=="backups") output.Children.Insert(0,backupSummary);
@@ -328,7 +472,7 @@ namespace Denghuo.Native {
                 map.Render(Data.Object(d,"map")); mapLegend.Visibility=mapDetails.Visibility=map.Visibility; mapCoordinates.Text=map.Description(); var rows=Data.Array(d,"rows");  string next=new JavaScriptSerializer { MaxJsonLength=524288 }.Serialize(rows)+Data.Text(d,"selected",""); if(next!=rowSignature) { bool firstRows=rowSignature.Length==0; var priorRowFocus=Keyboard.FocusedElement; var previousRows=new Dictionary<string,Control>(rowControls); rowControls.Clear(); selector.Children.Clear(); foreach(object item in rows) { var row=(Dictionary<string,object>)item; string id=Data.Text(row,"id",""), token=Data.Text(row,"token",""); var button=UI.Button("",delegate { if(!host.Frozen) { host.Send("game_select","page",page,"id",id,"token",token); selection.IsExpanded=false; } }); string caption=Data.Text(row,"summary",Data.Text(row,"text","")); var rowBody=new DockPanel(); var chevron=UI.Text("›",17,UI.Muted); chevron.VerticalAlignment=VerticalAlignment.Center; chevron.Margin=new Thickness(6,0,0,0); DockPanel.SetDock(chevron,Dock.Right); rowBody.Children.Add(chevron); rowBody.Children.Add(UI.ImageRow(caption,Data.Object(row,"artwork"))); button.Content=rowBody; UI.Name(button,caption); button.HorizontalContentAlignment=HorizontalAlignment.Stretch; button.Margin=new Thickness(0); button.Padding=new Thickness(4,4,6,4); button.Background=id==Data.Text(d,"selected","") ? UI.Panel : Brushes.Transparent; button.BorderBrush=UI.Line; button.BorderThickness=new Thickness(0); selector.Children.Add(button); rowControls[id]=button; } host.Manager.RebindTaskFocus(page,previousRows,rowControls,this,priorRowFocus); rowSignature=next; if(firstRows && Data.Text(d,"selected","").Length>0) selection.IsExpanded=false; } selection.Visibility=rows.Length>0 ? Visibility.Visible : Visibility.Collapsed;
                 notice.Text=Data.Text(d,"notice",""); if(notice.Text.Length==0 && Dirty && specs.Length>0) notice.Text=calculated ? "有未保存的修改" : "条件已修改，待重新计算"; notice.Visibility=notice.Text.Length>0 ? Visibility.Visible : Visibility.Collapsed; if(receipt!=null) { receipt.Visibility=receiptBrief.Visibility=notice.Visibility; receiptBrief.Text=Data.Text(d,"notice_brief","操作回执"); }
                 string nextActions=new JavaScriptSerializer().Serialize(Data.Array(d,"actions"))+"/"+(Data.Text(d,"selected","").Length>0);
-                if(nextActions!=actionSignature) { var priorFocus=Keyboard.FocusedElement; var previousControls=new Dictionary<string,Control>(actionControls); actions.Children.Clear(); actionControls.Clear(); var extras=new List<MenuItem>(); Button more=null;
+                if(nextActions!=actionSignature) { var priorFocus=Keyboard.FocusedElement; var previousControls=new Dictionary<string,Control>(actionControls); actions.Children.Clear(); if(inventoryReveal!=null) { taskHeader.Children.Remove(inventoryReveal); inventoryReveal=null; } actionControls.Clear(); var extras=new List<MenuItem>(); Button more=null;
                 string primaryCommand=page=="inventory" ? "reference" : page=="backups" ? "backup_preview" : page=="map" ? "map_reveal" : "calculate";
                 if(page=="inventory") foreach(object item in Data.Array(d,"actions")) if(Data.Text((Dictionary<string,object>)item,"id","")=="reveal") primaryCommand="reveal";
                 if(page=="backups") foreach(object item in Data.Array(d,"actions")) if(Data.Text((Dictionary<string,object>)item,"id","")=="backup_confirm") primaryCommand="backup_confirm";
@@ -336,15 +480,15 @@ namespace Denghuo.Native {
                 if(page=="alchemy") { orderedActions.Clear(); foreach(string id in new[]{"calculate","import","add_target","undo","save","update"}) foreach(object item in Data.Array(d,"actions")) if(Data.Text((Dictionary<string,object>)item,"id","")==id) orderedActions.Add(item); foreach(object item in Data.Array(d,"actions")) { string id=Data.Text((Dictionary<string,object>)item,"id",""); if(id!="calculate" && id!="import" && id!="add_target" && id!="undo" && id!="save" && id!="update") orderedActions.Add(item); } }
                 foreach(object item in orderedActions) {
                     var action=(Dictionary<string,object>)item; string command=Data.Text(action,"id","");
-                    Action clicked=delegate { if(host.Frozen) return; if(page=="alchemy" && (command=="add_target" || command=="add_resource" || command=="add_path")) { string count=command=="add_target" ? "targets" : command=="add_resource" ? "resources" : "paths"; int index; Int32.TryParse(Data.Text(Raw(),count,"0"),out index); pendingEditorSection=(command=="add_target" ? "产出目标 " : command=="add_resource" ? "独立库存 " : "明确指定前置生产路径 ")+(index+1)+(command=="add_target" || command=="add_resource" ? " ·" : ""); } Flush(); host.Send("game_action","page",page,"command",command=="save" ? "name_plan" : command,"values",Raw(),"draft_revision",revision); };
-                    string label=Data.Text(action,"text",""), reason=Data.Text(action,"reason",""); bool disabled=Data.Flag(action,"disabled"); if(page=="inventory" && Data.Text(d,"selected","").Length==0) continue;
+                    Action clicked=delegate { if(host.Frozen) return; if(page=="alchemy" && (command=="add_target" || command=="add_resource" || command=="add_path")) { string count=command=="add_target" ? "targets" : command=="add_resource" ? "resources" : "paths"; int index; Int32.TryParse(Data.Text(Raw(),count,"0"),out index); pendingEditorSection=(command=="add_target" ? "产出目标 " : command=="add_resource" ? "独立库存 " : "明确指定前置生产路径 ")+(index+1)+(command=="add_target" || command=="add_resource" ? " ·" : ""); } Flush(); host.Send("game_action","page",page,"command",command=="save" ? "name_plan" : command,"values",Raw(),"draft_revision",revision,"settings_revision",Data.Text(action,"settings_revision","")); };
+                    string label=Data.Text(action,"text",""), reason=Data.Text(action,"reason",""); bool disabled=Data.Flag(action,"disabled"); bool allReveal=command=="enable_all_reveal" || command=="disable_all_reveal"; if(page=="inventory" && Data.Text(d,"selected","").Length==0 && !allReveal) continue;
                     if(page=="backups" && command=="backup_preview" && Data.Array(d,"rows").Length==0) continue;
                     if(page=="map" && command=="map_hide" && !Data.Flag(d,"map_revealed")) continue;
-                    bool direct=command==primaryCommand || page=="inventory" && (command=="reference" || command=="hide_reveal") || page=="map" && (command=="reload" || command=="map_hide") || page=="backups" && command=="reload" || page=="inventory" && (command=="equip_a" || command=="equip_b") || page=="alchemy" && (command=="add_target" || command=="import");
+                    bool direct=command==primaryCommand || page=="inventory" && (allReveal || command=="reference" || command=="hide_reveal") || page=="map" && (command=="reload" || command=="map_hide") || page=="backups" && command=="reload" || page=="inventory" && (command=="equip_a" || command=="equip_b") || page=="alchemy" && (command=="add_target" || command=="import");
                     if(page=="alchemy" && command=="import") label="带入库存";
                     if(command=="calculate" && page=="equipment") label="比较装备";
                     if(command=="calculate" && page=="alchemy") label="计算";
-                    if(direct) { string caption=page=="inventory" ? command=="reference" ? label : command=="reveal" ? "揭示属性" : command=="hide_reveal" ? "收起揭示" : command=="equip_a" ? "加入 A" : command=="equip_b" ? "加入 B" : label : label; var button=UI.Button(caption,clicked,command==primaryCommand); UI.Name(button,label); button.FontSize=12; button.Padding=new Thickness(9,4,9,4); button.MinHeight=30; button.IsEnabled=!disabled; string help=reason.Length>0 ? reason : command=="import" && page=="alchemy" ? "主动替换当前库存与能量；保留目标。未知身份与未确认状态不猜测，可撤回。" : ""; if(help.Length>0) { button.ToolTip=help; System.Windows.Controls.ToolTipService.SetShowOnDisabled(button,true); System.Windows.Automation.AutomationProperties.SetHelpText(button,help); } actions.Children.Add(button); actionControls[command]=button; }
+                    if(direct) { string caption=page=="inventory" ? command=="reference" ? label : command=="reveal" ? "揭示身份与属性" : command=="hide_reveal" ? "收起揭示" : command=="equip_a" ? "加入 A" : command=="equip_b" ? "加入 B" : label : label; var button=UI.Button(caption,clicked,command==primaryCommand); UI.Name(button,label); button.FontSize=12; button.Padding=new Thickness(9,4,9,4); button.MinHeight=30; button.IsEnabled=!disabled; string help=reason.Length>0 ? reason : allReveal ? "切换全局物品揭示，也影响完整面板；不会改变游戏存档。" : command=="import" && page=="alchemy" ? "主动替换当前库存与能量；保留目标。未知身份与未确认状态不猜测，可撤回。" : ""; if(help.Length>0) { button.ToolTip=help; System.Windows.Controls.ToolTipService.SetShowOnDisabled(button,true); System.Windows.Automation.AutomationProperties.SetHelpText(button,help); } if(allReveal && page=="inventory") { taskHeader.Children.Add(button); inventoryReveal=button; } else actions.Children.Add(button); actionControls[command]=button; }
                     else if(!(page=="inventory" && Data.Text(d,"selected","").Length==0)) { var menuItem=UI.Item(label,clicked,!disabled); if(reason.Length>0) { menuItem.ToolTip=reason; System.Windows.Controls.ToolTipService.SetShowOnDisabled(menuItem,true); System.Windows.Automation.AutomationProperties.SetHelpText(menuItem,reason); } extras.Add(menuItem); actionControls[command]=menuItem; }
                 }
                 if(extras.Count>0) { string extraLabel=page=="alchemy" ? "计划操作" : page=="inventory" ? "更多操作 ▾" : "更多操作 ▾"; more=UI.Button(extraLabel,delegate { UI.Menu(more,extras.ToArray()); }); if(page=="alchemy") { more.Padding=new Thickness(10,6,10,6); more.MinHeight=30; more.ToolTip="移除目标、增减独立库存与前置路径"; } actions.Children.Add(more); actionControls["__more"]=more; }
@@ -612,7 +756,9 @@ namespace Denghuo.Native {
                 if(columns.Length>0 && rows.Length>0) {
                     var table=new StackPanel(); int rowIndex=0;
                     foreach(object rawRow in rows) {
-                        var cells=rawRow as object[]; if(cells==null) continue; var labeled=new List<object>();
+                        var cells=rawRow as object[];
+                        if(cells==null && rawRow is System.Collections.ArrayList) cells=((System.Collections.ArrayList)rawRow).ToArray();
+                        if(cells==null) continue; var labeled=new List<object>();
                         for(int i=1;i<Math.Min(columns.Length,cells.Length);i++) labeled.Add(Data.Map("label",Convert.ToString(columns[i]),"value",Convert.ToString(cells[i])));
                         string rowTitle=Convert.ToString(columns[0])+" "+(cells.Length>0 ? Convert.ToString(cells[0]) : "");
                         bool current=section.ContainsKey("selected_row") && section["selected_row"]!=null && Data.Number(section,"selected_row")==rowIndex++;

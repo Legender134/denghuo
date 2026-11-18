@@ -94,7 +94,7 @@ vm.runInContext(buffLabel,context);
   assert.equal(run('numericalDetail.context.vial'),undefined);assert.match(renderedHTML,/凝血试管 无效果（−1）（示例/);assert(!renderedHTML.includes('未佩戴'));
   get('#values-use-latest').listeners.click();await tick();assert.match(run('numericalDetail.origins.vial'),/^示例.*未确认/);
   state.settings.mode='manual';state.data.items=[];assert.equal(run("visibleCalculationContext('items.potions.potionofhealing').vial"),undefined);
-  for(const [identity,metric,note] of [['actors.buffs.poison','完整毒伤总量','后续续毒'],['actors.buffs.bleeding','预计总流血伤害','平均估计']]){
+  for(const [identity,metric,note] of [['actors.buffs.poison','剩余基础毒伤总量','后续续毒'],['actors.buffs.bleeding','连续衰减近似总量','平均估计']]){
     run('cancelNumericalDetail()');await run(`loadNumericalDetail('${identity}',{},'example',{ignoreDrafts:true})`);
     assert.match(renderedHTML,new RegExp('<section id="values-answer"[\\s\\S]*?'+metric));assert(renderedHTML.includes(note));
     assert.match(renderedHTML,/（示例 · 请核对）/);input('power').value='4';input('power').listeners.input();

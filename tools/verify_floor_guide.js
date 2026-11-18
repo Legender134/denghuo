@@ -6,7 +6,7 @@ const scoutingSource=fs.readFileSync(path.join(__dirname,'../web/scouting.js'),'
 function harness(){
   const nodes=new Map(),writes=[],reads=[],references=[];
   function node(tag='div'){return {tagName:tag.toUpperCase(),children:[],listeners:{},open:false,hidden:false,disabled:false,textContent:'',innerHTML:'',
-    append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;this.innerHTML='';this.textContent='';},setAttribute(name,value){this[name]=value;},addEventListener(name,handler){this.listeners[name]=handler;},contains(item){return this===item||this.children.some(child=>child.contains?.(item));},focus(){context.document.activeElement=this;},getContext(){return {fillRect(){},strokeRect(){}};}};}
+    append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;this.innerHTML='';this.textContent='';},setAttribute(name,value){this[name]=value;},addEventListener(name,handler){this.listeners[name]=handler;},contains(item){return this===item||this.children.some(child=>child.contains?.(item));},focus(){context.document.activeElement=this;},classList:{remove(){}},getContext(){return {setTransform(){},clearRect(){},fillRect(){},strokeRect(){}};}};}
   const get=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
   const state={started:1,revision:1,settings_revision:'s1',active_slot:1,run_id:'run1',error:'',stale:false,
     settings:{mode:'save',save_root:'synthetic-only'},data:{depth:4,branch:0,version:922,hero:{level:5}}};

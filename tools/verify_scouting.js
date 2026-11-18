@@ -5,9 +5,13 @@ const source=fs.readFileSync(path.join(__dirname,'../web/scouting.js'),'utf8');
 const application=fs.readFileSync(path.join(__dirname,'../web/app.js'),'utf8');
 function harness(){
   const nodes=new Map(),writes=[],details=[],calculations=[],fills=[];
-  function node(tag='div'){return {tagName:tag.toUpperCase(),value:'',textContent:'',checked:false,disabled:false,hidden:false,children:[],listeners:{},
-    append(...values){this.children.push(...values);},replaceChildren(){this.children=[];},addEventListener(event,fn){this.listeners[event]=fn;},
-    getContext(){return {fillStyle:'',fillRect(){fills.push(this.fillStyle);},strokeRect(){}};}};}
+  function node(tag='div'){return {tagName:tag.toUpperCase(),value:'',textContent:'',checked:false,disabled:false,hidden:false,children:[],listeners:{},clientWidth:600,clientHeight:380,
+    classList:{add(){},remove(){}},setAttribute(name,value){this[name]=value;},focus(){this.focused=true;},
+    setPointerCapture(id){this.pointer=id;},hasPointerCapture(id){return this.pointer===id;},releasePointerCapture(){this.pointer=null;},
+    getBoundingClientRect(){return {left:0,top:0,width:600,height:380};},
+    close(){this.open=false;this.listeners.close?.();},showModal(){this.open=true;},
+    append(...values){this.children.push(...values);},replaceChildren(...values){this.textContent='';this.children=[...values];},addEventListener(event,fn){this.listeners[event]=fn;},
+    getContext(){return {fillStyle:'',setTransform(){},clearRect(){},fillRect(){fills.push(this.fillStyle);},strokeRect(){}};}};}
   const get=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
   get('#scout-result').hidden=true;
   const context=vm.createContext({console,JSON,Number,String,Object,Map,Set,$:get,document:{createElement:node},
@@ -79,5 +83,21 @@ function enable(h){h.get('#scout-reveal').checked=true;h.get('#scout-reveal').li
   map.mobs=[{name:'螃蟹',x:2,y:1,hp:15,ht:15,items:[],reference:{id:'actors.mobs.crab'}}];terrain.run('renderScouting(testResult)');
   const mob=terrain.get('#scout-mobs').children[0];assert.equal(mob.tagName,'DETAILS');assert.equal(mob.children[0].tagName,'SUMMARY');
   terrain.context.testCatalog=catalog();terrain.run('renderScoutingCatalog(testCatalog)');assert.match(terrain.get('#scout-source').textContent,/槽位 1.*第 4 层.*4.0.2/);
+  const interactive=harness();interactive.context.floor=result();interactive.run('renderScouting(floor);selectScoutMapCell(2)');
+  const selected=interactive.get('#scout-cell-info').children.map(row=>row.textContent).join('\n');
+  assert.match(selected,/\(1, 2\)/);assert.match(selected,/上锁宝箱/);assert.match(selected,/毒镖陷阱.*可触发/);assert.match(selected,/根骨之戒.*×1/);
+  interactive.run('floor.heaps[0].haunted=true;renderScouting(floor);selectScoutMapCell(2)');
+  assert.match(interactive.get('#scout-cell-info').children.map(row=>row.textContent).join('\n'),/上锁宝箱.*闹鬼/);
+  interactive.run('zoomScoutMap(3)');const before=interactive.run('scoutMapCell({x:330,y:210})');
+  interactive.run('zoomScoutMap(1.25,{x:330,y:210})');assert.equal(interactive.run('scoutMapCell({x:330,y:210})'),before,'wheel zoom keeps the pointed cell');
+  const canvas=interactive.get('#scout-map'),pointer=(x,y)=>({button:0,pointerId:7,clientX:x,clientY:y,preventDefault(){}});
+  canvas.listeners.pointerdown(pointer(300,190));canvas.listeners.pointermove(pointer(10000,10000));canvas.listeners.pointerup(pointer(10000,10000));
+  assert.equal(interactive.run('scoutMapView.selected'),2,'panning must not click another cell');
+  assert(interactive.run('Math.abs(scoutMapView.panX)<2000&&Math.abs(scoutMapView.panY)<2000'),'pan is bounded to the map');
+  canvas.listeners.pointerdown(pointer(300,190));canvas.listeners.pointercancel();assert.equal(interactive.run('scoutMapView.drag'),null);assert.equal(canvas.pointer,null);
+  canvas.listeners.keydown({key:'Home',preventDefault(){}});assert.equal(interactive.run('scoutMapView.zoom'),1);
+  interactive.run('floor.map.tiles[2]=-1;renderScouting(floor);selectScoutMapCell(2)');
+  const hidden=interactive.get('#scout-cell-info').children.map(row=>row.textContent).join('\n');assert.match(hidden,/未探索/);assert.doesNotMatch(hidden,/宝箱|毒镖|根骨/);
+  interactive.run('zoomScoutMap(4);clearScoutingResult()');assert.equal(interactive.run('scoutMapView.selected'),-1);assert.equal(interactive.run('scoutMapView.zoom'),1);assert.equal(canvas.width,1);
   console.log('PASS: saved-floor opt-in, exact request context, coordinates and text-only labels, captured item values, cancellation, floor/slot/revision races, failure, unsupported version and disconnect');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -20,7 +20,7 @@ def build(references, output=None, compiler=None):
         if not (references/name).is_file():
             raise ValueError('缺少Framework 4.0 reference assembly：'+name)
     inputs = [ROOT/'native'/name for name in ('NativeCompanion.cs', 'NativeCompanion.manifest', 'NativeCompanion.exe.config')]+[ROOT/'data/lamp.ico']
-    inputs += [ROOT/'native'/name for name in ('NativeShell.cs', 'NativeWorkspace.cs', 'NativeTheme.xaml')]
+    inputs += [ROOT/'native'/name for name in ('NativeShell.cs', 'NativeWorkspace.cs', 'NativeTheme.xaml', 'NativeGameDisplay.cs')]
     digest = hashlib.sha256(b''.join(path.read_bytes() for path in inputs)+b''.join((references/name).read_bytes() for name in ASSEMBLIES)).hexdigest()
     output = Path(output) if output else ROOT/'.local'/'native'/digest[:20]
     output.mkdir(parents=True, exist_ok=True)
@@ -31,7 +31,7 @@ def build(references, output=None, compiler=None):
                *['/reference:'+str(references/name) for name in ASSEMBLIES],
                '/resource:'+str(inputs[6])+',Denghuo.Theme.xaml',
                '/resource:'+str(inputs[3])+',Denghuo.Lamp.ico',
-               str(inputs[0]), str(inputs[4]), str(inputs[5])]
+               str(inputs[0]), str(inputs[4]), str(inputs[5]), str(inputs[7])]
     completed = subprocess.run(command, capture_output=True, text=True, encoding='mbcs' if sys.platform == 'win32' else 'utf-8', errors='replace')
     if completed.returncode:
         raise RuntimeError(completed.stdout+completed.stderr)

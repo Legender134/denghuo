@@ -126,7 +126,7 @@ class OblivionLootTests(unittest.TestCase):
         # These Vault variants inherit Mob.lootChance instead of returning 1.
         inherited = {'wealth_bonus':-1, 'oblivion_shard':0, 'unidentified_equipment':1}
         for name in ('vaultdm100','vaultghoul','vaultelemental$fire'):
-            self.assertAlmostEqual(self.chance('quest.vault.'+name, 'items.quest.dwarftoken', **inherited), 1, places=7)
+            self.assertAlmostEqual(self.chance('quest.vault.'+name, 'items.quest.dwarftoken', hero_level=3, **inherited), 1, places=7)
         self.assertEqual(self.loot('gnollexile'), self.loot('gnollexile', **args))
         # Acidic overrides createLoot, but still reaches Mob.lootChance.
         self.assertAlmostEqual(self.chance('acidic', 'items.potions.potionofexperience',

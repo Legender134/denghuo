@@ -649,6 +649,7 @@ class NumericControllerTests(ControllerFixture):
         ui = NativeManager.__new__(NativeManager)
         ui.manager, ui.session, ui.host = self.manager, self.session, self.host
         ui.report_drafts, ui.update = Mock(), Mock()
+        ui.frozen = False
         self.owner.native.remembered_game.return_value = {'hwnd': 1234, 'pid': 456, 'rect': (0, 0, 900, 700)}
         self.host.commands.clear()
         ui.dispatch({'action': 'collapse', 'game': {'hwnd': 999, 'pid': 888}})
